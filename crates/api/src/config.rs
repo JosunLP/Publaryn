@@ -156,6 +156,42 @@ impl Config {
         cfg.try_deserialize()
             .context("Failed to parse configuration")
     }
+
+    /// Build a configuration suitable for integration tests.
+    /// Uses the provided database URL and sensible defaults for everything else.
+    pub fn test_config(database_url: &str) -> Self {
+        Self {
+            server: ServerConfig {
+                bind_address: "127.0.0.1:0".to_owned(),
+                base_url: "http://localhost:3000".to_owned(),
+                cors_allowed_origins: vec![],
+            },
+            database: DatabaseConfig {
+                url: database_url.to_owned(),
+                max_connections: 5,
+            },
+            auth: AuthConfig {
+                jwt_secret: "test-secret-that-is-long-enough-for-hmac-256!".to_owned(),
+                jwt_ttl_seconds: 3600,
+                session_ttl_seconds: 86400,
+                issuer: "https://test.publaryn.dev".to_owned(),
+            },
+            storage: StorageConfig {
+                endpoint: "http://localhost:9000".to_owned(),
+                bucket: "test-artifacts".to_owned(),
+                access_key: "minioadmin".to_owned(),
+                secret_key: "minioadmin".to_owned(),
+                region: "us-east-1".to_owned(),
+            },
+            search: SearchConfig {
+                url: "http://localhost:7700".to_owned(),
+                api_key: None,
+            },
+            redis: RedisConfig {
+                url: "redis://localhost:6379".to_owned(),
+            },
+        }
+    }
 }
 
 #[cfg(test)]

@@ -11,13 +11,6 @@ use publaryn_core::{Error, Result};
 
 use crate::config::StorageConfig;
 
-#[cfg(test)]
-use std::sync::Arc;
-#[cfg(test)]
-use std::collections::HashMap;
-#[cfg(test)]
-use tokio::sync::RwLock;
-
 #[derive(Debug, Clone)]
 pub struct PutArtifactObject {
     pub storage_key: String,
@@ -35,6 +28,36 @@ pub struct StoredArtifactObject {
 pub trait ArtifactStore: Send + Sync {
     async fn put_object(&self, object: PutArtifactObject) -> Result<()>;
     async fn get_object(&self, storage_key: &str) -> Result<Option<StoredArtifactObject>>;
+}
+
+/// In-memory artifact store for testing.
+#[derive(Debug, Default)]
+pub struct MemoryArtifactStore {
+    objects: std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, StoredArtifactObject>>>,
+}
+
+impl MemoryArtifactStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+#[async_trait]
+impl ArtifactStore for MemoryArtifactStore {
+    async fn put_object(&self, object: PutArtifactObject) -> Result<()> {
+        self.objects.write().await.insert(
+            object.storage_key,
+            StoredArtifactObject {
+                content_type: object.content_type,
+                bytes: object.bytes,
+            },
+        );
+        Ok(())
+    }
+
+    async fn get_object(&self, storage_key: &str) -> Result<Option<StoredArtifactObject>> {
+        Ok(self.objects.read().await.get(storage_key).cloned())
+    }
 }
 
 pub struct S3ArtifactStore {
@@ -125,39 +148,6 @@ impl ArtifactStore for S3ArtifactStore {
             content_type,
             bytes,
         }))
-    }
-}
-
-#[cfg(test)]
-#[derive(Debug, Default)]
-pub struct MemoryArtifactStore {
-    objects: Arc<RwLock<HashMap<String, StoredArtifactObject>>>,
-}
-
-#[cfg(test)]
-impl MemoryArtifactStore {
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-#[cfg(test)]
-#[async_trait]
-impl ArtifactStore for MemoryArtifactStore {
-    async fn put_object(&self, object: PutArtifactObject) -> Result<()> {
-        self.objects.write().await.insert(
-            object.storage_key,
-            StoredArtifactObject {
-                content_type: object.content_type,
-                bytes: object.bytes,
-            },
-        );
-
-        Ok(())
-    }
-
-    async fn get_object(&self, storage_key: &str) -> Result<Option<StoredArtifactObject>> {
-        Ok(self.objects.read().await.get(storage_key).cloned())
     }
 }
 

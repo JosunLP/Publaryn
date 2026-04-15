@@ -1,18 +1,7 @@
 use anyhow::Result;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
-mod config;
-mod error;
-mod cargo_bridge;
-mod npm_bridge;
-mod nuget_bridge;
-mod pypi_bridge;
-mod request_auth;
-mod router;
-mod routes;
-mod scopes;
-mod state;
-mod storage;
+use publaryn_api::{config, router, state};
 
 #[tokio::main]
 async fn main() -> Result<()> {

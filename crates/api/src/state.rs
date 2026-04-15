@@ -40,4 +40,19 @@ impl AppState {
             artifact_store,
         })
     }
+
+    /// Build an `AppState` from an already-provisioned database pool (for tests).
+    /// Uses an in-memory artifact store and a real (but test-pointed) Meilisearch client.
+    pub fn new_with_pool(db: PgPool, config: Config) -> Self {
+        let search = Arc::new(MeilisearchIndex::new(
+            &config.search.url,
+            config.search.api_key.as_deref(),
+        ));
+        Self {
+            db,
+            config: Arc::new(config),
+            search,
+            artifact_store: Arc::new(crate::storage::MemoryArtifactStore::new()),
+        }
+    }
 }

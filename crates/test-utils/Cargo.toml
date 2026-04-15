@@ -1,0 +1,23 @@
+[package]
+name = "publaryn-test-utils"
+version = "0.1.0"
+edition = "2021"
+description = "Test helpers, fixture factories, and integration test infrastructure for Publaryn"
+
+[dependencies]
+publaryn-core = { workspace = true }
+publaryn-auth = { workspace = true }
+
+tokio = { workspace = true }
+sqlx = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+bytes = { workspace = true }
+async-trait = { workspace = true }
+rand = { workspace = true }
+
+axum = { workspace = true }
+tower = { workspace = true }
+hyper = { workspace = true }

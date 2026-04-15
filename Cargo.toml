@@ -4,6 +4,7 @@ members = [
     "crates/api",
     "crates/auth",
     "crates/search",
+    "crates/test-utils",
     "crates/adapters/npm",
     "crates/adapters/pypi",
     "crates/adapters/cargo-registry",
@@ -102,6 +103,7 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 publaryn-core = { path = "crates/core" }
 publaryn-auth = { path = "crates/auth" }
 publaryn-search = { path = "crates/search" }
+publaryn-test-utils = { path = "crates/test-utils" }
 publaryn-adapter-npm = { path = "crates/adapters/npm" }
 publaryn-adapter-pypi = { path = "crates/adapters/pypi" }
 publaryn-adapter-cargo-registry = { path = "crates/adapters/cargo-registry" }
