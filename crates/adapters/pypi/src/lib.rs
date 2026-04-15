@@ -7,7 +7,7 @@
 //!
 //! - project index responses at `/simple/`
 //! - project detail responses at `/simple/<project>/`
-//! - Twine-compatible uploads at `/legacy/`
+//! - Twine-compatible uploads at `/legacy/` and `/legacy/<repository_slug>/`
 //! - both HTML and JSON serializations via content negotiation
 //! - distribution downloads for published, deprecated, and yanked releases
 //! - direct reads of unlisted packages and authenticated reads of private or

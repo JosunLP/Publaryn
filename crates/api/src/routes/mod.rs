@@ -11,6 +11,7 @@ pub mod openapi;
 pub mod orgs;
 pub mod org_invitations;
 pub mod packages;
+pub mod pypi_oidc;
 pub mod repositories;
 pub mod search;
 pub mod security;

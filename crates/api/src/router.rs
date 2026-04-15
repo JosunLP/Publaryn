@@ -36,6 +36,7 @@ pub fn build_router(state: AppState) -> Result<Router> {
         .merge(routes::security::router())
         .merge(routes::tokens::router())
         .merge(routes::trusted_publishers::router())
+        .merge(routes::pypi_oidc::router())
         // npm registry protocol adapter
         .nest("/npm", publaryn_adapter_npm::routes::router())
         // PyPI Simple API adapter

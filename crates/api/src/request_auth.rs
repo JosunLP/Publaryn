@@ -210,7 +210,7 @@ fn authenticate_jwt(token: &str, state: &AppState) -> ApiResult<AuthenticatedIde
 async fn authenticate_api_token(token: &str, state: &AppState) -> ApiResult<AuthenticatedIdentity> {
     let token_hash = security::hash_token(token);
     let row = sqlx::query(
-        "SELECT id, user_id, scopes, expires_at \
+        "SELECT id, user_id, scopes, expires_at, kind \
          FROM tokens \
          WHERE token_hash = $1 AND is_revoked = false",
     )
@@ -226,6 +226,15 @@ async fn authenticate_api_token(token: &str, state: &AppState) -> ApiResult<Auth
 
     if expires_at.is_some_and(|value| value <= Utc::now()) {
         return Err(ApiError(Error::Unauthorized("API token has expired".into())));
+    }
+
+    let token_kind = row
+        .try_get::<String, _>("kind")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    if token_kind == "oidc_derived" {
+        return Err(ApiError(Error::Unauthorized(
+            "OIDC-derived API tokens are only valid for native publishing endpoints".into(),
+        )));
     }
 
     let token_id: Uuid = row

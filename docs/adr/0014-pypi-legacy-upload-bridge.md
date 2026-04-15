@@ -13,7 +13,7 @@ That protocol has a few constraints that do not map one-to-one onto Publaryn's e
 - files are uploaded one at a time
 - the first file for a version creates the release and sets its metadata
 - subsequent files for the same version may arrive later
-- the upload request does not include an explicit Publaryn repository slug
+- the legacy multipart payload itself does not include an explicit Publaryn repository slug
 
 Publaryn must preserve its existing architectural principles while still being usable from standard Python tooling:
 
@@ -24,7 +24,7 @@ Publaryn must preserve its existing architectural principles while still being u
 
 ## Decision
 
-Publaryn now accepts Twine-compatible uploads at `POST /pypi/legacy/`.
+Publaryn now accepts Twine-compatible uploads at `POST /pypi/legacy/` and `POST /pypi/legacy/:repository_slug/`.
 
 ### Authentication
 
@@ -47,7 +47,10 @@ When the target package already exists, Publaryn reuses the shared package owner
 When the package does not exist yet, Publaryn auto-creates it in the publisher's first eligible user-owned repository.
 This mirrors the current npm adapter behavior and avoids inventing a PyPI-specific repository selector in the legacy protocol.
 
-Organization-targeted auto-create is intentionally deferred because the legacy upload protocol does not carry enough context to choose safely among multiple organization-owned repositories.
+When a repository slug is supplied in the upload URL, Publaryn validates write access to that repository and creates the package there.
+This allows first-publish flows into organization-owned repositories without introducing ambiguous organization defaults.
+
+Implicit organization-targeted auto-create on the bare `/pypi/legacy/` endpoint is still intentionally deferred because the legacy upload protocol does not carry enough context to choose safely among multiple organization-owned repositories.
 
 ### Release and artifact lifecycle
 
@@ -84,7 +87,7 @@ The route currently rejects or defers:
 
 - upload attestations
 - detached signatures
-- organization-targeted auto-create
+- implicit organization-targeted auto-create without a repository-specific upload URL
 - richer Python-specific metadata persistence beyond release provenance
 
 ## Consequences
@@ -92,19 +95,21 @@ The route currently rejects or defers:
 ### Positive
 
 - Twine can publish to Publaryn without going through the management API first
+- organization administrators can target a specific repository URL to bootstrap organization-owned PyPI packages natively
 - PyPI uploads reuse the shared package, release, audit, and artifact infrastructure
 - the adapter remains stateless and safe to scale horizontally across multiple API replicas
 - upload retries for the same filename and content are idempotent
 
 ### Trade-offs
 
-- package auto-create is currently limited to user-owned repositories
+- package auto-create still defaults to user-owned repositories on the bare `/pypi/legacy/` endpoint
+- organization-targeted auto-create requires a repository-specific upload URL
 - additional files may appear on an already published PyPI version over time, which is necessary for protocol compatibility but narrower than the current control-plane publish model
 - Python-specific metadata is preserved in provenance rather than normalized into dedicated schema columns
 
 ## Follow-up work
 
-- add organization-aware repository selection for native PyPI publishes
+- consider organization-level default resolution for bare `/pypi/legacy/` uploads when the actor has exactly one eligible organization repository
 - persist Python-specific metadata such as `Requires-Python`, project URLs, signatures, and attestations in protocol-aware columns
 - add trusted publishing support for PyPI uploads using the existing trusted publisher model
 - consider emitting richer observability metrics for upload sizes, duplicate retries, and protocol-level conflicts

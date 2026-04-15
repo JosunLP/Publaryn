@@ -155,7 +155,7 @@ async fn authenticate<S: NpmAppState>(
     if token.starts_with("pub_") {
         let token_hash = publaryn_core::security::hash_token(token);
         let row = sqlx::query(
-            "SELECT id, user_id, scopes, expires_at \
+            "SELECT id, user_id, scopes, expires_at, kind \
              FROM tokens \
              WHERE token_hash = $1 AND is_revoked = false",
         )
@@ -174,6 +174,16 @@ async fn authenticate<S: NpmAppState>(
             return Err(npm_error_response(
                 StatusCode::UNAUTHORIZED,
                 "Token has expired",
+            ));
+        }
+
+        let token_kind: String = row.try_get("kind").map_err(|_| {
+            npm_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error")
+        })?;
+        if token_kind == "oidc_derived" {
+            return Err(npm_error_response(
+                StatusCode::UNAUTHORIZED,
+                "OIDC-derived tokens are only valid for PyPI trusted publishing",
             ));
         }
 

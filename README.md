@@ -285,10 +285,13 @@ If a matching namespace claim exists for an extracted namespace (currently npm/B
 Publaryn currently exposes the following native PyPI-compatible routes:
 
 ```http
+GET  /_/oidc/audience
+POST /_/oidc/mint-token
 GET  /pypi/simple/
 GET  /pypi/simple/:project/
 GET  /pypi/files/:artifact_id/:filename
 POST /pypi/legacy/
+POST /pypi/legacy/:repository_slug/
 ```
 
 The read surface supports the PEP 503/691 Simple API with HTML and JSON responses.
@@ -297,13 +300,23 @@ The upload surface accepts Twine-compatible legacy uploads using `multipart/form
 
 - Basic authentication with a Publaryn API token (for example username `__token__`, password `<pub_...>`)
 - Bearer JWTs or Bearer API tokens for non-Twine clients
+- Short-lived trusted-publishing tokens minted from `POST /_/oidc/mint-token`
+
+Publaryn also exposes the PyPI trusted-publishing exchange expected by modern PyPA tooling:
+
+- `GET /_/oidc/audience` returns the audience string external CI providers should request for their OIDC JWT
+- `POST /_/oidc/mint-token` exchanges that external OIDC JWT for a short-lived Publaryn `pub_...` token
+- the minted token currently lasts 15 minutes, carries `packages:write`, and is bound to exactly one existing PyPI package
 
 Current PyPI upload behavior:
 
 - the first uploaded file for a version auto-creates the release and publishes it once the artifact is durably stored
 - additional immutable files can be appended to the same published version to match PyPI's one-file-at-a-time upload flow
-- missing packages are auto-created in the publisher's first eligible user-owned repository, mirroring the current npm adapter ergonomics
-- organization-targeted auto-create, detached signatures, and upload attestations are intentionally deferred
+- missing packages are auto-created in the publisher's first eligible user-owned repository when the default `/pypi/legacy/` endpoint is used, mirroring the current npm adapter ergonomics
+- publishers can target a specific Publaryn repository by posting to `/pypi/legacy/:repository_slug/`, which enables first-publish flows into organization-owned repositories for organization admins
+- trusted publishing reuses the existing per-package trusted publisher configuration and currently supports existing PyPI packages only
+- OIDC-derived tokens are intentionally confined to PyPI uploads for their matched package and are rejected on control-plane, npm, and PyPI read endpoints
+- detached signatures, upload attestations, and implicit organization selection without a repository-specific upload URL are intentionally deferred
 
 ### Search
 
