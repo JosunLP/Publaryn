@@ -77,7 +77,7 @@ async fn create_repository(
     sqlx::query(
         "INSERT INTO repositories (id, name, slug, description, kind, visibility, owner_user_id, \
          owner_org_id, upstream_url, created_at, updated_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())",
     )
     .bind(repository.id)
     .bind(&repository.name)

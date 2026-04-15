@@ -56,7 +56,7 @@ async fn create_namespace(
         return Err(ApiError(Error::Validation("Namespace must not be empty".into())));
     }
 
-    if (body.owner_user_id.is_some() as u8 + body.owner_org_id.is_some() as u8) != 1 {
+    if body.owner_user_id.is_some() == body.owner_org_id.is_some() {
         return Err(ApiError(Error::Validation(
             "Namespace claim must have exactly one owner".into(),
         )));
