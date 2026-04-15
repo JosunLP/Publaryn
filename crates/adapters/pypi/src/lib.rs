@@ -1,3 +1,17 @@
-//! Ecosystem adapter implementation.
+//! # PyPI Simple API adapter
 //!
-//! See the `npm` adapter for the shared `EcosystemAdapter` trait definition.
+//! Implements a read-only subset of the PyPI Simple Repository API using the
+//! shared Publaryn package, release, and artifact domain data.
+//!
+//! The current slice supports:
+//!
+//! - project index responses at `/simple/`
+//! - project detail responses at `/simple/<project>/`
+//! - both HTML and JSON serializations via content negotiation
+//! - distribution downloads for published, deprecated, and yanked releases
+//! - direct reads of unlisted packages and authenticated reads of private or
+//!   organization-internal packages
+
+pub mod name;
+pub mod routes;
+pub mod simple;

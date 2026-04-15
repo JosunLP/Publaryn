@@ -99,3 +99,4 @@ publaryn-core = { path = "crates/core" }
 publaryn-auth = { path = "crates/auth" }
 publaryn-search = { path = "crates/search" }
 publaryn-adapter-npm = { path = "crates/adapters/npm" }
+publaryn-adapter-pypi = { path = "crates/adapters/pypi" }

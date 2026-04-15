@@ -22,8 +22,9 @@ fn test_normalize_npm_name() {
 
 #[test]
 fn test_normalize_pypi_name() {
-    assert_eq!(normalize_package_name("My-Package", &Ecosystem::Pypi), "my_package");
-    assert_eq!(normalize_package_name("my.package", &Ecosystem::Pypi), "my_package");
+    assert_eq!(normalize_package_name("My-Package", &Ecosystem::Pypi), "my-package");
+    assert_eq!(normalize_package_name("my.package", &Ecosystem::Pypi), "my-package");
+    assert_eq!(normalize_package_name("my___package", &Ecosystem::Pypi), "my-package");
 }
 
 #[test]

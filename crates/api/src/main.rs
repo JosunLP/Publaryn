@@ -4,6 +4,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 mod config;
 mod error;
 mod npm_bridge;
+mod pypi_bridge;
 mod request_auth;
 mod router;
 mod routes;

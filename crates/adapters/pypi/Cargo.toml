@@ -6,7 +6,9 @@ description = "Publaryn ecosystem adapter: pypi"
 
 [dependencies]
 publaryn-core = { workspace = true }
+publaryn-auth = { workspace = true }
 tokio = { workspace = true }
+axum = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
@@ -16,5 +18,7 @@ anyhow = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }
 bytes = { workspace = true }
+base64 = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
+sqlx = { workspace = true }

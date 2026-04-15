@@ -38,6 +38,8 @@ pub fn build_router(state: AppState) -> Result<Router> {
         .merge(routes::trusted_publishers::router())
         // npm registry protocol adapter
         .nest("/npm", publaryn_adapter_npm::routes::router())
+        // PyPI Simple API adapter
+        .nest("/pypi", publaryn_adapter_pypi::routes::router())
         // Swagger UI
         .merge(routes::openapi::router())
         .with_state(state)

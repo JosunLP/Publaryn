@@ -13,6 +13,7 @@ publaryn-core = { workspace = true }
 publaryn-auth = { workspace = true }
 publaryn-search = { workspace = true }
 publaryn-adapter-npm = { workspace = true }
+publaryn-adapter-pypi = { workspace = true }
 
 tokio = { workspace = true }
 axum = { workspace = true }

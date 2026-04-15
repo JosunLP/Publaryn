@@ -544,6 +544,7 @@ async fn publish_inner<S: NpmAppState>(
             // Verify write access
             if !has_package_write_access(
                 state.db(),
+                pkg_id,
                 row.try_get("owner_user_id").unwrap_or(None),
                 row.try_get("owner_org_id").unwrap_or(None),
                 identity.user_id,
@@ -1326,6 +1327,7 @@ async fn resolve_npm_package_id_for_write(
 
     if !has_package_write_access(
         db,
+        package_id,
         row.try_get("owner_user_id").unwrap_or(None),
         row.try_get("owner_org_id").unwrap_or(None),
         actor_user_id,
@@ -1343,6 +1345,7 @@ async fn resolve_npm_package_id_for_write(
 
 async fn has_package_write_access(
     db: &PgPool,
+    package_id: Uuid,
     owner_user_id: Option<Uuid>,
     owner_org_id: Option<Uuid>,
     actor_user_id: Uuid,
@@ -1370,7 +1373,31 @@ async fn has_package_write_access(
         .fetch_one(db)
         .await;
 
-        return result.unwrap_or(false);
+        if result.unwrap_or(false) {
+            return true;
+        }
+
+        let permissions: Vec<String> = vec!["admin".into(), "publish".into()];
+        let delegated_result = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS (\
+                 SELECT 1 \
+                 FROM team_package_access tpa \
+                 JOIN team_memberships tm ON tm.team_id = tpa.team_id \
+                 JOIN teams t ON t.id = tpa.team_id \
+                 JOIN packages p ON p.id = tpa.package_id \
+                 WHERE tpa.package_id = $1 \
+                   AND tm.user_id = $2 \
+                   AND t.org_id = p.owner_org_id \
+                   AND tpa.permission::text = ANY($3)\
+             )",
+        )
+        .bind(package_id)
+        .bind(actor_user_id)
+        .bind(&permissions)
+        .fetch_one(db)
+        .await;
+
+        return delegated_result.unwrap_or(false);
     }
 
     false

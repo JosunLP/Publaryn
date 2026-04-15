@@ -77,7 +77,7 @@ impl Package {
 pub fn normalize_package_name(name: &str, ecosystem: &Ecosystem) -> String {
     match ecosystem {
         Ecosystem::Npm | Ecosystem::Bun => name.to_lowercase(),
-        Ecosystem::Pypi => name.to_lowercase().replace(['-', '.'], "_"),
+        Ecosystem::Pypi => normalize_pypi_name(name),
         Ecosystem::Cargo => name.to_lowercase().replace('-', "_"),
         Ecosystem::Nuget => name.to_lowercase(),
         Ecosystem::Rubygems => name.to_lowercase().replace('-', "_"),
@@ -85,4 +85,26 @@ pub fn normalize_package_name(name: &str, ecosystem: &Ecosystem) -> String {
         Ecosystem::Maven => name.to_lowercase(),
         Ecosystem::Oci => name.to_lowercase(),
     }
+}
+
+fn normalize_pypi_name(name: &str) -> String {
+    let mut normalized = String::with_capacity(name.len());
+    let mut previous_was_separator = false;
+
+    for character in name.chars() {
+        match character {
+            '-' | '_' | '.' => {
+                if !previous_was_separator {
+                    normalized.push('-');
+                    previous_was_separator = true;
+                }
+            }
+            other => {
+                normalized.push(other.to_ascii_lowercase());
+                previous_was_separator = false;
+            }
+        }
+    }
+
+    normalized
 }
