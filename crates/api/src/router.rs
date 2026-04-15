@@ -1,7 +1,6 @@
 use axum::{
     extract::MatchedPath,
     http::Request,
-    middleware,
     Router,
 };
 use tower_http::{
@@ -19,12 +18,17 @@ use crate::routes;
 pub fn build_router(state: AppState) -> Router {
     Router::new()
         .merge(routes::health::router())
+        .merge(routes::audit::router())
         .merge(routes::auth::router())
+        .merge(routes::namespaces::router())
         .merge(routes::users::router())
         .merge(routes::orgs::router())
+        .merge(routes::repositories::router())
         .merge(routes::packages::router())
         .merge(routes::search::router())
+        .merge(routes::security::router())
         .merge(routes::tokens::router())
+        .merge(routes::trusted_publishers::router())
         // Swagger UI
         .merge(routes::openapi::router())
         .with_state(state)

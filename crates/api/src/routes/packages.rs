@@ -11,16 +11,14 @@ use uuid::Uuid;
 use publaryn_core::{
     domain::{
         namespace::Ecosystem,
-        package::{normalize_package_name, Package},
-        release::Release,
-        repository::Visibility,
+        package::normalize_package_name,
     },
     error::Error,
-    policy, validation,
 };
 
 use crate::{
     error::{ApiError, ApiResult},
+    routes::parse_ecosystem,
     state::AppState,
 };
 
@@ -35,20 +33,6 @@ pub fn router() -> Router<AppState> {
         .route("/v1/packages/:ecosystem/:name/releases/:version/deprecate", put(deprecate_release))
         .route("/v1/packages/:ecosystem/:name/tags", get(list_tags))
         .route("/v1/packages/:ecosystem/:name/tags/:tag", put(upsert_tag))
-}
-
-fn parse_ecosystem(s: &str) -> ApiResult<Ecosystem> {
-    match s.to_lowercase().as_str() {
-        "npm" | "bun" => Ok(Ecosystem::Npm),
-        "pypi" => Ok(Ecosystem::Pypi),
-        "cargo" => Ok(Ecosystem::Cargo),
-        "nuget" => Ok(Ecosystem::Nuget),
-        "rubygems" => Ok(Ecosystem::Rubygems),
-        "maven" => Ok(Ecosystem::Maven),
-        "composer" => Ok(Ecosystem::Composer),
-        "oci" => Ok(Ecosystem::Oci),
-        other => Err(ApiError(Error::Validation(format!("Unknown ecosystem: {other}")))),
-    }
 }
 
 async fn get_package(
