@@ -6,6 +6,7 @@ use std::sync::Arc;
 use publaryn_search::index::MeilisearchIndex;
 
 use crate::config::Config;
+use crate::storage::{ArtifactStore, S3ArtifactStore};
 
 /// Shared application state injected into every handler.
 #[derive(Clone)]
@@ -13,6 +14,7 @@ pub struct AppState {
     pub db: PgPool,
     pub config: Arc<Config>,
     pub search: Arc<MeilisearchIndex>,
+    pub artifact_store: Arc<dyn ArtifactStore>,
 }
 
 impl AppState {
@@ -29,11 +31,13 @@ impl AppState {
             &cfg.search.url,
             cfg.search.api_key.as_deref(),
         ));
+        let artifact_store = Arc::new(S3ArtifactStore::new(&cfg.storage).await?);
 
         Ok(Self {
             db,
             config: Arc::new(cfg.clone()),
             search,
+            artifact_store,
         })
     }
 }

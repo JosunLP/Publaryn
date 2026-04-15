@@ -34,6 +34,8 @@ tracing-subscriber = { workspace = true }
 
 config = { workspace = true }
 dotenvy = { workspace = true }
+aws-config = { workspace = true }
+aws-sdk-s3 = { workspace = true }
 
 utoipa = { workspace = true }
 utoipa-swagger-ui = { workspace = true }

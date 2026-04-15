@@ -228,8 +228,13 @@ GET    /v1/packages/:ecosystem/:name
 PATCH  /v1/packages/:ecosystem/:name
 DELETE /v1/packages/:ecosystem/:name
 POST   /v1/packages/:ecosystem/:name/ownership-transfer
+POST   /v1/packages/:ecosystem/:name/releases
 GET    /v1/packages/:ecosystem/:name/releases
 GET    /v1/packages/:ecosystem/:name/releases/:version
+POST   /v1/packages/:ecosystem/:name/releases/:version/publish
+GET    /v1/packages/:ecosystem/:name/releases/:version/artifacts
+PUT    /v1/packages/:ecosystem/:name/releases/:version/artifacts/:filename?kind=<kind>
+GET    /v1/packages/:ecosystem/:name/releases/:version/artifacts/:filename
 PUT    /v1/packages/:ecosystem/:name/releases/:version/yank
 PUT    /v1/packages/:ecosystem/:name/releases/:version/unyank
 PUT    /v1/packages/:ecosystem/:name/releases/:version/deprecate
@@ -241,6 +246,16 @@ POST   /v1/packages/:ecosystem/:name/trusted-publishers
 ```
 
 Release history responses include published, deprecated, and yanked versions so maintainers and consumers can inspect full version state. Yanked releases can be restored with the dedicated unyank endpoint.
+
+The control-plane publish workflow is now explicit and quarantine-first:
+
+1. create the release in `quarantine`
+2. upload one or more immutable artifacts into shared object storage
+3. publish the release once artifact metadata and blobs are present consistently
+
+Quarantined and scanning releases are intentionally hidden from public direct reads and artifact downloads. They remain visible only to actors who already have package write access.
+
+Artifact uploads are idempotent by filename and content. Repeating the same upload for the same release and filename returns the existing artifact metadata instead of creating duplicates.
 
 Package and repository read endpoints enforce explicit visibility semantics.
 `public` resources are readable and discoverable by everyone.

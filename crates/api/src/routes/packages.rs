@@ -1,17 +1,25 @@
 use axum::{
-    extract::{Path, State},
-    http::StatusCode,
+    body::{Body, Bytes},
+    extract::{Path, Query, State},
+    http::{
+        header::{CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE},
+        HeaderMap, StatusCode,
+    },
+    response::Response,
     routing::{delete, get, patch, post, put},
     Json, Router,
 };
+use sha2::{Digest, Sha256, Sha512};
 use serde::Deserialize;
 use sqlx::Row;
 use uuid::Uuid;
 
 use publaryn_core::{
     domain::{
+        artifact::{Artifact, ArtifactKind},
         namespace::Ecosystem,
         package::{normalize_package_name, Package},
+        release::Release,
         repository::Visibility,
     },
     error::Error,
@@ -23,18 +31,22 @@ use publaryn_search::{PackageDocument, SearchIndex};
 use crate::{
     error::{ApiError, ApiResult},
     request_auth::{
-        ensure_package_read_access, ensure_package_write_access, ensure_repository_write_access,
-        AuthenticatedIdentity, OptionalAuthenticatedIdentity,
+        actor_can_write_package_by_id, ensure_package_read_access,
+        ensure_package_write_access, ensure_repository_write_access, AuthenticatedIdentity,
+        OptionalAuthenticatedIdentity,
     },
     routes::parse_ecosystem,
     scopes::{ensure_scope, SCOPE_PACKAGES_TRANSFER, SCOPE_PACKAGES_WRITE},
     state::AppState,
+    storage::PutArtifactObject,
 };
 
 const PACKAGE_CREATION_ALLOWED_REPOSITORY_KINDS: &[&str] =
     &["public", "private", "staging", "release"];
 const PACKAGE_TRANSFER_ORG_ADMIN_ROLES: &[&str] = &["owner", "admin"];
 const RELEASE_HISTORY_VISIBLE_STATUSES: &[&str] = &["published", "deprecated", "yanked"];
+const RELEASE_MANAGEMENT_VISIBLE_STATUSES: &[&str] =
+    &["quarantine", "scanning", "published", "deprecated", "yanked"];
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -46,10 +58,25 @@ pub fn router() -> Router<AppState> {
             "/v1/packages/:ecosystem/:name/ownership-transfer",
             post(transfer_package_ownership),
         )
-        .route("/v1/packages/:ecosystem/:name/releases", get(list_releases))
+        .route(
+            "/v1/packages/:ecosystem/:name/releases",
+            get(list_releases).post(create_release),
+        )
         .route(
             "/v1/packages/:ecosystem/:name/releases/:version",
             get(get_release),
+        )
+        .route(
+            "/v1/packages/:ecosystem/:name/releases/:version/publish",
+            post(publish_release),
+        )
+        .route(
+            "/v1/packages/:ecosystem/:name/releases/:version/artifacts",
+            get(list_artifacts),
+        )
+        .route(
+            "/v1/packages/:ecosystem/:name/releases/:version/artifacts/:filename",
+            get(download_artifact).put(upload_artifact),
         )
         .route(
             "/v1/packages/:ecosystem/:name/releases/:version/yank",
@@ -78,6 +105,13 @@ struct TargetOrganization {
     id: Uuid,
     slug: String,
     name: String,
+}
+
+#[derive(Debug, Clone)]
+struct ReleaseAccess {
+    package_id: Uuid,
+    release_id: Uuid,
+    status: String,
 }
 
 async fn get_package(
@@ -157,6 +191,24 @@ struct CreatePackageRequest {
     keywords: Option<Vec<String>>,
 }
 
+#[derive(Debug, Deserialize)]
+struct CreateReleaseRequest {
+    version: String,
+    description: Option<String>,
+    changelog: Option<String>,
+    source_ref: Option<String>,
+    provenance: Option<serde_json::Value>,
+    is_prerelease: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ArtifactUploadQuery {
+    kind: String,
+    sha256: Option<String>,
+    is_signed: Option<bool>,
+    signature_key_id: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 struct RepositoryPackageCreationTarget {
     id: Uuid,
@@ -165,7 +217,6 @@ struct RepositoryPackageCreationTarget {
     visibility: Visibility,
     owner_user_id: Option<Uuid>,
     owner_org_id: Option<Uuid>,
-    owner_name: Option<String>,
 }
 
 async fn create_package(
@@ -314,9 +365,7 @@ async fn create_package(
         .await
         .map_err(|e| ApiError(Error::Database(e)))?;
 
-    if let Err(error) =
-        index_package_after_creation(&state, &package, repository.owner_name.clone()).await
-    {
+    if let Err(error) = index_package_after_creation(&state, &package).await {
         tracing::warn!(
             package_id = %package.id,
             error = %error,
@@ -618,6 +667,69 @@ async fn transfer_package_ownership(
     })))
 }
 
+async fn create_release(
+    State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
+    Path((ecosystem_str, name)): Path<(String, String)>,
+    Json(body): Json<CreateReleaseRequest>,
+) -> ApiResult<(StatusCode, Json<serde_json::Value>)> {
+    ensure_scope(&identity, SCOPE_PACKAGES_WRITE)?;
+
+    let eco = parse_ecosystem(&ecosystem_str)?;
+    let normalized = normalize_package_name(&name, &eco);
+    let package_id =
+        ensure_package_write_access(&state.db, eco.as_str(), &normalized, identity.user_id).await?;
+
+    validation::validate_version(&body.version).map_err(ApiError::from)?;
+
+    let mut release = Release::new(package_id, body.version.clone(), identity.user_id);
+    release.description = body.description;
+    release.changelog = body.changelog;
+    release.source_ref = body.source_ref;
+    release.provenance = body.provenance;
+    release.is_prerelease = body
+        .is_prerelease
+        .unwrap_or_else(|| version_looks_prerelease(&release.version));
+
+    sqlx::query(
+        "INSERT INTO releases (id, package_id, version, status, published_by, description, changelog, \
+         is_prerelease, is_yanked, yank_reason, is_deprecated, deprecation_message, source_ref, \
+         provenance, published_at, updated_at) \
+         VALUES ($1, $2, $3, 'quarantine', $4, $5, $6, $7, false, NULL, false, NULL, $8, $9, $10, $11)",
+    )
+    .bind(release.id)
+    .bind(release.package_id)
+    .bind(&release.version)
+    .bind(release.published_by)
+    .bind(&release.description)
+    .bind(&release.changelog)
+    .bind(release.is_prerelease)
+    .bind(&release.source_ref)
+    .bind(&release.provenance)
+    .bind(release.published_at)
+    .bind(release.updated_at)
+    .execute(&state.db)
+    .await
+    .map_err(|e| match &e {
+        sqlx::Error::Database(db) if db.is_unique_violation() => ApiError(Error::AlreadyExists(
+            format!("Release '{}' already exists", release.version),
+        )),
+        _ => ApiError(Error::Database(e)),
+    })?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::json!({
+            "id": release.id,
+            "package_id": release.package_id,
+            "version": release.version,
+            "status": "quarantine",
+            "is_prerelease": release.is_prerelease,
+            "published_at": release.published_at,
+        })),
+    ))
+}
+
 async fn list_releases(
     State(state): State<AppState>,
     identity: OptionalAuthenticatedIdentity,
@@ -628,7 +740,13 @@ async fn list_releases(
     let pkg_id =
         ensure_package_read_access(&state.db, eco.as_str(), &normalized, identity.user_id())
             .await?;
-    let visible_statuses = release_history_visible_statuses();
+    let visible_statuses = if actor_can_write_package_by_id(&state.db, pkg_id, identity.user_id())
+        .await?
+    {
+        release_management_visible_statuses()
+    } else {
+        release_history_visible_statuses()
+    };
 
     let rows = sqlx::query(
         "SELECT version, status, is_yanked, is_deprecated, is_prerelease, published_at \
@@ -665,10 +783,14 @@ async fn get_release(
     Path((ecosystem_str, name, version)): Path<(String, String, String)>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let eco = parse_ecosystem(&ecosystem_str)?;
-    let normalized = normalize_package_name(&name, &eco);
-    let package_id =
-        ensure_package_read_access(&state.db, eco.as_str(), &normalized, identity.user_id())
-            .await?;
+    let release_access = ensure_release_read_access(
+        &state.db,
+        &eco,
+        &name,
+        &version,
+        identity.user_id(),
+    )
+    .await?;
 
     let row = sqlx::query(
         "SELECT r.id, r.version, r.status, r.is_yanked, r.yank_reason, r.is_deprecated, \
@@ -676,7 +798,7 @@ async fn get_release(
          FROM releases r \
          WHERE r.package_id = $1 AND r.version = $2",
     )
-    .bind(package_id)
+    .bind(release_access.package_id)
     .bind(&version)
     .fetch_optional(&state.db)
     .await
@@ -690,7 +812,7 @@ async fn get_release(
     Ok(Json(serde_json::json!({
         "id": row.try_get::<Uuid, _>("id").ok(),
         "version": row.try_get::<String, _>("version").ok(),
-        "status": row.try_get::<String, _>("status").ok(),
+        "status": Some(release_access.status),
         "is_yanked": row.try_get::<bool, _>("is_yanked").ok(),
         "yank_reason": row.try_get::<Option<String>, _>("yank_reason").ok().flatten(),
         "is_deprecated": row.try_get::<bool, _>("is_deprecated").ok(),
@@ -719,6 +841,9 @@ async fn yank_release(
     let normalized = normalize_package_name(&name, &eco);
     let package_id =
         ensure_package_write_access(&state.db, eco.as_str(), &normalized, identity.user_id).await?;
+
+    let release_access = load_release_for_write(&state.db, package_id, &version).await?;
+    ensure_release_allows_status_mutation(&release_access.status, "yanked")?;
 
     let release = sqlx::query(
         "UPDATE releases \
@@ -860,6 +985,9 @@ async fn deprecate_release(
     let package_id =
         ensure_package_write_access(&state.db, eco.as_str(), &normalized, identity.user_id).await?;
 
+    let release_access = load_release_for_write(&state.db, package_id, &version).await?;
+    ensure_release_allows_status_mutation(&release_access.status, "deprecated")?;
+
     let release = sqlx::query(
         "UPDATE releases \
          SET is_deprecated = true, deprecation_message = $1, status = 'deprecated', updated_at = NOW() \
@@ -995,6 +1123,458 @@ async fn upsert_tag(
     })))
 }
 
+async fn publish_release(
+    State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
+    Path((ecosystem_str, name, version)): Path<(String, String, String)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    ensure_scope(&identity, SCOPE_PACKAGES_WRITE)?;
+
+    let eco = parse_ecosystem(&ecosystem_str)?;
+    let normalized = normalize_package_name(&name, &eco);
+    let package_id =
+        ensure_package_write_access(&state.db, eco.as_str(), &normalized, identity.user_id).await?;
+
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let release_row = sqlx::query(
+        "SELECT id, status, is_yanked, is_deprecated \
+         FROM releases \
+         WHERE package_id = $1 AND version = $2 \
+         FOR UPDATE",
+    )
+    .bind(package_id)
+    .bind(&version)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?
+    .ok_or_else(|| ApiError(Error::NotFound(format!("Release '{version}' not found"))))?;
+
+    let release_id: Uuid = release_row
+        .try_get("id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let current_status = release_row
+        .try_get::<String, _>("status")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let is_yanked = release_row
+        .try_get::<bool, _>("is_yanked")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let is_deprecated = release_row
+        .try_get::<bool, _>("is_deprecated")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+
+    let artifact_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::BIGINT \
+         FROM artifacts \
+         WHERE release_id = $1",
+    )
+    .bind(release_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    if current_status == "published" {
+        tx.commit()
+            .await
+            .map_err(|e| ApiError(Error::Database(e)))?;
+
+        return Ok(Json(serde_json::json!({
+            "message": "Release already published",
+            "version": version,
+            "status": current_status,
+            "artifact_count": artifact_count,
+        })));
+    }
+
+    if !release_status_can_be_published(&current_status) {
+        return Err(ApiError(Error::Conflict(format!(
+            "Release '{version}' cannot be published from status '{current_status}'"
+        ))));
+    }
+
+    if artifact_count == 0 {
+        return Err(ApiError(Error::Conflict(
+            "A release must have at least one uploaded artifact before publication".into(),
+        )));
+    }
+
+    let next_status = finalize_release_status(is_deprecated, is_yanked);
+
+    sqlx::query(
+        "UPDATE releases \
+         SET status = $1, updated_at = NOW() \
+         WHERE id = $2",
+    )
+    .bind(next_status)
+    .bind(release_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    sqlx::query(
+        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_package_id, target_release_id, metadata, occurred_at) \
+         VALUES ($1, 'release_publish', $2, $3, $4, $5, $6, NOW())",
+    )
+    .bind(Uuid::new_v4())
+    .bind(identity.user_id)
+    .bind(identity.audit_actor_token_id())
+    .bind(package_id)
+    .bind(release_id)
+    .bind(serde_json::json!({
+        "ecosystem": eco.as_str(),
+        "name": normalized,
+        "version": version,
+        "status": next_status,
+        "artifact_count": artifact_count,
+    }))
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    if let Err(error) = reindex_package_document(&state, package_id).await {
+        tracing::warn!(
+            package_id = %package_id,
+            release_id = %release_id,
+            error = %error,
+            "Failed to reindex package after release publication"
+        );
+    }
+
+    Ok(Json(serde_json::json!({
+        "message": "Release published",
+        "version": version,
+        "status": next_status,
+        "artifact_count": artifact_count,
+    })))
+}
+
+async fn list_artifacts(
+    State(state): State<AppState>,
+    identity: OptionalAuthenticatedIdentity,
+    Path((ecosystem_str, name, version)): Path<(String, String, String)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let eco = parse_ecosystem(&ecosystem_str)?;
+    let release_access = ensure_release_read_access(
+        &state.db,
+        &eco,
+        &name,
+        &version,
+        identity.user_id(),
+    )
+    .await?;
+
+    let rows = sqlx::query(
+        "SELECT id, kind, filename, content_type, size_bytes, sha256, sha512, is_signed, signature_key_id, uploaded_at \
+         FROM artifacts \
+         WHERE release_id = $1 \
+         ORDER BY filename",
+    )
+    .bind(release_access.release_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let artifacts = rows
+        .iter()
+        .map(|row| {
+            serde_json::json!({
+                "id": row.try_get::<Uuid, _>("id").ok(),
+                "kind": row.try_get::<ArtifactKind, _>("kind").ok().map(artifact_kind_as_str),
+                "filename": row.try_get::<String, _>("filename").ok(),
+                "content_type": row.try_get::<String, _>("content_type").ok(),
+                "size_bytes": row.try_get::<i64, _>("size_bytes").ok(),
+                "sha256": row.try_get::<String, _>("sha256").ok(),
+                "sha512": row.try_get::<Option<String>, _>("sha512").ok().flatten(),
+                "is_signed": row.try_get::<bool, _>("is_signed").ok(),
+                "signature_key_id": row.try_get::<Option<String>, _>("signature_key_id").ok().flatten(),
+                "uploaded_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("uploaded_at").ok(),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    Ok(Json(serde_json::json!({ "artifacts": artifacts })))
+}
+
+async fn upload_artifact(
+    State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
+    Path((ecosystem_str, name, version, filename)): Path<(String, String, String, String)>,
+    Query(query): Query<ArtifactUploadQuery>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> ApiResult<(StatusCode, Json<serde_json::Value>)> {
+    ensure_scope(&identity, SCOPE_PACKAGES_WRITE)?;
+
+    let eco = parse_ecosystem(&ecosystem_str)?;
+    let normalized = normalize_package_name(&name, &eco);
+    let package_id =
+        ensure_package_write_access(&state.db, eco.as_str(), &normalized, identity.user_id).await?;
+    let release_access = load_release_for_write(&state.db, package_id, &version).await?;
+    validate_artifact_filename(&filename)?;
+
+    if !release_status_accepts_artifact_upload(&release_access.status) {
+        return Err(ApiError(Error::Conflict(format!(
+            "Artifacts can only be uploaded while a release is in quarantine or scanning; current status is '{}'",
+            release_access.status,
+        ))));
+    }
+
+    if body.is_empty() {
+        return Err(ApiError(Error::Validation(
+            "Artifact uploads must not be empty".into(),
+        )));
+    }
+
+    let artifact_kind = parse_artifact_kind(&query.kind)?;
+    let content_type = headers
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("application/octet-stream")
+        .to_owned();
+    let size_bytes = i64::try_from(body.len()).map_err(|_| {
+        ApiError(Error::Validation(
+            "Artifact upload is too large to be represented safely".into(),
+        ))
+    })?;
+
+    let sha256 = hex::encode(Sha256::digest(&body));
+    let sha512 = hex::encode(Sha512::digest(&body));
+    validate_expected_sha256(query.sha256.as_deref(), &sha256)?;
+
+    if let Some(existing_row) = sqlx::query(
+        "SELECT id, storage_key, content_type, size_bytes, sha256, sha512, is_signed, signature_key_id, uploaded_at \
+         FROM artifacts \
+         WHERE release_id = $1 AND filename = $2",
+    )
+    .bind(release_access.release_id)
+    .bind(&filename)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?
+    {
+        let existing_sha256 = existing_row
+            .try_get::<String, _>("sha256")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+
+        if existing_sha256 != sha256 {
+            return Err(ApiError(Error::Conflict(format!(
+                "An artifact named '{}' already exists for release '{}' with different content",
+                filename, version,
+            ))));
+        }
+
+        return Ok((
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "id": existing_row.try_get::<Uuid, _>("id").ok(),
+                "release_id": release_access.release_id,
+                "kind": artifact_kind_as_str(artifact_kind),
+                "filename": filename,
+                "storage_key": existing_row.try_get::<String, _>("storage_key").ok(),
+                "content_type": existing_row.try_get::<String, _>("content_type").ok(),
+                "size_bytes": existing_row.try_get::<i64, _>("size_bytes").ok(),
+                "sha256": existing_sha256,
+                "sha512": existing_row.try_get::<Option<String>, _>("sha512").ok().flatten(),
+                "is_signed": existing_row.try_get::<bool, _>("is_signed").ok(),
+                "signature_key_id": existing_row.try_get::<Option<String>, _>("signature_key_id").ok().flatten(),
+                "uploaded_at": existing_row.try_get::<chrono::DateTime<chrono::Utc>, _>("uploaded_at").ok(),
+            })),
+        ));
+    }
+
+    let storage_key = build_artifact_storage_key(release_access.release_id, &filename, &sha256);
+    state
+        .artifact_store
+        .put_object(PutArtifactObject {
+            storage_key: storage_key.clone(),
+            content_type: content_type.clone(),
+            bytes: body.clone(),
+        })
+        .await
+        .map_err(ApiError::from)?;
+
+    let is_signed = query.is_signed.unwrap_or(query.signature_key_id.is_some());
+    let mut artifact = Artifact::new(
+        release_access.release_id,
+        artifact_kind,
+        filename.clone(),
+        storage_key.clone(),
+        content_type.clone(),
+        size_bytes,
+        sha256.clone(),
+    );
+    artifact.sha512 = Some(sha512.clone());
+    artifact.is_signed = is_signed;
+    artifact.signature_key_id = query.signature_key_id.clone();
+
+    let insert_result = sqlx::query(
+        "INSERT INTO artifacts (id, release_id, kind, filename, storage_key, content_type, size_bytes, sha256, sha512, md5, is_signed, signature_key_id, uploaded_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NULL, $10, $11, $12) \
+         ON CONFLICT (release_id, filename) DO NOTHING",
+    )
+    .bind(artifact.id)
+    .bind(artifact.release_id)
+    .bind(artifact.kind.clone())
+    .bind(&artifact.filename)
+    .bind(&artifact.storage_key)
+    .bind(&artifact.content_type)
+    .bind(artifact.size_bytes)
+    .bind(&artifact.sha256)
+    .bind(&artifact.sha512)
+    .bind(artifact.is_signed)
+    .bind(&artifact.signature_key_id)
+    .bind(artifact.uploaded_at)
+    .execute(&state.db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    if insert_result.rows_affected() == 0 {
+        let existing_row = sqlx::query(
+            "SELECT id, storage_key, content_type, size_bytes, sha256, sha512, is_signed, signature_key_id, uploaded_at \
+             FROM artifacts \
+             WHERE release_id = $1 AND filename = $2",
+        )
+        .bind(release_access.release_id)
+        .bind(&filename)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?
+        .ok_or_else(|| {
+            ApiError(Error::Internal(
+                "Artifact insert conflicted but no existing artifact could be loaded".into(),
+            ))
+        })?;
+
+        let existing_sha256 = existing_row
+            .try_get::<String, _>("sha256")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+        if existing_sha256 != sha256 {
+            return Err(ApiError(Error::Conflict(format!(
+                "An artifact named '{}' already exists for release '{}' with different content",
+                filename, version,
+            ))));
+        }
+
+        return Ok((
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "id": existing_row.try_get::<Uuid, _>("id").ok(),
+                "release_id": release_access.release_id,
+                "kind": artifact_kind_as_str(artifact.kind),
+                "filename": artifact.filename,
+                "storage_key": existing_row.try_get::<String, _>("storage_key").ok(),
+                "content_type": existing_row.try_get::<String, _>("content_type").ok(),
+                "size_bytes": existing_row.try_get::<i64, _>("size_bytes").ok(),
+                "sha256": existing_sha256,
+                "sha512": existing_row.try_get::<Option<String>, _>("sha512").ok().flatten(),
+                "is_signed": existing_row.try_get::<bool, _>("is_signed").ok(),
+                "signature_key_id": existing_row.try_get::<Option<String>, _>("signature_key_id").ok().flatten(),
+                "uploaded_at": existing_row.try_get::<chrono::DateTime<chrono::Utc>, _>("uploaded_at").ok(),
+            })),
+        ));
+    }
+
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::json!({
+            "id": artifact.id,
+            "release_id": artifact.release_id,
+            "kind": artifact_kind_as_str(artifact.kind.clone()),
+            "filename": artifact.filename,
+            "storage_key": artifact.storage_key,
+            "content_type": artifact.content_type,
+            "size_bytes": artifact.size_bytes,
+            "sha256": artifact.sha256,
+            "sha512": artifact.sha512,
+            "is_signed": artifact.is_signed,
+            "signature_key_id": artifact.signature_key_id,
+            "uploaded_at": artifact.uploaded_at,
+        })),
+    ))
+}
+
+async fn download_artifact(
+    State(state): State<AppState>,
+    identity: OptionalAuthenticatedIdentity,
+    Path((ecosystem_str, name, version, filename)): Path<(String, String, String, String)>,
+) -> ApiResult<Response> {
+    let eco = parse_ecosystem(&ecosystem_str)?;
+    let release_access = ensure_release_read_access(
+        &state.db,
+        &eco,
+        &name,
+        &version,
+        identity.user_id(),
+    )
+    .await?;
+
+    let artifact_row = sqlx::query(
+        "SELECT storage_key, content_type, size_bytes, sha256 \
+         FROM artifacts \
+         WHERE release_id = $1 AND filename = $2",
+    )
+    .bind(release_access.release_id)
+    .bind(&filename)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?
+    .ok_or_else(|| ApiError(Error::NotFound(format!("Artifact '{}' not found", filename))))?;
+
+    let storage_key = artifact_row
+        .try_get::<String, _>("storage_key")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let sha256 = artifact_row
+        .try_get::<String, _>("sha256")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let declared_content_type = artifact_row
+        .try_get::<String, _>("content_type")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+
+    let stored_object = state
+        .artifact_store
+        .get_object(&storage_key)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| {
+            ApiError(Error::Internal(
+                "Artifact metadata exists but the stored object is missing".into(),
+            ))
+        })?;
+
+    sqlx::query("UPDATE packages SET download_count = download_count + 1 WHERE id = $1")
+        .bind(release_access.package_id)
+        .execute(&state.db)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let content_type = if stored_object.content_type.is_empty() {
+        declared_content_type
+    } else {
+        stored_object.content_type.clone()
+    };
+    let content_length = stored_object.bytes.len().to_string();
+    let disposition = format!("attachment; filename=\"{}\"", filename.replace('"', ""));
+
+    let response = Response::builder()
+        .status(StatusCode::OK)
+        .header(CONTENT_TYPE, content_type)
+        .header(CONTENT_LENGTH, content_length)
+        .header(CONTENT_DISPOSITION, disposition)
+        .header("x-checksum-sha256", sha256)
+        .body(Body::from(stored_object.bytes))
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+
+    Ok(response)
+}
+
 fn package_owner_from_fields(
     owner_user_id: Option<Uuid>,
     owner_org_id: Option<Uuid>,
@@ -1016,12 +1596,199 @@ fn release_history_visible_statuses() -> Vec<String> {
         .collect()
 }
 
+fn release_management_visible_statuses() -> Vec<String> {
+    RELEASE_MANAGEMENT_VISIBLE_STATUSES
+        .iter()
+        .map(|status| (*status).to_owned())
+        .collect()
+}
+
 fn release_status_after_unyank(is_deprecated: bool) -> &'static str {
     if is_deprecated {
         "deprecated"
     } else {
         "published"
     }
+}
+
+fn release_status_accepts_artifact_upload(status: &str) -> bool {
+    matches!(status, "quarantine" | "scanning")
+}
+
+fn release_status_allows_direct_read(status: &str) -> bool {
+    RELEASE_HISTORY_VISIBLE_STATUSES.contains(&status)
+}
+
+fn release_status_can_be_published(status: &str) -> bool {
+    matches!(status, "quarantine" | "scanning" | "published")
+}
+
+fn ensure_release_allows_status_mutation(status: &str, action: &str) -> ApiResult<()> {
+    if matches!(status, "quarantine" | "scanning" | "deleted") {
+        return Err(ApiError(Error::Conflict(format!(
+            "Releases in status '{status}' cannot be {action}"
+        ))));
+    }
+
+    Ok(())
+}
+
+fn finalize_release_status(is_deprecated: bool, is_yanked: bool) -> &'static str {
+    if is_yanked {
+        "yanked"
+    } else if is_deprecated {
+        "deprecated"
+    } else {
+        "published"
+    }
+}
+
+fn version_looks_prerelease(version: &str) -> bool {
+    version.contains('-')
+}
+
+fn parse_artifact_kind(input: &str) -> ApiResult<ArtifactKind> {
+    match input.trim().to_ascii_lowercase().as_str() {
+        "tarball" => Ok(ArtifactKind::Tarball),
+        "wheel" => Ok(ArtifactKind::Wheel),
+        "sdist" => Ok(ArtifactKind::Sdist),
+        "jar" => Ok(ArtifactKind::Jar),
+        "pom" => Ok(ArtifactKind::Pom),
+        "gem" => Ok(ArtifactKind::Gem),
+        "nupkg" => Ok(ArtifactKind::Nupkg),
+        "snupkg" => Ok(ArtifactKind::Snupkg),
+        "oci_manifest" => Ok(ArtifactKind::OciManifest),
+        "oci_layer" => Ok(ArtifactKind::OciLayer),
+        "crate" => Ok(ArtifactKind::Crate),
+        "composer_zip" => Ok(ArtifactKind::ComposerZip),
+        "checksum" => Ok(ArtifactKind::Checksum),
+        "signature" => Ok(ArtifactKind::Signature),
+        "sbom" => Ok(ArtifactKind::Sbom),
+        "source_zip" => Ok(ArtifactKind::SourceZip),
+        other => Err(ApiError(Error::Validation(format!(
+            "Unknown artifact kind: {other}"
+        )))),
+    }
+}
+
+fn artifact_kind_as_str(kind: ArtifactKind) -> &'static str {
+    match kind {
+        ArtifactKind::Tarball => "tarball",
+        ArtifactKind::Wheel => "wheel",
+        ArtifactKind::Sdist => "sdist",
+        ArtifactKind::Jar => "jar",
+        ArtifactKind::Pom => "pom",
+        ArtifactKind::Gem => "gem",
+        ArtifactKind::Nupkg => "nupkg",
+        ArtifactKind::Snupkg => "snupkg",
+        ArtifactKind::OciManifest => "oci_manifest",
+        ArtifactKind::OciLayer => "oci_layer",
+        ArtifactKind::Crate => "crate",
+        ArtifactKind::ComposerZip => "composer_zip",
+        ArtifactKind::Checksum => "checksum",
+        ArtifactKind::Signature => "signature",
+        ArtifactKind::Sbom => "sbom",
+        ArtifactKind::SourceZip => "source_zip",
+    }
+}
+
+fn validate_artifact_filename(filename: &str) -> ApiResult<()> {
+    if filename.trim().is_empty() {
+        return Err(ApiError(Error::Validation(
+            "Artifact filename must not be empty".into(),
+        )));
+    }
+
+    if filename.contains('/') || filename.contains('\\') {
+        return Err(ApiError(Error::Validation(
+            "Artifact filename must not contain path separators".into(),
+        )));
+    }
+
+    if filename.chars().any(|character| character.is_control()) {
+        return Err(ApiError(Error::Validation(
+            "Artifact filename must not contain control characters".into(),
+        )));
+    }
+
+    Ok(())
+}
+
+fn validate_expected_sha256(expected: Option<&str>, actual: &str) -> ApiResult<()> {
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+
+    let normalized = expected.trim().to_ascii_lowercase();
+    if normalized.len() != 64 || !normalized.chars().all(|character| character.is_ascii_hexdigit()) {
+        return Err(ApiError(Error::Validation(
+            "The supplied sha256 checksum must be a 64-character hexadecimal value".into(),
+        )));
+    }
+
+    if normalized != actual {
+        return Err(ApiError(Error::Validation(
+            "The supplied sha256 checksum does not match the uploaded artifact".into(),
+        )));
+    }
+
+    Ok(())
+}
+
+fn build_artifact_storage_key(release_id: Uuid, filename: &str, sha256: &str) -> String {
+    format!("releases/{release_id}/artifacts/{sha256}/{filename}")
+}
+
+async fn load_release_for_write(
+    db: &sqlx::PgPool,
+    package_id: Uuid,
+    version: &str,
+) -> ApiResult<ReleaseAccess> {
+    let row = sqlx::query(
+        "SELECT id, status, is_yanked, is_deprecated \
+         FROM releases \
+         WHERE package_id = $1 AND version = $2",
+    )
+    .bind(package_id)
+    .bind(version)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?
+    .ok_or_else(|| ApiError(Error::NotFound(format!("Release '{version}' not found"))))?;
+
+    Ok(ReleaseAccess {
+        package_id,
+        release_id: row
+            .try_get("id")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        status: row
+            .try_get("status")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+    })
+}
+
+async fn ensure_release_read_access(
+    db: &sqlx::PgPool,
+    ecosystem: &Ecosystem,
+    package_name: &str,
+    version: &str,
+    actor_user_id: Option<Uuid>,
+) -> ApiResult<ReleaseAccess> {
+    let normalized = normalize_package_name(package_name, ecosystem);
+    let package_id = ensure_package_read_access(db, ecosystem.as_str(), &normalized, actor_user_id).await?;
+    let release = load_release_for_write(db, package_id, version).await?;
+
+    if release_status_allows_direct_read(&release.status) {
+        return Ok(release);
+    }
+
+    if actor_can_write_package_by_id(db, package_id, actor_user_id).await? {
+        return Ok(release);
+    }
+
+    Err(ApiError(Error::NotFound(format!(
+        "Release '{version}' not found for package '{package_name}'"
+    ))))
 }
 
 fn validate_package_transfer_target(
@@ -1075,14 +1842,6 @@ async fn load_repository_package_creation_target(
         owner_org_id: row
             .try_get::<Option<Uuid>, _>("owner_org_id")
             .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
-        owner_name: row
-            .try_get::<Option<String>, _>("owner_org_slug")
-            .map_err(|e| ApiError(Error::Internal(e.to_string())))?
-            .or_else(|| {
-                row.try_get::<Option<String>, _>("owner_username")
-                    .ok()
-                    .flatten()
-            }),
     })
 }
 
@@ -1227,22 +1986,80 @@ fn join_policy_violations(violations: &[PolicyViolation]) -> String {
 async fn index_package_after_creation(
     state: &AppState,
     package: &Package,
-    owner_name: Option<String>,
 ) -> publaryn_core::Result<()> {
+    reindex_package_document(state, package.id).await
+}
+
+async fn reindex_package_document(state: &AppState, package_id: Uuid) -> publaryn_core::Result<()> {
+    let row = sqlx::query(
+        "SELECT p.id, p.name, p.normalized_name, p.display_name, p.description, p.ecosystem, \
+                p.keywords, p.download_count, p.is_deprecated, p.visibility, p.updated_at, \
+                u.username AS owner_username, o.slug AS owner_org_slug, \
+                latest_release.version AS latest_version \
+         FROM packages p \
+         LEFT JOIN users u ON u.id = p.owner_user_id \
+         LEFT JOIN organizations o ON o.id = p.owner_org_id \
+         LEFT JOIN LATERAL ( \
+             SELECT version \
+             FROM releases \
+             WHERE package_id = p.id AND status::text = ANY($2) \
+             ORDER BY published_at DESC \
+             LIMIT 1 \
+         ) latest_release ON true \
+         WHERE p.id = $1",
+    )
+    .bind(package_id)
+    .bind(&release_history_visible_statuses())
+    .fetch_optional(&state.db)
+    .await
+    .map_err(Error::Database)?
+    .ok_or_else(|| Error::NotFound(format!("Package '{package_id}' not found for indexing")))?;
+
+    let owner_name = row
+        .try_get::<Option<String>, _>("owner_org_slug")
+        .map_err(|e| Error::Internal(e.to_string()))?
+        .or_else(|| row.try_get::<Option<String>, _>("owner_username").ok().flatten());
+
     let document = PackageDocument {
-        id: package.id.to_string(),
-        name: package.name.clone(),
-        normalized_name: package.normalized_name.clone(),
-        display_name: package.display_name.clone(),
-        description: package.description.clone(),
-        ecosystem: package.ecosystem.as_str().to_owned(),
-        keywords: package.keywords.clone(),
-        latest_version: None,
-        download_count: package.download_count,
-        is_deprecated: package.is_deprecated,
-        visibility: visibility_as_str(&package.visibility).to_owned(),
+        id: row
+            .try_get::<Uuid, _>("id")
+            .map_err(|e| Error::Internal(e.to_string()))?
+            .to_string(),
+        name: row
+            .try_get("name")
+            .map_err(|e| Error::Internal(e.to_string()))?,
+        normalized_name: row
+            .try_get("normalized_name")
+            .map_err(|e| Error::Internal(e.to_string()))?,
+        display_name: row
+            .try_get::<Option<String>, _>("display_name")
+            .map_err(|e| Error::Internal(e.to_string()))?,
+        description: row
+            .try_get::<Option<String>, _>("description")
+            .map_err(|e| Error::Internal(e.to_string()))?,
+        ecosystem: row
+            .try_get::<String, _>("ecosystem")
+            .map_err(|e| Error::Internal(e.to_string()))?,
+        keywords: row
+            .try_get::<Vec<String>, _>("keywords")
+            .map_err(|e| Error::Internal(e.to_string()))?,
+        latest_version: row
+            .try_get::<Option<String>, _>("latest_version")
+            .map_err(|e| Error::Internal(e.to_string()))?,
+        download_count: row
+            .try_get::<i64, _>("download_count")
+            .map_err(|e| Error::Internal(e.to_string()))?,
+        is_deprecated: row
+            .try_get::<bool, _>("is_deprecated")
+            .map_err(|e| Error::Internal(e.to_string()))?,
+        visibility: row
+            .try_get::<String, _>("visibility")
+            .map_err(|e| Error::Internal(e.to_string()))?,
         owner_name,
-        updated_at: package.updated_at.to_rfc3339(),
+        updated_at: row
+            .try_get::<chrono::DateTime<chrono::Utc>, _>("updated_at")
+            .map_err(|e| Error::Internal(e.to_string()))?
+            .to_rfc3339(),
     };
 
     state.search.index_package(document).await
@@ -1257,10 +2074,15 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        derive_package_visibility, extract_namespace_claim_value, join_policy_violations,
-        package_owner_from_fields, release_history_visible_statuses, release_status_after_unyank,
-        validate_package_creation_repository_kind, validate_package_transfer_target,
-        visibility_scope_rank, PackageOwner,
+        build_artifact_storage_key, derive_package_visibility, ensure_release_allows_status_mutation,
+        extract_namespace_claim_value, finalize_release_status, join_policy_violations,
+        package_owner_from_fields, release_history_visible_statuses,
+        release_management_visible_statuses, release_status_accepts_artifact_upload,
+        release_status_after_unyank, release_status_allows_direct_read,
+        release_status_can_be_published, validate_artifact_filename,
+        validate_expected_sha256, validate_package_creation_repository_kind,
+        validate_package_transfer_target, version_looks_prerelease, visibility_scope_rank,
+        PackageOwner,
     };
 
     #[test]
@@ -1319,6 +2141,104 @@ mod tests {
         assert!(statuses.contains(&"deprecated".to_owned()));
         assert!(statuses.contains(&"yanked".to_owned()));
         assert!(!statuses.contains(&"deleted".to_owned()));
+    }
+
+    #[test]
+    fn management_release_statuses_include_quarantine_states() {
+        let statuses = release_management_visible_statuses();
+
+        assert!(statuses.contains(&"quarantine".to_owned()));
+        assert!(statuses.contains(&"scanning".to_owned()));
+        assert!(statuses.contains(&"published".to_owned()));
+    }
+
+    #[test]
+    fn direct_release_reads_hide_quarantine_statuses() {
+        assert!(release_status_allows_direct_read("published"));
+        assert!(release_status_allows_direct_read("deprecated"));
+        assert!(!release_status_allows_direct_read("quarantine"));
+        assert!(!release_status_allows_direct_read("scanning"));
+    }
+
+    #[test]
+    fn artifact_uploads_are_allowed_only_before_final_publication() {
+        assert!(release_status_accepts_artifact_upload("quarantine"));
+        assert!(release_status_accepts_artifact_upload("scanning"));
+        assert!(!release_status_accepts_artifact_upload("published"));
+        assert!(!release_status_accepts_artifact_upload("yanked"));
+    }
+
+    #[test]
+    fn publish_is_allowed_only_from_quarantine_or_scanning_or_idempotent_published() {
+        assert!(release_status_can_be_published("quarantine"));
+        assert!(release_status_can_be_published("scanning"));
+        assert!(release_status_can_be_published("published"));
+        assert!(!release_status_can_be_published("deprecated"));
+    }
+
+    #[test]
+    fn finalize_release_status_prefers_yanked_over_deprecated() {
+        assert_eq!(finalize_release_status(false, false), "published");
+        assert_eq!(finalize_release_status(true, false), "deprecated");
+        assert_eq!(finalize_release_status(true, true), "yanked");
+    }
+
+    #[test]
+    fn release_status_mutation_rejects_quarantine_releases() {
+        let error = ensure_release_allows_status_mutation("quarantine", "yanked")
+            .expect_err("quarantined releases should not be mutable through yank/deprecate routes");
+
+        assert_eq!(
+            error.0.to_string(),
+            "Conflict: Releases in status 'quarantine' cannot be yanked"
+        );
+    }
+
+    #[test]
+    fn prerelease_detection_uses_hyphenated_versions() {
+        assert!(version_looks_prerelease("1.2.3-rc.1"));
+        assert!(!version_looks_prerelease("1.2.3"));
+    }
+
+    #[test]
+    fn artifact_filename_validation_rejects_path_separators() {
+        let error = validate_artifact_filename("../../payload.tgz")
+            .expect_err("artifact filenames must not allow path traversal");
+
+        assert_eq!(
+            error.0.to_string(),
+            "Validation error: Artifact filename must not contain path separators"
+        );
+    }
+
+    #[test]
+    fn artifact_storage_keys_include_release_and_checksum() {
+        let release_id = Uuid::nil();
+        let key = build_artifact_storage_key(release_id, "demo-1.0.0.tgz", "abc123");
+
+        assert_eq!(
+            key,
+            "releases/00000000-0000-0000-0000-000000000000/artifacts/abc123/demo-1.0.0.tgz"
+        );
+    }
+
+    #[test]
+    fn expected_sha256_validation_rejects_mismatches() {
+        let error = validate_expected_sha256(Some("def456"), &"a".repeat(64))
+            .expect_err("mismatched checksums should be rejected");
+
+        assert_eq!(
+            error.0.to_string(),
+            "Validation error: The supplied sha256 checksum must be a 64-character hexadecimal value"
+        );
+
+        let mismatch = validate_expected_sha256(Some(&"b".repeat(64)), &"a".repeat(64))
+            .expect_err("different checksums should be rejected");
+
+        assert_eq!(
+            mismatch.0.to_string(),
+            "Validation error: The supplied sha256 checksum does not match the uploaded artifact"
+        );
     }
 
     #[test]

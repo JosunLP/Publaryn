@@ -8,6 +8,7 @@ mod router;
 mod routes;
 mod scopes;
 mod state;
+mod storage;
 
 #[tokio::main]
 async fn main() -> Result<()> {

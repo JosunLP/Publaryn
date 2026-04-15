@@ -537,6 +537,44 @@ pub async fn ensure_package_write_access(
     )))
 }
 
+pub async fn actor_can_write_package_by_id(
+    db: &PgPool,
+    package_id: Uuid,
+    actor_user_id: Option<Uuid>,
+) -> ApiResult<bool> {
+    let Some(actor_user_id) = actor_user_id else {
+        return Ok(false);
+    };
+
+    let row = sqlx::query(
+        "SELECT owner_user_id, owner_org_id \
+         FROM packages \
+         WHERE id = $1",
+    )
+    .bind(package_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?
+    .ok_or_else(|| ApiError(Error::NotFound(format!("Package '{package_id}' not found"))))?;
+
+    let owner_user_id = row
+        .try_get::<Option<Uuid>, _>("owner_user_id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let owner_org_id = row
+        .try_get::<Option<Uuid>, _>("owner_org_id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+
+    if owner_user_id == Some(actor_user_id) {
+        return Ok(true);
+    }
+
+    if let Some(owner_org_id) = owner_org_id {
+        return actor_has_org_roles(db, owner_org_id, actor_user_id, PACKAGE_WRITE_ROLES).await;
+    }
+
+    Ok(false)
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -553,6 +591,7 @@ mod tests {
             StorageConfig,
         },
         state::AppState,
+        storage::MemoryArtifactStore,
     };
 
     use super::{
@@ -597,6 +636,7 @@ mod tests {
                 },
             }),
             search: Arc::new(MeilisearchIndex::new("http://localhost:7700", None)),
+            artifact_store: Arc::new(MemoryArtifactStore::new()),
         }
     }
 
