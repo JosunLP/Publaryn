@@ -18,7 +18,10 @@ use publaryn_core::{
 
 use crate::{
     error::{ApiError, ApiResult},
-    request_auth::{ensure_org_admin_by_slug, AuthenticatedIdentity},
+    request_auth::{
+        ensure_org_admin_by_slug, is_org_member, AuthenticatedIdentity,
+        OptionalAuthenticatedIdentity,
+    },
     scopes::{ensure_scope, SCOPE_ORGS_TRANSFER, SCOPE_ORGS_WRITE},
     state::AppState,
 };
@@ -567,22 +570,39 @@ async fn create_team(
 
 async fn list_org_packages(
     State(state): State<AppState>,
+    identity: OptionalAuthenticatedIdentity,
     Path(slug): Path<String>,
     Query(q): Query<HashMap<String, String>>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let limit: i64 = q.get("per_page").and_then(|s| s.parse().ok()).unwrap_or(20_i64).min(100);
     let page: i64 = q.get("page").and_then(|s| s.parse().ok()).unwrap_or(1_i64);
     let offset = (page - 1) * limit;
+    let org_row = sqlx::query("SELECT id FROM organizations WHERE slug = $1")
+        .bind(&slug)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?
+        .ok_or_else(|| ApiError(Error::NotFound(format!("Organization '{slug}' not found"))))?;
+
+    let org_id: Uuid = org_row
+        .try_get("id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let can_view_non_public = match identity.user_id() {
+        Some(actor_user_id) => is_org_member(&state.db, org_id, actor_user_id).await?,
+        None => false,
+    };
 
     let rows = sqlx::query(
         "SELECT p.id, p.name, p.ecosystem, p.description, p.download_count, p.created_at \
          FROM packages p \
-         JOIN organizations o ON o.id = p.owner_org_id \
-         WHERE o.slug = $1 AND p.visibility = 'public' \
+         JOIN repositories r ON r.id = p.repository_id \
+         WHERE p.owner_org_id = $1 \
+           AND ($2::bool = true OR (p.visibility = 'public' AND r.visibility = 'public')) \
          ORDER BY p.download_count DESC \
-         LIMIT $2 OFFSET $3",
+         LIMIT $3 OFFSET $4",
     )
-    .bind(&slug)
+    .bind(org_id)
+    .bind(can_view_non_public)
     .bind(limit)
     .bind(offset)
     .fetch_all(&state.db)

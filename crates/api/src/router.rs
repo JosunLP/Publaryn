@@ -1,8 +1,13 @@
+use anyhow::{Context, Result};
 use axum::{
     extract::MatchedPath,
-    http::Request,
+    http::{
+        header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE},
+        HeaderName, Method, Request,
+    },
     Router,
 };
+use std::time::Duration;
 use tower_http::{
     compression::CompressionLayer,
     cors::CorsLayer,
@@ -10,13 +15,14 @@ use tower_http::{
     timeout::TimeoutLayer,
     trace::TraceLayer,
 };
-use std::time::Duration;
 
-use crate::state::AppState;
 use crate::routes;
+use crate::state::AppState;
 
-pub fn build_router(state: AppState) -> Router {
-    Router::new()
+pub fn build_router(state: AppState) -> Result<Router> {
+    let cors_layer = build_cors_layer(&state).context("Invalid server CORS configuration")?;
+
+    Ok(Router::new()
         .merge(routes::health::router())
         .merge(routes::audit::router())
         .merge(routes::auth::router())
@@ -37,22 +43,50 @@ pub fn build_router(state: AppState) -> Router {
             tower::ServiceBuilder::new()
                 .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
                 .layer(
-                    TraceLayer::new_for_http()
-                        .make_span_with(|req: &Request<_>| {
-                            let path = req
-                                .extensions()
-                                .get::<MatchedPath>()
-                                .map(|p| p.as_str())
-                                .unwrap_or(req.uri().path());
-                            tracing::info_span!(
-                                "http_request",
-                                method = %req.method(),
-                                path,
-                            )
-                        }),
+                    TraceLayer::new_for_http().make_span_with(|req: &Request<_>| {
+                        let path = req
+                            .extensions()
+                            .get::<MatchedPath>()
+                            .map(|p| p.as_str())
+                            .unwrap_or(req.uri().path());
+                        tracing::info_span!(
+                            "http_request",
+                            method = %req.method(),
+                            path,
+                        )
+                    }),
                 )
-                .layer(CorsLayer::permissive())
+                .layer(cors_layer)
                 .layer(CompressionLayer::new())
                 .layer(TimeoutLayer::new(Duration::from_secs(30))),
-        )
+        ))
+}
+
+fn build_cors_layer(state: &AppState) -> Result<CorsLayer> {
+    let request_id_header = HeaderName::from_static("x-request-id");
+    let allowed_origins = state.config.server.cors_allowed_origins()?;
+
+    let cors_layer = CorsLayer::new()
+        .allow_methods([
+            Method::GET,
+            Method::HEAD,
+            Method::POST,
+            Method::PATCH,
+            Method::PUT,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers([
+            ACCEPT,
+            AUTHORIZATION,
+            CONTENT_TYPE,
+            request_id_header.clone(),
+        ])
+        .expose_headers([request_id_header]);
+
+    if allowed_origins.is_empty() {
+        Ok(cors_layer)
+    } else {
+        Ok(cors_layer.allow_origin(allowed_origins))
+    }
 }

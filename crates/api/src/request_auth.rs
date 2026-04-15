@@ -31,6 +31,9 @@ pub struct AuthenticatedIdentity {
     pub credential_kind: CredentialKind,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct OptionalAuthenticatedIdentity(pub Option<AuthenticatedIdentity>);
+
 impl AuthenticatedIdentity {
     pub fn audit_actor_token_id(&self) -> Option<Uuid> {
         match self.credential_kind {
@@ -41,6 +44,12 @@ impl AuthenticatedIdentity {
 
     pub fn scopes(&self) -> &[String] {
         &self.scopes
+    }
+}
+
+impl OptionalAuthenticatedIdentity {
+    pub fn user_id(&self) -> Option<Uuid> {
+        self.0.as_ref().map(|identity| identity.user_id)
     }
 }
 
@@ -65,6 +74,31 @@ where
         let token = parse_bearer_token(authorization)?;
         let app_state = AppState::from_ref(state);
         authenticate_bearer_token(token, &app_state).await
+    }
+}
+
+#[async_trait]
+impl<S> FromRequestParts<S> for OptionalAuthenticatedIdentity
+where
+    AppState: FromRef<S>,
+    S: Send + Sync,
+{
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let Some(authorization) = parts.headers.get(AUTHORIZATION) else {
+            return Ok(Self(None));
+        };
+
+        let authorization = authorization
+            .to_str()
+            .map_err(|_| ApiError(Error::Unauthorized("Invalid Authorization header".into())))?;
+
+        let token = parse_bearer_token(authorization)?;
+        let app_state = AppState::from_ref(state);
+        let identity = authenticate_bearer_token(token, &app_state).await?;
+
+        Ok(Self(Some(identity)))
     }
 }
 
@@ -201,6 +235,178 @@ async fn actor_has_org_roles(
     .fetch_one(db)
     .await
     .map_err(|e| ApiError(Error::Database(e)))
+}
+
+pub async fn is_org_member(db: &PgPool, org_id: Uuid, actor_user_id: Uuid) -> ApiResult<bool> {
+    sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (\
+             SELECT 1 \
+             FROM org_memberships \
+             WHERE org_id = $1 AND user_id = $2\
+         )",
+    )
+    .bind(org_id)
+    .bind(actor_user_id)
+    .fetch_one(db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))
+}
+
+pub fn visibility_is_discoverable(visibility: &str) -> bool {
+    visibility == "public"
+}
+
+fn visibility_allows_anonymous_read(visibility: &str) -> bool {
+    matches!(visibility, "public" | "unlisted")
+}
+
+fn visibility_allows_read(visibility: &str, can_view_non_public: bool) -> bool {
+    can_view_non_public || visibility_allows_anonymous_read(visibility)
+}
+
+async fn actor_can_read_owned_resource(
+    db: &PgPool,
+    owner_user_id: Option<Uuid>,
+    owner_org_id: Option<Uuid>,
+    actor_user_id: Option<Uuid>,
+) -> ApiResult<bool> {
+    let Some(actor_user_id) = actor_user_id else {
+        return Ok(false);
+    };
+
+    if owner_user_id == Some(actor_user_id) {
+        return Ok(true);
+    }
+
+    if let Some(owner_org_id) = owner_org_id {
+        return is_org_member(db, owner_org_id, actor_user_id).await;
+    }
+
+    Ok(false)
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct RepositoryReadAccess {
+    pub repository_id: Uuid,
+    pub can_view_non_public_packages: bool,
+}
+
+pub async fn ensure_repository_read_access(
+    db: &PgPool,
+    slug: &str,
+    actor_user_id: Option<Uuid>,
+) -> ApiResult<RepositoryReadAccess> {
+    let row = sqlx::query(
+        "SELECT id, visibility, owner_user_id, owner_org_id \
+         FROM repositories \
+         WHERE slug = $1",
+    )
+    .bind(slug)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?
+    .ok_or_else(|| ApiError(Error::NotFound(format!("Repository '{slug}' not found"))))?;
+
+    let repository_id: Uuid = row
+        .try_get("id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let visibility = row
+        .try_get::<String, _>("visibility")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let owner_user_id = row
+        .try_get::<Option<Uuid>, _>("owner_user_id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let owner_org_id = row
+        .try_get::<Option<Uuid>, _>("owner_org_id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+
+    let can_view_non_public_packages =
+        actor_can_read_owned_resource(db, owner_user_id, owner_org_id, actor_user_id).await?;
+
+    if !visibility_allows_read(&visibility, can_view_non_public_packages) {
+        return Err(ApiError(Error::NotFound(format!(
+            "Repository '{slug}' not found"
+        ))));
+    }
+
+    Ok(RepositoryReadAccess {
+        repository_id,
+        can_view_non_public_packages,
+    })
+}
+
+pub async fn ensure_package_read_access(
+    db: &PgPool,
+    ecosystem: &str,
+    normalized_name: &str,
+    actor_user_id: Option<Uuid>,
+) -> ApiResult<Uuid> {
+    let row = sqlx::query(
+        "SELECT p.id, p.visibility, p.owner_user_id, p.owner_org_id, \
+                r.visibility AS repository_visibility, \
+                r.owner_user_id AS repository_owner_user_id, \
+                r.owner_org_id AS repository_owner_org_id \
+         FROM packages p \
+         JOIN repositories r ON r.id = p.repository_id \
+         WHERE p.ecosystem = $1 AND p.normalized_name = $2",
+    )
+    .bind(ecosystem)
+    .bind(normalized_name)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?
+    .ok_or_else(|| {
+        ApiError(Error::NotFound(format!(
+            "Package '{normalized_name}' not found in ecosystem '{ecosystem}'"
+        )))
+    })?;
+
+    let package_id: Uuid = row
+        .try_get("id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let package_visibility = row
+        .try_get::<String, _>("visibility")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let package_owner_user_id = row
+        .try_get::<Option<Uuid>, _>("owner_user_id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let package_owner_org_id = row
+        .try_get::<Option<Uuid>, _>("owner_org_id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let repository_visibility = row
+        .try_get::<String, _>("repository_visibility")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let repository_owner_user_id = row
+        .try_get::<Option<Uuid>, _>("repository_owner_user_id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let repository_owner_org_id = row
+        .try_get::<Option<Uuid>, _>("repository_owner_org_id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+
+    let can_read_package_non_public = actor_can_read_owned_resource(
+        db,
+        package_owner_user_id,
+        package_owner_org_id,
+        actor_user_id,
+    )
+    .await?;
+    let can_read_repository_non_public = actor_can_read_owned_resource(
+        db,
+        repository_owner_user_id,
+        repository_owner_org_id,
+        actor_user_id,
+    )
+    .await?;
+
+    if !visibility_allows_read(&package_visibility, can_read_package_non_public)
+        || !visibility_allows_read(&repository_visibility, can_read_repository_non_public)
+    {
+        return Err(ApiError(Error::NotFound(format!(
+            "Package '{normalized_name}' not found in ecosystem '{ecosystem}'"
+        ))));
+    }
+
+    Ok(package_id)
 }
 
 pub async fn ensure_org_admin_by_id(db: &PgPool, org_id: Uuid, actor_user_id: Uuid) -> ApiResult<()> {
@@ -349,7 +555,10 @@ mod tests {
         state::AppState,
     };
 
-    use super::{AuthenticatedIdentity, CredentialKind};
+    use super::{
+        visibility_allows_read, visibility_is_discoverable, AuthenticatedIdentity,
+        CredentialKind, OptionalAuthenticatedIdentity,
+    };
 
     fn test_state() -> AppState {
         AppState {
@@ -360,6 +569,7 @@ mod tests {
                 server: ServerConfig {
                     bind_address: "127.0.0.1:3000".into(),
                     base_url: "http://localhost:3000".into(),
+                    cors_allowed_origins: Vec::new(),
                 },
                 database: DatabaseConfig {
                     url: "postgres://publaryn:publaryn_dev@localhost/publaryn".into(),
@@ -436,5 +646,73 @@ mod tests {
             .expect_err("missing header must fail");
 
         assert_eq!(error.0.to_string(), "Unauthorized: Missing Authorization header");
+    }
+
+    #[tokio::test]
+    async fn optional_identity_allows_missing_authorization_header() {
+        let state = test_state();
+        let (mut parts, _) = Request::builder()
+            .body(())
+            .expect("request should build")
+            .into_parts();
+
+        let identity = OptionalAuthenticatedIdentity::from_request_parts(&mut parts, &state)
+            .await
+            .expect("missing header should be accepted for optional auth");
+
+        assert_eq!(identity.user_id(), None);
+    }
+
+    #[tokio::test]
+    async fn optional_identity_extracts_jwt_bearer_token() {
+        let state = test_state();
+        let user_id = Uuid::new_v4();
+        let token_id = Uuid::new_v4();
+        let jwt = publaryn_auth::create_token(
+            user_id,
+            token_id,
+            vec!["write:packages".into()],
+            &state.config.auth.jwt_secret,
+            state.config.auth.jwt_ttl_seconds,
+            &state.config.auth.issuer,
+        )
+        .expect("jwt should be created");
+
+        let (mut parts, _) = Request::builder()
+            .header(AUTHORIZATION, format!("Bearer {jwt}"))
+            .body(())
+            .expect("request should build")
+            .into_parts();
+
+        let identity = OptionalAuthenticatedIdentity::from_request_parts(&mut parts, &state)
+            .await
+            .expect("identity should be extracted");
+
+        assert_eq!(identity.user_id(), Some(user_id));
+    }
+
+    #[test]
+    fn only_public_resources_are_discoverable() {
+        assert!(visibility_is_discoverable("public"));
+        assert!(!visibility_is_discoverable("unlisted"));
+        assert!(!visibility_is_discoverable("private"));
+        assert!(!visibility_is_discoverable("internal_org"));
+        assert!(!visibility_is_discoverable("quarantined"));
+    }
+
+    #[test]
+    fn unlisted_resources_allow_direct_read_without_being_discoverable() {
+        assert!(visibility_allows_read("unlisted", false));
+        assert!(!visibility_is_discoverable("unlisted"));
+    }
+
+    #[test]
+    fn non_public_resources_require_owner_or_member_access() {
+        assert!(!visibility_allows_read("private", false));
+        assert!(!visibility_allows_read("internal_org", false));
+        assert!(!visibility_allows_read("quarantined", false));
+        assert!(visibility_allows_read("private", true));
+        assert!(visibility_allows_read("internal_org", true));
+        assert!(visibility_allows_read("quarantined", true));
     }
 }

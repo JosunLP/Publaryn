@@ -24,7 +24,7 @@ async fn main() -> Result<()> {
     tracing::info!("Starting Publaryn v{}", env!("CARGO_PKG_VERSION"));
 
     let app_state = state::AppState::new(&cfg).await?;
-    let app = router::build_router(app_state);
+    let app = router::build_router(app_state)?;
 
     let listener = tokio::net::TcpListener::bind(&cfg.server.bind_address).await?;
     tracing::info!("Listening on {}", cfg.server.bind_address);

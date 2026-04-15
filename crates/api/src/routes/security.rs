@@ -14,6 +14,7 @@ use publaryn_core::{
 
 use crate::{
     error::{ApiError, ApiResult},
+    request_auth::{ensure_package_read_access, OptionalAuthenticatedIdentity},
     routes::parse_ecosystem,
     state::AppState,
 };
@@ -32,12 +33,20 @@ struct SecurityQuery {
 
 async fn list_security_findings(
     State(state): State<AppState>,
+    identity: OptionalAuthenticatedIdentity,
     Path((ecosystem_str, name)): Path<(String, String)>,
     Query(query): Query<SecurityQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let ecosystem = parse_ecosystem(&ecosystem_str)?;
     let normalized_name = normalize_package_name(&name, &ecosystem);
     let include_resolved = query.include_resolved.unwrap_or(false);
+    let package_id = ensure_package_read_access(
+        &state.db,
+        ecosystem.as_str(),
+        &normalized_name,
+        identity.user_id(),
+    )
+    .await?;
 
     let rows = sqlx::query(
         "SELECT sf.id, sf.kind, sf.severity, sf.title, sf.description, sf.advisory_id, \
@@ -45,14 +54,12 @@ async fn list_security_findings(
                 r.version, a.filename \
          FROM security_findings sf \
          JOIN releases r ON r.id = sf.release_id \
-         JOIN packages p ON p.id = r.package_id \
          LEFT JOIN artifacts a ON a.id = sf.artifact_id \
-         WHERE p.ecosystem = $1 AND p.normalized_name = $2 \
-           AND ($3::bool = true OR sf.is_resolved = false) \
+         WHERE r.package_id = $1 \
+           AND ($2::bool = true OR sf.is_resolved = false) \
          ORDER BY sf.detected_at DESC",
     )
-    .bind(ecosystem.as_str())
-    .bind(&normalized_name)
+    .bind(package_id)
     .bind(include_resolved)
     .fetch_all(&state.db)
     .await

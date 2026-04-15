@@ -15,7 +15,10 @@ use publaryn_core::{
 
 use crate::{
     error::{ApiError, ApiResult},
-    request_auth::{ensure_package_write_access, AuthenticatedIdentity},
+    request_auth::{
+        ensure_package_read_access, ensure_package_write_access, AuthenticatedIdentity,
+        OptionalAuthenticatedIdentity,
+    },
     routes::parse_ecosystem,
     scopes::{ensure_scope, SCOPE_PACKAGES_WRITE},
     state::AppState,
@@ -44,21 +47,27 @@ struct CreateTrustedPublisherRequest {
 
 async fn list_trusted_publishers(
     State(state): State<AppState>,
+    identity: OptionalAuthenticatedIdentity,
     Path((ecosystem_str, name)): Path<(String, String)>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let ecosystem = parse_ecosystem(&ecosystem_str)?;
     let normalized_name = normalize_package_name(&name, &ecosystem);
+    let package_id = ensure_package_read_access(
+        &state.db,
+        ecosystem.as_str(),
+        &normalized_name,
+        identity.user_id(),
+    )
+    .await?;
 
     let rows = sqlx::query(
         "SELECT tp.id, tp.issuer, tp.subject, tp.repository, tp.workflow_ref, tp.environment, \
                 tp.created_by, tp.created_at \
          FROM trusted_publishers tp \
-         JOIN packages p ON p.id = tp.package_id \
-         WHERE p.ecosystem = $1 AND p.normalized_name = $2 \
+         WHERE tp.package_id = $1 \
          ORDER BY tp.created_at DESC",
     )
-    .bind(ecosystem.as_str())
-    .bind(&normalized_name)
+    .bind(package_id)
     .fetch_all(&state.db)
     .await
     .map_err(|e| ApiError(Error::Database(e)))?;

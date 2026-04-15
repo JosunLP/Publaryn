@@ -11,7 +11,7 @@ use publaryn_core::error::Error;
 
 use crate::{
     error::{ApiError, ApiResult},
-    request_auth::AuthenticatedIdentity,
+    request_auth::{AuthenticatedIdentity, OptionalAuthenticatedIdentity},
     scopes::{ensure_scope, SCOPE_PROFILE_WRITE},
     state::AppState,
 };
@@ -118,22 +118,36 @@ struct PackageListQuery {
 
 async fn list_user_packages(
     State(state): State<AppState>,
+    identity: OptionalAuthenticatedIdentity,
     Path(username): Path<String>,
     Query(q): Query<PackageListQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let limit = q.per_page.unwrap_or(20).min(100) as i64;
     let offset = ((q.page.unwrap_or(1).saturating_sub(1)) as i64) * limit;
+    let user_row = sqlx::query("SELECT id FROM users WHERE username = $1 AND is_active = true")
+        .bind(&username)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?
+        .ok_or_else(|| ApiError(Error::NotFound(format!("User '{username}' not found"))))?;
+
+    let target_user_id: Uuid = user_row
+        .try_get("id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let can_view_non_public = identity.user_id() == Some(target_user_id);
 
     let rows = sqlx::query(
         "SELECT p.id, p.name, p.ecosystem, p.description, p.visibility, \
                 p.download_count, p.created_at \
          FROM packages p \
-         JOIN users u ON u.id = p.owner_user_id \
-         WHERE u.username = $1 AND p.visibility != 'private' \
+         JOIN repositories r ON r.id = p.repository_id \
+         WHERE p.owner_user_id = $1 \
+           AND ($2::bool = true OR (p.visibility = 'public' AND r.visibility = 'public')) \
          ORDER BY p.download_count DESC \
-         LIMIT $2 OFFSET $3",
+         LIMIT $3 OFFSET $4",
     )
-    .bind(&username)
+    .bind(target_user_id)
+    .bind(can_view_non_public)
     .bind(limit)
     .bind(offset)
     .fetch_all(&state.db)

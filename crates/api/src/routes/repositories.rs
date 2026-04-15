@@ -16,7 +16,10 @@ use publaryn_core::{
 
 use crate::{
     error::{ApiError, ApiResult},
-    request_auth::{ensure_org_admin_by_id, ensure_repository_write_access, AuthenticatedIdentity},
+    request_auth::{
+        ensure_org_admin_by_id, ensure_repository_read_access, ensure_repository_write_access,
+        AuthenticatedIdentity, OptionalAuthenticatedIdentity,
+    },
     scopes::{ensure_scope, SCOPE_REPOSITORIES_WRITE},
     state::AppState,
 };
@@ -130,14 +133,17 @@ async fn create_repository(
 
 async fn get_repository(
     State(state): State<AppState>,
+    identity: OptionalAuthenticatedIdentity,
     Path(slug): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
+    let access = ensure_repository_read_access(&state.db, &slug, identity.user_id()).await?;
+
     let row = sqlx::query(
         "SELECT id, name, slug, description, kind, visibility, owner_user_id, owner_org_id, \
                 upstream_url, created_at, updated_at \
-         FROM repositories WHERE slug = $1",
+         FROM repositories WHERE id = $1",
     )
-    .bind(&slug)
+    .bind(access.repository_id)
     .fetch_optional(&state.db)
     .await
     .map_err(|e| ApiError(Error::Database(e)))?
@@ -194,21 +200,24 @@ async fn update_repository(
 
 async fn list_repository_packages(
     State(state): State<AppState>,
+    identity: OptionalAuthenticatedIdentity,
     Path(slug): Path<String>,
     Query(query): Query<PackageListQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let limit = query.per_page.unwrap_or(20).min(100) as i64;
     let offset = ((query.page.unwrap_or(1).saturating_sub(1)) as i64) * limit;
+    let access = ensure_repository_read_access(&state.db, &slug, identity.user_id()).await?;
 
     let rows = sqlx::query(
         "SELECT p.id, p.name, p.ecosystem, p.description, p.visibility, p.download_count, p.created_at \
          FROM packages p \
-         JOIN repositories r ON r.id = p.repository_id \
-         WHERE r.slug = $1 \
+         WHERE p.repository_id = $1 \
+           AND ($2::bool = true OR p.visibility = 'public') \
          ORDER BY p.download_count DESC, p.created_at DESC \
-         LIMIT $2 OFFSET $3",
+         LIMIT $3 OFFSET $4",
     )
-    .bind(&slug)
+    .bind(access.repository_id)
+    .bind(access.can_view_non_public_packages)
     .bind(limit)
     .bind(offset)
     .fetch_all(&state.db)

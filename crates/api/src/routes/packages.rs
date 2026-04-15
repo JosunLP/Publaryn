@@ -10,25 +10,35 @@ use uuid::Uuid;
 
 use publaryn_core::{
     domain::{
-        package::normalize_package_name,
+        namespace::Ecosystem,
+        package::{normalize_package_name, Package},
+        repository::Visibility,
     },
     error::Error,
+    policy::{self, PolicyViolation},
     validation,
 };
+use publaryn_search::{PackageDocument, SearchIndex};
 
 use crate::{
     error::{ApiError, ApiResult},
-    request_auth::{ensure_package_write_access, AuthenticatedIdentity},
+    request_auth::{
+        ensure_package_read_access, ensure_package_write_access, ensure_repository_write_access,
+        AuthenticatedIdentity, OptionalAuthenticatedIdentity,
+    },
     routes::parse_ecosystem,
     scopes::{ensure_scope, SCOPE_PACKAGES_TRANSFER, SCOPE_PACKAGES_WRITE},
     state::AppState,
 };
 
+const PACKAGE_CREATION_ALLOWED_REPOSITORY_KINDS: &[&str] =
+    &["public", "private", "staging", "release"];
 const PACKAGE_TRANSFER_ORG_ADMIN_ROLES: &[&str] = &["owner", "admin"];
 const RELEASE_HISTORY_VISIBLE_STATUSES: &[&str] = &["published", "deprecated", "yanked"];
 
 pub fn router() -> Router<AppState> {
     Router::new()
+        .route("/v1/packages", post(create_package))
         .route("/v1/packages/:ecosystem/:name", get(get_package))
         .route("/v1/packages/:ecosystem/:name", patch(update_package))
         .route("/v1/packages/:ecosystem/:name", delete(delete_package))
@@ -37,13 +47,22 @@ pub fn router() -> Router<AppState> {
             post(transfer_package_ownership),
         )
         .route("/v1/packages/:ecosystem/:name/releases", get(list_releases))
-        .route("/v1/packages/:ecosystem/:name/releases/:version", get(get_release))
-        .route("/v1/packages/:ecosystem/:name/releases/:version/yank", put(yank_release))
+        .route(
+            "/v1/packages/:ecosystem/:name/releases/:version",
+            get(get_release),
+        )
+        .route(
+            "/v1/packages/:ecosystem/:name/releases/:version/yank",
+            put(yank_release),
+        )
         .route(
             "/v1/packages/:ecosystem/:name/releases/:version/unyank",
             put(unyank_release),
         )
-        .route("/v1/packages/:ecosystem/:name/releases/:version/deprecate", put(deprecate_release))
+        .route(
+            "/v1/packages/:ecosystem/:name/releases/:version/deprecate",
+            put(deprecate_release),
+        )
         .route("/v1/packages/:ecosystem/:name/tags", get(list_tags))
         .route("/v1/packages/:ecosystem/:name/tags/:tag", put(upsert_tag))
 }
@@ -63,25 +82,30 @@ struct TargetOrganization {
 
 async fn get_package(
     State(state): State<AppState>,
+    identity: OptionalAuthenticatedIdentity,
     Path((ecosystem_str, name)): Path<(String, String)>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let eco = parse_ecosystem(&ecosystem_str)?;
     let normalized = normalize_package_name(&name, &eco);
+    let package_id =
+        ensure_package_read_access(&state.db, eco.as_str(), &normalized, identity.user_id())
+            .await?;
 
     let row = sqlx::query(
         "SELECT id, name, ecosystem, description, homepage, repository_url, license, keywords, \
                 visibility, is_deprecated, deprecation_message, is_archived, download_count, \
                 created_at, updated_at \
          FROM packages \
-         WHERE ecosystem = $1 AND normalized_name = $2 AND visibility != 'private'",
+         WHERE id = $1",
     )
-    .bind(eco.as_str())
-    .bind(&normalized)
+    .bind(package_id)
     .fetch_optional(&state.db)
     .await
     .map_err(|e| ApiError(Error::Database(e)))?
     .ok_or_else(|| {
-        ApiError(Error::NotFound(format!("Package '{name}' not found in {ecosystem_str}")))
+        ApiError(Error::NotFound(format!(
+            "Package '{name}' not found in {ecosystem_str}"
+        )))
     })?;
 
     Ok(Json(serde_json::json!({
@@ -116,6 +140,203 @@ struct UpdatePackageRequest {
 #[derive(Debug, Deserialize)]
 struct TransferPackageOwnershipRequest {
     target_org_slug: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreatePackageRequest {
+    ecosystem: String,
+    name: String,
+    repository_slug: String,
+    visibility: Option<String>,
+    display_name: Option<String>,
+    description: Option<String>,
+    readme: Option<String>,
+    homepage: Option<String>,
+    repository_url: Option<String>,
+    license: Option<String>,
+    keywords: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone)]
+struct RepositoryPackageCreationTarget {
+    id: Uuid,
+    slug: String,
+    kind: String,
+    visibility: Visibility,
+    owner_user_id: Option<Uuid>,
+    owner_org_id: Option<Uuid>,
+    owner_name: Option<String>,
+}
+
+async fn create_package(
+    State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
+    Json(body): Json<CreatePackageRequest>,
+) -> ApiResult<(StatusCode, Json<serde_json::Value>)> {
+    ensure_scope(&identity, SCOPE_PACKAGES_WRITE)?;
+    validation::validate_slug(&body.repository_slug).map_err(ApiError::from)?;
+
+    let ecosystem = parse_ecosystem(&body.ecosystem)?;
+    validation::validate_package_name(&body.name, &ecosystem).map_err(ApiError::from)?;
+
+    let repository_id =
+        ensure_repository_write_access(&state.db, &body.repository_slug, identity.user_id).await?;
+    let repository = load_repository_package_creation_target(&state.db, repository_id).await?;
+    validate_package_creation_repository_kind(&repository.kind)?;
+
+    let requested_visibility = body
+        .visibility
+        .as_deref()
+        .map(parse_package_visibility)
+        .transpose()?;
+    let package_visibility = derive_package_visibility(
+        requested_visibility,
+        repository.visibility.clone(),
+        repository.owner_org_id.is_some(),
+    )?;
+
+    let normalized_name = normalize_package_name(&body.name, &ecosystem);
+    let existing_rows =
+        sqlx::query("SELECT name, normalized_name FROM packages WHERE ecosystem = $1")
+            .bind(ecosystem.as_str())
+            .fetch_all(&state.db)
+            .await
+            .map_err(|e| ApiError(Error::Database(e)))?;
+
+    if existing_rows.iter().any(|row| {
+        row.try_get::<String, _>("normalized_name")
+            .ok()
+            .is_some_and(|existing| existing == normalized_name)
+    }) {
+        return Err(ApiError(Error::AlreadyExists(format!(
+            "A package named '{}' already exists in ecosystem '{}'",
+            body.name,
+            ecosystem.as_str()
+        ))));
+    }
+
+    let existing_names = existing_rows
+        .iter()
+        .filter_map(|row| row.try_get::<String, _>("name").ok())
+        .collect::<Vec<_>>();
+    let policy_violations = policy::check_name_policy(&body.name, &existing_names, &ecosystem)
+        .map_err(ApiError::from)?;
+    if !policy_violations.is_empty() {
+        return Err(ApiError(Error::PolicyViolation(join_policy_violations(
+            &policy_violations,
+        ))));
+    }
+
+    validate_namespace_claim_for_package(
+        &state.db,
+        &ecosystem,
+        &body.name,
+        repository.owner_user_id,
+        repository.owner_org_id,
+    )
+    .await?;
+
+    let mut package = Package::new(
+        repository.id,
+        ecosystem.clone(),
+        body.name.clone(),
+        package_visibility.clone(),
+    );
+    package.display_name = body.display_name;
+    package.description = body.description;
+    package.readme = body.readme;
+    package.homepage = body.homepage;
+    package.repository_url = body.repository_url;
+    package.license = body.license;
+    package.keywords = body.keywords.unwrap_or_default();
+    package.owner_user_id = repository.owner_user_id;
+    package.owner_org_id = repository.owner_org_id;
+
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    sqlx::query(
+        "INSERT INTO packages (id, repository_id, ecosystem, name, normalized_name, display_name, \
+         description, readme, homepage, repository_url, license, keywords, visibility, \
+         owner_user_id, owner_org_id, is_deprecated, deprecation_message, is_archived, \
+         download_count, created_at, updated_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, false, NULL, false, 0, $16, $17)",
+    )
+    .bind(package.id)
+    .bind(package.repository_id)
+    .bind(package.ecosystem.as_str())
+    .bind(&package.name)
+    .bind(&package.normalized_name)
+    .bind(&package.display_name)
+    .bind(&package.description)
+    .bind(&package.readme)
+    .bind(&package.homepage)
+    .bind(&package.repository_url)
+    .bind(&package.license)
+    .bind(&package.keywords)
+    .bind(visibility_as_str(&package.visibility))
+    .bind(package.owner_user_id)
+    .bind(package.owner_org_id)
+    .bind(package.created_at)
+    .bind(package.updated_at)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| match &e {
+        sqlx::Error::Database(db) if db.is_unique_violation() => ApiError(Error::AlreadyExists(
+            "Package already exists in the selected repository".into(),
+        )),
+        _ => ApiError(Error::Database(e)),
+    })?;
+
+    sqlx::query(
+        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_package_id, metadata, occurred_at) \
+         VALUES ($1, 'package_create', $2, $3, $4, $5, NOW())",
+    )
+    .bind(Uuid::new_v4())
+    .bind(identity.user_id)
+    .bind(identity.audit_actor_token_id())
+    .bind(package.id)
+    .bind(serde_json::json!({
+        "ecosystem": package.ecosystem.as_str(),
+        "name": package.name,
+        "normalized_name": package.normalized_name,
+        "repository_slug": repository.slug,
+        "visibility": visibility_as_str(&package.visibility),
+    }))
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    if let Err(error) =
+        index_package_after_creation(&state, &package, repository.owner_name.clone()).await
+    {
+        tracing::warn!(
+            package_id = %package.id,
+            error = %error,
+            "Failed to index newly created package"
+        );
+    }
+
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::json!({
+            "id": package.id,
+            "ecosystem": package.ecosystem.as_str(),
+            "name": package.name,
+            "normalized_name": package.normalized_name,
+            "repository_slug": repository.slug,
+            "visibility": visibility_as_str(&package.visibility),
+            "owner_user_id": package.owner_user_id,
+            "owner_org_id": package.owner_org_id,
+        })),
+    ))
 }
 
 async fn update_package(
@@ -170,10 +391,10 @@ async fn delete_package(
         ensure_package_write_access(&state.db, eco.as_str(), &normalized, identity.user_id).await?;
 
     sqlx::query("UPDATE packages SET is_archived = true, updated_at = NOW() WHERE id = $1")
-    .bind(package_id)
-    .execute(&state.db)
-    .await
-    .map_err(|e| ApiError(Error::Database(e)))?;
+        .bind(package_id)
+        .execute(&state.db)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
 
     sqlx::query(
         "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_package_id, metadata, occurred_at) \
@@ -192,7 +413,10 @@ async fn delete_package(
     .await
     .map_err(|e| ApiError(Error::Database(e)))?;
 
-    Ok((StatusCode::OK, Json(serde_json::json!({ "message": "Package archived" }))))
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::json!({ "message": "Package archived" })),
+    ))
 }
 
 async fn transfer_package_ownership(
@@ -396,33 +620,24 @@ async fn transfer_package_ownership(
 
 async fn list_releases(
     State(state): State<AppState>,
+    identity: OptionalAuthenticatedIdentity,
     Path((ecosystem_str, name)): Path<(String, String)>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let eco = parse_ecosystem(&ecosystem_str)?;
     let normalized = normalize_package_name(&name, &eco);
-
-    let pkg_row = sqlx::query(
-        "SELECT id FROM packages WHERE ecosystem = $1 AND normalized_name = $2",
-    )
-    .bind(eco.as_str())
-    .bind(&normalized)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|e| ApiError(Error::Database(e)))?
-    .ok_or_else(|| ApiError(Error::NotFound(format!("Package '{name}' not found"))))?;
-
-    let pkg_id: Uuid = pkg_row.try_get("id").map_err(|e| ApiError(Error::Internal(e.to_string())))?;
-
-        let visible_statuses = release_history_visible_statuses();
+    let pkg_id =
+        ensure_package_read_access(&state.db, eco.as_str(), &normalized, identity.user_id())
+            .await?;
+    let visible_statuses = release_history_visible_statuses();
 
     let rows = sqlx::query(
         "SELECT version, status, is_yanked, is_deprecated, is_prerelease, published_at \
          FROM releases \
-            WHERE package_id = $1 AND status::text = ANY($2) \
+         WHERE package_id = $1 AND status::text = ANY($2) \
          ORDER BY published_at DESC",
     )
     .bind(pkg_id)
-        .bind(&visible_statuses)
+    .bind(&visible_statuses)
     .fetch_all(&state.db)
     .await
     .map_err(|e| ApiError(Error::Database(e)))?;
@@ -446,20 +661,22 @@ async fn list_releases(
 
 async fn get_release(
     State(state): State<AppState>,
+    identity: OptionalAuthenticatedIdentity,
     Path((ecosystem_str, name, version)): Path<(String, String, String)>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let eco = parse_ecosystem(&ecosystem_str)?;
     let normalized = normalize_package_name(&name, &eco);
+    let package_id =
+        ensure_package_read_access(&state.db, eco.as_str(), &normalized, identity.user_id())
+            .await?;
 
     let row = sqlx::query(
         "SELECT r.id, r.version, r.status, r.is_yanked, r.yank_reason, r.is_deprecated, \
                 r.deprecation_message, r.is_prerelease, r.changelog, r.source_ref, r.published_at \
          FROM releases r \
-         JOIN packages p ON p.id = r.package_id \
-         WHERE p.ecosystem = $1 AND p.normalized_name = $2 AND r.version = $3",
+         WHERE r.package_id = $1 AND r.version = $2",
     )
-    .bind(eco.as_str())
-    .bind(&normalized)
+    .bind(package_id)
     .bind(&version)
     .fetch_optional(&state.db)
     .await
@@ -685,21 +902,23 @@ async fn deprecate_release(
 
 async fn list_tags(
     State(state): State<AppState>,
+    identity: OptionalAuthenticatedIdentity,
     Path((ecosystem_str, name)): Path<(String, String)>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let eco = parse_ecosystem(&ecosystem_str)?;
     let normalized = normalize_package_name(&name, &eco);
+    let package_id =
+        ensure_package_read_access(&state.db, eco.as_str(), &normalized, identity.user_id())
+            .await?;
 
     let rows = sqlx::query(
         "SELECT cr.name, r.version, cr.updated_at \
          FROM channel_refs cr \
          JOIN releases r ON r.id = cr.release_id \
-         JOIN packages p ON p.id = cr.package_id \
-         WHERE p.ecosystem = $1 AND p.normalized_name = $2 \
+         WHERE cr.package_id = $1 \
          ORDER BY cr.name",
     )
-    .bind(eco.as_str())
-    .bind(&normalized)
+    .bind(package_id)
     .fetch_all(&state.db)
     .await
     .map_err(|e| ApiError(Error::Database(e)))?;
@@ -709,7 +928,10 @@ async fn list_tags(
         let tag_name: String = r.try_get("name").unwrap_or_default();
         let version: String = r.try_get("version").unwrap_or_default();
         let updated_at: Option<chrono::DateTime<chrono::Utc>> = r.try_get("updated_at").ok();
-        tags.insert(tag_name, serde_json::json!({ "version": version, "updated_at": updated_at }));
+        tags.insert(
+            tag_name,
+            serde_json::json!({ "version": version, "updated_at": updated_at }),
+        );
     }
 
     Ok(Json(serde_json::json!({ "tags": tags })))
@@ -733,17 +955,22 @@ async fn upsert_tag(
     let pkg_id =
         ensure_package_write_access(&state.db, eco.as_str(), &normalized, identity.user_id).await?;
 
-    let rel_row = sqlx::query(
-        "SELECT id FROM releases WHERE package_id = $1 AND version = $2",
-    )
-    .bind(pkg_id)
-    .bind(&body.version)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|e| ApiError(Error::Database(e)))?
-    .ok_or_else(|| ApiError(Error::NotFound(format!("Release '{}' not found", body.version))))?;
+    let rel_row = sqlx::query("SELECT id FROM releases WHERE package_id = $1 AND version = $2")
+        .bind(pkg_id)
+        .bind(&body.version)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?
+        .ok_or_else(|| {
+            ApiError(Error::NotFound(format!(
+                "Release '{}' not found",
+                body.version
+            )))
+        })?;
 
-    let release_id: Uuid = rel_row.try_get("id").map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let release_id: Uuid = rel_row
+        .try_get("id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
 
     sqlx::query(
         "INSERT INTO channel_refs (id, package_id, ecosystem, name, release_id, created_by, created_at, updated_at) \
@@ -775,9 +1002,7 @@ fn package_owner_from_fields(
     match (owner_user_id, owner_org_id) {
         (Some(user_id), None) => Ok(PackageOwner::User(user_id)),
         (None, Some(org_id)) => Ok(PackageOwner::Organization(org_id)),
-        (None, None) => Err(ApiError(Error::Internal(
-            "Package owner is not set".into(),
-        ))),
+        (None, None) => Err(ApiError(Error::Internal("Package owner is not set".into()))),
         (Some(_), Some(_)) => Err(ApiError(Error::Internal(
             "Package owner state is invalid".into(),
         ))),
@@ -799,7 +1024,10 @@ fn release_status_after_unyank(is_deprecated: bool) -> &'static str {
     }
 }
 
-fn validate_package_transfer_target(current_owner: &PackageOwner, target_org_id: Uuid) -> ApiResult<()> {
+fn validate_package_transfer_target(
+    current_owner: &PackageOwner,
+    target_org_id: Uuid,
+) -> ApiResult<()> {
     if matches!(current_owner, PackageOwner::Organization(current_org_id) if *current_org_id == target_org_id)
     {
         return Err(ApiError(Error::Conflict(
@@ -810,13 +1038,229 @@ fn validate_package_transfer_target(current_owner: &PackageOwner, target_org_id:
     Ok(())
 }
 
+async fn load_repository_package_creation_target(
+    db: &sqlx::PgPool,
+    repository_id: Uuid,
+) -> ApiResult<RepositoryPackageCreationTarget> {
+    let row = sqlx::query(
+        "SELECT r.id, r.slug, r.kind, r.visibility, r.owner_user_id, r.owner_org_id, \
+                u.username AS owner_username, o.slug AS owner_org_slug \
+         FROM repositories r \
+         LEFT JOIN users u ON u.id = r.owner_user_id \
+         LEFT JOIN organizations o ON o.id = r.owner_org_id \
+         WHERE r.id = $1",
+    )
+    .bind(repository_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?
+    .ok_or_else(|| ApiError(Error::NotFound("Repository not found".into())))?;
+
+    Ok(RepositoryPackageCreationTarget {
+        id: row
+            .try_get("id")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        slug: row
+            .try_get("slug")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        kind: row
+            .try_get("kind")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        visibility: row
+            .try_get("visibility")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        owner_user_id: row
+            .try_get::<Option<Uuid>, _>("owner_user_id")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        owner_org_id: row
+            .try_get::<Option<Uuid>, _>("owner_org_id")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        owner_name: row
+            .try_get::<Option<String>, _>("owner_org_slug")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?
+            .or_else(|| {
+                row.try_get::<Option<String>, _>("owner_username")
+                    .ok()
+                    .flatten()
+            }),
+    })
+}
+
+fn validate_package_creation_repository_kind(kind: &str) -> ApiResult<()> {
+    if PACKAGE_CREATION_ALLOWED_REPOSITORY_KINDS.contains(&kind) {
+        return Ok(());
+    }
+
+    Err(ApiError(Error::Conflict(
+        "Packages can only be created in public, private, staging, or release repositories".into(),
+    )))
+}
+
+fn parse_package_visibility(input: &str) -> ApiResult<Visibility> {
+    match input.to_lowercase().as_str() {
+        "public" => Ok(Visibility::Public),
+        "private" => Ok(Visibility::Private),
+        "internal-org" | "internal_org" => Ok(Visibility::InternalOrg),
+        "unlisted" => Ok(Visibility::Unlisted),
+        "quarantined" => Ok(Visibility::Quarantined),
+        other => Err(ApiError(Error::Validation(format!(
+            "Unknown visibility: {other}"
+        )))),
+    }
+}
+
+fn visibility_as_str(visibility: &Visibility) -> &'static str {
+    match visibility {
+        Visibility::Public => "public",
+        Visibility::Private => "private",
+        Visibility::InternalOrg => "internal_org",
+        Visibility::Unlisted => "unlisted",
+        Visibility::Quarantined => "quarantined",
+    }
+}
+
+fn derive_package_visibility(
+    requested_visibility: Option<Visibility>,
+    repository_visibility: Visibility,
+    repository_is_org_owned: bool,
+) -> ApiResult<Visibility> {
+    let package_visibility = requested_visibility.unwrap_or_else(|| repository_visibility.clone());
+
+    if repository_visibility == Visibility::Quarantined
+        && package_visibility != Visibility::Quarantined
+    {
+        return Err(ApiError(Error::Validation(
+            "Packages in quarantined repositories must remain quarantined".into(),
+        )));
+    }
+
+    if package_visibility == Visibility::InternalOrg && !repository_is_org_owned {
+        return Err(ApiError(Error::Validation(
+            "internal_org visibility requires an organization-owned repository".into(),
+        )));
+    }
+
+    if visibility_scope_rank(&package_visibility) > visibility_scope_rank(&repository_visibility) {
+        return Err(ApiError(Error::Validation(
+            "Package visibility cannot be broader than the enclosing repository visibility".into(),
+        )));
+    }
+
+    Ok(package_visibility)
+}
+
+fn visibility_scope_rank(visibility: &Visibility) -> u8 {
+    match visibility {
+        Visibility::Public => 2,
+        Visibility::Unlisted => 1,
+        Visibility::Private | Visibility::InternalOrg | Visibility::Quarantined => 0,
+    }
+}
+
+fn extract_namespace_claim_value(ecosystem: &Ecosystem, package_name: &str) -> Option<String> {
+    match ecosystem {
+        Ecosystem::Npm | Ecosystem::Bun => package_name.strip_prefix('@').and_then(|_| {
+            package_name
+                .split_once('/')
+                .map(|(scope, _)| scope.to_owned())
+        }),
+        Ecosystem::Composer => package_name
+            .split_once('/')
+            .map(|(vendor, _)| vendor.to_owned()),
+        Ecosystem::Maven => package_name
+            .split_once(':')
+            .map(|(group_id, _)| group_id.to_owned()),
+        _ => None,
+    }
+}
+
+async fn validate_namespace_claim_for_package(
+    db: &sqlx::PgPool,
+    ecosystem: &Ecosystem,
+    package_name: &str,
+    owner_user_id: Option<Uuid>,
+    owner_org_id: Option<Uuid>,
+) -> ApiResult<()> {
+    let Some(namespace) = extract_namespace_claim_value(ecosystem, package_name) else {
+        return Ok(());
+    };
+
+    let Some(row) = sqlx::query(
+        "SELECT owner_user_id, owner_org_id \
+         FROM namespace_claims \
+         WHERE ecosystem = $1 AND namespace = $2",
+    )
+    .bind(ecosystem.as_str())
+    .bind(&namespace)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?
+    else {
+        return Ok(());
+    };
+
+    let claim_owner_user_id = row
+        .try_get::<Option<Uuid>, _>("owner_user_id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let claim_owner_org_id = row
+        .try_get::<Option<Uuid>, _>("owner_org_id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+
+    if claim_owner_user_id != owner_user_id || claim_owner_org_id != owner_org_id {
+        return Err(ApiError(Error::Forbidden(format!(
+            "Namespace '{}' is claimed by another owner",
+            namespace
+        ))));
+    }
+
+    Ok(())
+}
+
+fn join_policy_violations(violations: &[PolicyViolation]) -> String {
+    violations
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+async fn index_package_after_creation(
+    state: &AppState,
+    package: &Package,
+    owner_name: Option<String>,
+) -> publaryn_core::Result<()> {
+    let document = PackageDocument {
+        id: package.id.to_string(),
+        name: package.name.clone(),
+        normalized_name: package.normalized_name.clone(),
+        display_name: package.display_name.clone(),
+        description: package.description.clone(),
+        ecosystem: package.ecosystem.as_str().to_owned(),
+        keywords: package.keywords.clone(),
+        latest_version: None,
+        download_count: package.download_count,
+        is_deprecated: package.is_deprecated,
+        visibility: visibility_as_str(&package.visibility).to_owned(),
+        owner_name,
+        updated_at: package.updated_at.to_rfc3339(),
+    };
+
+    state.search.index_package(document).await
+}
+
 #[cfg(test)]
 mod tests {
+    use publaryn_core::{
+        domain::{namespace::Ecosystem, repository::Visibility},
+        policy::PolicyViolation,
+    };
     use uuid::Uuid;
 
     use super::{
+        derive_package_visibility, extract_namespace_claim_value, join_policy_violations,
         package_owner_from_fields, release_history_visible_statuses, release_status_after_unyank,
-        validate_package_transfer_target, PackageOwner,
+        validate_package_creation_repository_kind, validate_package_transfer_target,
+        visibility_scope_rank, PackageOwner,
     };
 
     #[test]
@@ -832,7 +1276,10 @@ mod tests {
         let error = package_owner_from_fields(None, None)
             .expect_err("packages without an owner should be rejected");
 
-        assert_eq!(error.0.to_string(), "Internal error: Package owner is not set");
+        assert_eq!(
+            error.0.to_string(),
+            "Internal error: Package owner is not set"
+        );
     }
 
     #[test]
@@ -882,5 +1329,101 @@ mod tests {
     #[test]
     fn release_status_after_unyank_restores_deprecated_for_deprecated_release() {
         assert_eq!(release_status_after_unyank(true), "deprecated");
+    }
+
+    #[test]
+    fn package_creation_rejects_proxy_repositories() {
+        let error = validate_package_creation_repository_kind("proxy")
+            .expect_err("proxy repositories must not accept created packages");
+
+        assert_eq!(
+            error.0.to_string(),
+            "Conflict: Packages can only be created in public, private, staging, or release repositories"
+        );
+    }
+
+    #[test]
+    fn package_visibility_defaults_to_repository_visibility() {
+        let visibility = derive_package_visibility(None, Visibility::Public, false)
+            .expect("repository visibility should be reusable as package default");
+
+        assert_eq!(visibility, Visibility::Public);
+    }
+
+    #[test]
+    fn package_visibility_rejects_broader_scope_than_repository() {
+        let error = derive_package_visibility(Some(Visibility::Public), Visibility::Private, false)
+            .expect_err("package visibility must not be broader than repository visibility");
+
+        assert_eq!(
+            error.0.to_string(),
+            "Validation error: Package visibility cannot be broader than the enclosing repository visibility"
+        );
+    }
+
+    #[test]
+    fn internal_org_visibility_requires_org_owned_repository() {
+        let error =
+            derive_package_visibility(Some(Visibility::InternalOrg), Visibility::Public, false)
+                .expect_err("internal_org visibility must require an org-owned repository");
+
+        assert_eq!(
+            error.0.to_string(),
+            "Validation error: internal_org visibility requires an organization-owned repository"
+        );
+    }
+
+    #[test]
+    fn quarantined_repository_forces_quarantined_package_visibility() {
+        let error =
+            derive_package_visibility(Some(Visibility::Private), Visibility::Quarantined, true)
+                .expect_err("quarantined repositories must keep packages quarantined");
+
+        assert_eq!(
+            error.0.to_string(),
+            "Validation error: Packages in quarantined repositories must remain quarantined"
+        );
+    }
+
+    #[test]
+    fn visibility_scope_rank_treats_public_as_broader_than_unlisted() {
+        assert!(
+            visibility_scope_rank(&Visibility::Public)
+                > visibility_scope_rank(&Visibility::Unlisted)
+        );
+        assert_eq!(visibility_scope_rank(&Visibility::Private), 0);
+    }
+
+    #[test]
+    fn namespace_extraction_supports_scoped_ecosystems() {
+        assert_eq!(
+            extract_namespace_claim_value(&Ecosystem::Npm, "@acme/widget"),
+            Some("@acme".to_owned())
+        );
+        assert_eq!(
+            extract_namespace_claim_value(&Ecosystem::Composer, "acme/widget"),
+            Some("acme".to_owned())
+        );
+        assert_eq!(
+            extract_namespace_claim_value(&Ecosystem::Maven, "com.acme:widget"),
+            Some("com.acme".to_owned())
+        );
+        assert_eq!(
+            extract_namespace_claim_value(&Ecosystem::Pypi, "acme-widget"),
+            None
+        );
+    }
+
+    #[test]
+    fn policy_violations_are_joined_into_a_readable_message() {
+        let message = join_policy_violations(&[
+            PolicyViolation::ReservedName("admin".to_owned()),
+            PolicyViolation::NamespaceMismatch,
+        ]);
+
+        assert_eq!(
+            message,
+            "Package name 'admin' is reserved; Package name does not match the claimed namespace"
+        );
     }
 }

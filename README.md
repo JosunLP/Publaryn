@@ -109,6 +109,9 @@ docker compose up -d postgres redis minio meilisearch
 # 2. Copy env config
 cp .env.example .env
 
+# Optional: allow a separate frontend origin during local development
+# SERVER__CORS_ALLOWED_ORIGINS=http://localhost:5173
+
 # 3. Run the API server
 cargo run --bin publaryn
 ```
@@ -220,6 +223,7 @@ GET    /v1/repositories/:slug/packages
 ### Packages & Releases
 
 ```http
+POST   /v1/packages
 GET    /v1/packages/:ecosystem/:name
 PATCH  /v1/packages/:ecosystem/:name
 DELETE /v1/packages/:ecosystem/:name
@@ -238,11 +242,23 @@ POST   /v1/packages/:ecosystem/:name/trusted-publishers
 
 Release history responses include published, deprecated, and yanked versions so maintainers and consumers can inspect full version state. Yanked releases can be restored with the dedicated unyank endpoint.
 
+Package and repository read endpoints enforce explicit visibility semantics.
+`public` resources are readable and discoverable by everyone.
+`unlisted` resources remain readable through direct URLs but are intentionally excluded from search and package listing surfaces.
+`private`, `internal_org`, and `quarantined` resources require an authenticated owner or organization member.
+
+Control-plane package creation derives package ownership from the target repository instead of trusting caller-supplied owner fields.
+For the current slice, package names are also enforced as globally unique within an ecosystem so the existing `/v1/packages/:ecosystem/:name` control-plane paths remain unambiguous.
+If a matching namespace claim exists for an extracted namespace (currently npm/Bun scopes, Composer vendors, and Maven group IDs), the claim owner must match the repository owner.
+
 ### Search
 
 ```http
 GET /v1/search?q=<query>&ecosystem=<eco>&page=1&per_page=20
 ```
+
+The current search endpoint returns only publicly discoverable packages.
+Authenticated discovery for private and organization-internal packages will be added in a later slice with actor-aware indexing.
 
 ### Tokens
 
@@ -311,16 +327,21 @@ See [`.env.example`](.env.example) for the full reference.
 
 Key variables:
 
-| Variable               | Description                       | Default                  |
-| ---------------------- | --------------------------------- | ------------------------ |
-| `DATABASE__URL`        | PostgreSQL connection string      | —                        |
-| `AUTH__JWT_SECRET`     | JWT signing secret (min 32 chars) | —                        |
-| `AUTH__ISSUER`         | JWT issuer URL                    | `http://localhost:3000`  |
-| `STORAGE__ENDPOINT`    | S3/MinIO endpoint                 | —                        |
-| `STORAGE__BUCKET`      | Artifact storage bucket           | —                        |
-| `SEARCH__URL`          | Meilisearch base URL              | `http://localhost:7700`  |
-| `REDIS__URL`           | Redis URL                         | `redis://localhost:6379` |
-| `SERVER__BIND_ADDRESS` | HTTP bind address                 | `0.0.0.0:3000`           |
+| Variable                       | Description                                                         | Default                              |
+| ------------------------------ | ------------------------------------------------------------------- | ------------------------------------ |
+| `DATABASE__URL`                | PostgreSQL connection string                                        | —                                    |
+| `AUTH__JWT_SECRET`             | JWT signing secret (min 32 chars)                                   | —                                    |
+| `AUTH__ISSUER`                 | JWT issuer URL                                                      | `http://localhost:3000`              |
+| `SERVER__CORS_ALLOWED_ORIGINS` | Comma-separated browser origins allowed for cross-origin API access | empty (deny cross-origin by default) |
+| `STORAGE__ENDPOINT`            | S3/MinIO endpoint                                                   | —                                    |
+| `STORAGE__BUCKET`              | Artifact storage bucket                                             | —                                    |
+| `SEARCH__URL`                  | Meilisearch base URL                                                | `http://localhost:7700`              |
+| `REDIS__URL`                   | Redis URL                                                           | `redis://localhost:6379`             |
+| `SERVER__BIND_ADDRESS`         | HTTP bind address                                                   | `0.0.0.0:3000`                       |
+
+The API does not emit permissive CORS headers by default.
+If the frontend runs on a different origin in development or production, configure an explicit allowlist with `SERVER__CORS_ALLOWED_ORIGINS`.
+Wildcard origins are intentionally rejected so browser-based token usage cannot be exposed accidentally.
 
 ---
 
