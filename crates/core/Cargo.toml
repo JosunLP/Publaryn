@@ -1,0 +1,21 @@
+[package]
+name = "publaryn-core"
+version = "0.1.0"
+edition = "2021"
+description = "Core domain models and shared types for Publaryn"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+validator = { workspace = true }
+sqlx = { workspace = true }
+strsim = { workspace = true }
+regex = { workspace = true }
+itertools = { workspace = true }
+once_cell = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+rand = { workspace = true }

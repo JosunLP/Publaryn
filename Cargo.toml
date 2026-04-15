@@ -1,0 +1,100 @@
+[workspace]
+members = [
+    "crates/core",
+    "crates/api",
+    "crates/auth",
+    "crates/search",
+    "crates/adapters/npm",
+    "crates/adapters/pypi",
+    "crates/adapters/cargo-registry",
+    "crates/adapters/maven",
+    "crates/adapters/nuget",
+    "crates/adapters/rubygems",
+    "crates/adapters/composer",
+    "crates/adapters/oci",
+]
+resolver = "2"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# HTTP
+axum = { version = "0.7", features = ["macros"] }
+axum-extra = { version = "0.9", features = ["typed-header"] }
+tower = { version = "0.4" }
+tower-http = { version = "0.5", features = ["cors", "trace", "compression-gzip", "request-id", "timeout"] }
+hyper = { version = "1" }
+
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json", "migrate"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Validation & errors
+validator = { version = "0.18", features = ["derive"] }
+thiserror = "1"
+anyhow = "1"
+
+# UUID and time
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# Crypto & security
+argon2 = "0.5"
+rand = "0.8"
+hmac = "0.12"
+sha2 = "0.10"
+base64 = "0.22"
+hex = "0.4"
+jsonwebtoken = "9"
+totp-rs = { version = "5", features = ["gen_secret"] }
+
+# Tracing / observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+opentelemetry = "0.24"
+opentelemetry_sdk = { version = "0.24", features = ["rt-tokio"] }
+
+# Config
+config = "0.14"
+dotenvy = "0.15"
+
+# Object Storage (S3/MinIO)
+aws-sdk-s3 = "1"
+aws-config = "1"
+
+# Search (Meilisearch)
+meilisearch-sdk = "0.27"
+
+# Redis
+fred = { version = "9", features = ["enable-rustls", "enable-native-tls"] }
+
+# Emails
+lettre = { version = "0.11", features = ["tokio1-native-tls", "builder", "smtp-transport"] }
+
+# HTTP client
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+
+# OpenAPI
+utoipa = { version = "4", features = ["axum_extras", "chrono", "uuid"] }
+utoipa-swagger-ui = { version = "7", features = ["axum"] }
+
+# Misc utilities
+itertools = "0.13"
+regex = "1"
+url = "2"
+mime = "0.3"
+bytes = "1"
+futures = "0.3"
+async-trait = "0.1"
+once_cell = "1"
+strsim = "0.11"
+
+# Internal crates
+publaryn-core = { path = "crates/core" }
+publaryn-auth = { path = "crates/auth" }
+publaryn-search = { path = "crates/search" }
