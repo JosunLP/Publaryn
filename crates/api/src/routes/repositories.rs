@@ -16,6 +16,8 @@ use publaryn_core::{
 
 use crate::{
     error::{ApiError, ApiResult},
+    request_auth::{ensure_org_admin_by_id, ensure_repository_write_access, AuthenticatedIdentity},
+    scopes::{ensure_scope, SCOPE_REPOSITORIES_WRITE},
     state::AppState,
 };
 
@@ -54,8 +56,10 @@ struct PackageListQuery {
 
 async fn create_repository(
     State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
     Json(body): Json<CreateRepositoryRequest>,
 ) -> ApiResult<(StatusCode, Json<serde_json::Value>)> {
+    ensure_scope(&identity, SCOPE_REPOSITORIES_WRITE)?;
     validation::validate_slug(&body.slug).map_err(ApiError::from)?;
 
     if body.owner_user_id.is_some() && body.owner_org_id.is_some() {
@@ -68,9 +72,24 @@ async fn create_repository(
     let visibility = parse_visibility(body.visibility.as_deref().unwrap_or("public"))?;
     let kind_str = kind.as_str();
     let visibility_str = visibility.as_str();
+    let owner_user_id = match (body.owner_user_id, body.owner_org_id) {
+        (Some(owner_user_id), None) if owner_user_id == identity.user_id => Some(owner_user_id),
+        (Some(_), None) => {
+            return Err(ApiError(Error::Forbidden(
+                "You can only create user-owned repositories for your own account".into(),
+            )));
+        }
+        (None, Some(owner_org_id)) => {
+            ensure_org_admin_by_id(&state.db, owner_org_id, identity.user_id).await?;
+            None
+        }
+        (None, None) => Some(identity.user_id),
+        (Some(_), Some(_)) => unreachable!("validated above"),
+    };
+
     let mut repository = Repository::new(body.name, body.slug, kind, visibility);
     repository.description = body.description;
-    repository.owner_user_id = body.owner_user_id;
+    repository.owner_user_id = owner_user_id;
     repository.owner_org_id = body.owner_org_id;
     repository.upstream_url = body.upstream_url;
 
@@ -141,14 +160,18 @@ async fn get_repository(
 
 async fn update_repository(
     State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
     Path(slug): Path<String>,
     Json(body): Json<UpdateRepositoryRequest>,
 ) -> ApiResult<Json<serde_json::Value>> {
+    ensure_scope(&identity, SCOPE_REPOSITORIES_WRITE)?;
     let visibility = body
         .visibility
         .as_deref()
         .map(parse_visibility)
         .transpose()?;
+
+    let repository_id = ensure_repository_write_access(&state.db, &slug, identity.user_id).await?;
 
     sqlx::query(
         "UPDATE repositories \
@@ -156,12 +179,12 @@ async fn update_repository(
              visibility  = COALESCE($2, visibility), \
              upstream_url = COALESCE($3, upstream_url), \
              updated_at  = NOW() \
-         WHERE slug = $4",
+         WHERE id = $4",
     )
     .bind(&body.description)
     .bind(visibility.map(|value| value.as_str()))
     .bind(&body.upstream_url)
-    .bind(&slug)
+    .bind(repository_id)
     .execute(&state.db)
     .await
     .map_err(|e| ApiError(Error::Database(e)))?;

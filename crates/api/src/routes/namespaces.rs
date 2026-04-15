@@ -15,7 +15,9 @@ use publaryn_core::{
 
 use crate::{
     error::{ApiError, ApiResult},
+    request_auth::{ensure_org_admin_by_id, AuthenticatedIdentity},
     routes::parse_ecosystem,
+    scopes::{ensure_scope, SCOPE_NAMESPACES_WRITE},
     state::AppState,
 };
 
@@ -50,24 +52,42 @@ struct NamespaceLookupQuery {
 
 async fn create_namespace(
     State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
     Json(body): Json<CreateNamespaceRequest>,
 ) -> ApiResult<(StatusCode, Json<serde_json::Value>)> {
+    ensure_scope(&identity, SCOPE_NAMESPACES_WRITE)?;
+
     if body.namespace.trim().is_empty() {
         return Err(ApiError(Error::Validation("Namespace must not be empty".into())));
     }
 
-    if body.owner_user_id.is_some() == body.owner_org_id.is_some() {
+    if body.owner_user_id.is_some() && body.owner_org_id.is_some() {
         return Err(ApiError(Error::Validation(
             "Namespace claim must have exactly one owner".into(),
         )));
     }
 
     let ecosystem = parse_ecosystem(&body.ecosystem)?;
+    let owner_user_id = match (body.owner_user_id, body.owner_org_id) {
+        (Some(owner_user_id), None) if owner_user_id == identity.user_id => Some(owner_user_id),
+        (Some(_), None) => {
+            return Err(ApiError(Error::Forbidden(
+                "You can only create user-owned namespace claims for your own account".into(),
+            )));
+        }
+        (None, Some(owner_org_id)) => {
+            ensure_org_admin_by_id(&state.db, owner_org_id, identity.user_id).await?;
+            None
+        }
+        (None, None) => Some(identity.user_id),
+        (Some(_), Some(_)) => unreachable!("validated above"),
+    };
+
     let claim = NamespaceClaim {
         id: Uuid::new_v4(),
         ecosystem: ecosystem.clone(),
         namespace: body.namespace,
-        owner_user_id: body.owner_user_id,
+        owner_user_id,
         owner_org_id: body.owner_org_id,
         is_verified: false,
         created_at: chrono::Utc::now(),
@@ -94,15 +114,17 @@ async fn create_namespace(
     })?;
 
     sqlx::query(
-        "INSERT INTO audit_logs (id, action, target_user_id, target_org_id, metadata, occurred_at) \
-         VALUES ($1, 'namespace_claim_create', $2, $3, $4, NOW())",
+        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_user_id, target_org_id, metadata, occurred_at) \
+         VALUES ($1, 'namespace_claim_create', $2, $3, $4, $5, $6, NOW())",
     )
     .bind(Uuid::new_v4())
+    .bind(identity.user_id)
+    .bind(identity.audit_actor_token_id())
     .bind(claim.owner_user_id)
     .bind(claim.owner_org_id)
     .bind(serde_json::json!({
         "ecosystem": claim.ecosystem.as_str(),
-        "namespace": claim.namespace,
+        "namespace": &claim.namespace,
     }))
     .execute(&state.db)
     .await

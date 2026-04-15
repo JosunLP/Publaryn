@@ -8,16 +8,16 @@ A self-hostable, security-first package registry platform that speaks the native
 
 ## Supported Ecosystems
 
-| Ecosystem | Protocol | Status |
-|---|---|---|
-| npm / Bun | npm Registry Protocol | 🚧 In progress |
-| pip / PyPI | Simple Index (PEP 503/691) | 🚧 In progress |
-| Rust Crates | Cargo Sparse Index | 🚧 In progress |
-| NuGet | NuGet v3 | 🚧 In progress |
-| Apache Maven | Maven2 | 🚧 In progress |
-| RubyGems | RubyGems / Compact Index | 🚧 In progress |
-| Composer | Composer Repository | 🚧 In progress |
-| Containers | OCI Distribution Spec | 🚧 In progress |
+| Ecosystem    | Protocol                   | Status        |
+| ------------ | -------------------------- | ------------- |
+| npm / Bun    | npm Registry Protocol      | 🚧 In progress |
+| pip / PyPI   | Simple Index (PEP 503/691) | 🚧 In progress |
+| Rust Crates  | Cargo Sparse Index         | 🚧 In progress |
+| NuGet        | NuGet v3                   | 🚧 In progress |
+| Apache Maven | Maven2                     | 🚧 In progress |
+| RubyGems     | RubyGems / Compact Index   | 🚧 In progress |
+| Composer     | Composer Repository        | 🚧 In progress |
+| Containers   | OCI Distribution Spec      | 🚧 In progress |
 
 > **Note:** Bun uses the npm adapter — no separate protocol implementation is required.
 
@@ -74,7 +74,7 @@ A self-hostable, security-first package registry platform that speaks the native
 
 ### Crate Structure
 
-```
+```text
 crates/
 ├── core/               # Domain models, errors, validation, policy
 ├── api/                # HTTP server (axum) — REST + OpenAPI
@@ -113,7 +113,7 @@ cp .env.example .env
 cargo run --bin publaryn
 ```
 
-The API is available at `http://localhost:3000`.  
+The API is available at `http://localhost:3000`.
 Swagger UI at `http://localhost:3000/swagger-ui`.
 
 ### Full Stack (includes API container)
@@ -133,6 +133,34 @@ POST /v1/auth/register
 POST /v1/auth/login
 POST /v1/auth/logout
 ```
+
+## Control-plane Authentication
+
+Mutable management endpoints under `/v1/*` require an `Authorization: Bearer ...` header.
+
+Supported bearer credentials:
+
+- JWT access tokens returned by `POST /v1/auth/login`
+- Opaque API tokens created via `POST /v1/tokens`
+
+Ownership-sensitive fields are derived from the authenticated actor instead of trusting request payload values.
+For example, user-owned namespaces and repositories are created for the authenticated user, and organization-owned mutations require owner or admin membership in the owning organization.
+
+Initial control-plane scopes:
+
+| Scope                | Purpose                                                      |
+| -------------------- | ------------------------------------------------------------ |
+| `profile:write`      | Update the authenticated user's profile                      |
+| `tokens:read`        | List the authenticated user's API tokens                     |
+| `tokens:write`       | Create and revoke API tokens                                 |
+| `orgs:write`         | Create organizations and mutate organization governance data |
+| `namespaces:write`   | Create namespace claims                                      |
+| `repositories:write` | Create and update repositories                               |
+| `packages:write`     | Update packages, releases, tags, and trusted publishers      |
+| `audit:read`         | Read the platform audit log (platform administrators only)   |
+
+JWT login sessions receive a default interactive scope set for standard self-service control-plane actions.
+Opaque API tokens must request one or more supported scopes, and unsupported scope strings are rejected.
 
 ### Users
 
@@ -238,21 +266,21 @@ GET /readiness
 
 ## Domain Model
 
-| Entity | Description |
-|---|---|
-| `User` | A registered user account with MFA support |
-| `Organization` | Group of users with teams, namespace claims, policies |
-| `Team` | Sub-group of an org with fine-grained permissions |
-| `NamespaceClaim` | Ecosystem-specific namespace owned by user/org |
-| `Repository` | Logical collection of packages (public/private/staging/proxy/virtual) |
-| `Package` | Ecosystem-specific package identity |
-| `Release` | Immutable versioned release |
-| `Artifact` | A file associated with a release (tarball, wheel, jar, gem, …) |
-| `ChannelRef` | Mutable tag/alias pointing to a release (npm dist-tag, OCI tag) |
-| `Token` | Granular API token with expiry and scopes |
-| `AuditLog` | Append-only record of all significant actions |
-| `SecurityFinding` | CVE, malware, or policy violation found in a release |
-| `TrustedPublisher` | OIDC trusted publishing configuration |
+| Entity             | Description                                                           |
+| ------------------ | --------------------------------------------------------------------- |
+| `User`             | A registered user account with MFA support                            |
+| `Organization`     | Group of users with teams, namespace claims, policies                 |
+| `Team`             | Sub-group of an org with fine-grained permissions                     |
+| `NamespaceClaim`   | Ecosystem-specific namespace owned by user/org                        |
+| `Repository`       | Logical collection of packages (public/private/staging/proxy/virtual) |
+| `Package`          | Ecosystem-specific package identity                                   |
+| `Release`          | Immutable versioned release                                           |
+| `Artifact`         | A file associated with a release (tarball, wheel, jar, gem, …)        |
+| `ChannelRef`       | Mutable tag/alias pointing to a release (npm dist-tag, OCI tag)       |
+| `Token`            | Granular API token with expiry and scopes                             |
+| `AuditLog`         | Append-only record of all significant actions                         |
+| `SecurityFinding`  | CVE, malware, or policy violation found in a release                  |
+| `TrustedPublisher` | OIDC trusted publishing configuration                                 |
 
 ---
 
@@ -263,16 +291,16 @@ See [`.env.example`](.env.example) for the full reference.
 
 Key variables:
 
-| Variable | Description | Default |
-|---|---|---|
-| `DATABASE__URL` | PostgreSQL connection string | — |
-| `AUTH__JWT_SECRET` | JWT signing secret (min 32 chars) | — |
-| `AUTH__ISSUER` | JWT issuer URL | `http://localhost:3000` |
-| `STORAGE__ENDPOINT` | S3/MinIO endpoint | — |
-| `STORAGE__BUCKET` | Artifact storage bucket | — |
-| `SEARCH__URL` | Meilisearch base URL | `http://localhost:7700` |
-| `REDIS__URL` | Redis URL | `redis://localhost:6379` |
-| `SERVER__BIND_ADDRESS` | HTTP bind address | `0.0.0.0:3000` |
+| Variable               | Description                       | Default                  |
+| ---------------------- | --------------------------------- | ------------------------ |
+| `DATABASE__URL`        | PostgreSQL connection string      | —                        |
+| `AUTH__JWT_SECRET`     | JWT signing secret (min 32 chars) | —                        |
+| `AUTH__ISSUER`         | JWT issuer URL                    | `http://localhost:3000`  |
+| `STORAGE__ENDPOINT`    | S3/MinIO endpoint                 | —                        |
+| `STORAGE__BUCKET`      | Artifact storage bucket           | —                        |
+| `SEARCH__URL`          | Meilisearch base URL              | `http://localhost:7700`  |
+| `REDIS__URL`           | Redis URL                         | `redis://localhost:6379` |
+| `SERVER__BIND_ADDRESS` | HTTP bind address                 | `0.0.0.0:3000`           |
 
 ---
 

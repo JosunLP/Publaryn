@@ -11,6 +11,8 @@ use publaryn_core::error::Error;
 
 use crate::{
     error::{ApiError, ApiResult},
+    request_auth::{ensure_platform_admin, AuthenticatedIdentity},
+    scopes::{ensure_scope, SCOPE_AUDIT_READ},
     state::AppState,
 };
 
@@ -30,8 +32,12 @@ struct AuditQuery {
 
 async fn list_audit_logs(
     State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
     Query(query): Query<AuditQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
+    ensure_scope(&identity, SCOPE_AUDIT_READ)?;
+    ensure_platform_admin(&state.db, identity.user_id).await?;
+
     let limit = query.per_page.unwrap_or(50).min(100) as i64;
     let offset = ((query.page.unwrap_or(1).saturating_sub(1)) as i64) * limit;
 

@@ -3,8 +3,10 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 
 mod config;
 mod error;
+mod request_auth;
 mod router;
 mod routes;
+mod scopes;
 mod state;
 
 #[tokio::main]

@@ -13,6 +13,11 @@ use publaryn_core::{error::Error, security};
 
 use crate::{
     error::{ApiError, ApiResult},
+    request_auth::{is_platform_admin, AuthenticatedIdentity},
+    scopes::{
+        ensure_scope, ensure_scope_grant_allowed, normalize_requested_scopes, SCOPE_TOKENS_READ,
+        SCOPE_TOKENS_WRITE,
+    },
     state::AppState,
 };
 
@@ -33,10 +38,16 @@ struct CreateTokenRequest {
 
 async fn create_token(
     State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
     Json(body): Json<CreateTokenRequest>,
 ) -> ApiResult<(StatusCode, Json<serde_json::Value>)> {
-    // TODO: extract user_id from JWT middleware
-    let user_id = Uuid::nil();
+    ensure_scope(&identity, SCOPE_TOKENS_WRITE)?;
+
+    let user_id = identity.user_id;
+    let token_name = body.name.clone();
+    let scopes = normalize_requested_scopes(&body.scopes).map_err(ApiError::from)?;
+    let actor_is_platform_admin = is_platform_admin(&state.db, user_id).await?;
+    ensure_scope_grant_allowed(&scopes, actor_is_platform_admin)?;
 
     let raw_token = format!("pub_{}", security::generate_random_token(32));
     let token_hash = security::hash_token(&raw_token);
@@ -54,8 +65,26 @@ async fn create_token(
     .bind(&token_hash)
     .bind(&body.name)
     .bind(user_id)
-    .bind(&body.scopes)
+    .bind(&scopes)
     .bind(expires_at)
+    .execute(&state.db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    sqlx::query(
+        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_user_id, metadata, occurred_at) \
+         VALUES ($1, 'token_create', $2, $3, $2, $4, NOW())",
+    )
+    .bind(Uuid::new_v4())
+    .bind(user_id)
+    .bind(identity.audit_actor_token_id())
+    .bind(serde_json::json!({
+        "token_id": token_id,
+        "kind": kind,
+        "name": token_name,
+        "scopes": scopes,
+        "expires_at": expires_at,
+    }))
     .execute(&state.db)
     .await
     .map_err(|e| ApiError(Error::Database(e)))?;
@@ -66,15 +95,20 @@ async fn create_token(
             "id": token_id,
             "token": raw_token,
             "name": body.name,
-            "scopes": body.scopes,
+            "scopes": scopes,
             "expires_at": expires_at,
             "warning": "Store this token securely. It will not be shown again.",
         })),
     ))
 }
 
-async fn list_tokens(State(state): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
-    let user_id = Uuid::nil(); // TODO: extract from JWT
+async fn list_tokens(
+    State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
+) -> ApiResult<Json<serde_json::Value>> {
+    ensure_scope(&identity, SCOPE_TOKENS_READ)?;
+
+    let user_id = identity.user_id;
 
     let rows = sqlx::query(
         "SELECT id, name, kind, scopes, prefix, expires_at, last_used_at, is_revoked, created_at \
@@ -108,15 +142,34 @@ async fn list_tokens(State(state): State<AppState>) -> ApiResult<Json<serde_json
 
 async fn revoke_token(
     State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let user_id = Uuid::nil(); // TODO: extract from JWT
+    ensure_scope(&identity, SCOPE_TOKENS_WRITE)?;
 
-    sqlx::query(
+    let user_id = identity.user_id;
+
+    let result = sqlx::query(
         "UPDATE tokens SET is_revoked = true WHERE id = $1 AND user_id = $2",
     )
     .bind(id)
     .bind(user_id)
+    .execute(&state.db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    if result.rows_affected() == 0 {
+        return Err(ApiError(Error::NotFound("Token not found".into())));
+    }
+
+    sqlx::query(
+        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_user_id, metadata, occurred_at) \
+         VALUES ($1, 'token_revoke', $2, $3, $2, $4, NOW())",
+    )
+    .bind(Uuid::new_v4())
+    .bind(user_id)
+    .bind(identity.audit_actor_token_id())
+    .bind(serde_json::json!({ "token_id": id }))
     .execute(&state.db)
     .await
     .map_err(|e| ApiError(Error::Database(e)))?;

@@ -15,7 +15,9 @@ use publaryn_core::{
 
 use crate::{
     error::{ApiError, ApiResult},
+    request_auth::{ensure_package_write_access, AuthenticatedIdentity},
     routes::parse_ecosystem,
+    scopes::{ensure_scope, SCOPE_PACKAGES_WRITE},
     state::AppState,
 };
 
@@ -38,7 +40,6 @@ struct CreateTrustedPublisherRequest {
     repository: Option<String>,
     workflow_ref: Option<String>,
     environment: Option<String>,
-    created_by: Uuid,
 }
 
 async fn list_trusted_publishers(
@@ -83,27 +84,24 @@ async fn list_trusted_publishers(
 
 async fn create_trusted_publisher(
     State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
     Path((ecosystem_str, name)): Path<(String, String)>,
     Json(body): Json<CreateTrustedPublisherRequest>,
 ) -> ApiResult<(StatusCode, Json<serde_json::Value>)> {
+    ensure_scope(&identity, SCOPE_PACKAGES_WRITE)?;
+
     let ecosystem = parse_ecosystem(&ecosystem_str)?;
     let normalized_name = normalize_package_name(&name, &ecosystem);
-
-    let package_row = sqlx::query(
-        "SELECT id FROM packages WHERE ecosystem = $1 AND normalized_name = $2",
+    let package_id = ensure_package_write_access(
+        &state.db,
+        ecosystem.as_str(),
+        &normalized_name,
+        identity.user_id,
     )
-    .bind(ecosystem.as_str())
-    .bind(&normalized_name)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|e| ApiError(Error::Database(e)))?
-    .ok_or_else(|| ApiError(Error::NotFound(format!("Package '{name}' not found"))))?;
+    .await?;
 
-    let package_id: Uuid = package_row
-        .try_get("id")
-        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
-
-    let mut publisher = TrustedPublisher::new(package_id, body.issuer, body.subject, body.created_by);
+    let mut publisher =
+        TrustedPublisher::new(package_id, body.issuer, body.subject, identity.user_id);
     publisher.repository = body.repository;
     publisher.workflow_ref = body.workflow_ref;
     publisher.environment = body.environment;

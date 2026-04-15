@@ -11,6 +11,8 @@ use publaryn_core::error::Error;
 
 use crate::{
     error::{ApiError, ApiResult},
+    request_auth::AuthenticatedIdentity,
+    scopes::{ensure_scope, SCOPE_PROFILE_WRITE},
     state::AppState,
 };
 
@@ -64,9 +66,29 @@ struct UpdateUserRequest {
 
 async fn update_user(
     State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
     Path(username): Path<String>,
     Json(body): Json<UpdateUserRequest>,
 ) -> ApiResult<Json<serde_json::Value>> {
+    ensure_scope(&identity, SCOPE_PROFILE_WRITE)?;
+
+    let row = sqlx::query("SELECT id FROM users WHERE username = $1 AND is_active = true")
+        .bind(&username)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?
+        .ok_or_else(|| ApiError(Error::NotFound(format!("User '{username}' not found"))))?;
+
+    let target_user_id: Uuid = row
+        .try_get("id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+
+    if target_user_id != identity.user_id {
+        return Err(ApiError(Error::Forbidden(
+            "You can only update your own profile".into(),
+        )));
+    }
+
     sqlx::query(
         "UPDATE users \
          SET display_name = COALESCE($1, display_name), \

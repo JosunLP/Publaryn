@@ -10,6 +10,7 @@ use publaryn_core::{
 
 use crate::{
     error::{ApiError, ApiResult},
+    scopes::default_session_scopes,
     state::AppState,
 };
 
@@ -103,7 +104,7 @@ async fn login(
     Json(body): Json<LoginRequest>,
 ) -> ApiResult<Json<LoginResponse>> {
     let row = sqlx::query(
-        "SELECT id, password_hash, is_active FROM users \
+        "SELECT id, password_hash, is_active, is_admin FROM users \
          WHERE username = $1 OR email = $1",
     )
     .bind(&body.username_or_email)
@@ -134,13 +135,15 @@ async fn login(
     let user_id: uuid::Uuid = row
         .try_get("id")
         .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let is_admin: bool = row.try_get("is_admin").unwrap_or(false);
     let token_id = uuid::Uuid::new_v4();
     let ttl = state.config.auth.jwt_ttl_seconds;
+    let session_scopes = default_session_scopes(is_admin);
 
     let jwt = publaryn_auth::create_token(
         user_id,
         token_id,
-        vec!["read:packages".into(), "write:packages".into()],
+        session_scopes,
         &state.config.auth.jwt_secret,
         ttl,
         &state.config.auth.issuer,

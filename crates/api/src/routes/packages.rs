@@ -17,7 +17,9 @@ use publaryn_core::{
 
 use crate::{
     error::{ApiError, ApiResult},
+    request_auth::{ensure_package_write_access, AuthenticatedIdentity},
     routes::parse_ecosystem,
+    scopes::{ensure_scope, SCOPE_PACKAGES_WRITE},
     state::AppState,
 };
 
@@ -88,11 +90,16 @@ struct UpdatePackageRequest {
 
 async fn update_package(
     State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
     Path((ecosystem_str, name)): Path<(String, String)>,
     Json(body): Json<UpdatePackageRequest>,
 ) -> ApiResult<Json<serde_json::Value>> {
+    ensure_scope(&identity, SCOPE_PACKAGES_WRITE)?;
+
     let eco = parse_ecosystem(&ecosystem_str)?;
     let normalized = normalize_package_name(&name, &eco);
+
+    ensure_package_write_access(&state.db, eco.as_str(), &normalized, identity.user_id).await?;
 
     sqlx::query(
         "UPDATE packages \
@@ -122,17 +129,35 @@ async fn update_package(
 
 async fn delete_package(
     State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
     Path((ecosystem_str, name)): Path<(String, String)>,
 ) -> ApiResult<(StatusCode, Json<serde_json::Value>)> {
+    ensure_scope(&identity, SCOPE_PACKAGES_WRITE)?;
+
     let eco = parse_ecosystem(&ecosystem_str)?;
     let normalized = normalize_package_name(&name, &eco);
+    let package_id =
+        ensure_package_write_access(&state.db, eco.as_str(), &normalized, identity.user_id).await?;
+
+    sqlx::query("UPDATE packages SET is_archived = true, updated_at = NOW() WHERE id = $1")
+    .bind(package_id)
+    .execute(&state.db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
 
     sqlx::query(
-        "UPDATE packages SET is_archived = true, updated_at = NOW() \
-         WHERE ecosystem = $1 AND normalized_name = $2",
+        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_package_id, metadata, occurred_at) \
+         VALUES ($1, 'package_delete', $2, $3, $4, $5, NOW())",
     )
-    .bind(eco.as_str())
-    .bind(&normalized)
+    .bind(Uuid::new_v4())
+    .bind(identity.user_id)
+    .bind(identity.audit_actor_token_id())
+    .bind(package_id)
+    .bind(serde_json::json!({
+        "ecosystem": eco.as_str(),
+        "name": normalized,
+        "mode": "archive",
+    }))
     .execute(&state.db)
     .await
     .map_err(|e| ApiError(Error::Database(e)))?;
@@ -235,23 +260,50 @@ struct YankRequest {
 
 async fn yank_release(
     State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
     Path((ecosystem_str, name, version)): Path<(String, String, String)>,
     Json(body): Json<YankRequest>,
 ) -> ApiResult<Json<serde_json::Value>> {
+    ensure_scope(&identity, SCOPE_PACKAGES_WRITE)?;
+
     let eco = parse_ecosystem(&ecosystem_str)?;
     let normalized = normalize_package_name(&name, &eco);
+    let package_id =
+        ensure_package_write_access(&state.db, eco.as_str(), &normalized, identity.user_id).await?;
 
-    sqlx::query(
-        "UPDATE releases r \
+    let release = sqlx::query(
+        "UPDATE releases \
          SET is_yanked = true, yank_reason = $1, status = 'yanked', updated_at = NOW() \
-         FROM packages p \
-         WHERE r.package_id = p.id \
-           AND p.ecosystem = $2 AND p.normalized_name = $3 AND r.version = $4",
+         WHERE package_id = $2 AND version = $3 \
+         RETURNING id",
     )
     .bind(&body.reason)
-    .bind(eco.as_str())
-    .bind(&normalized)
+    .bind(package_id)
     .bind(&version)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?
+    .ok_or_else(|| ApiError(Error::NotFound(format!("Release '{version}' not found"))))?;
+
+    let release_id: Uuid = release
+        .try_get("id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+
+    sqlx::query(
+        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_package_id, target_release_id, metadata, occurred_at) \
+         VALUES ($1, 'release_yank', $2, $3, $4, $5, $6, NOW())",
+    )
+    .bind(Uuid::new_v4())
+    .bind(identity.user_id)
+    .bind(identity.audit_actor_token_id())
+    .bind(package_id)
+    .bind(release_id)
+    .bind(serde_json::json!({
+        "ecosystem": eco.as_str(),
+        "name": normalized,
+        "version": version,
+        "reason": body.reason,
+    }))
     .execute(&state.db)
     .await
     .map_err(|e| ApiError(Error::Database(e)))?;
@@ -266,23 +318,50 @@ struct DeprecateRequest {
 
 async fn deprecate_release(
     State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
     Path((ecosystem_str, name, version)): Path<(String, String, String)>,
     Json(body): Json<DeprecateRequest>,
 ) -> ApiResult<Json<serde_json::Value>> {
+    ensure_scope(&identity, SCOPE_PACKAGES_WRITE)?;
+
     let eco = parse_ecosystem(&ecosystem_str)?;
     let normalized = normalize_package_name(&name, &eco);
+    let package_id =
+        ensure_package_write_access(&state.db, eco.as_str(), &normalized, identity.user_id).await?;
 
-    sqlx::query(
-        "UPDATE releases r \
+    let release = sqlx::query(
+        "UPDATE releases \
          SET is_deprecated = true, deprecation_message = $1, status = 'deprecated', updated_at = NOW() \
-         FROM packages p \
-         WHERE r.package_id = p.id \
-           AND p.ecosystem = $2 AND p.normalized_name = $3 AND r.version = $4",
+         WHERE package_id = $2 AND version = $3 \
+         RETURNING id",
     )
     .bind(&body.message)
-    .bind(eco.as_str())
-    .bind(&normalized)
+    .bind(package_id)
     .bind(&version)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?
+    .ok_or_else(|| ApiError(Error::NotFound(format!("Release '{version}' not found"))))?;
+
+    let release_id: Uuid = release
+        .try_get("id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+
+    sqlx::query(
+        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_package_id, target_release_id, metadata, occurred_at) \
+         VALUES ($1, 'release_deprecate', $2, $3, $4, $5, $6, NOW())",
+    )
+    .bind(Uuid::new_v4())
+    .bind(identity.user_id)
+    .bind(identity.audit_actor_token_id())
+    .bind(package_id)
+    .bind(release_id)
+    .bind(serde_json::json!({
+        "ecosystem": eco.as_str(),
+        "name": normalized,
+        "version": version,
+        "message": body.message,
+    }))
     .execute(&state.db)
     .await
     .map_err(|e| ApiError(Error::Database(e)))?;
@@ -329,23 +408,16 @@ struct UpsertTagRequest {
 
 async fn upsert_tag(
     State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
     Path((ecosystem_str, name, tag)): Path<(String, String, String)>,
     Json(body): Json<UpsertTagRequest>,
 ) -> ApiResult<Json<serde_json::Value>> {
+    ensure_scope(&identity, SCOPE_PACKAGES_WRITE)?;
+
     let eco = parse_ecosystem(&ecosystem_str)?;
     let normalized = normalize_package_name(&name, &eco);
-
-    let pkg_row = sqlx::query(
-        "SELECT id FROM packages WHERE ecosystem = $1 AND normalized_name = $2",
-    )
-    .bind(eco.as_str())
-    .bind(&normalized)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|e| ApiError(Error::Database(e)))?
-    .ok_or_else(|| ApiError(Error::NotFound(format!("Package '{name}' not found"))))?;
-
-    let pkg_id: Uuid = pkg_row.try_get("id").map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let pkg_id =
+        ensure_package_write_access(&state.db, eco.as_str(), &normalized, identity.user_id).await?;
 
     let rel_row = sqlx::query(
         "SELECT id FROM releases WHERE package_id = $1 AND version = $2",
@@ -370,7 +442,7 @@ async fn upsert_tag(
     .bind(eco.as_str())
     .bind(&tag)
     .bind(release_id)
-    .bind(Uuid::nil()) // TODO: use authenticated user ID
+    .bind(identity.user_id)
     .execute(&state.db)
     .await
     .map_err(|e| ApiError(Error::Database(e)))?;

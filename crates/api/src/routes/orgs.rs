@@ -17,6 +17,8 @@ use publaryn_core::{
 
 use crate::{
     error::{ApiError, ApiResult},
+    request_auth::{ensure_org_admin_by_slug, AuthenticatedIdentity},
+    scopes::{ensure_scope, SCOPE_ORGS_WRITE},
     state::AppState,
 };
 
@@ -44,10 +46,19 @@ struct CreateOrgRequest {
 
 async fn create_org(
     State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
     Json(body): Json<CreateOrgRequest>,
 ) -> ApiResult<(StatusCode, Json<serde_json::Value>)> {
+    ensure_scope(&identity, SCOPE_ORGS_WRITE)?;
+
     validation::validate_slug(&body.slug).map_err(ApiError::from)?;
     let org = Organization::new(body.name, body.slug);
+
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
 
     sqlx::query(
         "INSERT INTO organizations (id, name, slug, description, website, email, \
@@ -61,7 +72,7 @@ async fn create_org(
     .bind(&body.website)
     .bind(&body.email)
     .bind(org.created_at)
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await
     .map_err(|e| match &e {
         sqlx::Error::Database(db) if db.is_unique_violation() => {
@@ -69,6 +80,34 @@ async fn create_org(
         }
         _ => ApiError(Error::Database(e)),
     })?;
+
+    sqlx::query(
+        "INSERT INTO org_memberships (id, org_id, user_id, role, invited_by, joined_at) \
+         VALUES ($1, $2, $3, 'owner', NULL, NOW())",
+    )
+    .bind(Uuid::new_v4())
+    .bind(org.id)
+    .bind(identity.user_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    sqlx::query(
+        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_org_id, metadata, occurred_at) \
+         VALUES ($1, 'org_create', $2, $3, $4, $5, NOW())",
+    )
+    .bind(Uuid::new_v4())
+    .bind(identity.user_id)
+    .bind(identity.audit_actor_token_id())
+    .bind(org.id)
+    .bind(serde_json::json!({ "name": &org.name, "slug": &org.slug }))
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
 
     Ok((StatusCode::CREATED, Json(serde_json::json!({ "id": org.id, "slug": org.slug }))))
 }
@@ -108,9 +147,13 @@ struct UpdateOrgRequest {
 
 async fn update_org(
     State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
     Path(slug): Path<String>,
     Json(body): Json<UpdateOrgRequest>,
 ) -> ApiResult<Json<serde_json::Value>> {
+    ensure_scope(&identity, SCOPE_ORGS_WRITE)?;
+    ensure_org_admin_by_slug(&state.db, &slug, identity.user_id).await?;
+
     sqlx::query(
         "UPDATE organizations \
          SET description = COALESCE($1, description), \
@@ -170,17 +213,12 @@ struct AddMemberRequest {
 
 async fn add_member(
     State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
     Path(slug): Path<String>,
     Json(body): Json<AddMemberRequest>,
 ) -> ApiResult<(StatusCode, Json<serde_json::Value>)> {
-    let org_row = sqlx::query("SELECT id FROM organizations WHERE slug = $1")
-        .bind(&slug)
-        .fetch_optional(&state.db)
-        .await
-        .map_err(|e| ApiError(Error::Database(e)))?
-        .ok_or_else(|| ApiError(Error::NotFound(format!("Org '{slug}' not found"))))?;
-
-    let org_id: Uuid = org_row.try_get("id").map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    ensure_scope(&identity, SCOPE_ORGS_WRITE)?;
+    let org_id = ensure_org_admin_by_slug(&state.db, &slug, identity.user_id).await?;
 
     let user_row = sqlx::query("SELECT id FROM users WHERE username = $1")
         .bind(&body.username)
@@ -192,14 +230,16 @@ async fn add_member(
     let user_id: Uuid = user_row.try_get("id").map_err(|e| ApiError(Error::Internal(e.to_string())))?;
 
     sqlx::query(
-        "INSERT INTO org_memberships (id, org_id, user_id, role, joined_at) \
-         VALUES ($1, $2, $3, $4, NOW()) \
-         ON CONFLICT (org_id, user_id) DO UPDATE SET role = EXCLUDED.role",
+           "INSERT INTO org_memberships (id, org_id, user_id, role, invited_by, joined_at) \
+            VALUES ($1, $2, $3, $4, $5, NOW()) \
+            ON CONFLICT (org_id, user_id) DO UPDATE \
+            SET role = EXCLUDED.role, invited_by = EXCLUDED.invited_by",
     )
     .bind(Uuid::new_v4())
     .bind(org_id)
     .bind(user_id)
     .bind(&body.role)
+        .bind(identity.user_id)
     .execute(&state.db)
     .await
     .map_err(|e| ApiError(Error::Database(e)))?;
@@ -209,19 +249,33 @@ async fn add_member(
 
 async fn remove_member(
     State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
     Path((slug, username)): Path<(String, String)>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    sqlx::query(
-        "DELETE FROM org_memberships om \
-         USING organizations o, users u \
-         WHERE om.org_id = o.id AND om.user_id = u.id \
-           AND o.slug = $1 AND u.username = $2",
-    )
-    .bind(&slug)
-    .bind(&username)
+    ensure_scope(&identity, SCOPE_ORGS_WRITE)?;
+    let org_id = ensure_org_admin_by_slug(&state.db, &slug, identity.user_id).await?;
+
+    let user_row = sqlx::query("SELECT id FROM users WHERE username = $1")
+        .bind(&username)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?
+        .ok_or_else(|| ApiError(Error::NotFound(format!("User '{username}' not found"))))?;
+
+    let user_id: Uuid = user_row
+        .try_get("id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+
+    let result = sqlx::query("DELETE FROM org_memberships WHERE org_id = $1 AND user_id = $2")
+    .bind(org_id)
+    .bind(user_id)
     .execute(&state.db)
     .await
     .map_err(|e| ApiError(Error::Database(e)))?;
+
+    if result.rows_affected() == 0 {
+        return Err(ApiError(Error::NotFound("Membership not found".into())));
+    }
 
     Ok(Json(serde_json::json!({ "message": "Member removed" })))
 }
@@ -267,19 +321,14 @@ struct CreateTeamRequest {
 
 async fn create_team(
     State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
     Path(slug): Path<String>,
     Json(body): Json<CreateTeamRequest>,
 ) -> ApiResult<(StatusCode, Json<serde_json::Value>)> {
+    ensure_scope(&identity, SCOPE_ORGS_WRITE)?;
     validation::validate_slug(&body.slug).map_err(ApiError::from)?;
 
-    let org_row = sqlx::query("SELECT id FROM organizations WHERE slug = $1")
-        .bind(&slug)
-        .fetch_optional(&state.db)
-        .await
-        .map_err(|e| ApiError(Error::Database(e)))?
-        .ok_or_else(|| ApiError(Error::NotFound(format!("Org '{slug}' not found"))))?;
-
-    let org_id: Uuid = org_row.try_get("id").map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let org_id = ensure_org_admin_by_slug(&state.db, &slug, identity.user_id).await?;
     let team_id = Uuid::new_v4();
 
     sqlx::query(
