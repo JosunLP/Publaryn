@@ -1,0 +1,49 @@
+[package]
+name = "publaryn-api"
+version = "0.1.0"
+edition = "2021"
+description = "Publaryn HTTP API server"
+
+[[bin]]
+name = "publaryn"
+path = "src/main.rs"
+
+[dependencies]
+publaryn-core = { workspace = true }
+publaryn-auth = { workspace = true }
+publaryn-search = { workspace = true }
+
+tokio = { workspace = true }
+axum = { workspace = true }
+axum-extra = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+hyper = { workspace = true }
+
+sqlx = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+validator = { workspace = true }
+
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+config = { workspace = true }
+dotenvy = { workspace = true }
+
+utoipa = { workspace = true }
+utoipa-swagger-ui = { workspace = true }
+
+reqwest = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+base64 = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+rand = { workspace = true }
+once_cell = { workspace = true }
