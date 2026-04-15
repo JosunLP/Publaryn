@@ -1,12 +1,12 @@
 use axum::{
     body::Body,
-    extract::{Path, State},
+    extract::{DefaultBodyLimit, Multipart, Path, State},
     http::{
         header::{ACCEPT, AUTHORIZATION, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE, LOCATION, WWW_AUTHENTICATE},
         HeaderMap, HeaderValue, StatusCode,
     },
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
@@ -18,7 +18,13 @@ use std::collections::BTreeMap;
 use uuid::Uuid;
 
 use publaryn_core::{
-    domain::{namespace::Ecosystem, package::normalize_package_name},
+    domain::{
+        artifact::{Artifact, ArtifactKind},
+        namespace::Ecosystem,
+        package::{normalize_package_name, Package},
+        release::Release,
+        repository::Visibility,
+    },
     error::Error,
 };
 
@@ -29,15 +35,25 @@ use crate::{
         select_response_format, ProjectFile, ProjectLink, ResponseFormat,
         PYPI_SIMPLE_JSON_CONTENT_TYPE,
     },
+    upload::{LegacyPackageMetadata, LegacyUploadBuilder, LegacyUploadRequest},
 };
 
 const PYPI_SIMPLE_ROOT_PATH: &str = "/pypi/simple/";
 const PYPI_SIMPLE_FILES_PATH: &str = "/pypi/files";
 const PYPI_READABLE_RELEASE_STATUSES: &[&str] = &["published", "deprecated", "yanked"];
 const PYPI_AUTH_REALM: &str = "Basic realm=\"Publaryn PyPI\"";
+const PYPI_UPLOAD_ALLOWED_REPOSITORY_KINDS: &[&str] = &["public", "private", "staging", "release"];
+const PACKAGE_PUBLISH_ROLES: &[&str] = &["owner", "admin", "maintainer", "publisher"];
+const TEAM_PACKAGE_PUBLISH_PERMISSIONS: &[&str] = &["admin", "publish"];
 
 pub trait PyPiAppState: Clone + Send + Sync + 'static {
     fn db(&self) -> &PgPool;
+    fn artifact_put(
+        &self,
+        key: String,
+        content_type: String,
+        bytes: Bytes,
+    ) -> impl std::future::Future<Output = Result<(), Error>> + Send;
     fn artifact_get(
         &self,
         key: &str,
@@ -53,9 +69,27 @@ pub struct StoredObject {
     pub bytes: Bytes,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CredentialKind {
+    Jwt,
+    ApiToken,
+}
+
 #[derive(Debug, Clone)]
 struct PyPiIdentity {
     user_id: Uuid,
+    token_id: Option<Uuid>,
+    scopes: Vec<String>,
+    credential_kind: CredentialKind,
+}
+
+impl PyPiIdentity {
+    fn audit_actor_token_id(&self) -> Option<Uuid> {
+        match self.credential_kind {
+            CredentialKind::Jwt => None,
+            CredentialKind::ApiToken => self.token_id,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -70,6 +104,26 @@ struct PackageAccessRow {
     repository_owner_org_id: Option<Uuid>,
 }
 
+#[derive(Debug, Clone)]
+struct UploadPackageContext {
+    package_id: Uuid,
+}
+
+#[derive(Debug, Clone)]
+struct UploadReleaseContext {
+    release_id: Uuid,
+    status: String,
+    is_yanked: bool,
+    is_deprecated: bool,
+    was_created: bool,
+}
+
+#[derive(Debug, Clone)]
+struct UploadedArtifactContext {
+    artifact_id: Uuid,
+    created: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct ErrorDocument<'a> {
     error: &'a str,
@@ -77,6 +131,14 @@ struct ErrorDocument<'a> {
 
 pub fn router<S: PyPiAppState>() -> Router<S> {
     Router::new()
+        .route(
+            "/legacy",
+            post(upload_distribution::<S>).layer(DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/legacy/",
+            post(upload_distribution::<S>).layer(DefaultBodyLimit::disable()),
+        )
         .route("/simple", get(redirect_simple_root::<S>))
         .route("/simple/", get(simple_index::<S>))
         .route("/simple/:project", get(project_detail_without_trailing_slash::<S>))
@@ -272,6 +334,109 @@ async fn download_distribution<S: PyPiAppState>(
         .unwrap_or_else(|_| internal_error_response("Failed to build file response"))
 }
 
+async fn upload_distribution<S: PyPiAppState>(
+    State(state): State<S>,
+    headers: HeaderMap,
+    multipart: Multipart,
+) -> Response {
+    let identity = match authenticate_required(&state, &headers).await {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+
+    if !identity_has_scope(&identity, "packages:write") {
+        return forbidden_response("The supplied credential does not include the packages:write scope");
+    }
+
+    let upload = match parse_legacy_upload(multipart).await {
+        Ok(upload) => upload,
+        Err(response) => return response,
+    };
+
+    let package = match resolve_or_create_upload_package(&state, &identity, &upload).await {
+        Ok(package) => package,
+        Err(response) => return response,
+    };
+
+    let release = match resolve_or_create_upload_release(state.db(), package.package_id, &upload, identity.user_id).await {
+        Ok(release) => release,
+        Err(response) => return response,
+    };
+
+    let artifact = match upload_artifact_for_release(&state, release.release_id, &upload).await {
+        Ok(artifact) => artifact,
+        Err(response) => return response,
+    };
+
+    let final_status = match finalize_upload_release(state.db(), &release).await {
+        Ok(status) => status,
+        Err(response) => return response,
+    };
+
+    if artifact.created {
+        if let Err(response) = record_upload_audit(
+            state.db(),
+            &identity,
+            package.package_id,
+            release.release_id,
+            artifact.artifact_id,
+            &upload,
+            &final_status,
+            release.was_created,
+        )
+        .await
+        {
+            return response;
+        }
+    }
+
+    let _ = touch_package_after_upload(state.db(), package.package_id).await;
+
+    legacy_upload_success_response(&state, &upload.package_name)
+}
+
+async fn parse_legacy_upload(mut multipart: Multipart) -> Result<LegacyUploadRequest, Response> {
+    let mut builder = LegacyUploadBuilder::default();
+
+    loop {
+        let field = multipart
+            .next_field()
+            .await
+            .map_err(|_| bad_request_response("The multipart upload payload could not be parsed"))?;
+
+        let Some(field) = field else {
+            break;
+        };
+
+        let Some(name) = field.name().map(str::to_owned) else {
+            return Err(bad_request_response(
+                "Every multipart field must include a field name",
+            ));
+        };
+
+        let file_name = field.file_name().map(str::to_owned);
+        let content_type = field.content_type().map(|value| value.to_string());
+
+        if file_name.is_some() {
+            let bytes = field
+                .bytes()
+                .await
+                .map_err(|_| bad_request_response("The uploaded distribution file could not be read"))?;
+            builder
+                .add_file_field(&name, file_name.as_deref(), content_type.as_deref(), bytes)
+                .map_err(|message| bad_request_response(&message))?;
+        } else {
+            let text = field
+                .text()
+                .await
+                .map_err(|_| bad_request_response("A multipart text field could not be decoded as UTF-8"))?;
+            builder.add_text_field(&name, text);
+        }
+    }
+
+    builder.build().map_err(|message| bad_request_response(&message))
+}
+
 async fn load_visible_projects(
     db: &PgPool,
     actor_user_id: Option<Uuid>,
@@ -459,6 +624,15 @@ async fn authenticate_optional<S: PyPiAppState>(
     ))
 }
 
+async fn authenticate_required<S: PyPiAppState>(
+    state: &S,
+    headers: &HeaderMap,
+) -> Result<PyPiIdentity, Response> {
+    authenticate_optional(state, headers)
+        .await?
+        .ok_or_else(|| unauthorized_response("Authentication is required for PyPI uploads"))
+}
+
 async fn authenticate_bearer_token<S: PyPiAppState>(
     state: &S,
     token: &str,
@@ -477,7 +651,12 @@ async fn authenticate_bearer_token<S: PyPiAppState>(
     let user_id = Uuid::parse_str(&claims.sub)
         .map_err(|_| unauthorized_response("Token subject is not a valid user identifier"))?;
 
-    Ok(PyPiIdentity { user_id })
+    Ok(PyPiIdentity {
+        user_id,
+        token_id: None,
+        scopes: claims.scopes,
+        credential_kind: CredentialKind::Jwt,
+    })
 }
 
 async fn authenticate_basic_token<S: PyPiAppState>(
@@ -510,7 +689,7 @@ async fn authenticate_api_token<S: PyPiAppState>(
 ) -> Result<PyPiIdentity, Response> {
     let token_hash = publaryn_core::security::hash_token(token);
     let row = sqlx::query(
-        "SELECT id, user_id, expires_at \
+        "SELECT id, user_id, scopes, expires_at \
          FROM tokens \
          WHERE token_hash = $1 AND is_revoked = false",
     )
@@ -528,13 +707,21 @@ async fn authenticate_api_token<S: PyPiAppState>(
     let token_id = uuid_column(&row, "id");
     let user_id = optional_uuid_column(&row, "user_id")
         .ok_or_else(|| unauthorized_response("API token is not associated with a user account"))?;
+    let scopes = row
+        .try_get::<Vec<String>, _>("scopes")
+        .unwrap_or_default();
 
     let _ = sqlx::query("UPDATE tokens SET last_used_at = NOW() WHERE id = $1")
         .bind(token_id)
         .execute(state.db())
         .await;
 
-    Ok(PyPiIdentity { user_id })
+    Ok(PyPiIdentity {
+        user_id,
+        token_id: Some(token_id),
+        scopes,
+        credential_kind: CredentialKind::ApiToken,
+    })
 }
 
 async fn can_read_package(
@@ -642,6 +829,587 @@ async fn actor_has_any_team_package_access(db: &PgPool, package_id: Uuid, actor_
     .unwrap_or(false)
 }
 
+fn identity_has_scope(identity: &PyPiIdentity, scope: &str) -> bool {
+    identity.scopes.iter().any(|candidate| candidate == scope)
+}
+
+async fn resolve_or_create_upload_package<S: PyPiAppState>(
+    state: &S,
+    identity: &PyPiIdentity,
+    upload: &LegacyUploadRequest,
+) -> Result<UploadPackageContext, Response> {
+    let normalized_name = normalize_package_name(&upload.package_name, &Ecosystem::Pypi);
+    let metadata = upload.package_metadata();
+
+    let existing_package = sqlx::query(
+        "SELECT id, owner_user_id, owner_org_id \
+         FROM packages \
+         WHERE ecosystem = 'pypi' AND normalized_name = $1",
+    )
+    .bind(&normalized_name)
+    .fetch_optional(state.db())
+    .await
+    .map_err(|_| internal_error_response("Database error"))?;
+
+    if let Some(existing_package) = existing_package {
+        let package_id = uuid_column(&existing_package, "id");
+        if !actor_can_publish_package(
+            state.db(),
+            package_id,
+            optional_uuid_column(&existing_package, "owner_user_id"),
+            optional_uuid_column(&existing_package, "owner_org_id"),
+            identity.user_id,
+        )
+        .await
+        {
+            return Err(forbidden_response(
+                "You do not have permission to upload distributions for this package",
+            ));
+        }
+
+        update_upload_package_metadata(state.db(), package_id, &metadata).await?;
+        return Ok(UploadPackageContext { package_id });
+    }
+
+    let repository_row = sqlx::query(
+        "SELECT id, visibility, owner_user_id, owner_org_id \
+         FROM repositories \
+         WHERE owner_user_id = $1 \
+           AND kind::text = ANY($2) \
+         ORDER BY created_at ASC \
+         LIMIT 1",
+    )
+    .bind(identity.user_id)
+    .bind(&PYPI_UPLOAD_ALLOWED_REPOSITORY_KINDS
+        .iter()
+        .map(|kind| (*kind).to_owned())
+        .collect::<Vec<_>>())
+    .fetch_optional(state.db())
+    .await
+    .map_err(|_| internal_error_response("Database error"))?
+    .ok_or_else(|| {
+        forbidden_response(
+            "You have no user-owned repository suitable for PyPI uploads. Create one via the Publaryn API first.",
+        )
+    })?;
+
+    let repository_id = uuid_column(&repository_row, "id");
+    let owner_user_id = optional_uuid_column(&repository_row, "owner_user_id");
+    let owner_org_id = optional_uuid_column(&repository_row, "owner_org_id");
+    let visibility = upload_package_visibility(&string_column(&repository_row, "visibility"));
+    let mut package = Package::new(
+        repository_id,
+        Ecosystem::Pypi,
+        upload.package_name.clone(),
+        visibility.clone(),
+    );
+    package.description = metadata.description.clone();
+    package.readme = metadata.readme.clone();
+    package.homepage = metadata.homepage.clone();
+    package.repository_url = metadata.repository_url.clone();
+    package.license = metadata.license.clone();
+    package.keywords = metadata.keywords.clone();
+    package.owner_user_id = owner_user_id;
+    package.owner_org_id = owner_org_id;
+
+    let mut tx = state
+        .db()
+        .begin()
+        .await
+        .map_err(|_| internal_error_response("Database error"))?;
+
+    let insert_result = sqlx::query(
+        "INSERT INTO packages (id, repository_id, ecosystem, name, normalized_name, display_name, \
+         description, readme, homepage, repository_url, license, keywords, visibility, \
+         owner_user_id, owner_org_id, is_deprecated, deprecation_message, is_archived, \
+         download_count, created_at, updated_at) \
+         VALUES ($1, $2, 'pypi', $3, $4, NULL, $5, $6, $7, $8, $9, $10, $11, $12, $13, false, NULL, false, 0, $14, $15)",
+    )
+    .bind(package.id)
+    .bind(package.repository_id)
+    .bind(&package.name)
+    .bind(&package.normalized_name)
+    .bind(&package.description)
+    .bind(&package.readme)
+    .bind(&package.homepage)
+    .bind(&package.repository_url)
+    .bind(&package.license)
+    .bind(&package.keywords)
+    .bind(visibility_as_str(&visibility))
+    .bind(package.owner_user_id)
+    .bind(package.owner_org_id)
+    .bind(package.created_at)
+    .bind(package.updated_at)
+    .execute(&mut *tx)
+    .await;
+
+    match insert_result {
+        Ok(_) => {
+            sqlx::query(
+                "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_package_id, metadata, occurred_at) \
+                 VALUES ($1, 'package_create', $2, $3, $4, $5, NOW())",
+            )
+            .bind(Uuid::new_v4())
+            .bind(identity.user_id)
+            .bind(identity.audit_actor_token_id())
+            .bind(package.id)
+            .bind(serde_json::json!({
+                "ecosystem": "pypi",
+                "name": package.name,
+                "normalized_name": package.normalized_name,
+                "source": "pypi_legacy_upload",
+            }))
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| internal_error_response("Database error"))?;
+
+            tx.commit()
+                .await
+                .map_err(|_| internal_error_response("Database error"))?;
+
+            Ok(UploadPackageContext {
+                package_id: package.id,
+            })
+        }
+        Err(sqlx::Error::Database(db_error)) if db_error.is_unique_violation() => {
+            tx.rollback().await.ok();
+
+            let existing_package = sqlx::query(
+                "SELECT id, owner_user_id, owner_org_id \
+                 FROM packages \
+                 WHERE ecosystem = 'pypi' AND normalized_name = $1",
+            )
+            .bind(&normalized_name)
+            .fetch_optional(state.db())
+            .await
+            .map_err(|_| internal_error_response("Database error"))?
+            .ok_or_else(|| internal_error_response("Package creation raced but the package could not be reloaded"))?;
+
+            let package_id = uuid_column(&existing_package, "id");
+            if !actor_can_publish_package(
+                state.db(),
+                package_id,
+                optional_uuid_column(&existing_package, "owner_user_id"),
+                optional_uuid_column(&existing_package, "owner_org_id"),
+                identity.user_id,
+            )
+            .await
+            {
+                return Err(forbidden_response(
+                    "You do not have permission to upload distributions for this package",
+                ));
+            }
+
+            update_upload_package_metadata(state.db(), package_id, &metadata).await?;
+            Ok(UploadPackageContext { package_id })
+        }
+        Err(_) => Err(internal_error_response("Database error")),
+    }
+}
+
+async fn update_upload_package_metadata(
+    db: &PgPool,
+    package_id: Uuid,
+    metadata: &LegacyPackageMetadata,
+) -> Result<(), Response> {
+    sqlx::query(
+        "UPDATE packages \
+         SET description = COALESCE($1, description), \
+             homepage = COALESCE($2, homepage), \
+             repository_url = COALESCE($3, repository_url), \
+             license = COALESCE($4, license), \
+             keywords = COALESCE($5, keywords), \
+             readme = COALESCE($6, readme), \
+             updated_at = NOW() \
+         WHERE id = $7",
+    )
+    .bind(metadata.description.clone())
+    .bind(metadata.homepage.clone())
+    .bind(metadata.repository_url.clone())
+    .bind(metadata.license.clone())
+    .bind(if metadata.keywords.is_empty() {
+        None::<Vec<String>>
+    } else {
+        Some(metadata.keywords.clone())
+    })
+    .bind(metadata.readme.clone())
+    .bind(package_id)
+    .execute(db)
+    .await
+    .map_err(|_| internal_error_response("Database error"))?;
+
+    Ok(())
+}
+
+async fn actor_can_publish_package(
+    db: &PgPool,
+    package_id: Uuid,
+    owner_user_id: Option<Uuid>,
+    owner_org_id: Option<Uuid>,
+    actor_user_id: Uuid,
+) -> bool {
+    if owner_user_id == Some(actor_user_id) {
+        return true;
+    }
+
+    if let Some(owner_org_id) = owner_org_id {
+        let allowed_roles = PACKAGE_PUBLISH_ROLES
+            .iter()
+            .map(|role| (*role).to_owned())
+            .collect::<Vec<_>>();
+
+        let org_role_match = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS (\
+                 SELECT 1 \
+                 FROM org_memberships \
+                 WHERE org_id = $1 AND user_id = $2 AND role::text = ANY($3)\
+             )",
+        )
+        .bind(owner_org_id)
+        .bind(actor_user_id)
+        .bind(&allowed_roles)
+        .fetch_one(db)
+        .await
+        .unwrap_or(false);
+
+        if org_role_match {
+            return true;
+        }
+
+        let allowed_permissions = TEAM_PACKAGE_PUBLISH_PERMISSIONS
+            .iter()
+            .map(|permission| (*permission).to_owned())
+            .collect::<Vec<_>>();
+
+        return sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS (\
+                 SELECT 1 \
+                 FROM team_package_access tpa \
+                 JOIN team_memberships tm ON tm.team_id = tpa.team_id \
+                 JOIN teams t ON t.id = tpa.team_id \
+                 JOIN packages p ON p.id = tpa.package_id \
+                 WHERE tpa.package_id = $1 \
+                   AND tm.user_id = $2 \
+                   AND t.org_id = p.owner_org_id \
+                   AND tpa.permission::text = ANY($3)\
+             )",
+        )
+        .bind(package_id)
+        .bind(actor_user_id)
+        .bind(&allowed_permissions)
+        .fetch_one(db)
+        .await
+        .unwrap_or(false);
+    }
+
+    false
+}
+
+async fn resolve_or_create_upload_release(
+    db: &PgPool,
+    package_id: Uuid,
+    upload: &LegacyUploadRequest,
+    actor_user_id: Uuid,
+) -> Result<UploadReleaseContext, Response> {
+    if let Some(existing_release) = sqlx::query(
+        "SELECT id, status, is_yanked, is_deprecated \
+         FROM releases \
+         WHERE package_id = $1 AND version = $2",
+    )
+    .bind(package_id)
+    .bind(&upload.version)
+    .fetch_optional(db)
+    .await
+    .map_err(|_| internal_error_response("Database error"))?
+    {
+        let status = string_column(&existing_release, "status");
+        if status == "deleted" {
+            return Err(conflict_response(
+                "The requested PyPI version has been deleted and cannot accept new uploads",
+            ));
+        }
+
+        return Ok(UploadReleaseContext {
+            release_id: uuid_column(&existing_release, "id"),
+            status,
+            is_yanked: bool_column(&existing_release, "is_yanked"),
+            is_deprecated: bool_column(&existing_release, "is_deprecated"),
+            was_created: false,
+        });
+    }
+
+    let release = Release::new(package_id, upload.version.clone(), actor_user_id);
+    let insert_result = sqlx::query(
+        "INSERT INTO releases (id, package_id, version, status, published_by, description, changelog, \
+         is_prerelease, is_yanked, yank_reason, is_deprecated, deprecation_message, source_ref, provenance, \
+         published_at, updated_at) \
+         VALUES ($1, $2, $3, 'quarantine', $4, $5, NULL, $6, false, NULL, false, NULL, NULL, $7, $8, $9)",
+    )
+    .bind(release.id)
+    .bind(package_id)
+    .bind(&upload.version)
+    .bind(actor_user_id)
+    .bind(upload.release_description())
+    .bind(upload.is_prerelease())
+    .bind(upload.provenance_json())
+    .bind(release.published_at)
+    .bind(release.updated_at)
+    .execute(db)
+    .await;
+
+    match insert_result {
+        Ok(_) => Ok(UploadReleaseContext {
+            release_id: release.id,
+            status: "quarantine".into(),
+            is_yanked: false,
+            is_deprecated: false,
+            was_created: true,
+        }),
+        Err(sqlx::Error::Database(db_error)) if db_error.is_unique_violation() => {
+            let existing_release = sqlx::query(
+                "SELECT id, status, is_yanked, is_deprecated \
+                 FROM releases \
+                 WHERE package_id = $1 AND version = $2",
+            )
+            .bind(package_id)
+            .bind(&upload.version)
+            .fetch_optional(db)
+            .await
+            .map_err(|_| internal_error_response("Database error"))?
+            .ok_or_else(|| internal_error_response("Release creation raced but the release could not be reloaded"))?;
+
+            let status = string_column(&existing_release, "status");
+            if status == "deleted" {
+                return Err(conflict_response(
+                    "The requested PyPI version has been deleted and cannot accept new uploads",
+                ));
+            }
+
+            Ok(UploadReleaseContext {
+                release_id: uuid_column(&existing_release, "id"),
+                status,
+                is_yanked: bool_column(&existing_release, "is_yanked"),
+                is_deprecated: bool_column(&existing_release, "is_deprecated"),
+                was_created: false,
+            })
+        }
+        Err(_) => Err(internal_error_response("Database error")),
+    }
+}
+
+async fn upload_artifact_for_release<S: PyPiAppState>(
+    state: &S,
+    release_id: Uuid,
+    upload: &LegacyUploadRequest,
+) -> Result<UploadedArtifactContext, Response> {
+    if let Some(existing_artifact) = sqlx::query(
+        "SELECT id, sha256 \
+         FROM artifacts \
+         WHERE release_id = $1 AND filename = $2",
+    )
+    .bind(release_id)
+    .bind(&upload.filename)
+    .fetch_optional(state.db())
+    .await
+    .map_err(|_| internal_error_response("Database error"))?
+    {
+        if string_column(&existing_artifact, "sha256") != upload.digests.sha256_hex.as_str() {
+            return Err(conflict_response(
+                "A file with the same name already exists for this PyPI version with different content",
+            ));
+        }
+
+        return Ok(UploadedArtifactContext {
+            artifact_id: uuid_column(&existing_artifact, "id"),
+            created: false,
+        });
+    }
+
+    let storage_key = format!(
+        "releases/{}/artifacts/{}/{}",
+        release_id, upload.digests.sha256_hex, upload.filename
+    );
+    state
+        .artifact_put(
+            storage_key.clone(),
+            upload.content_type.clone(),
+            upload.bytes.clone(),
+        )
+        .await
+        .map_err(|_| internal_error_response("Artifact storage error"))?;
+
+    let mut artifact = Artifact::new(
+        release_id,
+        upload.artifact_kind.clone(),
+        upload.filename.clone(),
+        storage_key.clone(),
+        upload.content_type.clone(),
+        i64::try_from(upload.bytes.len())
+            .map_err(|_| internal_error_response("The uploaded file is too large"))?,
+        upload.digests.sha256_hex.clone(),
+    );
+    artifact.sha512 = Some(upload.digests.sha512_hex.clone());
+
+    let insert_result = sqlx::query(
+        "INSERT INTO artifacts (id, release_id, kind, filename, storage_key, content_type, size_bytes, sha256, sha512, md5, is_signed, signature_key_id, uploaded_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, false, NULL, $11) \
+         ON CONFLICT (release_id, filename) DO NOTHING",
+    )
+    .bind(artifact.id)
+    .bind(release_id)
+    .bind(artifact.kind.clone())
+    .bind(&artifact.filename)
+    .bind(&artifact.storage_key)
+    .bind(&artifact.content_type)
+    .bind(artifact.size_bytes)
+    .bind(&artifact.sha256)
+    .bind(&artifact.sha512)
+    .bind(Some(upload.digests.md5_hex.clone()))
+    .bind(artifact.uploaded_at)
+    .execute(state.db())
+    .await
+    .map_err(|_| internal_error_response("Database error"))?;
+
+    if insert_result.rows_affected() == 0 {
+        let existing_artifact = sqlx::query(
+            "SELECT id, sha256 \
+             FROM artifacts \
+             WHERE release_id = $1 AND filename = $2",
+        )
+        .bind(release_id)
+        .bind(&upload.filename)
+        .fetch_optional(state.db())
+        .await
+        .map_err(|_| internal_error_response("Database error"))?
+        .ok_or_else(|| internal_error_response("Artifact creation raced but the artifact could not be reloaded"))?;
+
+        if string_column(&existing_artifact, "sha256") != upload.digests.sha256_hex.as_str() {
+            return Err(conflict_response(
+                "A file with the same name already exists for this PyPI version with different content",
+            ));
+        }
+
+        return Ok(UploadedArtifactContext {
+            artifact_id: uuid_column(&existing_artifact, "id"),
+            created: false,
+        });
+    }
+
+    Ok(UploadedArtifactContext {
+        artifact_id: artifact.id,
+        created: true,
+    })
+}
+
+async fn finalize_upload_release(
+    db: &PgPool,
+    release: &UploadReleaseContext,
+) -> Result<String, Response> {
+    let desired_status = desired_upload_release_status(release);
+    if release.status == desired_status {
+        return Ok(desired_status.to_owned());
+    }
+
+    if !matches!(release.status.as_str(), "quarantine" | "scanning") {
+        return Ok(release.status.clone());
+    }
+
+    sqlx::query(
+        "UPDATE releases \
+         SET status = $1, updated_at = NOW() \
+         WHERE id = $2",
+    )
+    .bind(desired_status)
+    .bind(release.release_id)
+    .execute(db)
+    .await
+    .map_err(|_| internal_error_response("Database error"))?;
+
+    Ok(desired_status.to_owned())
+}
+
+fn desired_upload_release_status(release: &UploadReleaseContext) -> &'static str {
+    if release.is_yanked {
+        "yanked"
+    } else if release.is_deprecated {
+        "deprecated"
+    } else {
+        "published"
+    }
+}
+
+async fn record_upload_audit(
+    db: &PgPool,
+    identity: &PyPiIdentity,
+    package_id: Uuid,
+    release_id: Uuid,
+    artifact_id: Uuid,
+    upload: &LegacyUploadRequest,
+    final_status: &str,
+    release_was_created: bool,
+) -> Result<(), Response> {
+    sqlx::query(
+        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_package_id, target_release_id, metadata, occurred_at) \
+         VALUES ($1, 'release_publish', $2, $3, $4, $5, $6, NOW())",
+    )
+    .bind(Uuid::new_v4())
+    .bind(identity.user_id)
+    .bind(identity.audit_actor_token_id())
+    .bind(package_id)
+    .bind(release_id)
+    .bind(serde_json::json!({
+        "ecosystem": "pypi",
+        "name": upload.package_name.as_str(),
+        "version": upload.version.as_str(),
+        "filename": upload.filename.as_str(),
+        "artifact_id": artifact_id,
+        "artifact_kind": match &upload.artifact_kind {
+            ArtifactKind::Wheel => "wheel",
+            ArtifactKind::Sdist => "sdist",
+            _ => "artifact",
+        },
+        "status": final_status,
+        "release_was_created": release_was_created,
+        "source": "pypi_legacy_upload",
+        "comment": upload.comment.as_deref(),
+        "sha256": upload.digests.sha256_hex.as_str(),
+    }))
+    .execute(db)
+    .await
+    .map_err(|_| internal_error_response("Database error"))?;
+
+    Ok(())
+}
+
+async fn touch_package_after_upload(db: &PgPool, package_id: Uuid) -> Result<(), Response> {
+    sqlx::query("UPDATE packages SET updated_at = NOW() WHERE id = $1")
+        .bind(package_id)
+        .execute(db)
+        .await
+        .map_err(|_| internal_error_response("Database error"))?;
+
+    Ok(())
+}
+
+fn upload_package_visibility(repository_visibility: &str) -> Visibility {
+    match repository_visibility {
+        "public" => Visibility::Public,
+        "unlisted" => Visibility::Unlisted,
+        "quarantined" => Visibility::Quarantined,
+        _ => Visibility::Private,
+    }
+}
+
+fn visibility_as_str(visibility: &Visibility) -> &'static str {
+    match visibility {
+        Visibility::Public => "public",
+        Visibility::Private => "private",
+        Visibility::InternalOrg => "internal_org",
+        Visibility::Unlisted => "unlisted",
+        Visibility::Quarantined => "quarantined",
+    }
+}
+
 fn header_value<'a>(headers: &'a HeaderMap, name: axum::http::header::HeaderName) -> Option<&'a str> {
     headers.get(name).and_then(|value| value.to_str().ok())
 }
@@ -679,6 +1447,18 @@ fn not_acceptable_response() -> Response {
     )
 }
 
+fn bad_request_response(message: &str) -> Response {
+    text_response(StatusCode::BAD_REQUEST, "text/plain; charset=utf-8", message)
+}
+
+fn forbidden_response(message: &str) -> Response {
+    text_response(StatusCode::FORBIDDEN, "text/plain; charset=utf-8", message)
+}
+
+fn conflict_response(message: &str) -> Response {
+    text_response(StatusCode::CONFLICT, "text/plain; charset=utf-8", message)
+}
+
 fn unauthorized_response(message: &str) -> Response {
     Response::builder()
         .status(StatusCode::UNAUTHORIZED)
@@ -704,6 +1484,23 @@ fn internal_error_response(message: &str) -> Response {
         "application/json",
         serde_json::json!({ "error": message }),
     )
+}
+
+fn legacy_upload_success_response<S: PyPiAppState>(state: &S, package_name: &str) -> Response {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(
+            LOCATION,
+            format!(
+                "{}{}/{}/",
+                trimmed_base_url(state),
+                "/pypi/simple".trim_end_matches('/'),
+                canonicalize_project_name(package_name),
+            ),
+        )
+        .header(CONTENT_TYPE, "text/plain; charset=utf-8")
+        .body(Body::from("OK"))
+        .unwrap_or_else(|_| internal_error_response("Failed to build upload response"))
 }
 
 fn json_response(status: StatusCode, content_type: &str, value: serde_json::Value) -> Response {

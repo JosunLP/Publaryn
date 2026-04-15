@@ -8,10 +8,21 @@ use sqlx::PgPool;
 use publaryn_adapter_pypi::routes::{PyPiAppState, StoredObject};
 
 use crate::state::AppState;
+use crate::storage::PutArtifactObject;
 
 impl PyPiAppState for AppState {
     fn db(&self) -> &PgPool {
         &self.db
+    }
+
+    async fn artifact_put(&self, key: String, content_type: String, bytes: Bytes) -> Result<(), Error> {
+        self.artifact_store
+            .put_object(PutArtifactObject {
+                storage_key: key,
+                content_type,
+                bytes,
+            })
+            .await
     }
 
     async fn artifact_get(&self, key: &str) -> Result<Option<StoredObject>, Error> {

@@ -20,7 +20,7 @@ resolver = "2"
 tokio = { version = "1", features = ["full"] }
 
 # HTTP
-axum = { version = "0.7", features = ["macros"] }
+axum = { version = "0.7", features = ["macros", "multipart"] }
 axum-extra = { version = "0.9", features = ["typed-header"] }
 tower = { version = "0.4" }
 tower-http = { version = "0.5", features = ["cors", "trace", "compression-gzip", "request-id", "timeout"] }
@@ -49,8 +49,10 @@ rand = "0.8"
 hmac = "0.12"
 sha2 = "0.10"
 base64 = "0.22"
+blake2 = "0.10"
 hex = "0.4"
 jsonwebtoken = "9"
+md-5 = "0.10"
 totp-rs = { version = "5", features = ["gen_secret"] }
 
 # Tracing / observability

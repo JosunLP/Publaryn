@@ -8,16 +8,16 @@ A self-hostable, security-first package registry platform that speaks the native
 
 ## Supported Ecosystems
 
-| Ecosystem    | Protocol                   | Status        |
-| ------------ | -------------------------- | ------------- |
-| npm / Bun    | npm Registry Protocol      | 🚧 In progress |
-| pip / PyPI   | Simple Index (PEP 503/691) | 🚧 In progress |
-| Rust Crates  | Cargo Sparse Index         | 🚧 In progress |
-| NuGet        | NuGet v3                   | 🚧 In progress |
-| Apache Maven | Maven2                     | 🚧 In progress |
-| RubyGems     | RubyGems / Compact Index   | 🚧 In progress |
-| Composer     | Composer Repository        | 🚧 In progress |
-| Containers   | OCI Distribution Spec      | 🚧 In progress |
+| Ecosystem    | Protocol                     | Status        |
+| ------------ | ---------------------------- | ------------- |
+| npm / Bun    | npm Registry Protocol        | 🚧 In progress |
+| pip / PyPI   | Simple Index + Legacy Upload | 🚧 In progress |
+| Rust Crates  | Cargo Sparse Index           | 🚧 In progress |
+| NuGet        | NuGet v3                     | 🚧 In progress |
+| Apache Maven | Maven2                       | 🚧 In progress |
+| RubyGems     | RubyGems / Compact Index     | 🚧 In progress |
+| Composer     | Composer Repository          | 🚧 In progress |
+| Containers   | OCI Distribution Spec        | 🚧 In progress |
 
 > **Note:** Bun uses the npm adapter — no separate protocol implementation is required.
 
@@ -277,6 +277,33 @@ Package and repository read endpoints enforce explicit visibility semantics.
 Control-plane package creation derives package ownership from the target repository instead of trusting caller-supplied owner fields.
 For the current slice, package names are also enforced as globally unique within an ecosystem so the existing `/v1/packages/:ecosystem/:name` control-plane paths remain unambiguous.
 If a matching namespace claim exists for an extracted namespace (currently npm/Bun scopes, Composer vendors, and Maven group IDs), the claim owner must match the repository owner.
+
+### Native protocol adapters
+
+#### PyPI / pip
+
+Publaryn currently exposes the following native PyPI-compatible routes:
+
+```http
+GET  /pypi/simple/
+GET  /pypi/simple/:project/
+GET  /pypi/files/:artifact_id/:filename
+POST /pypi/legacy/
+```
+
+The read surface supports the PEP 503/691 Simple API with HTML and JSON responses.
+
+The upload surface accepts Twine-compatible legacy uploads using `multipart/form-data` and a Publaryn credential:
+
+- Basic authentication with a Publaryn API token (for example username `__token__`, password `<pub_...>`)
+- Bearer JWTs or Bearer API tokens for non-Twine clients
+
+Current PyPI upload behavior:
+
+- the first uploaded file for a version auto-creates the release and publishes it once the artifact is durably stored
+- additional immutable files can be appended to the same published version to match PyPI's one-file-at-a-time upload flow
+- missing packages are auto-created in the publisher's first eligible user-owned repository, mirroring the current npm adapter ergonomics
+- organization-targeted auto-create, detached signatures, and upload attestations are intentionally deferred
 
 ### Search
 
