@@ -95,6 +95,8 @@ futures = "0.3"
 async-trait = "0.1"
 once_cell = "1"
 strsim = "0.11"
+quick-xml = "0.37"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 # Internal crates
 publaryn-core = { path = "crates/core" }
@@ -102,3 +104,5 @@ publaryn-auth = { path = "crates/auth" }
 publaryn-search = { path = "crates/search" }
 publaryn-adapter-npm = { path = "crates/adapters/npm" }
 publaryn-adapter-pypi = { path = "crates/adapters/pypi" }
+publaryn-adapter-cargo-registry = { path = "crates/adapters/cargo-registry" }
+publaryn-adapter-nuget = { path = "crates/adapters/nuget" }

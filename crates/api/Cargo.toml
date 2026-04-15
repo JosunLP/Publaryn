@@ -14,6 +14,8 @@ publaryn-auth = { workspace = true }
 publaryn-search = { workspace = true }
 publaryn-adapter-npm = { workspace = true }
 publaryn-adapter-pypi = { workspace = true }
+publaryn-adapter-cargo-registry = { workspace = true }
+publaryn-adapter-nuget = { workspace = true }
 
 tokio = { workspace = true }
 axum = { workspace = true }

@@ -3,7 +3,9 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 
 mod config;
 mod error;
+mod cargo_bridge;
 mod npm_bridge;
+mod nuget_bridge;
 mod pypi_bridge;
 mod request_auth;
 mod router;

@@ -41,6 +41,11 @@ pub fn build_router(state: AppState) -> Result<Router> {
         .nest("/npm", publaryn_adapter_npm::routes::router())
         // PyPI Simple API adapter
         .nest("/pypi", publaryn_adapter_pypi::routes::router())
+        // Cargo alternative registry adapter
+        .nest("/cargo/index", publaryn_adapter_cargo_registry::routes::index_router())
+        .nest("/cargo/api/v1", publaryn_adapter_cargo_registry::routes::api_router())
+        // NuGet V3 protocol adapter
+        .nest("/nuget", publaryn_adapter_nuget::routes::router())
         // Swagger UI
         .merge(routes::openapi::router())
         .with_state(state)
@@ -69,6 +74,7 @@ pub fn build_router(state: AppState) -> Result<Router> {
 
 fn build_cors_layer(state: &AppState) -> Result<CorsLayer> {
     let request_id_header = HeaderName::from_static("x-request-id");
+    let nuget_api_key_header = HeaderName::from_static("x-nuget-apikey");
     let allowed_origins = state.config.server.cors_allowed_origins()?;
 
     let cors_layer = CorsLayer::new()
@@ -86,6 +92,7 @@ fn build_cors_layer(state: &AppState) -> Result<CorsLayer> {
             AUTHORIZATION,
             CONTENT_TYPE,
             request_id_header.clone(),
+            nuget_api_key_header,
         ])
         .expose_headers([request_id_header]);
 

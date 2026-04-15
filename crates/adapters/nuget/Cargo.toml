@@ -6,7 +6,11 @@ description = "Publaryn ecosystem adapter: nuget"
 
 [dependencies]
 publaryn-core = { workspace = true }
+publaryn-auth = { workspace = true }
+publaryn-search = { workspace = true }
 tokio = { workspace = true }
+axum = { workspace = true }
+sqlx = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
@@ -18,3 +22,5 @@ tracing = { workspace = true }
 bytes = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
+quick-xml = { workspace = true }
+zip = { workspace = true }

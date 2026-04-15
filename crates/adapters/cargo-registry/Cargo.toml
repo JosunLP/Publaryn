@@ -1,12 +1,14 @@
 [package]
-name = "publaryn-adapter-cargo_registry"
+name = "publaryn-adapter-cargo-registry"
 version = "0.1.0"
 edition = "2021"
-description = "Publaryn ecosystem adapter: cargo-registry"
+description = "Publaryn ecosystem adapter: Cargo alternative registry (sparse index + Web API)"
 
 [dependencies]
 publaryn-core = { workspace = true }
+publaryn-auth = { workspace = true }
 tokio = { workspace = true }
+axum = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
@@ -18,3 +20,4 @@ tracing = { workspace = true }
 bytes = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
+sqlx = { workspace = true }
