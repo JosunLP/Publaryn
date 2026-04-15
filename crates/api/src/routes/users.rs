@@ -3,7 +3,7 @@ use axum::{
     routing::{get, patch},
     Json, Router,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use sqlx::Row;
 use uuid::Uuid;
 

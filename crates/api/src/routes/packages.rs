@@ -1,7 +1,7 @@
 use axum::{
     extract::{Path, State},
     http::StatusCode,
-    routing::{delete, get, patch, post, put},
+    routing::{delete, get, patch, put},
     Json, Router,
 };
 use serde::Deserialize;
@@ -10,7 +10,6 @@ use uuid::Uuid;
 
 use publaryn_core::{
     domain::{
-        namespace::Ecosystem,
         package::normalize_package_name,
     },
     error::Error,

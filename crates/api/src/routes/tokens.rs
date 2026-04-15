@@ -44,8 +44,6 @@ async fn create_token(
     let kind = body.kind.as_deref().unwrap_or("personal");
     let expires_at = body.expires_in_days.map(|d| Utc::now() + Duration::days(d as i64));
 
-    let scopes_str: Vec<&str> = body.scopes.iter().map(|s| s.as_str()).collect();
-
     sqlx::query(
         "INSERT INTO tokens (id, kind, prefix, token_hash, name, user_id, scopes, \
          expires_at, is_revoked, created_at) \

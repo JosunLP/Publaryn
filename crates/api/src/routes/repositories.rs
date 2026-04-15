@@ -66,6 +66,8 @@ async fn create_repository(
 
     let kind = parse_repository_kind(body.kind.as_deref().unwrap_or("public"))?;
     let visibility = parse_visibility(body.visibility.as_deref().unwrap_or("public"))?;
+    let kind_str = kind.as_str();
+    let visibility_str = visibility.as_str();
     let mut repository = Repository::new(body.name, body.slug, kind, visibility);
     repository.description = body.description;
     repository.owner_user_id = body.owner_user_id;
@@ -81,8 +83,8 @@ async fn create_repository(
     .bind(&repository.name)
     .bind(&repository.slug)
     .bind(&repository.description)
-    .bind(kind.as_str())
-    .bind(visibility.as_str())
+    .bind(kind_str)
+    .bind(visibility_str)
     .bind(repository.owner_user_id)
     .bind(repository.owner_org_id)
     .bind(&repository.upstream_url)
@@ -101,8 +103,8 @@ async fn create_repository(
         Json(serde_json::json!({
             "id": repository.id,
             "slug": repository.slug,
-            "kind": kind.as_str(),
-            "visibility": visibility.as_str(),
+            "kind": kind_str,
+            "visibility": visibility_str,
         })),
     ))
 }
