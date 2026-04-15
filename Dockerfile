@@ -27,5 +27,6 @@ COPY --from=builder /app/target/release/publaryn /usr/local/bin/publaryn
 COPY migrations/ migrations/
 
 EXPOSE 3000
+STOPSIGNAL SIGTERM
 
 CMD ["publaryn"]

@@ -296,6 +296,13 @@ GET /health
 GET /readiness
 ```
 
+`/health` is a liveness probe and returns `200 OK` while the process is running.
+`/readiness` is a readiness probe and returns `200 OK` only when the instance can reach PostgreSQL; it returns `503 Service Unavailable` otherwise so orchestrators can stop routing new traffic to that replica.
+
+The API server handles `SIGTERM` and `Ctrl+C` gracefully.
+During shutdown it stops accepting new work, lets in-flight requests drain within the orchestrator grace period, and then exits cleanly.
+This is the expected lifecycle for rolling updates and horizontal scale-down events.
+
 ---
 
 ## Security Features
