@@ -15,7 +15,62 @@ use crate::{
 };
 
 const ORG_ADMIN_ROLES: &[&str] = &["owner", "admin"];
-const PACKAGE_WRITE_ROLES: &[&str] = &["owner", "admin", "maintainer", "publisher"];
+const PACKAGE_METADATA_ROLES: &[&str] = &["owner", "admin", "maintainer"];
+const PACKAGE_PUBLISH_ROLES: &[&str] = &["owner", "admin", "maintainer", "publisher"];
+const PACKAGE_ADMIN_ROLES: &[&str] = &["owner", "admin"];
+const PACKAGE_MANAGEMENT_VISIBILITY_ROLES: &[&str] =
+    &["owner", "admin", "maintainer", "publisher"];
+
+const TEAM_PACKAGE_METADATA_PERMISSIONS: &[&str] = &["admin", "write_metadata"];
+const TEAM_PACKAGE_PUBLISH_PERMISSIONS: &[&str] = &["admin", "publish"];
+const TEAM_PACKAGE_ADMIN_PERMISSIONS: &[&str] = &["admin"];
+const TEAM_PACKAGE_TRANSFER_PERMISSIONS: &[&str] = &["admin", "transfer_ownership"];
+const TEAM_PACKAGE_MANAGEMENT_VISIBILITY_PERMISSIONS: &[&str] = &[
+    "admin",
+    "publish",
+    "write_metadata",
+    "security_review",
+    "transfer_ownership",
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PackageAccessRequirement {
+    MetadataWrite,
+    Publish,
+    Admin,
+    TransferOwnership,
+}
+
+impl PackageAccessRequirement {
+    fn org_roles(self) -> &'static [&'static str] {
+        match self {
+            Self::MetadataWrite => PACKAGE_METADATA_ROLES,
+            Self::Publish => PACKAGE_PUBLISH_ROLES,
+            Self::Admin => PACKAGE_ADMIN_ROLES,
+            Self::TransferOwnership => PACKAGE_ADMIN_ROLES,
+        }
+    }
+
+    fn team_permissions(self) -> &'static [&'static str] {
+        match self {
+            Self::MetadataWrite => TEAM_PACKAGE_METADATA_PERMISSIONS,
+            Self::Publish => TEAM_PACKAGE_PUBLISH_PERMISSIONS,
+            Self::Admin => TEAM_PACKAGE_ADMIN_PERMISSIONS,
+            Self::TransferOwnership => TEAM_PACKAGE_TRANSFER_PERMISSIONS,
+        }
+    }
+
+    fn denial_message(self) -> &'static str {
+        match self {
+            Self::MetadataWrite => "You do not have permission to update this package's metadata",
+            Self::Publish => "You do not have permission to publish or mutate releases for this package",
+            Self::Admin => "You do not have package administration permission",
+            Self::TransferOwnership => {
+                "You do not have permission to transfer ownership of this package"
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CredentialKind {
@@ -285,6 +340,126 @@ async fn actor_can_read_owned_resource(
     Ok(false)
 }
 
+async fn actor_has_any_team_package_access(
+    db: &PgPool,
+    package_id: Uuid,
+    actor_user_id: Uuid,
+) -> ApiResult<bool> {
+    sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (\
+             SELECT 1 \
+             FROM team_package_access tpa \
+             JOIN team_memberships tm ON tm.team_id = tpa.team_id \
+             JOIN teams t ON t.id = tpa.team_id \
+             JOIN packages p ON p.id = tpa.package_id \
+             WHERE tpa.package_id = $1 \
+               AND tm.user_id = $2 \
+               AND t.org_id = p.owner_org_id\
+         )",
+    )
+    .bind(package_id)
+    .bind(actor_user_id)
+    .fetch_one(db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))
+}
+
+async fn actor_has_team_package_permissions(
+    db: &PgPool,
+    package_id: Uuid,
+    actor_user_id: Uuid,
+    allowed_permissions: &[&str],
+) -> ApiResult<bool> {
+    let allowed_permissions = allowed_permissions
+        .iter()
+        .map(|permission| (*permission).to_owned())
+        .collect::<Vec<_>>();
+
+    sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (\
+             SELECT 1 \
+             FROM team_package_access tpa \
+             JOIN team_memberships tm ON tm.team_id = tpa.team_id \
+             JOIN teams t ON t.id = tpa.team_id \
+             JOIN packages p ON p.id = tpa.package_id \
+             WHERE tpa.package_id = $1 \
+               AND tm.user_id = $2 \
+               AND t.org_id = p.owner_org_id \
+               AND tpa.permission::text = ANY($3)\
+         )",
+    )
+    .bind(package_id)
+    .bind(actor_user_id)
+    .bind(&allowed_permissions)
+    .fetch_one(db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))
+}
+
+async fn fetch_package_ownership(
+    db: &PgPool,
+    ecosystem: &str,
+    normalized_name: &str,
+) -> ApiResult<(Uuid, Option<Uuid>, Option<Uuid>)> {
+    let row = sqlx::query(
+        "SELECT id, owner_user_id, owner_org_id \
+         FROM packages \
+         WHERE ecosystem = $1 AND normalized_name = $2",
+    )
+    .bind(ecosystem)
+    .bind(normalized_name)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?
+    .ok_or_else(|| {
+        ApiError(Error::NotFound(format!(
+            "Package '{normalized_name}' not found in ecosystem '{ecosystem}'"
+        )))
+    })?;
+
+    Ok((
+        row.try_get("id")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        row.try_get::<Option<Uuid>, _>("owner_user_id")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        row.try_get::<Option<Uuid>, _>("owner_org_id")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+    ))
+}
+
+async fn ensure_package_access_by_requirement(
+    db: &PgPool,
+    ecosystem: &str,
+    normalized_name: &str,
+    actor_user_id: Uuid,
+    requirement: PackageAccessRequirement,
+) -> ApiResult<Uuid> {
+    let (package_id, owner_user_id, owner_org_id) =
+        fetch_package_ownership(db, ecosystem, normalized_name).await?;
+
+    if owner_user_id == Some(actor_user_id) {
+        return Ok(package_id);
+    }
+
+    if let Some(owner_org_id) = owner_org_id {
+        if actor_has_org_roles(db, owner_org_id, actor_user_id, requirement.org_roles()).await?
+            || actor_has_team_package_permissions(
+                db,
+                package_id,
+                actor_user_id,
+                requirement.team_permissions(),
+            )
+            .await?
+        {
+            return Ok(package_id);
+        }
+    }
+
+    Err(ApiError(Error::Forbidden(
+        requirement.denial_message().into(),
+    )))
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct RepositoryReadAccess {
     pub repository_id: Uuid,
@@ -383,13 +558,19 @@ pub async fn ensure_package_read_access(
         .try_get::<Option<Uuid>, _>("repository_owner_org_id")
         .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
 
-    let can_read_package_non_public = actor_can_read_owned_resource(
+    let package_owner_read_access = actor_can_read_owned_resource(
         db,
         package_owner_user_id,
         package_owner_org_id,
         actor_user_id,
     )
     .await?;
+    let team_package_read_access = match actor_user_id {
+        Some(actor_user_id) if !package_owner_read_access => {
+            actor_has_any_team_package_access(db, package_id, actor_user_id).await?
+        }
+        _ => false,
+    };
     let can_read_repository_non_public = actor_can_read_owned_resource(
         db,
         repository_owner_user_id,
@@ -397,6 +578,8 @@ pub async fn ensure_package_read_access(
         actor_user_id,
     )
     .await?;
+
+    let can_read_package_non_public = package_owner_read_access || team_package_read_access;
 
     if !visibility_allows_read(&package_visibility, can_read_package_non_public)
         || !visibility_allows_read(&repository_visibility, can_read_repository_non_public)
@@ -490,51 +673,68 @@ pub async fn ensure_repository_write_access(
     )))
 }
 
-pub async fn ensure_package_write_access(
+pub async fn ensure_package_metadata_write_access(
     db: &PgPool,
     ecosystem: &str,
     normalized_name: &str,
     actor_user_id: Uuid,
 ) -> ApiResult<Uuid> {
-    let row = sqlx::query(
-        "SELECT id, owner_user_id, owner_org_id \
-         FROM packages \
-         WHERE ecosystem = $1 AND normalized_name = $2",
+    ensure_package_access_by_requirement(
+        db,
+        ecosystem,
+        normalized_name,
+        actor_user_id,
+        PackageAccessRequirement::MetadataWrite,
     )
-    .bind(ecosystem)
-    .bind(normalized_name)
-    .fetch_optional(db)
     .await
-    .map_err(|e| ApiError(Error::Database(e)))?
-    .ok_or_else(|| {
-        ApiError(Error::NotFound(format!(
-            "Package '{normalized_name}' not found in ecosystem '{ecosystem}'"
-        )))
-    })?;
+}
 
-    let package_id: Uuid = row
-        .try_get("id")
-        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
-    let owner_user_id = row
-        .try_get::<Option<Uuid>, _>("owner_user_id")
-        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
-    let owner_org_id = row
-        .try_get::<Option<Uuid>, _>("owner_org_id")
-        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+pub async fn ensure_package_publish_access(
+    db: &PgPool,
+    ecosystem: &str,
+    normalized_name: &str,
+    actor_user_id: Uuid,
+) -> ApiResult<Uuid> {
+    ensure_package_access_by_requirement(
+        db,
+        ecosystem,
+        normalized_name,
+        actor_user_id,
+        PackageAccessRequirement::Publish,
+    )
+    .await
+}
 
-    if owner_user_id == Some(actor_user_id) {
-        return Ok(package_id);
-    }
+pub async fn ensure_package_admin_access(
+    db: &PgPool,
+    ecosystem: &str,
+    normalized_name: &str,
+    actor_user_id: Uuid,
+) -> ApiResult<Uuid> {
+    ensure_package_access_by_requirement(
+        db,
+        ecosystem,
+        normalized_name,
+        actor_user_id,
+        PackageAccessRequirement::Admin,
+    )
+    .await
+}
 
-    if let Some(owner_org_id) = owner_org_id {
-        if actor_has_org_roles(db, owner_org_id, actor_user_id, PACKAGE_WRITE_ROLES).await? {
-            return Ok(package_id);
-        }
-    }
-
-    Err(ApiError(Error::Forbidden(
-        "You do not have permission to modify this package".into(),
-    )))
+pub async fn ensure_package_transfer_access(
+    db: &PgPool,
+    ecosystem: &str,
+    normalized_name: &str,
+    actor_user_id: Uuid,
+) -> ApiResult<Uuid> {
+    ensure_package_access_by_requirement(
+        db,
+        ecosystem,
+        normalized_name,
+        actor_user_id,
+        PackageAccessRequirement::TransferOwnership,
+    )
+    .await
 }
 
 pub async fn actor_can_write_package_by_id(
@@ -569,10 +769,25 @@ pub async fn actor_can_write_package_by_id(
     }
 
     if let Some(owner_org_id) = owner_org_id {
-        return actor_has_org_roles(db, owner_org_id, actor_user_id, PACKAGE_WRITE_ROLES).await;
+        if actor_has_org_roles(
+            db,
+            owner_org_id,
+            actor_user_id,
+            PACKAGE_MANAGEMENT_VISIBILITY_ROLES,
+        )
+        .await?
+        {
+            return Ok(true);
+        }
     }
 
-    Ok(false)
+    actor_has_team_package_permissions(
+        db,
+        package_id,
+        actor_user_id,
+        TEAM_PACKAGE_MANAGEMENT_VISIBILITY_PERMISSIONS,
+    )
+    .await
 }
 
 #[cfg(test)]

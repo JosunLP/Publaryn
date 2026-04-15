@@ -16,7 +16,7 @@ use publaryn_core::{
 use crate::{
     error::{ApiError, ApiResult},
     request_auth::{
-        ensure_package_read_access, ensure_package_write_access, AuthenticatedIdentity,
+        ensure_package_admin_access, ensure_package_read_access, AuthenticatedIdentity,
         OptionalAuthenticatedIdentity,
     },
     routes::parse_ecosystem,
@@ -101,7 +101,7 @@ async fn create_trusted_publisher(
 
     let ecosystem = parse_ecosystem(&ecosystem_str)?;
     let normalized_name = normalize_package_name(&name, &ecosystem);
-    let package_id = ensure_package_write_access(
+    let package_id = ensure_package_admin_access(
         &state.db,
         ecosystem.as_str(),
         &normalized_name,

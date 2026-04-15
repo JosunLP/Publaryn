@@ -31,9 +31,10 @@ use publaryn_search::{PackageDocument, SearchIndex};
 use crate::{
     error::{ApiError, ApiResult},
     request_auth::{
-        actor_can_write_package_by_id, ensure_package_read_access,
-        ensure_package_write_access, ensure_repository_write_access, AuthenticatedIdentity,
-        OptionalAuthenticatedIdentity,
+        actor_can_write_package_by_id, ensure_package_admin_access,
+        ensure_package_metadata_write_access, ensure_package_publish_access,
+        ensure_package_read_access, ensure_package_transfer_access,
+        ensure_repository_write_access, AuthenticatedIdentity, OptionalAuthenticatedIdentity,
     },
     routes::parse_ecosystem,
     scopes::{ensure_scope, SCOPE_PACKAGES_TRANSFER, SCOPE_PACKAGES_WRITE},
@@ -43,7 +44,6 @@ use crate::{
 
 const PACKAGE_CREATION_ALLOWED_REPOSITORY_KINDS: &[&str] =
     &["public", "private", "staging", "release"];
-const PACKAGE_TRANSFER_ORG_ADMIN_ROLES: &[&str] = &["owner", "admin"];
 const RELEASE_HISTORY_VISIBLE_STATUSES: &[&str] = &["published", "deprecated", "yanked"];
 const RELEASE_MANAGEMENT_VISIBLE_STATUSES: &[&str] =
     &["quarantine", "scanning", "published", "deprecated", "yanked"];
@@ -399,7 +399,8 @@ async fn update_package(
     let eco = parse_ecosystem(&ecosystem_str)?;
     let normalized = normalize_package_name(&name, &eco);
 
-    ensure_package_write_access(&state.db, eco.as_str(), &normalized, identity.user_id).await?;
+    ensure_package_metadata_write_access(&state.db, eco.as_str(), &normalized, identity.user_id)
+        .await?;
 
     sqlx::query(
         "UPDATE packages \
@@ -437,7 +438,7 @@ async fn delete_package(
     let eco = parse_ecosystem(&ecosystem_str)?;
     let normalized = normalize_package_name(&name, &eco);
     let package_id =
-        ensure_package_write_access(&state.db, eco.as_str(), &normalized, identity.user_id).await?;
+        ensure_package_admin_access(&state.db, eco.as_str(), &normalized, identity.user_id).await?;
 
     sqlx::query("UPDATE packages SET is_archived = true, updated_at = NOW() WHERE id = $1")
         .bind(package_id)
@@ -480,6 +481,9 @@ async fn transfer_package_ownership(
     let eco = parse_ecosystem(&ecosystem_str)?;
     let normalized = normalize_package_name(&name, &eco);
 
+    ensure_package_transfer_access(&state.db, eco.as_str(), &normalized, identity.user_id)
+        .await?;
+
     let mut tx = state
         .db
         .begin()
@@ -518,42 +522,6 @@ async fn transfer_package_ownership(
             .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
     )?;
 
-    let allowed_roles = PACKAGE_TRANSFER_ORG_ADMIN_ROLES
-        .iter()
-        .map(|role| (*role).to_owned())
-        .collect::<Vec<_>>();
-
-    match current_owner {
-        PackageOwner::User(owner_user_id) if owner_user_id == identity.user_id => {}
-        PackageOwner::User(_) => {
-            return Err(ApiError(Error::Forbidden(
-                "Transferring a user-owned package requires ownership by the authenticated user"
-                    .into(),
-            )));
-        }
-        PackageOwner::Organization(source_org_id) => {
-            let actor_controls_source = sqlx::query_scalar::<_, bool>(
-                "SELECT EXISTS (\
-                     SELECT 1 \
-                     FROM org_memberships \
-                     WHERE org_id = $1 AND user_id = $2 AND role::text = ANY($3)\
-                 )",
-            )
-            .bind(source_org_id)
-            .bind(identity.user_id)
-            .bind(&allowed_roles)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(|e| ApiError(Error::Database(e)))?;
-
-            if !actor_controls_source {
-                return Err(ApiError(Error::Forbidden(
-                    "Transferring an organization-owned package requires owner or admin membership in the owning organization".into(),
-                )));
-            }
-        }
-    }
-
     let target_org_row = sqlx::query(
         "SELECT id, slug, name \
          FROM organizations \
@@ -591,7 +559,7 @@ async fn transfer_package_ownership(
     )
     .bind(target_org.id)
     .bind(identity.user_id)
-    .bind(&allowed_roles)
+    .bind(&vec!["owner".to_owned(), "admin".to_owned()])
     .fetch_one(&mut *tx)
     .await
     .map_err(|e| ApiError(Error::Database(e)))?;
@@ -603,6 +571,22 @@ async fn transfer_package_ownership(
     }
 
     validate_package_transfer_target(&current_owner, target_org.id)?;
+
+    let revoked_team_grants: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::BIGINT \
+         FROM team_package_access \
+         WHERE package_id = $1",
+    )
+    .bind(package_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    sqlx::query("DELETE FROM team_package_access WHERE package_id = $1")
+        .bind(package_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
 
     sqlx::query(
         "UPDATE packages \
@@ -641,6 +625,7 @@ async fn transfer_package_ownership(
         "new_owner_org_id": target_org.id,
         "new_owner_org_slug": target_org.slug,
         "new_owner_org_name": target_org.name,
+        "revoked_team_grants": revoked_team_grants,
     }))
     .execute(&mut *tx)
     .await
@@ -678,7 +663,8 @@ async fn create_release(
     let eco = parse_ecosystem(&ecosystem_str)?;
     let normalized = normalize_package_name(&name, &eco);
     let package_id =
-        ensure_package_write_access(&state.db, eco.as_str(), &normalized, identity.user_id).await?;
+        ensure_package_publish_access(&state.db, eco.as_str(), &normalized, identity.user_id)
+            .await?;
 
     validation::validate_version(&body.version).map_err(ApiError::from)?;
 
@@ -840,7 +826,8 @@ async fn yank_release(
     let eco = parse_ecosystem(&ecosystem_str)?;
     let normalized = normalize_package_name(&name, &eco);
     let package_id =
-        ensure_package_write_access(&state.db, eco.as_str(), &normalized, identity.user_id).await?;
+        ensure_package_publish_access(&state.db, eco.as_str(), &normalized, identity.user_id)
+            .await?;
 
     let release_access = load_release_for_write(&state.db, package_id, &version).await?;
     ensure_release_allows_status_mutation(&release_access.status, "yanked")?;
@@ -895,7 +882,8 @@ async fn unyank_release(
     let eco = parse_ecosystem(&ecosystem_str)?;
     let normalized = normalize_package_name(&name, &eco);
     let package_id =
-        ensure_package_write_access(&state.db, eco.as_str(), &normalized, identity.user_id).await?;
+        ensure_package_publish_access(&state.db, eco.as_str(), &normalized, identity.user_id)
+            .await?;
 
     let release_row = sqlx::query(
         "SELECT id, is_yanked, is_deprecated \
@@ -983,7 +971,8 @@ async fn deprecate_release(
     let eco = parse_ecosystem(&ecosystem_str)?;
     let normalized = normalize_package_name(&name, &eco);
     let package_id =
-        ensure_package_write_access(&state.db, eco.as_str(), &normalized, identity.user_id).await?;
+        ensure_package_publish_access(&state.db, eco.as_str(), &normalized, identity.user_id)
+            .await?;
 
     let release_access = load_release_for_write(&state.db, package_id, &version).await?;
     ensure_release_allows_status_mutation(&release_access.status, "deprecated")?;
@@ -1081,7 +1070,8 @@ async fn upsert_tag(
     let eco = parse_ecosystem(&ecosystem_str)?;
     let normalized = normalize_package_name(&name, &eco);
     let pkg_id =
-        ensure_package_write_access(&state.db, eco.as_str(), &normalized, identity.user_id).await?;
+        ensure_package_publish_access(&state.db, eco.as_str(), &normalized, identity.user_id)
+            .await?;
 
     let rel_row = sqlx::query("SELECT id FROM releases WHERE package_id = $1 AND version = $2")
         .bind(pkg_id)
@@ -1133,7 +1123,8 @@ async fn publish_release(
     let eco = parse_ecosystem(&ecosystem_str)?;
     let normalized = normalize_package_name(&name, &eco);
     let package_id =
-        ensure_package_write_access(&state.db, eco.as_str(), &normalized, identity.user_id).await?;
+        ensure_package_publish_access(&state.db, eco.as_str(), &normalized, identity.user_id)
+            .await?;
 
     let mut tx = state
         .db
@@ -1316,7 +1307,8 @@ async fn upload_artifact(
     let eco = parse_ecosystem(&ecosystem_str)?;
     let normalized = normalize_package_name(&name, &eco);
     let package_id =
-        ensure_package_write_access(&state.db, eco.as_str(), &normalized, identity.user_id).await?;
+        ensure_package_publish_access(&state.db, eco.as_str(), &normalized, identity.user_id)
+            .await?;
     let release_access = load_release_for_write(&state.db, package_id, &version).await?;
     validate_artifact_filename(&filename)?;
 

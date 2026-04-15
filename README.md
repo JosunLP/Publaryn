@@ -197,11 +197,23 @@ POST   /v1/orgs/:slug/invitations
 DELETE /v1/orgs/:slug/invitations/:id
 GET    /v1/orgs/:slug/teams
 POST   /v1/orgs/:slug/teams
+PATCH  /v1/orgs/:slug/teams/:team_slug
+DELETE /v1/orgs/:slug/teams/:team_slug
+GET    /v1/orgs/:slug/teams/:team_slug/members
+POST   /v1/orgs/:slug/teams/:team_slug/members
+DELETE /v1/orgs/:slug/teams/:team_slug/members/:username
+GET    /v1/orgs/:slug/teams/:team_slug/package-access
+PUT    /v1/orgs/:slug/teams/:team_slug/package-access/:ecosystem/:name
+DELETE /v1/orgs/:slug/teams/:team_slug/package-access/:ecosystem/:name
 GET    /v1/orgs/:slug/packages
 GET    /v1/org-invitations
 POST   /v1/org-invitations/:id/accept
 POST   /v1/org-invitations/:id/decline
 ```
+
+Organization administrators can delegate package responsibilities to teams for organization-owned packages.
+Current package-scoped team permissions are `admin`, `publish`, `write_metadata`, `read_private`, `security_review`, and `transfer_ownership`.
+These grants are stored in PostgreSQL, enforced by the management API, and automatically cleared when package ownership moves to a different organization.
 
 ### Namespace Claims
 

@@ -1,17 +1,21 @@
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
-    routing::{delete, get, patch, post},
+    routing::{delete, get, patch, post, put},
     Json, Router,
 };
 use serde::Deserialize;
 use sqlx::Row;
+use std::collections::{BTreeSet, HashMap};
 use std::str::FromStr;
 use uuid::Uuid;
-use std::collections::HashMap;
 
 use publaryn_core::{
-    domain::organization::{OrgRole, Organization},
+    domain::{
+        organization::{OrgRole, Organization},
+        package::normalize_package_name,
+        team::TeamPermission,
+    },
     error::Error,
     validation,
 };
@@ -37,6 +41,24 @@ pub fn router() -> Router<AppState> {
         .route("/v1/orgs/:slug/ownership-transfer", post(transfer_ownership))
         .route("/v1/orgs/:slug/teams", get(list_teams))
         .route("/v1/orgs/:slug/teams", post(create_team))
+        .route("/v1/orgs/:slug/teams/:team_slug", patch(update_team))
+        .route("/v1/orgs/:slug/teams/:team_slug", delete(delete_team))
+        .route(
+            "/v1/orgs/:slug/teams/:team_slug/members",
+            get(list_team_members).post(add_team_member),
+        )
+        .route(
+            "/v1/orgs/:slug/teams/:team_slug/members/:username",
+            delete(remove_team_member),
+        )
+        .route(
+            "/v1/orgs/:slug/teams/:team_slug/package-access",
+            get(list_team_package_access),
+        )
+        .route(
+            "/v1/orgs/:slug/teams/:team_slug/package-access/:ecosystem/:name",
+            put(replace_team_package_access).delete(remove_team_package_access),
+        )
         .route("/v1/orgs/:slug/packages", get(list_org_packages))
 }
 
@@ -540,6 +562,39 @@ struct CreateTeamRequest {
     description: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct UpdateTeamRequest {
+    name: Option<String>,
+    description: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AddTeamMemberRequest {
+    username: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReplaceTeamPackageAccessRequest {
+    permissions: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct TeamRecord {
+    id: Uuid,
+    org_id: Uuid,
+    name: String,
+    slug: String,
+    description: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct TeamPackageAccessTarget {
+    id: Uuid,
+    ecosystem: String,
+    name: String,
+    normalized_name: String,
+}
+
 async fn create_team(
     State(state): State<AppState>,
     identity: AuthenticatedIdentity,
@@ -549,8 +604,20 @@ async fn create_team(
     ensure_scope(&identity, SCOPE_ORGS_WRITE)?;
     validation::validate_slug(&body.slug).map_err(ApiError::from)?;
 
+    if body.name.trim().is_empty() {
+        return Err(ApiError(Error::Validation(
+            "Team name must not be empty".into(),
+        )));
+    }
+
     let org_id = ensure_org_admin_by_slug(&state.db, &slug, identity.user_id).await?;
     let team_id = Uuid::new_v4();
+
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
 
     sqlx::query(
         "INSERT INTO teams (id, org_id, name, slug, description, created_at, updated_at) \
@@ -558,14 +625,594 @@ async fn create_team(
     )
     .bind(team_id)
     .bind(org_id)
-    .bind(&body.name)
+    .bind(body.name.trim())
     .bind(&body.slug)
     .bind(&body.description)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| match &e {
+        sqlx::Error::Database(db) if db.is_unique_violation() => {
+            ApiError(Error::AlreadyExists("Team slug already exists in this organization".into()))
+        }
+        _ => ApiError(Error::Database(e)),
+    })?;
+
+    sqlx::query(
+        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_org_id, metadata, occurred_at) \
+         VALUES ($1, 'team_create', $2, $3, $4, $5, NOW())",
+    )
+    .bind(Uuid::new_v4())
+    .bind(identity.user_id)
+    .bind(identity.audit_actor_token_id())
+    .bind(org_id)
+    .bind(serde_json::json!({
+        "team_id": team_id,
+        "team_slug": body.slug,
+        "team_name": body.name.trim(),
+        "description": body.description,
+    }))
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::json!({
+            "id": team_id,
+            "slug": body.slug,
+            "name": body.name.trim(),
+        })),
+    ))
+}
+
+async fn update_team(
+    State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
+    Path((slug, team_slug)): Path<(String, String)>,
+    Json(body): Json<UpdateTeamRequest>,
+) -> ApiResult<Json<serde_json::Value>> {
+    ensure_scope(&identity, SCOPE_ORGS_WRITE)?;
+
+    if body.name.is_none() && body.description.is_none() {
+        return Err(ApiError(Error::Validation(
+            "At least one team field must be provided".into(),
+        )));
+    }
+
+    if body
+        .name
+        .as_ref()
+        .is_some_and(|name| name.trim().is_empty())
+    {
+        return Err(ApiError(Error::Validation(
+            "Team name must not be empty".into(),
+        )));
+    }
+
+    let org_id = ensure_org_admin_by_slug(&state.db, &slug, identity.user_id).await?;
+    let team = load_team_record(&state.db, org_id, &team_slug).await?;
+    let updated_name = body.name.as_deref().map(str::trim);
+
+    sqlx::query(
+        "UPDATE teams \
+         SET name = COALESCE($1, name), \
+             description = COALESCE($2, description), \
+             updated_at = NOW() \
+         WHERE id = $3",
+    )
+    .bind(updated_name)
+    .bind(&body.description)
+    .bind(team.id)
     .execute(&state.db)
     .await
     .map_err(|e| ApiError(Error::Database(e)))?;
 
-    Ok((StatusCode::CREATED, Json(serde_json::json!({ "id": team_id, "slug": body.slug }))))
+    sqlx::query(
+        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_org_id, metadata, occurred_at) \
+         VALUES ($1, 'team_update', $2, $3, $4, $5, NOW())",
+    )
+    .bind(Uuid::new_v4())
+    .bind(identity.user_id)
+    .bind(identity.audit_actor_token_id())
+    .bind(org_id)
+    .bind(serde_json::json!({
+        "team_id": team.id,
+        "team_slug": team.slug,
+        "previous_name": team.name,
+        "previous_description": team.description,
+        "name": updated_name.unwrap_or(team.name.as_str()),
+        "description": body.description,
+    }))
+    .execute(&state.db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    Ok(Json(serde_json::json!({ "message": "Team updated" })))
+}
+
+async fn delete_team(
+    State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
+    Path((slug, team_slug)): Path<(String, String)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    ensure_scope(&identity, SCOPE_ORGS_WRITE)?;
+
+    let org_id = ensure_org_admin_by_slug(&state.db, &slug, identity.user_id).await?;
+    let team = load_team_record(&state.db, org_id, &team_slug).await?;
+
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let member_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::BIGINT FROM team_memberships WHERE team_id = $1",
+    )
+    .bind(team.id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let package_access_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::BIGINT FROM team_package_access WHERE team_id = $1",
+    )
+    .bind(team.id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    sqlx::query("DELETE FROM teams WHERE id = $1")
+        .bind(team.id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    sqlx::query(
+        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_org_id, metadata, occurred_at) \
+         VALUES ($1, 'team_delete', $2, $3, $4, $5, NOW())",
+    )
+    .bind(Uuid::new_v4())
+    .bind(identity.user_id)
+    .bind(identity.audit_actor_token_id())
+    .bind(org_id)
+    .bind(serde_json::json!({
+        "team_id": team.id,
+        "team_slug": team.slug,
+        "team_name": team.name,
+        "removed_member_count": member_count,
+        "removed_package_access_count": package_access_count,
+    }))
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    Ok(Json(serde_json::json!({ "message": "Team deleted" })))
+}
+
+async fn list_team_members(
+    State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
+    Path((slug, team_slug)): Path<(String, String)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    ensure_scope(&identity, SCOPE_ORGS_WRITE)?;
+
+    let org_id = ensure_org_admin_by_slug(&state.db, &slug, identity.user_id).await?;
+    let team = load_team_record(&state.db, org_id, &team_slug).await?;
+
+    let rows = sqlx::query(
+        "SELECT u.id, u.username, u.display_name, tm.added_at \
+         FROM team_memberships tm \
+         JOIN users u ON u.id = tm.user_id \
+         WHERE tm.team_id = $1 \
+         ORDER BY tm.added_at ASC",
+    )
+    .bind(team.id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let members = rows
+        .iter()
+        .map(|row| {
+            serde_json::json!({
+                "id": row.try_get::<Uuid, _>("id").ok(),
+                "username": row.try_get::<String, _>("username").ok(),
+                "display_name": row.try_get::<Option<String>, _>("display_name").ok().flatten(),
+                "added_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("added_at").ok(),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    Ok(Json(serde_json::json!({
+        "team": {
+            "id": team.id,
+            "slug": team.slug,
+            "name": team.name,
+        },
+        "members": members,
+    })))
+}
+
+async fn add_team_member(
+    State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
+    Path((slug, team_slug)): Path<(String, String)>,
+    Json(body): Json<AddTeamMemberRequest>,
+) -> ApiResult<(StatusCode, Json<serde_json::Value>)> {
+    ensure_scope(&identity, SCOPE_ORGS_WRITE)?;
+
+    let org_id = ensure_org_admin_by_slug(&state.db, &slug, identity.user_id).await?;
+    let team = load_team_record(&state.db, org_id, &team_slug).await?;
+
+    let user_row = sqlx::query(
+        "SELECT u.id, EXISTS (\
+             SELECT 1 \
+             FROM org_memberships om \
+             WHERE om.org_id = $1 AND om.user_id = u.id\
+         ) AS is_org_member \
+         FROM users u \
+         WHERE u.username = $2",
+    )
+    .bind(org_id)
+    .bind(&body.username)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?
+    .ok_or_else(|| ApiError(Error::NotFound(format!("User '{}' not found", body.username))))?;
+
+    let user_id: Uuid = user_row
+        .try_get("id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let is_org_member = user_row
+        .try_get::<bool, _>("is_org_member")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+
+    if !is_org_member {
+        return Err(ApiError(Error::Conflict(
+            "Team members must already belong to the organization".into(),
+        )));
+    }
+
+    let result = sqlx::query(
+        "INSERT INTO team_memberships (id, team_id, user_id, added_at) \
+         VALUES ($1, $2, $3, NOW()) \
+         ON CONFLICT (team_id, user_id) DO NOTHING",
+    )
+    .bind(Uuid::new_v4())
+    .bind(team.id)
+    .bind(user_id)
+    .execute(&state.db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    if result.rows_affected() == 0 {
+        return Ok((
+            StatusCode::OK,
+            Json(serde_json::json!({ "message": "Team member already present" })),
+        ));
+    }
+
+    sqlx::query(
+        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_user_id, target_org_id, metadata, occurred_at) \
+         VALUES ($1, 'team_member_add', $2, $3, $4, $5, $6, NOW())",
+    )
+    .bind(Uuid::new_v4())
+    .bind(identity.user_id)
+    .bind(identity.audit_actor_token_id())
+    .bind(user_id)
+    .bind(org_id)
+    .bind(serde_json::json!({
+        "team_id": team.id,
+        "team_slug": team.slug,
+        "team_name": team.name,
+        "username": body.username,
+    }))
+    .execute(&state.db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::json!({ "message": "Team member added" })),
+    ))
+}
+
+async fn remove_team_member(
+    State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
+    Path((slug, team_slug, username)): Path<(String, String, String)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    ensure_scope(&identity, SCOPE_ORGS_WRITE)?;
+
+    let org_id = ensure_org_admin_by_slug(&state.db, &slug, identity.user_id).await?;
+    let team = load_team_record(&state.db, org_id, &team_slug).await?;
+
+    let user_row = sqlx::query("SELECT id FROM users WHERE username = $1")
+        .bind(&username)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?
+        .ok_or_else(|| ApiError(Error::NotFound(format!("User '{username}' not found"))))?;
+
+    let user_id: Uuid = user_row
+        .try_get("id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+
+    let result = sqlx::query("DELETE FROM team_memberships WHERE team_id = $1 AND user_id = $2")
+        .bind(team.id)
+        .bind(user_id)
+        .execute(&state.db)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    if result.rows_affected() == 0 {
+        return Err(ApiError(Error::NotFound("Team membership not found".into())));
+    }
+
+    sqlx::query(
+        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_user_id, target_org_id, metadata, occurred_at) \
+         VALUES ($1, 'team_member_remove', $2, $3, $4, $5, $6, NOW())",
+    )
+    .bind(Uuid::new_v4())
+    .bind(identity.user_id)
+    .bind(identity.audit_actor_token_id())
+    .bind(user_id)
+    .bind(org_id)
+    .bind(serde_json::json!({
+        "team_id": team.id,
+        "team_slug": team.slug,
+        "team_name": team.name,
+        "username": username,
+    }))
+    .execute(&state.db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    Ok(Json(serde_json::json!({ "message": "Team member removed" })))
+}
+
+async fn list_team_package_access(
+    State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
+    Path((slug, team_slug)): Path<(String, String)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    ensure_scope(&identity, SCOPE_ORGS_WRITE)?;
+
+    let org_id = ensure_org_admin_by_slug(&state.db, &slug, identity.user_id).await?;
+    let team = load_team_record(&state.db, org_id, &team_slug).await?;
+
+    let rows = sqlx::query(
+        "SELECT p.id, p.name, p.normalized_name, p.ecosystem, \
+                ARRAY_AGG(tpa.permission::text ORDER BY tpa.permission::text) AS permissions, \
+                MAX(tpa.granted_at) AS granted_at \
+         FROM team_package_access tpa \
+         JOIN packages p ON p.id = tpa.package_id \
+         WHERE tpa.team_id = $1 AND p.owner_org_id = $2 \
+         GROUP BY p.id, p.name, p.normalized_name, p.ecosystem \
+         ORDER BY p.ecosystem ASC, p.name ASC",
+    )
+    .bind(team.id)
+    .bind(org_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let package_access = rows
+        .iter()
+        .map(|row| {
+            serde_json::json!({
+                "package_id": row.try_get::<Uuid, _>("id").ok(),
+                "name": row.try_get::<String, _>("name").ok(),
+                "normalized_name": row.try_get::<String, _>("normalized_name").ok(),
+                "ecosystem": row.try_get::<String, _>("ecosystem").ok(),
+                "permissions": row.try_get::<Vec<String>, _>("permissions").ok(),
+                "granted_at": row.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("granted_at").ok().flatten(),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    Ok(Json(serde_json::json!({
+        "team": {
+            "id": team.id,
+            "slug": team.slug,
+            "name": team.name,
+        },
+        "package_access": package_access,
+    })))
+}
+
+async fn replace_team_package_access(
+    State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
+    Path((slug, team_slug, ecosystem_str, name)): Path<(String, String, String, String)>,
+    Json(body): Json<ReplaceTeamPackageAccessRequest>,
+) -> ApiResult<Json<serde_json::Value>> {
+    ensure_scope(&identity, SCOPE_ORGS_WRITE)?;
+
+    let org_id = ensure_org_admin_by_slug(&state.db, &slug, identity.user_id).await?;
+    let team = load_team_record(&state.db, org_id, &team_slug).await?;
+    let ecosystem = crate::routes::parse_ecosystem(&ecosystem_str)?;
+    let package = load_org_owned_package_for_team_access(&state.db, org_id, &ecosystem, &name).await?;
+    let permissions = normalize_team_permissions(&body.permissions)?;
+    let permission_strings = team_permission_strings(&permissions);
+
+    let previous_permissions = sqlx::query(
+        "SELECT permission::text AS permission \
+         FROM team_package_access \
+         WHERE team_id = $1 AND package_id = $2 \
+         ORDER BY permission::text ASC",
+    )
+    .bind(team.id)
+    .bind(package.id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?
+    .into_iter()
+    .filter_map(|row| row.try_get::<String, _>("permission").ok())
+    .collect::<Vec<_>>();
+
+    if previous_permissions == permission_strings {
+        return Ok(Json(serde_json::json!({
+            "message": "Team package access unchanged",
+            "package": {
+                "id": package.id,
+                "ecosystem": package.ecosystem,
+                "name": package.name,
+                "normalized_name": package.normalized_name,
+            },
+            "permissions": permission_strings,
+        })));
+    }
+
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    sqlx::query("DELETE FROM team_package_access WHERE team_id = $1 AND package_id = $2")
+        .bind(team.id)
+        .bind(package.id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    for permission in &permissions {
+        sqlx::query(
+            "INSERT INTO team_package_access (id, team_id, package_id, permission, granted_at) \
+             VALUES ($1, $2, $3, $4, NOW())",
+        )
+        .bind(Uuid::new_v4())
+        .bind(team.id)
+        .bind(package.id)
+        .bind(permission)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+    }
+
+    sqlx::query(
+        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_org_id, target_package_id, metadata, occurred_at) \
+         VALUES ($1, 'team_package_access_update', $2, $3, $4, $5, $6, NOW())",
+    )
+    .bind(Uuid::new_v4())
+    .bind(identity.user_id)
+    .bind(identity.audit_actor_token_id())
+    .bind(team.org_id)
+    .bind(package.id)
+    .bind(serde_json::json!({
+        "team_id": team.id,
+        "team_slug": team.slug,
+        "team_name": team.name,
+        "ecosystem": package.ecosystem,
+        "package_name": package.name,
+        "package_normalized_name": package.normalized_name,
+        "previous_permissions": previous_permissions,
+        "permissions": permission_strings,
+    }))
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    Ok(Json(serde_json::json!({
+        "message": "Team package access updated",
+        "package": {
+            "id": package.id,
+            "ecosystem": package.ecosystem,
+            "name": package.name,
+            "normalized_name": package.normalized_name,
+        },
+        "permissions": permission_strings,
+    })))
+}
+
+async fn remove_team_package_access(
+    State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
+    Path((slug, team_slug, ecosystem_str, name)): Path<(String, String, String, String)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    ensure_scope(&identity, SCOPE_ORGS_WRITE)?;
+
+    let org_id = ensure_org_admin_by_slug(&state.db, &slug, identity.user_id).await?;
+    let team = load_team_record(&state.db, org_id, &team_slug).await?;
+    let ecosystem = crate::routes::parse_ecosystem(&ecosystem_str)?;
+    let package = load_org_owned_package_for_team_access(&state.db, org_id, &ecosystem, &name).await?;
+
+    let previous_permissions = sqlx::query(
+        "SELECT permission::text AS permission \
+         FROM team_package_access \
+         WHERE team_id = $1 AND package_id = $2 \
+         ORDER BY permission::text ASC",
+    )
+    .bind(team.id)
+    .bind(package.id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?
+    .into_iter()
+    .filter_map(|row| row.try_get::<String, _>("permission").ok())
+    .collect::<Vec<_>>();
+
+    if previous_permissions.is_empty() {
+        return Err(ApiError(Error::NotFound(
+            "Team package access not found".into(),
+        )));
+    }
+
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    sqlx::query("DELETE FROM team_package_access WHERE team_id = $1 AND package_id = $2")
+        .bind(team.id)
+        .bind(package.id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    sqlx::query(
+        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_org_id, target_package_id, metadata, occurred_at) \
+         VALUES ($1, 'team_package_access_update', $2, $3, $4, $5, $6, NOW())",
+    )
+    .bind(Uuid::new_v4())
+    .bind(identity.user_id)
+    .bind(identity.audit_actor_token_id())
+    .bind(team.org_id)
+    .bind(package.id)
+    .bind(serde_json::json!({
+        "team_id": team.id,
+        "team_slug": team.slug,
+        "team_name": team.name,
+        "ecosystem": package.ecosystem,
+        "package_name": package.name,
+        "package_normalized_name": package.normalized_name,
+        "previous_permissions": previous_permissions,
+        "permissions": Vec::<String>::new(),
+    }))
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    Ok(Json(serde_json::json!({ "message": "Team package access removed" })))
 }
 
 async fn list_org_packages(
@@ -626,13 +1273,124 @@ async fn list_org_packages(
     Ok(Json(serde_json::json!({ "packages": packages })))
 }
 
+async fn load_team_record(db: &sqlx::PgPool, org_id: Uuid, team_slug: &str) -> ApiResult<TeamRecord> {
+    let row = sqlx::query(
+        "SELECT id, org_id, name, slug, description \
+         FROM teams \
+         WHERE org_id = $1 AND slug = $2",
+    )
+    .bind(org_id)
+    .bind(team_slug)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?
+    .ok_or_else(|| ApiError(Error::NotFound(format!("Team '{}' not found", team_slug))))?;
+
+    Ok(TeamRecord {
+        id: row
+            .try_get("id")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        org_id: row
+            .try_get("org_id")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        name: row
+            .try_get("name")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        slug: row
+            .try_get("slug")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        description: row
+            .try_get::<Option<String>, _>("description")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+    })
+}
+
+async fn load_org_owned_package_for_team_access(
+    db: &sqlx::PgPool,
+    org_id: Uuid,
+    ecosystem: &publaryn_core::domain::namespace::Ecosystem,
+    package_name: &str,
+) -> ApiResult<TeamPackageAccessTarget> {
+    let normalized_name = normalize_package_name(package_name, ecosystem);
+    let row = sqlx::query(
+        "SELECT id, ecosystem, name, normalized_name, owner_org_id \
+         FROM packages \
+         WHERE ecosystem = $1 AND normalized_name = $2",
+    )
+    .bind(ecosystem.as_str())
+    .bind(&normalized_name)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?
+    .ok_or_else(|| {
+        ApiError(Error::NotFound(format!(
+            "Package '{}' not found in ecosystem '{}'",
+            package_name,
+            ecosystem.as_str()
+        )))
+    })?;
+
+    let owner_org_id = row
+        .try_get::<Option<Uuid>, _>("owner_org_id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+
+    if owner_org_id != Some(org_id) {
+        return Err(ApiError(Error::Forbidden(
+            "Teams can only be granted access to packages owned by the same organization".into(),
+        )));
+    }
+
+    Ok(TeamPackageAccessTarget {
+        id: row
+            .try_get("id")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        ecosystem: row
+            .try_get("ecosystem")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        name: row
+            .try_get("name")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        normalized_name: row
+            .try_get("normalized_name")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+    })
+}
+
+fn normalize_team_permissions(input: &[String]) -> ApiResult<Vec<TeamPermission>> {
+    if input.is_empty() {
+        return Err(ApiError(Error::Validation(
+            "At least one team permission is required".into(),
+        )));
+    }
+
+    let mut seen = BTreeSet::new();
+    let mut normalized = Vec::new();
+
+    for raw_permission in input {
+        let permission = TeamPermission::from_str(raw_permission).map_err(ApiError::from)?;
+        if seen.insert(permission.as_str()) {
+            normalized.push(permission);
+        }
+    }
+
+    normalized.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+    Ok(normalized)
+}
+
+fn team_permission_strings(permissions: &[TeamPermission]) -> Vec<String> {
+    permissions
+        .iter()
+        .map(|permission| permission.as_str().to_owned())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use uuid::Uuid;
 
-    use publaryn_core::domain::organization::OrgRole;
+    use publaryn_core::domain::{organization::OrgRole, team::TeamPermission};
 
-    use super::validate_ownership_transfer;
+    use super::{normalize_team_permissions, validate_ownership_transfer};
 
     #[test]
     fn ownership_transfer_requires_current_owner() {
@@ -687,5 +1445,39 @@ mod tests {
             &OrgRole::Admin,
         )
         .expect("owner should be able to transfer to an existing non-owner member");
+    }
+
+    #[test]
+    fn normalize_team_permissions_sorts_and_deduplicates() {
+        let permissions = normalize_team_permissions(&[
+            "publish".to_owned(),
+            "admin".to_owned(),
+            "publish".to_owned(),
+        ])
+        .expect("permissions should normalize");
+
+        assert_eq!(permissions, vec![TeamPermission::Admin, TeamPermission::Publish]);
+    }
+
+    #[test]
+    fn normalize_team_permissions_rejects_empty_inputs() {
+        let error = normalize_team_permissions(&[])
+            .expect_err("empty permission lists must be rejected");
+
+        assert_eq!(
+            error.0.to_string(),
+            "Validation error: At least one team permission is required"
+        );
+    }
+
+    #[test]
+    fn normalize_team_permissions_rejects_unknown_values() {
+        let error = normalize_team_permissions(&["superpowers".to_owned()])
+            .expect_err("unknown permissions must be rejected");
+
+        assert_eq!(
+            error.0.to_string(),
+            "Validation error: Unknown team permission: superpowers"
+        );
     }
 }
