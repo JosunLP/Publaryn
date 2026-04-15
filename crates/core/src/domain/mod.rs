@@ -9,6 +9,7 @@ pub mod repository;
 pub mod security_finding;
 pub mod team;
 pub mod token;
+pub mod trusted_publisher;
 pub mod user;
 
 pub use artifact::{Artifact, ArtifactKind};
@@ -22,4 +23,5 @@ pub use repository::{Repository, RepositoryKind, Visibility};
 pub use security_finding::{SecurityFinding, SecuritySeverity};
 pub use team::Team;
 pub use token::{Token, TokenKind, TokenScope};
+pub use trusted_publisher::TrustedPublisher;
 pub use user::User;

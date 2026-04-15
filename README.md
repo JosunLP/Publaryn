@@ -156,6 +156,23 @@ POST   /v1/orgs/:slug/teams
 GET    /v1/orgs/:slug/packages
 ```
 
+### Namespace Claims
+
+```http
+GET    /v1/namespaces
+POST   /v1/namespaces
+GET    /v1/namespaces/lookup?ecosystem=<eco>&namespace=<claim>
+```
+
+### Repositories
+
+```http
+POST   /v1/repositories
+GET    /v1/repositories/:slug
+PATCH  /v1/repositories/:slug
+GET    /v1/repositories/:slug/packages
+```
+
 ### Packages & Releases
 
 ```http
@@ -168,6 +185,9 @@ PUT    /v1/packages/:ecosystem/:name/releases/:version/yank
 PUT    /v1/packages/:ecosystem/:name/releases/:version/deprecate
 GET    /v1/packages/:ecosystem/:name/tags
 PUT    /v1/packages/:ecosystem/:name/tags/:tag
+GET    /v1/packages/:ecosystem/:name/security-findings
+GET    /v1/packages/:ecosystem/:name/trusted-publishers
+POST   /v1/packages/:ecosystem/:name/trusted-publishers
 ```
 
 ### Search
@@ -182,6 +202,12 @@ GET /v1/search?q=<query>&ecosystem=<eco>&page=1&per_page=20
 POST   /v1/tokens
 GET    /v1/tokens
 DELETE /v1/tokens/:id
+```
+
+### Audit
+
+```http
+GET /v1/audit
 ```
 
 ### Health
