@@ -1,11 +1,16 @@
 use publaryn_core::{
     domain::{
         namespace::Ecosystem,
+        organization::OrgRole,
+        organization_invitation::{OrganizationInvitation, OrganizationInvitationStatus},
         package::normalize_package_name,
     },
     policy::{check_name_policy, is_reserved_name, name_similarity, PolicyViolation},
     validation::{validate_email, validate_package_name, validate_slug, validate_username},
 };
+use chrono::{Duration, Utc};
+use std::str::FromStr;
+use uuid::Uuid;
 
 // ── normalize_package_name ─────────────────────────────────────────────────
 
@@ -204,4 +209,79 @@ fn test_ecosystem_display() {
 #[test]
 fn test_bun_uses_npm_protocol() {
     assert_eq!(Ecosystem::Bun.protocol_family(), "npm");
+}
+
+// ── Organization roles and invitations ─────────────────────────────────────
+
+#[test]
+fn test_org_role_parses_from_supported_strings() {
+    assert_eq!(OrgRole::from_str("admin").unwrap(), OrgRole::Admin);
+    assert_eq!(OrgRole::from_str("security-manager").unwrap(), OrgRole::SecurityManager);
+    assert_eq!(OrgRole::from_str("billing_manager").unwrap(), OrgRole::BillingManager);
+}
+
+#[test]
+fn test_org_role_unknown_value_is_rejected() {
+    assert!(OrgRole::from_str("supreme-overlord").is_err());
+}
+
+#[test]
+fn test_org_invitation_new_requires_future_expiry() {
+    let result = OrganizationInvitation::new(
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        OrgRole::Viewer,
+        Uuid::new_v4(),
+        Utc::now() - Duration::minutes(1),
+    );
+
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_org_invitation_status_pending() {
+    let invitation = OrganizationInvitation::new(
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        OrgRole::Viewer,
+        Uuid::new_v4(),
+        Utc::now() + Duration::days(3),
+    )
+    .unwrap();
+
+    assert_eq!(invitation.status_at(Utc::now()), OrganizationInvitationStatus::Pending);
+    assert!(invitation.is_actionable_at(Utc::now()));
+}
+
+#[test]
+fn test_org_invitation_status_expired() {
+    let mut invitation = OrganizationInvitation::new(
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        OrgRole::Viewer,
+        Uuid::new_v4(),
+        Utc::now() + Duration::minutes(5),
+    )
+    .unwrap();
+    invitation.expires_at = Utc::now() - Duration::minutes(1);
+
+    assert_eq!(invitation.status_at(Utc::now()), OrganizationInvitationStatus::Expired);
+    assert!(!invitation.is_actionable_at(Utc::now()));
+}
+
+#[test]
+fn test_org_invitation_status_accepted() {
+    let mut invitation = OrganizationInvitation::new(
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        OrgRole::Viewer,
+        Uuid::new_v4(),
+        Utc::now() + Duration::days(1),
+    )
+    .unwrap();
+    invitation.accepted_at = Some(Utc::now());
+    invitation.accepted_by = Some(Uuid::new_v4());
+
+    assert_eq!(invitation.status_at(Utc::now()), OrganizationInvitationStatus::Accepted);
+    assert!(!invitation.is_actionable_at(Utc::now()));
 }

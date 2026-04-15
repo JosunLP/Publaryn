@@ -9,6 +9,7 @@ pub mod health;
 pub mod namespaces;
 pub mod openapi;
 pub mod orgs;
+pub mod org_invitations;
 pub mod packages;
 pub mod repositories;
 pub mod search;

@@ -148,19 +148,28 @@ For example, user-owned namespaces and repositories are created for the authenti
 
 Initial control-plane scopes:
 
-| Scope                | Purpose                                                      |
-| -------------------- | ------------------------------------------------------------ |
-| `profile:write`      | Update the authenticated user's profile                      |
-| `tokens:read`        | List the authenticated user's API tokens                     |
-| `tokens:write`       | Create and revoke API tokens                                 |
-| `orgs:write`         | Create organizations and mutate organization governance data |
-| `namespaces:write`   | Create namespace claims                                      |
-| `repositories:write` | Create and update repositories                               |
-| `packages:write`     | Update packages, releases, tags, and trusted publishers      |
-| `audit:read`         | Read the platform audit log (platform administrators only)   |
+| Scope                | Purpose                                                        |
+| -------------------- | -------------------------------------------------------------- |
+| `profile:write`      | Update the authenticated user's profile                        |
+| `tokens:read`        | List the authenticated user's API tokens                       |
+| `tokens:write`       | Create and revoke API tokens                                   |
+| `orgs:write`         | Create organizations and mutate organization governance data   |
+| `orgs:join`          | Review, accept, and decline invitations for the current user   |
+| `orgs:transfer`      | Transfer organization ownership to another active member       |
+| `namespaces:write`   | Create namespace claims                                        |
+| `repositories:write` | Create and update repositories                                 |
+| `packages:write`     | Update packages, releases, tags, and trusted publishers        |
+| `packages:transfer`  | Transfer package ownership into an organization you administer |
+| `audit:read`         | Read the platform audit log (platform administrators only)     |
 
 JWT login sessions receive a default interactive scope set for standard self-service control-plane actions.
 Opaque API tokens must request one or more supported scopes, and unsupported scope strings are rejected.
+
+The first invitation slice supports invitations for existing active user accounts. Invited users discover pending invitations through authenticated control-plane endpoints and can accept or decline them in product.
+
+The first ownership-transfer slice allows a current organization owner to hand off their owner role to another existing active member. The transfer is applied atomically, the initiating owner is demoted to `admin`, and the action is written to the audit log.
+
+The first package-transfer slice allows a package owner to move a package into an organization they already administer. This supports personal-to-organization handoff and organization-to-organization transfer when the authenticated actor controls both sides. Direct transfer to another user account is intentionally deferred until an acceptance-based flow exists.
 
 ### Users
 
@@ -179,9 +188,16 @@ PATCH  /v1/orgs/:slug
 GET    /v1/orgs/:slug/members
 POST   /v1/orgs/:slug/members
 DELETE /v1/orgs/:slug/members/:username
+POST   /v1/orgs/:slug/ownership-transfer
+GET    /v1/orgs/:slug/invitations
+POST   /v1/orgs/:slug/invitations
+DELETE /v1/orgs/:slug/invitations/:id
 GET    /v1/orgs/:slug/teams
 POST   /v1/orgs/:slug/teams
 GET    /v1/orgs/:slug/packages
+GET    /v1/org-invitations
+POST   /v1/org-invitations/:id/accept
+POST   /v1/org-invitations/:id/decline
 ```
 
 ### Namespace Claims
@@ -207,9 +223,11 @@ GET    /v1/repositories/:slug/packages
 GET    /v1/packages/:ecosystem/:name
 PATCH  /v1/packages/:ecosystem/:name
 DELETE /v1/packages/:ecosystem/:name
+POST   /v1/packages/:ecosystem/:name/ownership-transfer
 GET    /v1/packages/:ecosystem/:name/releases
 GET    /v1/packages/:ecosystem/:name/releases/:version
 PUT    /v1/packages/:ecosystem/:name/releases/:version/yank
+PUT    /v1/packages/:ecosystem/:name/releases/:version/unyank
 PUT    /v1/packages/:ecosystem/:name/releases/:version/deprecate
 GET    /v1/packages/:ecosystem/:name/tags
 PUT    /v1/packages/:ecosystem/:name/tags/:tag
@@ -217,6 +235,8 @@ GET    /v1/packages/:ecosystem/:name/security-findings
 GET    /v1/packages/:ecosystem/:name/trusted-publishers
 POST   /v1/packages/:ecosystem/:name/trusted-publishers
 ```
+
+Release history responses include published, deprecated, and yanked versions so maintainers and consumers can inspect full version state. Yanked releases can be restored with the dedicated unyank endpoint.
 
 ### Search
 

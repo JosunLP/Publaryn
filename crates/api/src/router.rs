@@ -23,6 +23,7 @@ pub fn build_router(state: AppState) -> Router {
         .merge(routes::namespaces::router())
         .merge(routes::users::router())
         .merge(routes::orgs::router())
+        .merge(routes::org_invitations::router())
         .merge(routes::repositories::router())
         .merge(routes::packages::router())
         .merge(routes::search::router())

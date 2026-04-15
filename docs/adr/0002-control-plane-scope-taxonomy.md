@@ -25,9 +25,12 @@ The initial supported scopes are:
 - `tokens:read`
 - `tokens:write`
 - `orgs:write`
+- `orgs:join`
+- `orgs:transfer`
 - `namespaces:write`
 - `repositories:write`
 - `packages:write`
+- `packages:transfer`
 - `audit:read`
 
 JWT login sessions receive a default interactive scope set that covers standard self-service control-plane actions.
@@ -39,6 +42,12 @@ Requested scopes are normalized, deduplicated, and validated against the support
 `audit:read` is treated as an administrator-only scope.
 Audit log access also requires the authenticated user to be a platform administrator.
 This keeps full-system audit visibility from becoming a multi-tenant data leak.
+
+`orgs:transfer` is reserved for dedicated organization ownership transfer flows.
+Separating it from `orgs:write` allows automation and personal API tokens to omit top-level governance handoff privileges unless they are explicitly needed.
+
+`packages:transfer` is reserved for dedicated package ownership transfer flows.
+Separating it from `packages:write` keeps day-to-day release and metadata maintenance distinct from durable ownership handoff.
 
 The first enforcement pass applies scopes only to sensitive control-plane operations.
 Public read endpoints remain unchanged unless they are explicitly security-sensitive.

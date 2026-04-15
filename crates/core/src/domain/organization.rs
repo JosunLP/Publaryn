@@ -1,7 +1,10 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
+use std::str::FromStr;
 use uuid::Uuid;
+
+use crate::error::Error;
 
 /// Role a user can hold within an organization.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
@@ -15,6 +18,43 @@ pub enum OrgRole {
     Auditor,
     BillingManager,
     Viewer,
+}
+
+impl OrgRole {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Owner => "owner",
+            Self::Admin => "admin",
+            Self::Maintainer => "maintainer",
+            Self::Publisher => "publisher",
+            Self::SecurityManager => "security_manager",
+            Self::Auditor => "auditor",
+            Self::BillingManager => "billing_manager",
+            Self::Viewer => "viewer",
+        }
+    }
+
+    pub fn is_owner(&self) -> bool {
+        matches!(self, Self::Owner)
+    }
+}
+
+impl FromStr for OrgRole {
+    type Err = Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_lowercase().as_str() {
+            "owner" => Ok(Self::Owner),
+            "admin" => Ok(Self::Admin),
+            "maintainer" => Ok(Self::Maintainer),
+            "publisher" => Ok(Self::Publisher),
+            "security_manager" | "security-manager" => Ok(Self::SecurityManager),
+            "auditor" => Ok(Self::Auditor),
+            "billing_manager" | "billing-manager" => Ok(Self::BillingManager),
+            "viewer" => Ok(Self::Viewer),
+            other => Err(Error::Validation(format!("Unknown organization role: {other}"))),
+        }
+    }
 }
 
 /// An organization that groups users, teams, and packages.

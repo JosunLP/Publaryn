@@ -1,7 +1,7 @@
 use axum::{
     extract::{Path, State},
     http::StatusCode,
-    routing::{delete, get, patch, put},
+    routing::{delete, get, patch, post, put},
     Json, Router,
 };
 use serde::Deserialize;
@@ -13,27 +13,52 @@ use publaryn_core::{
         package::normalize_package_name,
     },
     error::Error,
+    validation,
 };
 
 use crate::{
     error::{ApiError, ApiResult},
     request_auth::{ensure_package_write_access, AuthenticatedIdentity},
     routes::parse_ecosystem,
-    scopes::{ensure_scope, SCOPE_PACKAGES_WRITE},
+    scopes::{ensure_scope, SCOPE_PACKAGES_TRANSFER, SCOPE_PACKAGES_WRITE},
     state::AppState,
 };
+
+const PACKAGE_TRANSFER_ORG_ADMIN_ROLES: &[&str] = &["owner", "admin"];
+const RELEASE_HISTORY_VISIBLE_STATUSES: &[&str] = &["published", "deprecated", "yanked"];
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/packages/:ecosystem/:name", get(get_package))
         .route("/v1/packages/:ecosystem/:name", patch(update_package))
         .route("/v1/packages/:ecosystem/:name", delete(delete_package))
+        .route(
+            "/v1/packages/:ecosystem/:name/ownership-transfer",
+            post(transfer_package_ownership),
+        )
         .route("/v1/packages/:ecosystem/:name/releases", get(list_releases))
         .route("/v1/packages/:ecosystem/:name/releases/:version", get(get_release))
         .route("/v1/packages/:ecosystem/:name/releases/:version/yank", put(yank_release))
+        .route(
+            "/v1/packages/:ecosystem/:name/releases/:version/unyank",
+            put(unyank_release),
+        )
         .route("/v1/packages/:ecosystem/:name/releases/:version/deprecate", put(deprecate_release))
         .route("/v1/packages/:ecosystem/:name/tags", get(list_tags))
         .route("/v1/packages/:ecosystem/:name/tags/:tag", put(upsert_tag))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PackageOwner {
+    User(Uuid),
+    Organization(Uuid),
+}
+
+#[derive(Debug, Clone)]
+struct TargetOrganization {
+    id: Uuid,
+    slug: String,
+    name: String,
 }
 
 async fn get_package(
@@ -86,6 +111,11 @@ struct UpdatePackageRequest {
     license: Option<String>,
     keywords: Option<Vec<String>>,
     readme: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TransferPackageOwnershipRequest {
+    target_org_slug: String,
 }
 
 async fn update_package(
@@ -165,6 +195,205 @@ async fn delete_package(
     Ok((StatusCode::OK, Json(serde_json::json!({ "message": "Package archived" }))))
 }
 
+async fn transfer_package_ownership(
+    State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
+    Path((ecosystem_str, name)): Path<(String, String)>,
+    Json(body): Json<TransferPackageOwnershipRequest>,
+) -> ApiResult<Json<serde_json::Value>> {
+    ensure_scope(&identity, SCOPE_PACKAGES_TRANSFER)?;
+    validation::validate_slug(&body.target_org_slug).map_err(ApiError::from)?;
+
+    let eco = parse_ecosystem(&ecosystem_str)?;
+    let normalized = normalize_package_name(&name, &eco);
+
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let package_row = sqlx::query(
+        "SELECT id, name, owner_user_id, owner_org_id \
+         FROM packages \
+         WHERE ecosystem = $1 AND normalized_name = $2 \
+         FOR UPDATE",
+    )
+    .bind(eco.as_str())
+    .bind(&normalized)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?
+    .ok_or_else(|| {
+        ApiError(Error::NotFound(format!(
+            "Package '{name}' not found in ecosystem '{ecosystem_str}'"
+        )))
+    })?;
+
+    let package_id: Uuid = package_row
+        .try_get("id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let package_name: String = package_row
+        .try_get("name")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let current_owner = package_owner_from_fields(
+        package_row
+            .try_get::<Option<Uuid>, _>("owner_user_id")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        package_row
+            .try_get::<Option<Uuid>, _>("owner_org_id")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+    )?;
+
+    let allowed_roles = PACKAGE_TRANSFER_ORG_ADMIN_ROLES
+        .iter()
+        .map(|role| (*role).to_owned())
+        .collect::<Vec<_>>();
+
+    match current_owner {
+        PackageOwner::User(owner_user_id) if owner_user_id == identity.user_id => {}
+        PackageOwner::User(_) => {
+            return Err(ApiError(Error::Forbidden(
+                "Transferring a user-owned package requires ownership by the authenticated user"
+                    .into(),
+            )));
+        }
+        PackageOwner::Organization(source_org_id) => {
+            let actor_controls_source = sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS (\
+                     SELECT 1 \
+                     FROM org_memberships \
+                     WHERE org_id = $1 AND user_id = $2 AND role::text = ANY($3)\
+                 )",
+            )
+            .bind(source_org_id)
+            .bind(identity.user_id)
+            .bind(&allowed_roles)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| ApiError(Error::Database(e)))?;
+
+            if !actor_controls_source {
+                return Err(ApiError(Error::Forbidden(
+                    "Transferring an organization-owned package requires owner or admin membership in the owning organization".into(),
+                )));
+            }
+        }
+    }
+
+    let target_org_row = sqlx::query(
+        "SELECT id, slug, name \
+         FROM organizations \
+         WHERE slug = $1",
+    )
+    .bind(&body.target_org_slug)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?
+    .ok_or_else(|| {
+        ApiError(Error::NotFound(format!(
+            "Organization '{}' not found",
+            body.target_org_slug
+        )))
+    })?;
+
+    let target_org = TargetOrganization {
+        id: target_org_row
+            .try_get("id")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        slug: target_org_row
+            .try_get("slug")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        name: target_org_row
+            .try_get("name")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+    };
+
+    let actor_controls_target = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (\
+             SELECT 1 \
+             FROM org_memberships \
+             WHERE org_id = $1 AND user_id = $2 AND role::text = ANY($3)\
+         )",
+    )
+    .bind(target_org.id)
+    .bind(identity.user_id)
+    .bind(&allowed_roles)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    if !actor_controls_target {
+        return Err(ApiError(Error::Forbidden(
+            "Transferring a package into an organization requires owner or admin membership in the target organization".into(),
+        )));
+    }
+
+    validate_package_transfer_target(&current_owner, target_org.id)?;
+
+    sqlx::query(
+        "UPDATE packages \
+         SET owner_user_id = NULL, \
+             owner_org_id = $1, \
+             updated_at = NOW() \
+         WHERE id = $2",
+    )
+    .bind(target_org.id)
+    .bind(package_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let (previous_owner_type, previous_owner_user_id, previous_owner_org_id) = match current_owner {
+        PackageOwner::User(user_id) => ("user", Some(user_id), None),
+        PackageOwner::Organization(org_id) => ("organization", None, Some(org_id)),
+    };
+
+    sqlx::query(
+        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_package_id, metadata, occurred_at) \
+         VALUES ($1, 'package_transfer', $2, $3, $4, $5, NOW())",
+    )
+    .bind(Uuid::new_v4())
+    .bind(identity.user_id)
+    .bind(identity.audit_actor_token_id())
+    .bind(package_id)
+    .bind(serde_json::json!({
+        "ecosystem": eco.as_str(),
+        "name": package_name,
+        "normalized_name": normalized,
+        "previous_owner_type": previous_owner_type,
+        "previous_owner_user_id": previous_owner_user_id,
+        "previous_owner_org_id": previous_owner_org_id,
+        "new_owner_type": "organization",
+        "new_owner_org_id": target_org.id,
+        "new_owner_org_slug": target_org.slug,
+        "new_owner_org_name": target_org.name,
+    }))
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    Ok(Json(serde_json::json!({
+        "message": "Package ownership transferred",
+        "package": {
+            "id": package_id,
+            "ecosystem": eco.as_str(),
+            "name": package_name,
+            "normalized_name": normalized,
+        },
+        "owner": {
+            "type": "organization",
+            "id": target_org.id,
+            "slug": target_org.slug,
+            "name": target_org.name,
+        },
+    })))
+}
+
 async fn list_releases(
     State(state): State<AppState>,
     Path((ecosystem_str, name)): Path<(String, String)>,
@@ -184,13 +413,16 @@ async fn list_releases(
 
     let pkg_id: Uuid = pkg_row.try_get("id").map_err(|e| ApiError(Error::Internal(e.to_string())))?;
 
+        let visible_statuses = release_history_visible_statuses();
+
     let rows = sqlx::query(
         "SELECT version, status, is_yanked, is_deprecated, is_prerelease, published_at \
          FROM releases \
-         WHERE package_id = $1 AND status = 'published' \
+            WHERE package_id = $1 AND status::text = ANY($2) \
          ORDER BY published_at DESC",
     )
     .bind(pkg_id)
+        .bind(&visible_statuses)
     .fetch_all(&state.db)
     .await
     .map_err(|e| ApiError(Error::Database(e)))?;
@@ -309,6 +541,88 @@ async fn yank_release(
     .map_err(|e| ApiError(Error::Database(e)))?;
 
     Ok(Json(serde_json::json!({ "message": "Release yanked" })))
+}
+
+async fn unyank_release(
+    State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
+    Path((ecosystem_str, name, version)): Path<(String, String, String)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    ensure_scope(&identity, SCOPE_PACKAGES_WRITE)?;
+
+    let eco = parse_ecosystem(&ecosystem_str)?;
+    let normalized = normalize_package_name(&name, &eco);
+    let package_id =
+        ensure_package_write_access(&state.db, eco.as_str(), &normalized, identity.user_id).await?;
+
+    let release_row = sqlx::query(
+        "SELECT id, is_yanked, is_deprecated \
+         FROM releases \
+         WHERE package_id = $1 AND version = $2",
+    )
+    .bind(package_id)
+    .bind(&version)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?
+    .ok_or_else(|| ApiError(Error::NotFound(format!("Release '{version}' not found"))))?;
+
+    let release_id: Uuid = release_row
+        .try_get("id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let is_yanked = release_row
+        .try_get::<bool, _>("is_yanked")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let is_deprecated = release_row
+        .try_get::<bool, _>("is_deprecated")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+
+    if !is_yanked {
+        return Err(ApiError(Error::Conflict(format!(
+            "Release '{version}' is not yanked"
+        ))));
+    }
+
+    let restored_status = release_status_after_unyank(is_deprecated);
+
+    sqlx::query(
+        "UPDATE releases \
+         SET is_yanked = false, \
+             yank_reason = NULL, \
+             status = $1, \
+             updated_at = NOW() \
+         WHERE id = $2",
+    )
+    .bind(restored_status)
+    .bind(release_id)
+    .execute(&state.db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    sqlx::query(
+        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_package_id, target_release_id, metadata, occurred_at) \
+         VALUES ($1, 'release_unyank', $2, $3, $4, $5, $6, NOW())",
+    )
+    .bind(Uuid::new_v4())
+    .bind(identity.user_id)
+    .bind(identity.audit_actor_token_id())
+    .bind(package_id)
+    .bind(release_id)
+    .bind(serde_json::json!({
+        "ecosystem": eco.as_str(),
+        "name": normalized,
+        "version": version,
+        "restored_status": restored_status,
+    }))
+    .execute(&state.db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    Ok(Json(serde_json::json!({
+        "message": "Release restored",
+        "version": version,
+        "status": restored_status,
+    })))
 }
 
 #[derive(Debug, Deserialize)]
@@ -452,4 +766,121 @@ async fn upsert_tag(
         "tag": tag,
         "version": body.version,
     })))
+}
+
+fn package_owner_from_fields(
+    owner_user_id: Option<Uuid>,
+    owner_org_id: Option<Uuid>,
+) -> ApiResult<PackageOwner> {
+    match (owner_user_id, owner_org_id) {
+        (Some(user_id), None) => Ok(PackageOwner::User(user_id)),
+        (None, Some(org_id)) => Ok(PackageOwner::Organization(org_id)),
+        (None, None) => Err(ApiError(Error::Internal(
+            "Package owner is not set".into(),
+        ))),
+        (Some(_), Some(_)) => Err(ApiError(Error::Internal(
+            "Package owner state is invalid".into(),
+        ))),
+    }
+}
+
+fn release_history_visible_statuses() -> Vec<String> {
+    RELEASE_HISTORY_VISIBLE_STATUSES
+        .iter()
+        .map(|status| (*status).to_owned())
+        .collect()
+}
+
+fn release_status_after_unyank(is_deprecated: bool) -> &'static str {
+    if is_deprecated {
+        "deprecated"
+    } else {
+        "published"
+    }
+}
+
+fn validate_package_transfer_target(current_owner: &PackageOwner, target_org_id: Uuid) -> ApiResult<()> {
+    if matches!(current_owner, PackageOwner::Organization(current_org_id) if *current_org_id == target_org_id)
+    {
+        return Err(ApiError(Error::Conflict(
+            "The selected organization already owns this package".into(),
+        )));
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use uuid::Uuid;
+
+    use super::{
+        package_owner_from_fields, release_history_visible_statuses, release_status_after_unyank,
+        validate_package_transfer_target, PackageOwner,
+    };
+
+    #[test]
+    fn package_owner_from_fields_accepts_user_owner() {
+        let owner = package_owner_from_fields(Some(Uuid::new_v4()), None)
+            .expect("user-owned packages should parse");
+
+        assert!(matches!(owner, PackageOwner::User(_)));
+    }
+
+    #[test]
+    fn package_owner_from_fields_rejects_missing_owner() {
+        let error = package_owner_from_fields(None, None)
+            .expect_err("packages without an owner should be rejected");
+
+        assert_eq!(error.0.to_string(), "Internal error: Package owner is not set");
+    }
+
+    #[test]
+    fn package_owner_from_fields_rejects_invalid_double_owner_state() {
+        let error = package_owner_from_fields(Some(Uuid::new_v4()), Some(Uuid::new_v4()))
+            .expect_err("packages must not have both a user owner and an org owner");
+
+        assert_eq!(
+            error.0.to_string(),
+            "Internal error: Package owner state is invalid"
+        );
+    }
+
+    #[test]
+    fn package_transfer_rejects_same_target_org() {
+        let org_id = Uuid::new_v4();
+        let error = validate_package_transfer_target(&PackageOwner::Organization(org_id), org_id)
+            .expect_err("package transfer should reject the current owning organization");
+
+        assert_eq!(
+            error.0.to_string(),
+            "Conflict: The selected organization already owns this package"
+        );
+    }
+
+    #[test]
+    fn package_transfer_allows_user_owned_package_to_org() {
+        validate_package_transfer_target(&PackageOwner::User(Uuid::new_v4()), Uuid::new_v4())
+            .expect("user-owned packages should be transferable to a new organization");
+    }
+
+    #[test]
+    fn release_history_visible_statuses_include_yanked_and_deprecated() {
+        let statuses = release_history_visible_statuses();
+
+        assert!(statuses.contains(&"published".to_owned()));
+        assert!(statuses.contains(&"deprecated".to_owned()));
+        assert!(statuses.contains(&"yanked".to_owned()));
+        assert!(!statuses.contains(&"deleted".to_owned()));
+    }
+
+    #[test]
+    fn release_status_after_unyank_restores_published_for_normal_release() {
+        assert_eq!(release_status_after_unyank(false), "published");
+    }
+
+    #[test]
+    fn release_status_after_unyank_restores_deprecated_for_deprecated_release() {
+        assert_eq!(release_status_after_unyank(true), "deprecated");
+    }
 }

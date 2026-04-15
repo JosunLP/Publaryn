@@ -6,11 +6,12 @@ use axum::{
 };
 use serde::Deserialize;
 use sqlx::Row;
+use std::str::FromStr;
 use uuid::Uuid;
 use std::collections::HashMap;
 
 use publaryn_core::{
-    domain::organization::Organization,
+    domain::organization::{OrgRole, Organization},
     error::Error,
     validation,
 };
@@ -18,7 +19,7 @@ use publaryn_core::{
 use crate::{
     error::{ApiError, ApiResult},
     request_auth::{ensure_org_admin_by_slug, AuthenticatedIdentity},
-    scopes::{ensure_scope, SCOPE_ORGS_WRITE},
+    scopes::{ensure_scope, SCOPE_ORGS_TRANSFER, SCOPE_ORGS_WRITE},
     state::AppState,
 };
 
@@ -30,6 +31,7 @@ pub fn router() -> Router<AppState> {
         .route("/v1/orgs/:slug/members", get(list_members))
         .route("/v1/orgs/:slug/members", post(add_member))
         .route("/v1/orgs/:slug/members/:username", delete(remove_member))
+        .route("/v1/orgs/:slug/ownership-transfer", post(transfer_ownership))
         .route("/v1/orgs/:slug/teams", get(list_teams))
         .route("/v1/orgs/:slug/teams", post(create_team))
         .route("/v1/orgs/:slug/packages", get(list_org_packages))
@@ -211,6 +213,11 @@ struct AddMemberRequest {
     role: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct TransferOwnershipRequest {
+    username: String,
+}
+
 async fn add_member(
     State(state): State<AppState>,
     identity: AuthenticatedIdentity,
@@ -219,6 +226,13 @@ async fn add_member(
 ) -> ApiResult<(StatusCode, Json<serde_json::Value>)> {
     ensure_scope(&identity, SCOPE_ORGS_WRITE)?;
     let org_id = ensure_org_admin_by_slug(&state.db, &slug, identity.user_id).await?;
+    let role = OrgRole::from_str(&body.role).map_err(ApiError::from)?;
+
+    if role.is_owner() {
+        return Err(ApiError(Error::Validation(
+            "Owner assignment is not supported through member management; use a dedicated ownership transfer flow".into(),
+        )));
+    }
 
     let user_row = sqlx::query("SELECT id FROM users WHERE username = $1")
         .bind(&body.username)
@@ -238,7 +252,7 @@ async fn add_member(
     .bind(Uuid::new_v4())
     .bind(org_id)
     .bind(user_id)
-    .bind(&body.role)
+    .bind(role.as_str())
         .bind(identity.user_id)
     .execute(&state.db)
     .await
@@ -266,6 +280,24 @@ async fn remove_member(
         .try_get("id")
         .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
 
+    let membership_row = sqlx::query("SELECT role::text AS role FROM org_memberships WHERE org_id = $1 AND user_id = $2")
+        .bind(org_id)
+        .bind(user_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?
+        .ok_or_else(|| ApiError(Error::NotFound("Membership not found".into())))?;
+
+    let role: String = membership_row
+        .try_get("role")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+
+    if OrgRole::from_str(&role).map_err(ApiError::from)?.is_owner() {
+        return Err(ApiError(Error::Forbidden(
+            "Owner membership cannot be removed through this endpoint".into(),
+        )));
+    }
+
     let result = sqlx::query("DELETE FROM org_memberships WHERE org_id = $1 AND user_id = $2")
     .bind(org_id)
     .bind(user_id)
@@ -278,6 +310,192 @@ async fn remove_member(
     }
 
     Ok(Json(serde_json::json!({ "message": "Member removed" })))
+}
+
+async fn transfer_ownership(
+    State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
+    Path(slug): Path<String>,
+    Json(body): Json<TransferOwnershipRequest>,
+) -> ApiResult<Json<serde_json::Value>> {
+    ensure_scope(&identity, SCOPE_ORGS_TRANSFER)?;
+
+    let target_username = body.username.trim();
+    if target_username.is_empty() {
+        return Err(ApiError(Error::Validation(
+            "Ownership transfer target must not be empty".into(),
+        )));
+    }
+
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let org_row = sqlx::query(
+        "SELECT id, name \
+         FROM organizations \
+         WHERE slug = $1",
+    )
+    .bind(&slug)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?
+    .ok_or_else(|| ApiError(Error::NotFound(format!("Organization '{slug}' not found"))))?;
+
+    let org_id: Uuid = org_row
+        .try_get("id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let org_name: String = org_row
+        .try_get("name")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+
+    let actor_membership_row = sqlx::query(
+        "SELECT role::text AS role \
+         FROM org_memberships \
+         WHERE org_id = $1 AND user_id = $2 \
+         FOR UPDATE",
+    )
+    .bind(org_id)
+    .bind(identity.user_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?
+    .ok_or_else(|| {
+        ApiError(Error::Forbidden(
+            "Transferring organization ownership requires an owner membership".into(),
+        ))
+    })?;
+
+    let actor_role = actor_membership_row
+        .try_get::<String, _>("role")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let actor_role = OrgRole::from_str(&actor_role).map_err(ApiError::from)?;
+
+    let target_membership_row = sqlx::query(
+        "SELECT om.user_id, om.role::text AS role, u.username \
+         FROM org_memberships om \
+         JOIN users u ON u.id = om.user_id \
+         WHERE om.org_id = $1 AND u.username = $2 AND u.is_active = true \
+         FOR UPDATE OF om",
+    )
+    .bind(org_id)
+    .bind(target_username)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?
+    .ok_or_else(|| {
+        ApiError(Error::NotFound(
+            "The target user must already be an active organization member".into(),
+        ))
+    })?;
+
+    let target_user_id: Uuid = target_membership_row
+        .try_get("user_id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let target_username: String = target_membership_row
+        .try_get("username")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let target_role = target_membership_row
+        .try_get::<String, _>("role")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let target_role = OrgRole::from_str(&target_role).map_err(ApiError::from)?;
+
+    validate_ownership_transfer(identity.user_id, &actor_role, target_user_id, &target_role)?;
+
+    sqlx::query(
+        "UPDATE org_memberships \
+         SET role = 'owner' \
+         WHERE org_id = $1 AND user_id = $2",
+    )
+    .bind(org_id)
+    .bind(target_user_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    sqlx::query(
+        "UPDATE org_memberships \
+         SET role = 'admin' \
+         WHERE org_id = $1 AND user_id = $2",
+    )
+    .bind(org_id)
+    .bind(identity.user_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    sqlx::query(
+        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_user_id, target_org_id, metadata, occurred_at) \
+         VALUES ($1, 'org_ownership_transfer', $2, $3, $4, $5, $6, NOW())",
+    )
+    .bind(Uuid::new_v4())
+    .bind(identity.user_id)
+    .bind(identity.audit_actor_token_id())
+    .bind(target_user_id)
+    .bind(org_id)
+    .bind(serde_json::json!({
+        "org_slug": slug,
+        "org_name": org_name,
+        "former_owner_user_id": identity.user_id,
+        "former_owner_new_role": OrgRole::Admin.as_str(),
+        "new_owner_user_id": target_user_id,
+        "new_owner_username": target_username,
+        "new_owner_previous_role": target_role.as_str(),
+    }))
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    Ok(Json(serde_json::json!({
+        "message": "Organization ownership transferred",
+        "org": {
+            "id": org_id,
+            "slug": slug,
+            "name": org_name,
+        },
+        "previous_owner": {
+            "id": identity.user_id,
+            "new_role": OrgRole::Admin.as_str(),
+        },
+        "new_owner": {
+            "id": target_user_id,
+            "username": target_username,
+            "role": OrgRole::Owner.as_str(),
+        },
+    })))
+}
+
+fn validate_ownership_transfer(
+    actor_user_id: Uuid,
+    actor_role: &OrgRole,
+    target_user_id: Uuid,
+    target_role: &OrgRole,
+) -> ApiResult<()> {
+    if !actor_role.is_owner() {
+        return Err(ApiError(Error::Forbidden(
+            "Transferring organization ownership requires an owner membership".into(),
+        )));
+    }
+
+    if actor_user_id == target_user_id {
+        return Err(ApiError(Error::Validation(
+            "Ownership transfer target must be a different organization member".into(),
+        )));
+    }
+
+    if target_role.is_owner() {
+        return Err(ApiError(Error::Conflict(
+            "The selected member is already an organization owner".into(),
+        )));
+    }
+
+    Ok(())
 }
 
 async fn list_teams(
@@ -386,4 +604,68 @@ async fn list_org_packages(
         .collect();
 
     Ok(Json(serde_json::json!({ "packages": packages })))
+}
+
+#[cfg(test)]
+mod tests {
+    use uuid::Uuid;
+
+    use publaryn_core::domain::organization::OrgRole;
+
+    use super::validate_ownership_transfer;
+
+    #[test]
+    fn ownership_transfer_requires_current_owner() {
+        let error = validate_ownership_transfer(
+            Uuid::new_v4(),
+            &OrgRole::Admin,
+            Uuid::new_v4(),
+            &OrgRole::Viewer,
+        )
+        .expect_err("non-owners must not transfer ownership");
+
+        assert_eq!(
+            error.0.to_string(),
+            "Forbidden: Transferring organization ownership requires an owner membership"
+        );
+    }
+
+    #[test]
+    fn ownership_transfer_rejects_self_transfer() {
+        let actor_id = Uuid::new_v4();
+        let error = validate_ownership_transfer(actor_id, &OrgRole::Owner, actor_id, &OrgRole::Owner)
+            .expect_err("self-transfer must be rejected");
+
+        assert_eq!(
+            error.0.to_string(),
+            "Validation error: Ownership transfer target must be a different organization member"
+        );
+    }
+
+    #[test]
+    fn ownership_transfer_rejects_existing_owner_target() {
+        let error = validate_ownership_transfer(
+            Uuid::new_v4(),
+            &OrgRole::Owner,
+            Uuid::new_v4(),
+            &OrgRole::Owner,
+        )
+        .expect_err("transferring to another owner should fail");
+
+        assert_eq!(
+            error.0.to_string(),
+            "Conflict: The selected member is already an organization owner"
+        );
+    }
+
+    #[test]
+    fn ownership_transfer_accepts_non_owner_target() {
+        validate_ownership_transfer(
+            Uuid::new_v4(),
+            &OrgRole::Owner,
+            Uuid::new_v4(),
+            &OrgRole::Admin,
+        )
+        .expect("owner should be able to transfer to an existing non-owner member");
+    }
 }
