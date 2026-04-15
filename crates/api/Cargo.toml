@@ -12,6 +12,7 @@ path = "src/main.rs"
 publaryn-core = { workspace = true }
 publaryn-auth = { workspace = true }
 publaryn-search = { workspace = true }
+publaryn-adapter-npm = { workspace = true }
 
 tokio = { workspace = true }
 axum = { workspace = true }

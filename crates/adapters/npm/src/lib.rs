@@ -1,19 +1,25 @@
-use async_trait::async_trait;
-use publaryn_core::error::Result;
+//! # npm Registry Protocol Adapter
+//!
+//! Implements the npm registry HTTP protocol as understood by the npm CLI,
+//! Yarn, pnpm, and Bun. These handlers translate native npm wire-format
+//! requests into operations on the shared Publaryn domain model (PostgreSQL
+//! metadata + S3 artifact storage) and respond with npm-compatible JSON.
+//!
+//! ## Mounted endpoints
+//!
+//! All routes are relative to the mount prefix (e.g. `/npm`):
+//!
+//! | Method | Path | Description |
+//! |--------|------|-------------|
+//! | `GET`  | `/:package` | Package metadata (packument) |
+//! | `PUT`  | `/:package` | Publish a new version |
+//! | `GET`  | `/:package/-/:filename` | Download tarball |
+//! | `GET`  | `-/v1/search` | Search packages |
+//! | `GET`  | `-/package/:package/dist-tags` | List dist-tags |
+//! | `PUT`  | `-/package/:package/dist-tags/:tag` | Set dist-tag |
+//! | `DELETE` | `-/package/:package/dist-tags/:tag` | Remove dist-tag |
 
-/// Common trait for all ecosystem protocol adapters.
-///
-/// Each adapter translates native registry wire protocol requests into
-/// calls on the shared domain model (stored in PostgreSQL) and responds
-/// using the ecosystem-specific format.
-#[async_trait]
-pub trait EcosystemAdapter: Send + Sync {
-    /// Human-readable name of the ecosystem.
-    fn ecosystem_name(&self) -> &'static str;
-
-    /// Validate a raw package name according to ecosystem rules.
-    fn validate_name(&self, name: &str) -> Result<()>;
-
-    /// Normalize a package name for storage (de-duplication key).
-    fn normalize_name(&self, name: &str) -> String;
-}
+pub mod metadata;
+pub mod name;
+pub mod publish;
+pub mod routes;
