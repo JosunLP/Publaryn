@@ -16,7 +16,7 @@ The initial ecosystems are:
 - pip
 - Rust Crates
 
-The platform is built around a Rust-based backend as the registry and domain core, combined with a modern web interface powered by bQuery. The goal is to match at least the functional baseline of established hosting and registry services such as npmjs.org, PyPI, RubyGems.org, NuGet.org, and OCI/container registries, while exceeding them in security, governance, user experience, and multi-ecosystem consistency.
+The platform is built around a Rust-based backend as the registry and domain core, combined with a Bun-managed TypeScript web interface built on bQuery, @bquery/ui, and Tailwind CSS. The current frontend baseline already covers landing, search, package detail, version detail, login, register, and a persisted theme-aware shell. The settings experience now includes profile editing, TOTP-based MFA with recovery codes, scoped token management, organization memberships, invitation acceptance and decline, and organization creation. Dedicated organization workspaces, team administration, audit dashboards, and broader governance/security surfaces continue to expand on that foundation. The goal is to match at least the functional baseline of established hosting and registry services such as npmjs.org, PyPI, RubyGems.org, NuGet.org, and OCI/container registries, while exceeding them in security, governance, user experience, and multi-ecosystem consistency.
 
 Publaryn should be designed from the beginning to work as:
 
@@ -118,6 +118,8 @@ Many platforms lack strong support for:
 - clear separation between public and private packages
 - CI-based trusted publishing
 - security dashboards and audit workflows
+
+Publaryn already closes much of this gap at the domain and API layer: organizations, invitations, teams, ownership transfer, and delegated package access are present in the backend, while the frontend is now moving from personal settings flows into dedicated organization workspaces.
 
 ---
 
@@ -222,11 +224,11 @@ Later, selected components can be split out:
 
 ### Presentation Layer
 
-- bQuery-based web portal
-- public package pages
-- admin console
-- organization management
-- security and audit views
+- Bun-managed TypeScript web portal built on bQuery, @bquery/ui, and Tailwind CSS
+- public package discovery and detail pages
+- authentication and personal account settings for profile editing, TOTP MFA, scoped tokens, organization discovery, invitation review, and organization creation
+- dedicated organization workspaces, team management, audit views, and security dashboards delivered incrementally
+- future security and compliance views layered onto the same frontend foundation
 
 ### API Layer
 
@@ -284,6 +286,8 @@ Responsible for:
 - namespace claims
 - policies
 - quotas
+
+The backend API already implements organization CRUD, memberships, invitations, teams, ownership transfer, and delegated package access. The current frontend exposes org discovery, join/decline, and creation flows in settings and is expanding into dedicated organization workspaces.
 
 ## 7.3 Package Core
 
@@ -347,6 +351,8 @@ Responsible for:
 - abuse and takedowns
 - risk scoring
 
+Scanning, trusted publishing, and security findings are anchored in the backend today; dedicated web dashboards and triage workflows are later slices.
+
 ## 7.8 Audit and Compliance
 
 Responsible for:
@@ -356,6 +362,8 @@ Responsible for:
 - reporting
 - compliance-relevant data
 - administrative forensics
+
+Audit capture is already a backend concern; human-friendly audit and compliance views in the web UI are still pending.
 
 ## 7.9 Notifications and Integrations
 
@@ -378,11 +386,10 @@ Attributes:
 - unique ID
 - username
 - display name
-- email addresses
-- verified email status
+- email addresses and future verification workflow
 - security state
-- MFA state
-- passkeys
+- MFA state (currently TOTP-based with recovery codes)
+- passkeys as a future extension
 - preferences
 - API tokens
 - organization memberships
@@ -909,17 +916,32 @@ The interface should be:
 - controllable for enterprises
 - informative for visitors
 
+The implemented frontend foundation already delivers the public landing, search, package detail, version detail, login, register, and settings flows together with a shared theme-aware shell. Routing already runs through a bQuery-backed compatibility layer, so the immediate frontend goal is to grow the governance baseline into dedicated organization workspaces and then expand into teams, package access, audit, and security surfaces.
+
 ## 16.2 Main Areas of the Web Application
+
+Current implemented baseline:
 
 - landing and discovery
 - search
 - package detail pages
 - version pages
-- organization pages
+- login and registration
+- profile editing
+- TOTP MFA setup, verification, and disable flows
+- personal API token management
+- organization membership overview
+- organization invitation acceptance and decline
+- organization creation
+- shared theme-aware app shell
+
+Next major expansion areas on the same frontend foundation:
+
+- dedicated organization workspaces and member/invitation administration
 - team and role management
 - repository and namespace management
-- token and security settings
-- audit and activity views
+- package management workflows
+- audit, activity, and security views
 - administration area
 
 ## 16.3 Public Package Pages
@@ -941,6 +963,8 @@ Contents:
 
 ## 16.4 Package Management UI
 
+These workflows sit on top of the current public/search/settings baseline and the emerging organization workspace. They follow immediately after the dedicated org/team governance surfaces and the remaining typed API/auth-session hardening work.
+
 For maintainers:
 
 - package settings
@@ -956,6 +980,8 @@ For maintainers:
 ## 16.5 Organization UX
 
 Strong organization management can become a major competitive advantage.
+
+This remains a primary differentiator. The current implementation already lets users discover their organizations, accept or decline invitations, and create new organizations from settings; dedicated org workspaces, member administration, and team/package-governance views are the next step.
 
 Needs:
 
@@ -978,12 +1004,14 @@ Needs:
 
 bQuery fits especially well for:
 
-- reactive search and management views
+- reactive routing and management views
+- persisted theme and app-shell state
 - live publish and scan status updates
-- form-heavy administration areas
-- SSR for public package pages
+- SSR for public package pages when needed
 - safe rendering of README and markdown content
 - stateful security and audit interfaces
+
+In the implemented frontend stack, bQuery provides routing, reactive state, and platform primitives; @bquery/ui provides accessible Web Components and theme tokens; Tailwind CSS handles layout, spacing, and utility styling around those components; and Bun drives dependency management and local workflows.
 
 ---
 
@@ -1049,7 +1077,7 @@ Ranking should balance:
 ## 18.1 Account Security
 
 - MFA enabled by default or strongly encouraged
-- WebAuthn and passkeys preferred
+- TOTP with recovery codes as the current implementation baseline; WebAuthn and passkeys as preferred future additions
 - re-authentication for sensitive operations
 - new device and unusual location detection
 - recovery codes
@@ -1485,7 +1513,7 @@ Goal:
 - solid domain model
 - auth, org, and package core
 - storage and publish transactions
-- first bQuery-based UI skeleton
+- Bun-managed TypeScript UI foundation with bQuery, @bquery/ui, Tailwind CSS, persisted theming, and initial public/account pages
 - audit and policy framework
 
 ## Phase 1 – Minimal Viable Multi-Ecosystem Platform
@@ -1515,6 +1543,8 @@ Includes:
 - MFA
 - basic audit
 - basic scanning
+
+The public discovery, package page, and account/governance baseline is already underway in the current implementation; settings now covers profile editing, TOTP MFA, scoped tokens, organization memberships, invitation review, and organization creation. The remaining Phase 1 work focuses on dedicated organization workspaces, broader governance flows, and protocol completeness.
 
 ## Phase 2 – Enterprise and Governance Focus
 
@@ -1713,13 +1743,16 @@ Rust is a strong fit for:
 
 ## 33.2 bQuery as the Web Platform
 
-bQuery is a strong fit for:
+bQuery is a strong fit for the frontend runtime, routing, and reactive state layer. In practice, the web stack should be a Bun-managed TypeScript application that combines bQuery for platform primitives, @bquery/ui for accessible Web Components and design tokens, and Tailwind CSS for layout and utility styling.
+
+That combination is a strong fit for:
 
 - modern reactive UI
 - portal and admin functions
-- SSR for public pages
+- SSR for public pages when needed
 - security-aware frontend behavior
 - efficient forms and data-heavy interfaces
+- incremental migration from simple public pages toward richer governance workflows
 
 ## 33.3 PostgreSQL and Object Storage as the Base
 
@@ -1756,7 +1789,7 @@ That positioning is technically credible, market-relevant, and operationally rea
 Publaryn should:
 
 - have a Rust-based registry core
-- use bQuery for the web and admin frontend
+- use a Bun-managed TypeScript frontend built on bQuery, @bquery/ui, and Tailwind CSS
 - use PostgreSQL for metadata and governance
 - use S3-compatible object storage for artifacts
 - run a dedicated search index
@@ -1765,12 +1798,15 @@ Publaryn should:
 - prioritize secure tokens and OIDC trusted publishing
 - make immutable releases a core principle
 - use ecosystem-specific protocol adapters instead of forcing a fake universal protocol
+- continue the existing public/search/package/auth/settings frontend foundation toward broader governance and administration workflows, starting with dedicated organization workspaces
 
 ---
 
 # 36. Recommended Next Step
 
-Before implementation begins, the next step should be to produce four detailed artifacts:
+Implementation is already underway. The immediate next step is to turn the settings-based governance baseline into a dedicated organization workspace: a canonical `/orgs/:slug` UI that shows organization overview, members, teams, visible packages, and owner/admin invitation management while keeping Settings as the personal account hub.
+
+In parallel, the project should produce four detailed artifacts:
 
 1. Product Requirements Document
    - precise MVP definition
@@ -1793,6 +1829,8 @@ Before implementation begins, the next step should be to produce four detailed a
    - audit
    - OIDC publishing
    - abuse and takedown handling
+
+After that organization-workspace slice is stable, the next delivery steps should move into team management, delegated package-access governance, audit/security dashboards, and the remaining typed API/auth-session hardening.
 
 If you want, I can continue directly and turn this into one of the following:
 

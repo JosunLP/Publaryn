@@ -6,6 +6,13 @@ import {
   verifyMfaSetup,
 } from '../api/auth.js';
 import { getAuthToken } from '../api/client.js';
+import {
+  acceptInvitation,
+  createOrg,
+  declineInvitation,
+  listMyInvitations,
+  listMyOrganizations,
+} from '../api/orgs.js';
 import { createToken, listTokens, revokeToken } from '../api/tokens.js';
 import { navigate } from '../router.js';
 import { copyToClipboard, escapeHtml, formatDate } from '../utils/format.js';
@@ -44,13 +51,26 @@ async function loadAndRender(
   } = {}
 ) {
   try {
-    const [user, tokenData] = await Promise.all([
-      getCurrentUser(),
-      listTokens(),
-    ]);
+    const [user, tokenData, organizationData, invitationData] =
+      await Promise.all([
+        getCurrentUser(),
+        listTokens(),
+        listMyOrganizations().catch((err) => ({
+          organizations: [],
+          load_error: err?.message || 'Failed to load organizations.',
+        })),
+        listMyInvitations().catch((err) => ({
+          invitations: [],
+          load_error: err?.message || 'Failed to load invitations.',
+        })),
+      ]);
     render(container, {
       user,
       tokens: tokenData.tokens || [],
+      organizations: organizationData.organizations || [],
+      organizationsError: organizationData.load_error || null,
+      invitations: invitationData.invitations || [],
+      invitationsError: invitationData.load_error || null,
       notice,
       error,
       createdToken,
@@ -66,7 +86,18 @@ async function loadAndRender(
 }
 
 function render(container, state) {
-  const { user, tokens, notice, error, createdToken, mfaSetupState } = state;
+  const {
+    user,
+    tokens,
+    organizations,
+    organizationsError,
+    invitations,
+    invitationsError,
+    notice,
+    error,
+    createdToken,
+    mfaSetupState,
+  } = state;
 
   container.innerHTML = `
     <div class="mt-6 settings-page">
@@ -162,6 +193,157 @@ function render(container, state) {
               `
               : ''
           }
+        </section>
+      </div>
+
+      <div class="settings-grid mt-6">
+        <section class="card settings-section">
+          <h2>Your organizations</h2>
+          <p class="text-muted settings-copy">
+            Organizations you belong to and the role you currently hold in each one.
+          </p>
+
+          ${
+            organizationsError
+              ? `<div class="alert alert-error">${escapeHtml(organizationsError)}</div>`
+              : organizations.length === 0
+                ? `<div class="empty-state"><h3>No organizations yet</h3><p>Create one below or accept an invitation to start collaborating.</p></div>`
+                : `<div class="token-list">
+                    ${organizations
+                      .map(
+                        (organization) => `
+                          <div class="token-row">
+                            <div class="token-row__main">
+                              <div class="token-row__title">
+                                ${
+                                  organization.slug
+                                    ? `<a href="/orgs/${encodeURIComponent(organization.slug)}">${escapeHtml(organization.name || organization.slug || 'Organization')}</a>`
+                                    : escapeHtml(
+                                        organization.name ||
+                                          organization.slug ||
+                                          'Organization'
+                                      )
+                                }
+                                ${organization.is_verified ? '<span class="badge badge-verified">Verified</span>' : ''}
+                              </div>
+                              <div class="token-row__meta">
+                                <span>@${escapeHtml(organization.slug || 'unknown')}</span>
+                                <span>role ${escapeHtml(organization.role || 'member')}</span>
+                                <span>joined ${escapeHtml(formatDate(organization.joined_at))}</span>
+                              </div>
+                              <div class="token-row__scopes">
+                                <span class="badge badge-ecosystem">${escapeHtml(String(organization.package_count ?? 0))} packages</span>
+                                <span class="badge badge-ecosystem">${escapeHtml(String(organization.team_count ?? 0))} teams</span>
+                              </div>
+                              ${organization.description ? `<p class="settings-copy">${escapeHtml(organization.description)}</p>` : ''}
+                            </div>
+                            ${
+                              organization.slug
+                                ? `
+                                  <div class="token-row__actions">
+                                    <a class="btn btn-secondary btn-sm" href="/orgs/${encodeURIComponent(organization.slug)}">Open workspace</a>
+                                  </div>
+                                `
+                                : ''
+                            }
+                          </div>
+                        `
+                      )
+                      .join('')}
+                  </div>`
+          }
+        </section>
+
+        <section class="card settings-section">
+          <h2>Organization invitations</h2>
+          <p class="text-muted settings-copy">
+            Accept or decline invitations to join organizations.
+          </p>
+
+          ${
+            invitationsError
+              ? `<div class="alert alert-error">${escapeHtml(invitationsError)}</div>`
+              : invitations.length === 0
+                ? `<div class="empty-state"><h3>No pending invitations</h3><p>When an organization invites your account, it will appear here.</p></div>`
+                : `<div class="token-list">
+                    ${invitations
+                      .map(
+                        (invitation) => `
+                          <div class="token-row">
+                            <div class="token-row__main">
+                              <div class="token-row__title">${escapeHtml(invitation.org?.name || invitation.org?.slug || 'Organization')}</div>
+                              <div class="token-row__meta">
+                                <span>role ${escapeHtml(invitation.role || 'viewer')}</span>
+                                <span>invited by @${escapeHtml(invitation.invited_by?.username || 'unknown')}</span>
+                                <span>sent ${escapeHtml(formatDate(invitation.created_at))}</span>
+                                <span>${invitation.expires_at ? `expires ${escapeHtml(formatDate(invitation.expires_at))}` : 'no expiry'}</span>
+                              </div>
+                              <div class="token-row__scopes">
+                                <span class="badge badge-verified">${escapeHtml(invitation.status || 'pending')}</span>
+                              </div>
+                            </div>
+                            ${
+                              invitation.actionable === false
+                                ? ''
+                                : `
+                                  <div class="token-row__actions">
+                                    <button class="btn btn-primary btn-sm" data-accept-invitation="${escapeHtml(invitation.id || '')}" type="button">Accept</button>
+                                    <button class="btn btn-secondary btn-sm" data-decline-invitation="${escapeHtml(invitation.id || '')}" type="button">Decline</button>
+                                  </div>
+                                `
+                            }
+                          </div>
+                        `
+                      )
+                      .join('')}
+                  </div>`
+          }
+        </section>
+
+        <section class="card settings-section">
+          <h2>Create organization</h2>
+          <p class="text-muted settings-copy">
+            Start a shared workspace for teams, invitations, and delegated package governance.
+          </p>
+
+          <form id="org-create-form">
+            <div class="form-group">
+              <label for="org-name">Organization name</label>
+              <input id="org-name" name="name" class="form-input" placeholder="Acme" required />
+            </div>
+
+            <div class="form-group">
+              <label for="org-slug">Slug</label>
+              <input
+                id="org-slug"
+                name="slug"
+                class="form-input"
+                placeholder="acme"
+                pattern="[a-z0-9][a-z0-9-]{0,63}"
+                required
+              />
+              <div class="text-muted mt-4">
+                Lowercase letters, numbers, and hyphens only. Must start with a letter or number.
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label for="org-description">Description</label>
+              <textarea id="org-description" name="description" class="form-input" rows="3" placeholder="What this organization publishes and maintains"></textarea>
+            </div>
+
+            <div class="form-group">
+              <label for="org-website">Website</label>
+              <input id="org-website" name="website" class="form-input" placeholder="https://example.com" />
+            </div>
+
+            <div class="form-group">
+              <label for="org-email">Contact email</label>
+              <input id="org-email" name="email" type="email" class="form-input" placeholder="packages@example.com" />
+            </div>
+
+            <button type="submit" class="btn btn-primary">Create organization</button>
+          </form>
         </section>
       </div>
 
@@ -373,6 +555,102 @@ function render(container, state) {
       }
     });
 
+  const orgCreateForm = container.querySelector('#org-create-form');
+  const orgNameInput = orgCreateForm?.querySelector('input[name="name"]');
+  const orgSlugInput = orgCreateForm?.querySelector('input[name="slug"]');
+  let orgSlugTouched = false;
+
+  orgSlugInput?.addEventListener('input', () => {
+    orgSlugTouched = true;
+    orgSlugInput.value = normalizeOrgSlug(orgSlugInput.value);
+  });
+
+  orgNameInput?.addEventListener('input', () => {
+    if (!orgSlugTouched && orgSlugInput) {
+      orgSlugInput.value = normalizeOrgSlug(orgNameInput.value);
+    }
+  });
+
+  orgCreateForm?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const formData = new FormData(form);
+
+    const name = formData.get('name')?.toString().trim() || '';
+    const slug = normalizeOrgSlug(formData.get('slug')?.toString() || '');
+
+    if (!name || !slug) {
+      await loadAndRender(container, {
+        error: 'Organization name and a valid slug are required.',
+      });
+      return;
+    }
+
+    const submitButton = form.querySelector('button[type="submit"]');
+    submitButton.disabled = true;
+    submitButton.textContent = 'Creating…';
+
+    try {
+      const result = await createOrg({
+        name,
+        slug,
+        description: formData.get('description')?.toString().trim() || null,
+        website: formData.get('website')?.toString().trim() || null,
+        email: formData.get('email')?.toString().trim() || null,
+      });
+
+      await loadAndRender(container, {
+        notice: `Organization created successfully. Slug: ${result.slug}.`,
+      });
+    } catch (err) {
+      await loadAndRender(container, {
+        error: err.message || 'Failed to create organization.',
+      });
+    }
+  });
+
+  container.querySelectorAll('[data-accept-invitation]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const invitationId = button.getAttribute('data-accept-invitation');
+      if (!invitationId) return;
+
+      button.disabled = true;
+      button.textContent = 'Accepting…';
+
+      try {
+        const result = await acceptInvitation(invitationId);
+        await loadAndRender(container, {
+          notice: `Invitation accepted. You are now ${result.role} in ${result.org?.name || result.org?.slug || 'the organization'}.`,
+        });
+      } catch (err) {
+        await loadAndRender(container, {
+          error: err.message || 'Failed to accept invitation.',
+        });
+      }
+    });
+  });
+
+  container.querySelectorAll('[data-decline-invitation]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const invitationId = button.getAttribute('data-decline-invitation');
+      if (!invitationId) return;
+
+      button.disabled = true;
+      button.textContent = 'Declining…';
+
+      try {
+        await declineInvitation(invitationId);
+        await loadAndRender(container, {
+          notice: 'Invitation declined.',
+        });
+      } catch (err) {
+        await loadAndRender(container, {
+          error: err.message || 'Failed to decline invitation.',
+        });
+      }
+    });
+  });
+
   container.querySelectorAll('[data-copy]').forEach((button) => {
     button.addEventListener('click', async () => {
       const targetId = button.getAttribute('data-copy');
@@ -395,4 +673,15 @@ function render(container, state) {
       }, 1200);
     });
   });
+}
+
+function normalizeOrgSlug(value) {
+  return value
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9-\s]/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+/, '')
+    .slice(0, 64);
 }

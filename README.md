@@ -99,6 +99,7 @@ crates/
 
 - [Rust](https://rustup.rs/) 1.77+
 - [Docker](https://docs.docker.com/get-docker/) + Docker Compose
+- [Bun](https://bun.sh/) 1.3+ for the frontend toolchain
 
 ### Quick Start
 
@@ -114,9 +115,15 @@ cp .env.example .env
 
 # 3. Run the API server
 cargo run --bin publaryn
+
+# 4. In a second terminal, run the frontend
+cd frontend
+bun install
+bun run dev
 ```
 
 The API is available at `http://localhost:3000`.
+The frontend is available at `http://localhost:5173`.
 Swagger UI at `http://localhost:3000/swagger-ui`.
 
 ### Full Stack (includes API container)

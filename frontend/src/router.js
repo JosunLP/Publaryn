@@ -1,25 +1,128 @@
 /**
- * Minimal client-side router.
+ * Compatibility router for the current page modules.
  *
- * Supports path patterns like /packages/:ecosystem/:name
- * Uses History API for clean URLs.
+ * Keeps the existing `route()`, `notFound()`, `navigate()`, and `resolve()`
+ * surface while delegating browser history and route state to bQuery.
  */
 
+import {
+  currentRoute as bqueryCurrentRoute,
+  isNavigating as bqueryIsNavigating,
+  createRouter,
+} from '@bquery/bquery/router';
+
 const routes = [];
+const API_AND_PROTOCOL_PATH_PATTERN =
+  /^\/(v1|npm|pypi|composer|rubygems|maven|cargo|nuget|health|readiness|_\/|swagger-ui)/;
+
 let notFoundHandler = null;
 let currentCleanup = null;
+let router = null;
+let routerDirty = false;
+
+export const currentRoute = bqueryCurrentRoute;
+export const isNavigating = bqueryIsNavigating;
+
+function cleanupCurrentPage() {
+  if (typeof currentCleanup === 'function') {
+    currentCleanup();
+  }
+  currentCleanup = null;
+}
+
+function safeDecode(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function decodeParams(params) {
+  return Object.fromEntries(
+    Object.entries(params ?? {}).map(([key, value]) => [
+      key,
+      typeof value === 'string' ? safeDecode(value) : value,
+    ])
+  );
+}
+
+function buildRouteDefinitions() {
+  return [
+    ...routes.map(({ pattern, handler }) => ({
+      path: pattern,
+      component: () => null,
+      meta: {
+        kind: 'page',
+        handler,
+      },
+    })),
+    {
+      path: '*',
+      component: () => null,
+      meta: {
+        kind: 'not-found',
+      },
+    },
+  ];
+}
+
+function renderCurrentRoute() {
+  cleanupCurrentPage();
+
+  const activeRoute = bqueryCurrentRoute.value;
+  const routeMeta = activeRoute?.matched?.meta ?? null;
+
+  if (routeMeta?.kind === 'page' && typeof routeMeta.handler === 'function') {
+    const cleanup = routeMeta.handler({
+      params: decodeParams(activeRoute.params),
+      query: new URLSearchParams(window.location.search),
+    });
+
+    if (typeof cleanup === 'function') {
+      currentCleanup = cleanup;
+    }
+
+    return;
+  }
+
+  if (
+    routeMeta?.kind === 'not-found' &&
+    typeof notFoundHandler === 'function'
+  ) {
+    const cleanup = notFoundHandler({
+      path: activeRoute?.path || window.location.pathname,
+    });
+
+    if (typeof cleanup === 'function') {
+      currentCleanup = cleanup;
+    }
+  }
+}
+
+function ensureRouter() {
+  if (router && !routerDirty) {
+    return router;
+  }
+
+  if (router) {
+    cleanupCurrentPage();
+    router.destroy();
+    router = null;
+  }
+
+  router = createRouter({
+    routes: buildRouteDefinitions(),
+  });
+  router.afterEach(() => renderCurrentRoute());
+  routerDirty = false;
+
+  return router;
+}
 
 export function route(pattern, handler) {
-  const paramNames = [];
-  const regexStr = pattern.replace(/:([^/]+)/g, (_, name) => {
-    paramNames.push(name);
-    return '([^/]+)';
-  });
-  routes.push({
-    regex: new RegExp(`^${regexStr}$`),
-    paramNames,
-    handler,
-  });
+  routes.push({ pattern, handler });
+  routerDirty = true;
 }
 
 export function notFound(handler) {
@@ -27,70 +130,48 @@ export function notFound(handler) {
 }
 
 export function navigate(path, { replace = false } = {}) {
-  if (replace) {
-    history.replaceState(null, '', path);
-  } else {
-    history.pushState(null, '', path);
-  }
-  resolve();
+  const activeRouter = ensureRouter();
+
+  void activeRouter[replace ? 'replace' : 'push'](path).catch((error) => {
+    console.error('Publaryn router navigation failed:', error);
+  });
 }
 
 export function resolve() {
-  const path = location.pathname;
-  const search = new URLSearchParams(location.search);
-
-  // Cleanup previous page
-  if (currentCleanup) {
-    currentCleanup();
-    currentCleanup = null;
-  }
-
-  for (const { regex, paramNames, handler } of routes) {
-    const match = path.match(regex);
-    if (match) {
-      const params = {};
-      paramNames.forEach((name, i) => {
-        params[name] = decodeURIComponent(match[i + 1]);
-      });
-      const cleanup = handler({ params, query: search });
-      if (typeof cleanup === 'function') {
-        currentCleanup = cleanup;
-      }
-      return;
-    }
-  }
-
-  if (notFoundHandler) {
-    notFoundHandler({ path });
-  }
+  ensureRouter();
+  renderCurrentRoute();
 }
 
-// Handle browser back/forward
-window.addEventListener('popstate', () => resolve());
+document.addEventListener('click', (event) => {
+  if (!(event.target instanceof Element)) {
+    return;
+  }
 
-// Intercept link clicks for SPA navigation
-document.addEventListener('click', (e) => {
-  const link = e.target.closest('a[href]');
-  if (!link) return;
+  const link = event.target.closest('a[href]');
+  if (!(link instanceof HTMLAnchorElement)) {
+    return;
+  }
+
   const href = link.getAttribute('href');
-  // Only handle internal navigation links
   if (
     !href ||
-    href.startsWith('http') ||
     href.startsWith('//') ||
     href.startsWith('#') ||
-    link.target === '_blank'
+    link.target === '_blank' ||
+    link.hasAttribute('download')
   ) {
     return;
   }
-  // Skip API and protocol adapter paths
-  if (
-    /^\/(v1|npm|pypi|composer|rubygems|maven|cargo|nuget|health|readiness|_\/|swagger-ui)/.test(
-      href
-    )
-  ) {
+
+  if (link.origin !== window.location.origin) {
     return;
   }
-  e.preventDefault();
-  navigate(href);
+
+  const targetPath = `${link.pathname}${link.search}${link.hash}`;
+  if (API_AND_PROTOCOL_PATH_PATTERN.test(link.pathname)) {
+    return;
+  }
+
+  event.preventDefault();
+  navigate(targetPath);
 });

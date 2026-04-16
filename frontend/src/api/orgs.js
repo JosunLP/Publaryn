@@ -1,9 +1,14 @@
 import { api } from './client.js';
 
-export async function createOrg({ name, display_name, description }) {
+export async function createOrg({ name, slug, description, website, email }) {
   const { data } = await api.post('/v1/orgs', {
-    body: { name, display_name, description },
+    body: { name, slug, description, website, email },
   });
+  return data;
+}
+
+export async function listMyOrganizations() {
+  const { data } = await api.get('/v1/users/me/organizations');
   return data;
 }
 
@@ -45,11 +50,32 @@ export async function listOrgPackages(slug) {
   return data;
 }
 
-export async function sendInvitation(slug, { username, email, role }) {
+export async function sendInvitation(
+  slug,
+  { usernameOrEmail, username, email, role, expiresInDays }
+) {
   const { data } = await api.post(`/v1/orgs/${enc(slug)}/invitations`, {
-    body: { username, email, role },
+    body: {
+      username_or_email: usernameOrEmail || username || email,
+      role,
+      expires_in_days: expiresInDays,
+    },
   });
   return data;
+}
+
+export async function listOrgInvitations(
+  slug,
+  { includeInactive = false } = {}
+) {
+  const { data } = await api.get(`/v1/orgs/${enc(slug)}/invitations`, {
+    query: includeInactive ? { include_inactive: 'true' } : undefined,
+  });
+  return data;
+}
+
+export async function revokeInvitation(slug, id) {
+  await api.delete(`/v1/orgs/${enc(slug)}/invitations/${enc(id)}`);
 }
 
 export async function listMyInvitations() {

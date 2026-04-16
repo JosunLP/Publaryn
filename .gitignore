@@ -25,3 +25,6 @@ target
 
 # Docker volumes (if bind-mounted locally)
 data/
+
+*/node_modules/
+*/dist/

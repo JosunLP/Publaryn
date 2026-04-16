@@ -20,6 +20,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/users/me", get(get_current_user))
         .route("/v1/users/me", patch(update_current_user))
+    .route("/v1/users/me/organizations", get(list_current_user_organizations))
         .route("/v1/users/:username", get(get_user))
         .route("/v1/users/:username", patch(update_user))
         .route("/v1/users/:username/packages", get(list_user_packages))
@@ -50,6 +51,46 @@ async fn get_current_user(
         "mfa_enabled": row.try_get::<bool, _>("mfa_enabled").unwrap_or(false),
         "created_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at").ok(),
     })))
+}
+
+async fn list_current_user_organizations(
+    State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
+) -> ApiResult<Json<serde_json::Value>> {
+    let rows = sqlx::query(
+        "SELECT o.id, o.name, o.slug, o.description, o.website, o.is_verified, \
+                om.role::text AS role, om.joined_at, \
+                (SELECT COUNT(*)::BIGINT FROM teams t WHERE t.org_id = o.id) AS team_count, \
+                (SELECT COUNT(*)::BIGINT FROM packages p WHERE p.owner_org_id = o.id) AS package_count \
+         FROM org_memberships om \
+         JOIN organizations o ON o.id = om.org_id \
+         WHERE om.user_id = $1 \
+         ORDER BY o.name ASC",
+    )
+    .bind(identity.user_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let organizations: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|row| {
+            serde_json::json!({
+                "id": row.try_get::<Uuid, _>("id").ok(),
+                "name": row.try_get::<String, _>("name").ok(),
+                "slug": row.try_get::<String, _>("slug").ok(),
+                "description": row.try_get::<Option<String>, _>("description").ok().flatten(),
+                "website": row.try_get::<Option<String>, _>("website").ok().flatten(),
+                "is_verified": row.try_get::<bool, _>("is_verified").ok(),
+                "role": row.try_get::<String, _>("role").ok(),
+                "joined_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("joined_at").ok(),
+                "team_count": row.try_get::<i64, _>("team_count").ok(),
+                "package_count": row.try_get::<i64, _>("package_count").ok(),
+            })
+        })
+        .collect();
+
+    Ok(Json(serde_json::json!({ "organizations": organizations })))
 }
 
 async fn get_user(
