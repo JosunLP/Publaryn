@@ -1,12 +1,14 @@
-import { login } from '../api/auth.js';
-import { navigate } from '../router.js';
-import { escapeHtml } from '../utils/format.js';
+import { login } from '../api/auth';
+import { ApiError } from '../api/client';
+import type { RouteContext } from '../router';
+import { navigate } from '../router';
+import { escapeHtml } from '../utils/format';
 
-export function loginPage({ params, query }, container) {
+export function loginPage(_ctx: RouteContext, container: HTMLElement): void {
   render(container);
 }
 
-function render(container, error = null) {
+function render(container: HTMLElement, error: string | null = null): void {
   container.innerHTML = `
     <div class="mt-6" style="max-width:400px; margin-left:auto; margin-right:auto;">
       <h1 style="text-align:center; margin-bottom:24px;">Sign in</h1>
@@ -48,30 +50,49 @@ function render(container, error = null) {
     </div>
   `;
 
-  const form = container.querySelector('#login-form');
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const username = form.querySelector('#login-username').value.trim();
-    const password = form.querySelector('#login-password').value;
+  const form = container.querySelector<HTMLFormElement>('#login-form');
+  if (!form) {
+    return;
+  }
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+
+    const usernameInput =
+      form.querySelector<HTMLInputElement>('#login-username');
+    const passwordInput =
+      form.querySelector<HTMLInputElement>('#login-password');
+    const username = usernameInput?.value.trim() ?? '';
+    const password = passwordInput?.value ?? '';
 
     if (!username || !password) {
       render(container, 'Username and password are required.');
       return;
     }
 
-    const btn = form.querySelector('button[type="submit"]');
-    btn.disabled = true;
-    btn.textContent = 'Signing in…';
+    const submitButton = form.querySelector<HTMLButtonElement>(
+      'button[type="submit"]'
+    );
+
+    if (!submitButton) {
+      return;
+    }
+
+    submitButton.disabled = true;
+    submitButton.textContent = 'Signing in…';
 
     try {
-      await login({ username, password });
+      await login({ usernameOrEmail: username, password });
       navigate('/', { replace: true });
-    } catch (err) {
-      const msg =
-        err.status === 401
+    } catch (caughtError: unknown) {
+      const message =
+        caughtError instanceof ApiError && caughtError.status === 401
           ? 'Invalid username or password.'
-          : err.message || 'Login failed. Please try again.';
-      render(container, msg);
+          : caughtError instanceof Error && caughtError.message
+            ? caughtError.message
+            : 'Login failed. Please try again.';
+
+      render(container, message);
     }
   });
 }

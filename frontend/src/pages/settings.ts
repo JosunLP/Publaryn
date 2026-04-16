@@ -1,21 +1,30 @@
+import type { MfaSetupState, UserProfile } from '../api/auth';
 import {
   disableMfa,
   getCurrentUser,
   setupMfa,
   updateCurrentUser,
   verifyMfaSetup,
-} from '../api/auth.js';
-import { getAuthToken } from '../api/client.js';
+} from '../api/auth';
+import { getAuthToken } from '../api/client';
+import type {
+  MyInvitation,
+  MyInvitationListResponse,
+  OrganizationListResponse,
+  OrganizationMembership,
+} from '../api/orgs';
 import {
   acceptInvitation,
   createOrg,
   declineInvitation,
   listMyInvitations,
   listMyOrganizations,
-} from '../api/orgs.js';
-import { createToken, listTokens, revokeToken } from '../api/tokens.js';
-import { navigate } from '../router.js';
-import { copyToClipboard, escapeHtml, formatDate } from '../utils/format.js';
+} from '../api/orgs';
+import type { TokenListResponse, TokenRecord } from '../api/tokens';
+import { createToken, listTokens, revokeToken } from '../api/tokens';
+import type { RouteContext } from '../router';
+import { navigate } from '../router';
+import { copyToClipboard, escapeHtml, formatDate } from '../utils/format';
 
 const TOKEN_SCOPE_OPTIONS = [
   'profile:write',
@@ -29,41 +38,70 @@ const TOKEN_SCOPE_OPTIONS = [
   'packages:write',
   'packages:transfer',
   'audit:read',
-];
+] as const;
 
-export function settingsPage(_ctx, container) {
+interface SettingsViewState {
+  user: UserProfile;
+  tokens: TokenRecord[];
+  organizations: OrganizationMembership[];
+  organizationsError: string | null;
+  invitations: MyInvitation[];
+  invitationsError: string | null;
+  notice: string | null;
+  error: string | null;
+  createdToken: string | null;
+  mfaSetupState: MfaSetupState | null;
+}
+
+export function settingsPage(_ctx: RouteContext, container: HTMLElement): void {
   if (!getAuthToken()) {
     navigate('/login', { replace: true });
     return;
   }
 
   container.innerHTML = `<div class="loading"><span class="spinner"></span> Loading settings…</div>`;
-  loadAndRender(container);
+  void loadAndRender(container);
 }
 
 async function loadAndRender(
-  container,
+  container: HTMLElement,
   {
     notice = null,
     error = null,
     createdToken = null,
     mfaSetupState = null,
+  }: {
+    notice?: string | null;
+    error?: string | null;
+    createdToken?: string | null;
+    mfaSetupState?: MfaSetupState | null;
   } = {}
-) {
+): Promise<void> {
   try {
     const [user, tokenData, organizationData, invitationData] =
       await Promise.all([
         getCurrentUser(),
         listTokens(),
-        listMyOrganizations().catch((err) => ({
-          organizations: [],
-          load_error: err?.message || 'Failed to load organizations.',
-        })),
-        listMyInvitations().catch((err) => ({
-          invitations: [],
-          load_error: err?.message || 'Failed to load invitations.',
-        })),
+        listMyOrganizations().catch(
+          (caughtError: unknown): OrganizationListResponse => ({
+            organizations: [],
+            load_error: toErrorMessage(
+              caughtError,
+              'Failed to load organizations.'
+            ),
+          })
+        ),
+        listMyInvitations().catch(
+          (caughtError: unknown): MyInvitationListResponse => ({
+            invitations: [],
+            load_error: toErrorMessage(
+              caughtError,
+              'Failed to load invitations.'
+            ),
+          })
+        ),
       ]);
+
     render(container, {
       user,
       tokens: tokenData.tokens || [],
@@ -76,16 +114,18 @@ async function loadAndRender(
       createdToken,
       mfaSetupState,
     });
-  } catch (err) {
+  } catch (caughtError: unknown) {
     container.innerHTML = `
       <div class="mt-6">
-        <div class="alert alert-error">${escapeHtml(err.message || 'Failed to load settings.')}</div>
+        <div class="alert alert-error">${escapeHtml(
+          toErrorMessage(caughtError, 'Failed to load settings.')
+        )}</div>
       </div>
     `;
   }
 }
 
-function render(container, state) {
+function render(container: HTMLElement, state: SettingsViewState): void {
   const {
     user,
     tokens,
@@ -426,141 +466,216 @@ function render(container, state) {
     </div>
   `;
 
-  const profileForm = container.querySelector('#profile-form');
+  const profileForm = container.querySelector<HTMLFormElement>('#profile-form');
   profileForm?.addEventListener('submit', async (event) => {
     event.preventDefault();
-    const form = new FormData(profileForm);
-    const submitButton = profileForm.querySelector('button[type="submit"]');
+
+    const formData = new FormData(profileForm);
+    const submitButton = getSubmitButton(profileForm);
+    if (!submitButton) {
+      return;
+    }
+
     submitButton.disabled = true;
     submitButton.textContent = 'Saving…';
 
     try {
       await updateCurrentUser({
-        display_name: form.get('display_name')?.toString().trim() || null,
-        avatar_url: form.get('avatar_url')?.toString().trim() || null,
-        website: form.get('website')?.toString().trim() || null,
-        bio: form.get('bio')?.toString().trim() || null,
+        display_name: formData.get('display_name')?.toString().trim() || null,
+        avatar_url: formData.get('avatar_url')?.toString().trim() || null,
+        website: formData.get('website')?.toString().trim() || null,
+        bio: formData.get('bio')?.toString().trim() || null,
       });
+
       await loadAndRender(container, {
         notice: 'Profile updated successfully.',
       });
-    } catch (err) {
+    } catch (caughtError: unknown) {
       await loadAndRender(container, {
-        error: err.message || 'Failed to update profile.',
+        error: toErrorMessage(caughtError, 'Failed to update profile.'),
       });
     }
   });
 
-  const tokenForm = container.querySelector('#token-form');
+  const tokenForm = container.querySelector<HTMLFormElement>('#token-form');
   tokenForm?.addEventListener('submit', async (event) => {
     event.preventDefault();
-    const form = new FormData(tokenForm);
-    const scopes = form.getAll('scope').map((scope) => scope.toString());
-    const expiresRaw = form.get('expires_in_days')?.toString().trim();
-    const submitButton = tokenForm.querySelector('button[type="submit"]');
+
+    const formData = new FormData(tokenForm);
+    const tokenName = formData.get('name')?.toString().trim() || '';
+    const scopes = formData.getAll('scope').map((scope) => scope.toString());
+    const expiresRaw = formData.get('expires_in_days')?.toString().trim();
+    const submitButton = getSubmitButton(tokenForm);
+
+    if (!submitButton) {
+      return;
+    }
+
+    if (!tokenName) {
+      await loadAndRender(container, {
+        error: 'Token name is required.',
+        mfaSetupState,
+      });
+      return;
+    }
+
     submitButton.disabled = true;
     submitButton.textContent = 'Creating…';
 
     try {
       const result = await createToken({
-        name: form.get('name')?.toString().trim(),
+        name: tokenName,
         scopes,
         expires_in_days: expiresRaw ? Number(expiresRaw) : null,
       });
+
       await loadAndRender(container, {
         notice: 'Token created successfully.',
         createdToken: result.token,
+        mfaSetupState,
       });
-    } catch (err) {
+    } catch (caughtError: unknown) {
       await loadAndRender(container, {
-        error: err.message || 'Failed to create token.',
+        error: toErrorMessage(caughtError, 'Failed to create token.'),
+        mfaSetupState,
       });
     }
   });
 
-  container.querySelectorAll('[data-revoke-token]').forEach((button) => {
-    button.addEventListener('click', async () => {
-      const tokenId = button.getAttribute('data-revoke-token');
-      if (!tokenId) return;
-      button.disabled = true;
-      button.textContent = 'Revoking…';
-      try {
-        await revokeToken(tokenId);
-        await loadAndRender(container, { notice: 'Token revoked.' });
-      } catch (err) {
-        await loadAndRender(container, {
-          error: err.message || 'Failed to revoke token.',
-        });
-      }
+  container
+    .querySelectorAll<HTMLButtonElement>('[data-revoke-token]')
+    .forEach((button) => {
+      button.addEventListener('click', async () => {
+        const tokenId = button.getAttribute('data-revoke-token');
+        if (!tokenId) {
+          return;
+        }
+
+        button.disabled = true;
+        button.textContent = 'Revoking…';
+
+        try {
+          await revokeToken(tokenId);
+          await loadAndRender(container, {
+            notice: 'Token revoked.',
+            mfaSetupState,
+          });
+        } catch (caughtError: unknown) {
+          await loadAndRender(container, {
+            error: toErrorMessage(caughtError, 'Failed to revoke token.'),
+            mfaSetupState,
+          });
+        }
+      });
     });
-  });
 
   container
-    .querySelector('#mfa-setup-btn')
+    .querySelector<HTMLButtonElement>('#mfa-setup-btn')
     ?.addEventListener('click', async (event) => {
       const button = event.currentTarget;
+      if (!(button instanceof HTMLButtonElement)) {
+        return;
+      }
+
       button.disabled = true;
       button.textContent = 'Preparing…';
+
       try {
         const setup = await setupMfa();
         await loadAndRender(container, {
           notice: 'MFA setup initialized. Verify one code to enable it.',
           mfaSetupState: setup,
         });
-      } catch (err) {
+      } catch (caughtError: unknown) {
         await loadAndRender(container, {
-          error: err.message || 'Failed to initialize MFA setup.',
+          error: toErrorMessage(caughtError, 'Failed to initialize MFA setup.'),
         });
       }
     });
 
-  container
-    .querySelector('#mfa-verify-form')
-    ?.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      const form = event.currentTarget;
-      const code = new FormData(form).get('code')?.toString().trim();
-      const submitButton = form.querySelector('button[type="submit"]');
-      submitButton.disabled = true;
-      submitButton.textContent = 'Enabling…';
+  const mfaVerifyForm =
+    container.querySelector<HTMLFormElement>('#mfa-verify-form');
+  mfaVerifyForm?.addEventListener('submit', async (event) => {
+    event.preventDefault();
 
-      try {
-        await verifyMfaSetup(code);
-        await loadAndRender(container, { notice: 'MFA enabled successfully.' });
-      } catch (err) {
-        await loadAndRender(container, {
-          error: err.message || 'Failed to verify MFA setup.',
-          mfaSetupState,
-        });
-      }
-    });
+    const code =
+      new FormData(mfaVerifyForm).get('code')?.toString().trim() || '';
+    const submitButton = getSubmitButton(mfaVerifyForm);
 
-  container
-    .querySelector('#mfa-disable-form')
-    ?.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      const form = event.currentTarget;
-      const code = new FormData(form).get('code')?.toString().trim();
-      const submitButton = form.querySelector('button[type="submit"]');
-      submitButton.disabled = true;
-      submitButton.textContent = 'Disabling…';
+    if (!submitButton) {
+      return;
+    }
 
-      try {
-        await disableMfa(code);
-        await loadAndRender(container, { notice: 'MFA disabled.' });
-      } catch (err) {
-        await loadAndRender(container, {
-          error: err.message || 'Failed to disable MFA.',
-        });
-      }
-    });
+    if (!code) {
+      await loadAndRender(container, {
+        error: 'A verification code is required.',
+        mfaSetupState,
+      });
+      return;
+    }
 
-  const orgCreateForm = container.querySelector('#org-create-form');
-  const orgNameInput = orgCreateForm?.querySelector('input[name="name"]');
-  const orgSlugInput = orgCreateForm?.querySelector('input[name="slug"]');
+    submitButton.disabled = true;
+    submitButton.textContent = 'Enabling…';
+
+    try {
+      await verifyMfaSetup(code);
+      await loadAndRender(container, { notice: 'MFA enabled successfully.' });
+    } catch (caughtError: unknown) {
+      await loadAndRender(container, {
+        error: toErrorMessage(caughtError, 'Failed to verify MFA setup.'),
+        mfaSetupState,
+      });
+    }
+  });
+
+  const mfaDisableForm =
+    container.querySelector<HTMLFormElement>('#mfa-disable-form');
+  mfaDisableForm?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+
+    const code =
+      new FormData(mfaDisableForm).get('code')?.toString().trim() || '';
+    const submitButton = getSubmitButton(mfaDisableForm);
+
+    if (!submitButton) {
+      return;
+    }
+
+    if (!code) {
+      await loadAndRender(container, {
+        error: 'A code is required to disable MFA.',
+      });
+      return;
+    }
+
+    submitButton.disabled = true;
+    submitButton.textContent = 'Disabling…';
+
+    try {
+      await disableMfa(code);
+      await loadAndRender(container, { notice: 'MFA disabled.' });
+    } catch (caughtError: unknown) {
+      await loadAndRender(container, {
+        error: toErrorMessage(caughtError, 'Failed to disable MFA.'),
+      });
+    }
+  });
+
+  const orgCreateForm =
+    container.querySelector<HTMLFormElement>('#org-create-form');
+  const orgNameInput =
+    orgCreateForm?.querySelector<HTMLInputElement>('input[name="name"]') ??
+    null;
+  const orgSlugInput =
+    orgCreateForm?.querySelector<HTMLInputElement>('input[name="slug"]') ??
+    null;
   let orgSlugTouched = false;
 
   orgSlugInput?.addEventListener('input', () => {
+    if (!orgSlugInput) {
+      return;
+    }
+
     orgSlugTouched = true;
     orgSlugInput.value = normalizeOrgSlug(orgSlugInput.value);
   });
@@ -573,20 +688,24 @@ function render(container, state) {
 
   orgCreateForm?.addEventListener('submit', async (event) => {
     event.preventDefault();
-    const form = event.currentTarget;
-    const formData = new FormData(form);
 
+    const formData = new FormData(orgCreateForm);
     const name = formData.get('name')?.toString().trim() || '';
     const slug = normalizeOrgSlug(formData.get('slug')?.toString() || '');
 
     if (!name || !slug) {
       await loadAndRender(container, {
         error: 'Organization name and a valid slug are required.',
+        mfaSetupState,
       });
       return;
     }
 
-    const submitButton = form.querySelector('button[type="submit"]');
+    const submitButton = getSubmitButton(orgCreateForm);
+    if (!submitButton) {
+      return;
+    }
+
     submitButton.disabled = true;
     submitButton.textContent = 'Creating…';
 
@@ -601,81 +720,105 @@ function render(container, state) {
 
       await loadAndRender(container, {
         notice: `Organization created successfully. Slug: ${result.slug}.`,
+        mfaSetupState,
       });
-    } catch (err) {
+    } catch (caughtError: unknown) {
       await loadAndRender(container, {
-        error: err.message || 'Failed to create organization.',
+        error: toErrorMessage(caughtError, 'Failed to create organization.'),
+        mfaSetupState,
       });
     }
   });
 
-  container.querySelectorAll('[data-accept-invitation]').forEach((button) => {
-    button.addEventListener('click', async () => {
-      const invitationId = button.getAttribute('data-accept-invitation');
-      if (!invitationId) return;
+  container
+    .querySelectorAll<HTMLButtonElement>('[data-accept-invitation]')
+    .forEach((button) => {
+      button.addEventListener('click', async () => {
+        const invitationId = button.getAttribute('data-accept-invitation');
+        if (!invitationId) {
+          return;
+        }
 
-      button.disabled = true;
-      button.textContent = 'Accepting…';
+        button.disabled = true;
+        button.textContent = 'Accepting…';
 
-      try {
-        const result = await acceptInvitation(invitationId);
-        await loadAndRender(container, {
-          notice: `Invitation accepted. You are now ${result.role} in ${result.org?.name || result.org?.slug || 'the organization'}.`,
-        });
-      } catch (err) {
-        await loadAndRender(container, {
-          error: err.message || 'Failed to accept invitation.',
-        });
-      }
+        try {
+          const result = await acceptInvitation(invitationId);
+          await loadAndRender(container, {
+            notice: `Invitation accepted. You are now ${result.role || 'a member'} in ${
+              result.org?.name || result.org?.slug || 'the organization'
+            }.`,
+            mfaSetupState,
+          });
+        } catch (caughtError: unknown) {
+          await loadAndRender(container, {
+            error: toErrorMessage(caughtError, 'Failed to accept invitation.'),
+            mfaSetupState,
+          });
+        }
+      });
     });
-  });
 
-  container.querySelectorAll('[data-decline-invitation]').forEach((button) => {
-    button.addEventListener('click', async () => {
-      const invitationId = button.getAttribute('data-decline-invitation');
-      if (!invitationId) return;
+  container
+    .querySelectorAll<HTMLButtonElement>('[data-decline-invitation]')
+    .forEach((button) => {
+      button.addEventListener('click', async () => {
+        const invitationId = button.getAttribute('data-decline-invitation');
+        if (!invitationId) {
+          return;
+        }
 
-      button.disabled = true;
-      button.textContent = 'Declining…';
+        button.disabled = true;
+        button.textContent = 'Declining…';
 
-      try {
-        await declineInvitation(invitationId);
-        await loadAndRender(container, {
-          notice: 'Invitation declined.',
-        });
-      } catch (err) {
-        await loadAndRender(container, {
-          error: err.message || 'Failed to decline invitation.',
-        });
-      }
+        try {
+          await declineInvitation(invitationId);
+          await loadAndRender(container, {
+            notice: 'Invitation declined.',
+            mfaSetupState,
+          });
+        } catch (caughtError: unknown) {
+          await loadAndRender(container, {
+            error: toErrorMessage(caughtError, 'Failed to decline invitation.'),
+            mfaSetupState,
+          });
+        }
+      });
     });
-  });
 
-  container.querySelectorAll('[data-copy]').forEach((button) => {
-    button.addEventListener('click', async () => {
-      const targetId = button.getAttribute('data-copy');
-      const text = container.querySelector(`#${targetId}`)?.textContent || '';
-      const ok = await copyToClipboard(text);
-      button.textContent = ok ? 'Copied' : 'Failed';
-      setTimeout(() => {
-        button.textContent = 'Copy';
-      }, 1200);
-    });
-  });
+  container
+    .querySelectorAll<HTMLButtonElement>('[data-copy]')
+    .forEach((button) => {
+      button.addEventListener('click', async () => {
+        const targetId = button.getAttribute('data-copy');
+        const text = targetId
+          ? container.querySelector<HTMLElement>(`#${targetId}`)?.textContent ||
+            ''
+          : '';
 
-  container.querySelectorAll('[data-copy-token-prefix]').forEach((button) => {
-    button.addEventListener('click', async () => {
-      const prefix = button.getAttribute('data-copy-token-prefix') || 'pub_';
-      const ok = await copyToClipboard(prefix);
-      button.textContent = ok ? 'Copied' : 'Failed';
-      setTimeout(() => {
-        button.textContent = 'Copy prefix';
-      }, 1200);
+        const copied = await copyToClipboard(text);
+        button.textContent = copied ? 'Copied' : 'Failed';
+        window.setTimeout(() => {
+          button.textContent = 'Copy';
+        }, 1200);
+      });
     });
-  });
+
+  container
+    .querySelectorAll<HTMLButtonElement>('[data-copy-token-prefix]')
+    .forEach((button) => {
+      button.addEventListener('click', async () => {
+        const prefix = button.getAttribute('data-copy-token-prefix') || 'pub_';
+        const copied = await copyToClipboard(prefix);
+        button.textContent = copied ? 'Copied' : 'Failed';
+        window.setTimeout(() => {
+          button.textContent = 'Copy prefix';
+        }, 1200);
+      });
+    });
 }
 
-function normalizeOrgSlug(value) {
+function normalizeOrgSlug(value: string): string {
   return value
     .toLowerCase()
     .trim()
@@ -684,4 +827,12 @@ function normalizeOrgSlug(value) {
     .replace(/-+/g, '-')
     .replace(/^-+/, '')
     .slice(0, 64);
+}
+
+function getSubmitButton(form: HTMLFormElement): HTMLButtonElement | null {
+  return form.querySelector<HTMLButtonElement>('button[type="submit"]');
+}
+
+function toErrorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message ? error.message : fallback;
 }

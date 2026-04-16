@@ -74,6 +74,91 @@ async fn login_user(app: &axum::Router, username: &str, password: &str) -> Strin
     body["token"].as_str().expect("token field").to_owned()
 }
 
+/// Create an organization via POST /v1/orgs and return the response.
+async fn create_org(
+    app: &axum::Router,
+    jwt: &str,
+    name: &str,
+    slug: &str,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/v1/orgs")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::from(
+            json!({
+                "name": name,
+                "slug": slug,
+            })
+            .to_string(),
+        ))
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// Create a team for an organization and return the response.
+async fn create_team(
+    app: &axum::Router,
+    jwt: &str,
+    org_slug: &str,
+    name: &str,
+    team_slug: &str,
+    description: Option<&str>,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri(format!("/v1/orgs/{org_slug}/teams"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::from(
+            json!({
+                "name": name,
+                "slug": team_slug,
+                "description": description,
+            })
+            .to_string(),
+        ))
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// Add a user as an organization member and return the response.
+async fn add_org_member(
+    app: &axum::Router,
+    jwt: &str,
+    org_slug: &str,
+    username: &str,
+    role: &str,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri(format!("/v1/orgs/{org_slug}/members"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::from(
+            json!({
+                "username": username,
+                "role": role,
+            })
+            .to_string(),
+        ))
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // Health
 // ══════════════════════════════════════════════════════════════════════════════
@@ -402,6 +487,219 @@ async fn test_create_and_get_org(pool: PgPool) {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
     assert_eq!(body["slug"], "acme-corp");
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Teams
+// ══════════════════════════════════════════════════════════════════════════════
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_team_crud_roundtrip(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, _) = create_org(&app, &jwt, "Acme Corp", "acme-corp").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = create_team(
+        &app,
+        &jwt,
+        "acme-corp",
+        "Release Engineering",
+        "release-engineering",
+        Some("Owns package publication workflows"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(body["slug"], "release-engineering");
+    assert_eq!(body["name"], "Release Engineering");
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/v1/orgs/acme-corp/teams")
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    let teams = body["teams"].as_array().expect("teams response should be an array");
+    assert_eq!(teams.len(), 1);
+    assert_eq!(teams[0]["slug"], "release-engineering");
+    assert_eq!(teams[0]["description"], "Owns package publication workflows");
+
+    let req = Request::builder()
+        .method(Method::PATCH)
+        .uri("/v1/orgs/acme-corp/teams/release-engineering")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::from(
+            json!({
+                "name": "Release Operations",
+                "description": "Coordinates releases and publication",
+            })
+            .to_string(),
+        ))
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["message"], "Team updated");
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/v1/orgs/acme-corp/teams")
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    let teams = body["teams"].as_array().expect("teams response should be an array");
+    assert_eq!(teams[0]["name"], "Release Operations");
+    assert_eq!(teams[0]["description"], "Coordinates releases and publication");
+
+    let req = Request::builder()
+        .method(Method::DELETE)
+        .uri("/v1/orgs/acme-corp/teams/release-engineering")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["message"], "Team deleted");
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/v1/orgs/acme-corp/teams")
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    let teams = body["teams"].as_array().expect("teams response should be an array");
+    assert!(teams.is_empty(), "team should be removed after deletion");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_add_and_remove_team_member(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, _) = create_org(&app, &jwt, "Acme Corp", "acme-corp").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = add_org_member(&app, &jwt, "acme-corp", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_team(
+        &app,
+        &jwt,
+        "acme-corp",
+        "Release Engineering",
+        "release-engineering",
+        Some("Owns package publication workflows"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/v1/orgs/acme-corp/teams/release-engineering/members")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::from(json!({ "username": "bob" }).to_string()))
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let body = body_json(resp).await;
+    assert_eq!(body["message"], "Team member added");
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/v1/orgs/acme-corp/teams/release-engineering/members")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    let members = body["members"].as_array().expect("members response should be an array");
+    assert_eq!(body["team"]["slug"], "release-engineering");
+    assert_eq!(members.len(), 1);
+    assert_eq!(members[0]["username"], "bob");
+
+    let req = Request::builder()
+        .method(Method::DELETE)
+        .uri("/v1/orgs/acme-corp/teams/release-engineering/members/bob")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["message"], "Team member removed");
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/v1/orgs/acme-corp/teams/release-engineering/members")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    let members = body["members"].as_array().expect("members response should be an array");
+    assert!(members.is_empty(), "team member should be removed");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_add_team_member_requires_org_membership(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "charlie", "charlie@test.dev", "super_secret_pw!").await;
+    let jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, _) = create_org(&app, &jwt, "Acme Corp", "acme-corp").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_team(
+        &app,
+        &jwt,
+        "acme-corp",
+        "Release Engineering",
+        "release-engineering",
+        Some("Owns package publication workflows"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/v1/orgs/acme-corp/teams/release-engineering/members")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::from(json!({ "username": "charlie" }).to_string()))
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    let body = body_json(resp).await;
+    assert!(body["error"]
+        .as_str()
+        .expect("error should be present")
+        .contains("must already belong to the organization"));
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

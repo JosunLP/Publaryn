@@ -1,12 +1,14 @@
-import { register } from '../api/auth.js';
-import { navigate } from '../router.js';
-import { escapeHtml } from '../utils/format.js';
+import { register } from '../api/auth';
+import { ApiError } from '../api/client';
+import type { RouteContext } from '../router';
+import { navigate } from '../router';
+import { escapeHtml } from '../utils/format';
 
-export function registerPage({ params, query }, container) {
+export function registerPage(_ctx: RouteContext, container: HTMLElement): void {
   render(container);
 }
 
-function render(container, error = null) {
+function render(container: HTMLElement, error: string | null = null): void {
   container.innerHTML = `
     <div class="mt-6" style="max-width:400px; margin-left:auto; margin-right:auto;">
       <h1 style="text-align:center; margin-bottom:24px;">Create an account</h1>
@@ -67,35 +69,61 @@ function render(container, error = null) {
     </div>
   `;
 
-  const form = container.querySelector('#register-form');
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const username = form.querySelector('#reg-username').value.trim();
-    const email = form.querySelector('#reg-email').value.trim();
-    const password = form.querySelector('#reg-password').value;
+  const form = container.querySelector<HTMLFormElement>('#register-form');
+  if (!form) {
+    return;
+  }
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+
+    const usernameInput = form.querySelector<HTMLInputElement>('#reg-username');
+    const emailInput = form.querySelector<HTMLInputElement>('#reg-email');
+    const passwordInput = form.querySelector<HTMLInputElement>('#reg-password');
+
+    const username = usernameInput?.value.trim() ?? '';
+    const email = emailInput?.value.trim() ?? '';
+    const password = passwordInput?.value ?? '';
 
     if (!username || !email || !password) {
       render(container, 'All fields are required.');
       return;
     }
+
     if (password.length < 12) {
       render(container, 'Password must be at least 12 characters.');
       return;
     }
 
-    const btn = form.querySelector('button[type="submit"]');
-    btn.disabled = true;
-    btn.textContent = 'Creating account…';
+    const submitButton = form.querySelector<HTMLButtonElement>(
+      'button[type="submit"]'
+    );
+
+    if (!submitButton) {
+      return;
+    }
+
+    submitButton.disabled = true;
+    submitButton.textContent = 'Creating account…';
 
     try {
       await register({ username, email, password });
       navigate('/login', { replace: true });
-    } catch (err) {
-      const msg =
-        err.status === 409
+    } catch (caughtError: unknown) {
+      const message =
+        caughtError instanceof ApiError && caughtError.status === 409
           ? 'Username or email is already taken.'
-          : err.body?.error || err.message || 'Registration failed.';
-      render(container, msg);
+          : caughtError instanceof ApiError &&
+              caughtError.body &&
+              typeof caughtError.body === 'object' &&
+              'error' in caughtError.body &&
+              typeof caughtError.body.error === 'string'
+            ? caughtError.body.error
+            : caughtError instanceof Error && caughtError.message
+              ? caughtError.message
+              : 'Registration failed.';
+
+      render(container, message);
     }
   });
 }

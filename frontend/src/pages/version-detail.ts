@@ -1,23 +1,38 @@
-import { getRelease, listArtifacts } from '../api/packages.js';
+import { ApiError } from '../api/client';
+import type { Artifact, Release } from '../api/packages';
+import { getRelease, listArtifacts } from '../api/packages';
+import type { RouteContext } from '../router';
 import {
   ecosystemIcon,
   ecosystemLabel,
   installCommand,
-} from '../utils/ecosystem.js';
-import { copyToClipboard, escapeHtml, formatDate } from '../utils/format.js';
+} from '../utils/ecosystem';
+import { copyToClipboard, escapeHtml, formatDate } from '../utils/format';
 
-export function versionDetailPage({ params }, container) {
-  const { ecosystem, name, version } = params;
+export function versionDetailPage(
+  { params }: RouteContext,
+  container: HTMLElement
+): void {
+  const ecosystem = params.ecosystem ?? '';
+  const name = params.name ?? '';
+  const version = params.version ?? '';
+
   container.innerHTML = `<div class="loading"><span class="spinner"></span> Loading…</div>`;
-  render(container, ecosystem, name, version);
+  void render(container, ecosystem, name, version);
 }
 
-async function render(container, ecosystem, name, version) {
-  let release;
+async function render(
+  container: HTMLElement,
+  ecosystem: string,
+  name: string,
+  version: string
+): Promise<void> {
+  let release: Release;
+
   try {
     release = await getRelease(ecosystem, name, version);
-  } catch (err) {
-    if (err.status === 404) {
+  } catch (caughtError: unknown) {
+    if (caughtError instanceof ApiError && caughtError.status === 404) {
       container.innerHTML = `
         <div class="empty-state mt-6">
           <h2>Version not found</h2>
@@ -26,16 +41,23 @@ async function render(container, ecosystem, name, version) {
         </div>`;
       return;
     }
-    container.innerHTML = `<div class="alert alert-error mt-6">Failed to load version: ${escapeHtml(err.message)}</div>`;
+
+    const message =
+      caughtError instanceof Error
+        ? caughtError.message
+        : 'Failed to load version.';
+
+    container.innerHTML = `<div class="alert alert-error mt-6">Failed to load version: ${escapeHtml(message)}</div>`;
     return;
   }
 
-  let artifacts = [];
+  let artifacts: Artifact[] = [];
+
   try {
-    artifacts = await listArtifacts(ecosystem, name, version);
-    if (!Array.isArray(artifacts)) artifacts = [];
+    const loadedArtifacts = await listArtifacts(ecosystem, name, version);
+    artifacts = Array.isArray(loadedArtifacts) ? loadedArtifacts : [];
   } catch {
-    // Non-critical — page still renders without artifacts
+    // Non-critical — page still renders without artifacts.
   }
 
   const install = installCommand(ecosystem, name, version);
@@ -55,7 +77,6 @@ async function render(container, ecosystem, name, version) {
         ${release.status === 'deprecated' ? '<span class="badge badge-deprecated">deprecated</span>' : ''}
       </div>
 
-      <!-- Install -->
       <div class="card mt-4 mb-4">
         <h3 style="font-size:0.8125rem; font-weight:600; color:var(--color-text-muted); text-transform:uppercase; letter-spacing:0.05em; margin-bottom:8px;">Install</h3>
         <div class="code-block">
@@ -79,38 +100,41 @@ async function render(container, ecosystem, name, version) {
     </div>
   `;
 
-  // Copy button
-  const copyBtn = container.querySelector('#copy-install-btn');
-  if (copyBtn) {
-    copyBtn.addEventListener('click', async () => {
-      const ok = await copyToClipboard(install);
-      copyBtn.textContent = ok ? 'Copied!' : 'Failed';
-      setTimeout(() => {
-        copyBtn.textContent = 'Copy';
-      }, 2000);
-    });
-  }
+  const copyButton =
+    container.querySelector<HTMLButtonElement>('#copy-install-btn');
+  copyButton?.addEventListener('click', async () => {
+    const copied = await copyToClipboard(install);
+    copyButton.textContent = copied ? 'Copied!' : 'Failed';
+    window.setTimeout(() => {
+      copyButton.textContent = 'Copy';
+    }, 2000);
+  });
 }
 
-function renderArtifactsSection(artifacts, ecosystem, name, version) {
+function renderArtifactsSection(
+  artifacts: Artifact[],
+  ecosystem: string,
+  name: string,
+  version: string
+): string {
   if (artifacts.length === 0) {
     return '<div class="card"><div class="empty-state"><p>No artifacts available.</p></div></div>';
   }
 
   const rows = artifacts
     .map(
-      (a) => `
+      (artifact) => `
     <div class="release-row">
       <div>
-        <a href="/v1/packages/${encodeURIComponent(ecosystem)}/${encodeURIComponent(name)}/releases/${encodeURIComponent(version)}/artifacts/${encodeURIComponent(a.filename)}"
+        <a href="/v1/packages/${encodeURIComponent(ecosystem)}/${encodeURIComponent(name)}/releases/${encodeURIComponent(version)}/artifacts/${encodeURIComponent(artifact.filename)}"
            target="_blank" rel="noopener noreferrer"
            class="release-row__version">
-          ${escapeHtml(a.filename)}
+          ${escapeHtml(artifact.filename)}
         </a>
-        <span class="text-muted" style="font-size:0.8125rem; margin-left:8px;">${escapeHtml(a.content_type || '')}</span>
+        <span class="text-muted" style="font-size:0.8125rem; margin-left:8px;">${escapeHtml(artifact.content_type || '')}</span>
       </div>
       <div class="release-row__meta">
-        ${a.size_bytes != null ? formatFileSize(a.size_bytes) : ''}
+        ${artifact.size_bytes != null ? formatFileSize(artifact.size_bytes) : ''}
       </div>
     </div>`
     )
@@ -119,34 +143,51 @@ function renderArtifactsSection(artifacts, ecosystem, name, version) {
   return `<div class="card" style="padding:0;"><div style="padding:16px 20px 8px;"><h3 style="font-size:0.875rem; font-weight:600;">Artifacts</h3></div>${rows}</div>`;
 }
 
-function renderVersionSidebar(release) {
-  const meta = [];
-  if (release.status) meta.push(row('Status', escapeHtml(release.status)));
-  if (release.published_at)
-    meta.push(row('Published', formatDate(release.published_at)));
-  if (release.created_at)
-    meta.push(row('Created', formatDate(release.created_at)));
-  if (release.is_prerelease) meta.push(row('Pre-release', 'Yes'));
+function renderVersionSidebar(release: Release): string {
+  const metadata: string[] = [];
 
-  if (release.sha256)
-    meta.push(
+  if (release.status) {
+    metadata.push(row('Status', escapeHtml(release.status)));
+  }
+
+  if (release.published_at) {
+    metadata.push(row('Published', formatDate(release.published_at)));
+  }
+
+  if (release.created_at) {
+    metadata.push(row('Created', formatDate(release.created_at)));
+  }
+
+  if (release.is_prerelease) {
+    metadata.push(row('Pre-release', 'Yes'));
+  }
+
+  if (release.sha256) {
+    metadata.push(
       row(
         'SHA-256',
         `<code style="font-size:0.75rem; word-break:break-all;">${escapeHtml(release.sha256.substring(0, 16))}…</code>`
       )
     );
+  }
 
-  return meta.length > 0
-    ? `<div class="card"><div class="sidebar-section"><h3>Version Info</h3>${meta.join('')}</div></div>`
+  return metadata.length > 0
+    ? `<div class="card"><div class="sidebar-section"><h3>Version Info</h3>${metadata.join('')}</div></div>`
     : '';
 }
 
-function row(label, value) {
+function row(label: string, value: string): string {
   return `<div class="sidebar-row"><span class="sidebar-row__label">${label}</span><span class="sidebar-row__value">${value}</span></div>`;
 }
 
-function formatFileSize(bytes) {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }

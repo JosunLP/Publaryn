@@ -7,30 +7,61 @@
 
 import {
   currentRoute as bqueryCurrentRoute,
-  isNavigating as bqueryIsNavigating,
   createRouter,
+  isNavigating as bqueryIsNavigating,
 } from '@bquery/bquery/router';
 
-const routes = [];
+export type PageCleanup = void | (() => void);
+
+export interface RouteContext {
+  params: Record<string, string>;
+  query: URLSearchParams;
+}
+
+export interface NotFoundContext {
+  path: string;
+}
+
+export type RouteHandler = (ctx: RouteContext) => PageCleanup;
+export type NotFoundHandler = (ctx: NotFoundContext) => PageCleanup;
+
+interface RouteRecord {
+  pattern: string;
+  handler: RouteHandler;
+}
+
+interface PageRouteMeta {
+  kind: 'page';
+  handler: RouteHandler;
+}
+
+interface NotFoundRouteMeta {
+  kind: 'not-found';
+}
+
+type MatchedRouteMeta = PageRouteMeta | NotFoundRouteMeta;
+
+const routes: RouteRecord[] = [];
 const API_AND_PROTOCOL_PATH_PATTERN =
   /^\/(v1|npm|pypi|composer|rubygems|maven|cargo|nuget|health|readiness|_\/|swagger-ui)/;
 
-let notFoundHandler = null;
-let currentCleanup = null;
-let router = null;
+let notFoundHandler: NotFoundHandler | null = null;
+let currentCleanup: (() => void) | null = null;
+let router: ReturnType<typeof createRouter> | null = null;
 let routerDirty = false;
 
 export const currentRoute = bqueryCurrentRoute;
 export const isNavigating = bqueryIsNavigating;
 
-function cleanupCurrentPage() {
+function cleanupCurrentPage(): void {
   if (typeof currentCleanup === 'function') {
     currentCleanup();
   }
+
   currentCleanup = null;
 }
 
-function safeDecode(value) {
+function safeDecode(value: string): string {
   try {
     return decodeURIComponent(value);
   } catch {
@@ -38,11 +69,13 @@ function safeDecode(value) {
   }
 }
 
-function decodeParams(params) {
+function decodeParams(
+  params: Record<string, unknown> | null | undefined
+): Record<string, string> {
   return Object.fromEntries(
     Object.entries(params ?? {}).map(([key, value]) => [
       key,
-      typeof value === 'string' ? safeDecode(value) : value,
+      typeof value === 'string' ? safeDecode(value) : String(value ?? ''),
     ])
   );
 }
@@ -53,7 +86,7 @@ function buildRouteDefinitions() {
       path: pattern,
       component: () => null,
       meta: {
-        kind: 'page',
+        kind: 'page' as const,
         handler,
       },
     })),
@@ -61,19 +94,20 @@ function buildRouteDefinitions() {
       path: '*',
       component: () => null,
       meta: {
-        kind: 'not-found',
+        kind: 'not-found' as const,
       },
     },
   ];
 }
 
-function renderCurrentRoute() {
+function renderCurrentRoute(): void {
   cleanupCurrentPage();
 
   const activeRoute = bqueryCurrentRoute.value;
-  const routeMeta = activeRoute?.matched?.meta ?? null;
+  const routeMeta = activeRoute?.matched
+    ?.meta as unknown as MatchedRouteMeta | null;
 
-  if (routeMeta?.kind === 'page' && typeof routeMeta.handler === 'function') {
+  if (routeMeta?.kind === 'page') {
     const cleanup = routeMeta.handler({
       params: decodeParams(activeRoute.params),
       query: new URLSearchParams(window.location.search),
@@ -100,7 +134,7 @@ function renderCurrentRoute() {
   }
 }
 
-function ensureRouter() {
+function ensureRouter(): ReturnType<typeof createRouter> {
   if (router && !routerDirty) {
     return router;
   }
@@ -114,35 +148,44 @@ function ensureRouter() {
   router = createRouter({
     routes: buildRouteDefinitions(),
   });
-  router.afterEach(() => renderCurrentRoute());
-  routerDirty = false;
 
+  router.afterEach(() => {
+    renderCurrentRoute();
+  });
+
+  routerDirty = false;
   return router;
 }
 
-export function route(pattern, handler) {
+export function route(pattern: string, handler: RouteHandler): void {
   routes.push({ pattern, handler });
   routerDirty = true;
 }
 
-export function notFound(handler) {
+export function notFound(handler: NotFoundHandler): void {
   notFoundHandler = handler;
 }
 
-export function navigate(path, { replace = false } = {}) {
+export function navigate(
+  path: string,
+  { replace = false }: { replace?: boolean } = {}
+): void {
   const activeRouter = ensureRouter();
+  const navigateMethod = replace
+    ? activeRouter.replace.bind(activeRouter)
+    : activeRouter.push.bind(activeRouter);
 
-  void activeRouter[replace ? 'replace' : 'push'](path).catch((error) => {
+  void navigateMethod(path).catch((error: unknown) => {
     console.error('Publaryn router navigation failed:', error);
   });
 }
 
-export function resolve() {
+export function resolve(): void {
   ensureRouter();
   renderCurrentRoute();
 }
 
-document.addEventListener('click', (event) => {
+document.addEventListener('click', (event: MouseEvent) => {
   if (!(event.target instanceof Element)) {
     return;
   }

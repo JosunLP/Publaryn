@@ -1,4 +1,9 @@
-export function notFoundPage({ path }, container) {
+import type { NotFoundContext } from '../router';
+
+export function notFoundPage(
+  _ctx: NotFoundContext,
+  container: HTMLElement
+): void {
   container.innerHTML = `
     <div class="empty-state mt-6">
       <h2>Page not found</h2>

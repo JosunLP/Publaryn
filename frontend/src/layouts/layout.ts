@@ -1,12 +1,12 @@
-import { clearAuthToken, getAuthToken } from '../api/client.js';
-import { navigate } from '../router.js';
-import { getThemeMode, toggleThemeMode } from '../theme.js';
+import { clearAuthToken, getAuthToken } from '../api/client';
+import { navigate } from '../router';
+import { getThemeMode, toggleThemeMode } from '../theme';
 
 /**
  * Render the shared page layout (header + footer) and return a reference
  * to the main content container.
  */
-export function renderLayout(rootEl) {
+export function renderLayout(rootEl: HTMLElement): HTMLElement {
   const isLoggedIn = !!getAuthToken();
   const themeMode = getThemeMode();
 
@@ -57,27 +57,39 @@ export function renderLayout(rootEl) {
     </footer>
   `;
 
-  // Handle header search form submission
-  const searchForm = rootEl.querySelector('#header-search-form');
-  searchForm.addEventListener('submit', (e) => {
-    e.preventDefault();
-    const q = searchForm.querySelector('input').value.trim();
-    if (q) {
-      navigate(`/search?q=${encodeURIComponent(q)}`);
+  const searchForm = rootEl.querySelector<HTMLFormElement>(
+    '#header-search-form'
+  );
+  searchForm?.addEventListener('submit', (event) => {
+    event.preventDefault();
+
+    const searchInput =
+      searchForm.querySelector<HTMLInputElement>('input[name="q"]');
+    const query = searchInput?.value.trim() ?? '';
+
+    if (query) {
+      navigate(`/search?q=${encodeURIComponent(query)}`);
     }
   });
 
-  const themeToggle = rootEl.querySelector('#theme-toggle-btn');
+  const themeToggle =
+    rootEl.querySelector<HTMLButtonElement>('#theme-toggle-btn');
   themeToggle?.addEventListener('click', () => {
     const nextMode = toggleThemeMode();
     themeToggle.setAttribute('aria-pressed', String(nextMode === 'dark'));
     themeToggle.textContent = nextMode === 'dark' ? 'Light mode' : 'Dark mode';
   });
 
-  rootEl.querySelector('#logout-btn')?.addEventListener('click', () => {
+  const logoutButton = rootEl.querySelector<HTMLButtonElement>('#logout-btn');
+  logoutButton?.addEventListener('click', () => {
     clearAuthToken();
     navigate('/login', { replace: true });
   });
 
-  return rootEl.querySelector('#main-content');
+  const mainContent = rootEl.querySelector<HTMLElement>('#main-content');
+  if (!mainContent) {
+    throw new Error('Publaryn main content container was not rendered.');
+  }
+
+  return mainContent;
 }

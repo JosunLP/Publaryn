@@ -1,24 +1,34 @@
-import { searchPackages } from '../api/packages.js';
-import { navigate } from '../router.js';
-import {
-  ecosystemIcon,
-  ecosystemLabel,
-  ECOSYSTEMS,
-} from '../utils/ecosystem.js';
-import { escapeHtml, formatDate, formatNumber } from '../utils/format.js';
+import type { SearchPackagesResponse } from '../api/packages';
+import { searchPackages } from '../api/packages';
+import type { RouteContext } from '../router';
+import { navigate } from '../router';
+import { ECOSYSTEMS, ecosystemIcon, ecosystemLabel } from '../utils/ecosystem';
+import { escapeHtml, formatDate, formatNumber } from '../utils/format';
 
-export function searchPage({ params, query }, container) {
-  const q = query.get('q') || '';
-  const ecosystem = query.get('ecosystem') || '';
-  const page = parseInt(query.get('page') || '1', 10);
+export function searchPage(
+  { query }: RouteContext,
+  container: HTMLElement
+): void {
+  const q = query.get('q') ?? '';
+  const ecosystem = query.get('ecosystem') ?? '';
+  const parsedPage = Number.parseInt(query.get('page') ?? '1', 10);
+  const page = Number.isFinite(parsedPage) && parsedPage > 0 ? parsedPage : 1;
 
   container.innerHTML = `<div class="loading"><span class="spinner"></span> Searching…</div>`;
-  render(container, { q, ecosystem, page });
+  void render(container, { q, ecosystem, page });
 }
 
-async function render(container, { q, ecosystem, page }) {
+async function render(
+  container: HTMLElement,
+  { q, ecosystem, page }: { q: string; ecosystem: string; page: number }
+): Promise<void> {
   const perPage = 20;
-  let results = { total: 0, packages: [], page: 1, per_page: perPage };
+  let results: SearchPackagesResponse = {
+    total: 0,
+    packages: [],
+    page: 1,
+    per_page: perPage,
+  };
 
   try {
     results = await searchPackages({
@@ -27,8 +37,11 @@ async function render(container, { q, ecosystem, page }) {
       page,
       perPage,
     });
-  } catch (err) {
-    container.innerHTML = `<div class="alert alert-error">Search failed: ${escapeHtml(err.message)}</div>`;
+  } catch (caughtError: unknown) {
+    const message =
+      caughtError instanceof Error ? caughtError.message : 'Search failed.';
+
+    container.innerHTML = `<div class="alert alert-error">Search failed: ${escapeHtml(message)}</div>`;
     return;
   }
 
@@ -49,8 +62,8 @@ async function render(container, { q, ecosystem, page }) {
         <select name="ecosystem" class="form-input" style="width:auto; min-width:140px;">
           <option value="">All ecosystems</option>
           ${ECOSYSTEMS.map(
-            (e) =>
-              `<option value="${e.id}" ${e.id === ecosystem ? 'selected' : ''}>${e.label}</option>`
+            (option) =>
+              `<option value="${option.id}" ${option.id === ecosystem ? 'selected' : ''}>${option.label}</option>`
           ).join('')}
         </select>
         <button type="submit" class="btn btn-primary">Search</button>
@@ -101,25 +114,47 @@ async function render(container, { q, ecosystem, page }) {
     </div>
   `;
 
-  // Form handling
-  const form = container.querySelector('#search-form');
-  form.addEventListener('submit', (e) => {
-    e.preventDefault();
-    const fd = new FormData(form);
+  const form = container.querySelector<HTMLFormElement>('#search-form');
+  form?.addEventListener('submit', (event) => {
+    event.preventDefault();
+
+    const formData = new FormData(form);
     const params = new URLSearchParams();
-    if (fd.get('q')) params.set('q', fd.get('q'));
-    if (fd.get('ecosystem')) params.set('ecosystem', fd.get('ecosystem'));
+    const queryValue = formData.get('q')?.toString().trim() ?? '';
+    const ecosystemValue = formData.get('ecosystem')?.toString().trim() ?? '';
+
+    if (queryValue) {
+      params.set('q', queryValue);
+    }
+
+    if (ecosystemValue) {
+      params.set('ecosystem', ecosystemValue);
+    }
+
     navigate(`/search?${params.toString()}`);
   });
 
-  // Pagination
-  container.querySelectorAll('.pagination button[data-page]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const params = new URLSearchParams();
-      if (q) params.set('q', q);
-      if (ecosystem) params.set('ecosystem', ecosystem);
-      params.set('page', btn.dataset.page);
-      navigate(`/search?${params.toString()}`);
+  container
+    .querySelectorAll<HTMLButtonElement>('.pagination button[data-page]')
+    .forEach((button) => {
+      button.addEventListener('click', () => {
+        const nextPage = button.dataset.page;
+        if (!nextPage) {
+          return;
+        }
+
+        const params = new URLSearchParams();
+
+        if (q) {
+          params.set('q', q);
+        }
+
+        if (ecosystem) {
+          params.set('ecosystem', ecosystem);
+        }
+
+        params.set('page', nextPage);
+        navigate(`/search?${params.toString()}`);
+      });
     });
-  });
 }

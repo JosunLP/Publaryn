@@ -2,17 +2,17 @@ import { defineBqueryConfig } from '@bquery/bquery/platform';
 import { effect } from '@bquery/bquery/reactive';
 import '@bquery/ui';
 
-import { onUnauthorized } from './api/client.js';
-import { renderLayout } from './layouts/layout.js';
-import { landingPage } from './pages/landing.js';
-import { loginPage } from './pages/login.js';
-import { notFoundPage } from './pages/not-found.js';
-import { orgDetailPage } from './pages/org-detail.js';
-import { packageDetailPage } from './pages/package-detail.js';
-import { registerPage } from './pages/register.js';
-import { searchPage } from './pages/search.js';
-import { settingsPage } from './pages/settings.js';
-import { versionDetailPage } from './pages/version-detail.js';
+import { onUnauthorized } from './api/client';
+import { renderLayout } from './layouts/layout';
+import { landingPage } from './pages/landing';
+import { loginPage } from './pages/login';
+import { notFoundPage } from './pages/not-found';
+import { orgDetailPage } from './pages/org-detail';
+import { packageDetailPage } from './pages/package-detail';
+import { registerPage } from './pages/register';
+import { searchPage } from './pages/search';
+import { settingsPage } from './pages/settings';
+import { versionDetailPage } from './pages/version-detail';
 import {
   currentRoute,
   isNavigating,
@@ -20,17 +20,23 @@ import {
   notFound,
   resolve,
   route,
-} from './router.js';
+} from './router';
+import type { PageCleanup } from './router';
 import './styles/main.css';
-import { initializeTheme } from './theme.js';
+import { initializeTheme } from './theme';
 
-type PageHandler = (ctx: any, container: HTMLElement) => void | (() => void);
+type PageHandler<TContext> = (
+  ctx: TContext,
+  container: HTMLElement
+) => PageCleanup;
 
 const root = document.getElementById('app');
 
 if (!(root instanceof HTMLElement)) {
   throw new Error('Publaryn frontend root element was not found.');
 }
+
+const appRoot = root;
 
 defineBqueryConfig({
   transitions: {
@@ -84,17 +90,21 @@ function titleForPath(path: string, isNotFound: boolean) {
 }
 
 effect(() => {
-  const path = currentRoute.value.path || '/';
-  const isNotFound = currentRoute.value.matched?.meta?.kind === 'not-found';
+  const routePath = currentRoute.value.path;
+  const path = typeof routePath === 'string' && routePath ? routePath : '/';
+  const routeMeta = currentRoute.value.matched?.meta as
+    | { kind?: string }
+    | undefined;
+  const isNotFound = routeMeta?.kind === 'not-found';
 
   document.body.dataset.routePath = path;
   document.body.dataset.routeState = isNavigating.value ? 'loading' : 'idle';
   document.title = titleForPath(path, isNotFound);
 });
 
-function page(handler: PageHandler) {
-  return (ctx: any) => {
-    const main = renderLayout(root);
+function page<TContext>(handler: PageHandler<TContext>) {
+  return (ctx: TContext): PageCleanup => {
+    const main = renderLayout(appRoot);
     return handler(ctx, main);
   };
 }

@@ -1,7 +1,7 @@
 import DOMPurify from 'dompurify';
 import { marked } from 'marked';
 
-// Configure marked for security
+// Configure marked for security.
 marked.setOptions({
   gfm: true,
   breaks: false,
@@ -11,10 +11,15 @@ marked.setOptions({
  * Render markdown to sanitized HTML.
  * Prevents XSS from user-supplied README content.
  */
-export function renderMarkdown(md) {
-  if (!md) return '';
-  const raw = marked.parse(md);
-  return DOMPurify.sanitize(raw, {
+export function renderMarkdown(md: string | null | undefined): string {
+  if (!md) {
+    return '';
+  }
+
+  const rendered = marked.parse(md);
+  const rawHtml = typeof rendered === 'string' ? rendered : String(rendered);
+
+  return DOMPurify.sanitize(rawHtml, {
     ALLOWED_TAGS: [
       'h1',
       'h2',

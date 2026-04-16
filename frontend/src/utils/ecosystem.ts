@@ -1,12 +1,33 @@
+export type EcosystemId =
+  | 'npm'
+  | 'pypi'
+  | 'cargo'
+  | 'nuget'
+  | 'rubygems'
+  | 'maven'
+  | 'composer'
+  | 'oci';
+
+export interface EcosystemDefinition {
+  id: EcosystemId;
+  label: string;
+  icon: string;
+}
+
 /**
  * Generate ecosystem-specific install instructions.
  */
-export function installCommand(ecosystem, name, version) {
-  const v = version ? `@${version}` : '';
+export function installCommand(
+  ecosystem: string | null | undefined,
+  name: string,
+  version?: string | null
+): string {
+  const suffix = version ? `@${version}` : '';
+
   switch (ecosystem?.toLowerCase()) {
     case 'npm':
     case 'bun':
-      return `npm install ${name}${v}`;
+      return `npm install ${name}${suffix}`;
     case 'pypi':
       return version
         ? `pip install ${name}==${version}`
@@ -25,8 +46,10 @@ export function installCommand(ecosystem, name, version) {
       return version
         ? `composer require ${name}:${version}`
         : `composer require ${name}`;
-    case 'maven':
-      return `<dependency>\n  <groupId>${name.split(':')[0] || name}</groupId>\n  <artifactId>${name.split(':')[1] || name}</artifactId>${version ? `\n  <version>${version}</version>` : ''}\n</dependency>`;
+    case 'maven': {
+      const [groupId = name, artifactId = name] = name.split(':');
+      return `<dependency>\n  <groupId>${groupId}</groupId>\n  <artifactId>${artifactId}</artifactId>${version ? `\n  <version>${version}</version>` : ''}\n</dependency>`;
+    }
     case 'oci':
       return `docker pull ${name}${version ? `:${version}` : ''}`;
     default:
@@ -37,7 +60,7 @@ export function installCommand(ecosystem, name, version) {
 /**
  * User-friendly ecosystem display names.
  */
-export const ECOSYSTEMS = [
+export const ECOSYSTEMS: EcosystemDefinition[] = [
   { id: 'npm', label: 'npm', icon: '📦' },
   { id: 'pypi', label: 'PyPI', icon: '🐍' },
   { id: 'cargo', label: 'Cargo', icon: '🦀' },
@@ -48,10 +71,17 @@ export const ECOSYSTEMS = [
   { id: 'oci', label: 'OCI / Docker', icon: '🐳' },
 ];
 
-export function ecosystemLabel(id) {
-  return ECOSYSTEMS.find((e) => e.id === id?.toLowerCase())?.label || id;
+export function ecosystemLabel(id: string | null | undefined): string {
+  return (
+    ECOSYSTEMS.find((ecosystem) => ecosystem.id === id?.toLowerCase())?.label ||
+    id ||
+    ''
+  );
 }
 
-export function ecosystemIcon(id) {
-  return ECOSYSTEMS.find((e) => e.id === id?.toLowerCase())?.icon || '📦';
+export function ecosystemIcon(id: string | null | undefined): string {
+  return (
+    ECOSYSTEMS.find((ecosystem) => ecosystem.id === id?.toLowerCase())?.icon ||
+    '📦'
+  );
 }
