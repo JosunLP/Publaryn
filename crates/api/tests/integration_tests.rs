@@ -159,6 +159,66 @@ async fn add_org_member(
     (status, body)
 }
 
+/// Create a repository and return the response.
+async fn create_repository(
+    app: &axum::Router,
+    jwt: &str,
+    name: &str,
+    slug: &str,
+    owner_org_id: Option<&str>,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/v1/repositories")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::from(
+            json!({
+                "name": name,
+                "slug": slug,
+                "kind": "public",
+                "visibility": "public",
+                "owner_org_id": owner_org_id,
+            })
+            .to_string(),
+        ))
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// Create a package and return the response.
+async fn create_package(
+    app: &axum::Router,
+    jwt: &str,
+    ecosystem: &str,
+    name: &str,
+    repository_slug: &str,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/v1/packages")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::from(
+            json!({
+                "ecosystem": ecosystem,
+                "name": name,
+                "repository_slug": repository_slug,
+            })
+            .to_string(),
+        ))
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // Health
 // ══════════════════════════════════════════════════════════════════════════════
@@ -700,6 +760,301 @@ async fn test_add_team_member_requires_org_membership(pool: PgPool) {
         .as_str()
         .expect("error should be present")
         .contains("must already belong to the organization"));
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_team_package_access_roundtrip(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &jwt, "Acme Corp", "acme-corp").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id = org_body["id"].as_str().expect("org id should be returned");
+
+    let (status, _) = create_repository(
+        &app,
+        &jwt,
+        "Acme Packages",
+        "acme-packages",
+        Some(org_id),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_package(&app, &jwt, "npm", "acme-widget", "acme-packages").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_team(
+        &app,
+        &jwt,
+        "acme-corp",
+        "Release Engineering",
+        "release-engineering",
+        Some("Owns delegated package publication workflows"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let req = Request::builder()
+        .method(Method::PUT)
+        .uri("/v1/orgs/acme-corp/teams/release-engineering/package-access/npm/acme-widget")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::from(
+            json!({
+                "permissions": ["publish", "write_metadata"],
+            })
+            .to_string(),
+        ))
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["message"], "Team package access updated");
+    assert_eq!(body["permissions"], json!(["publish", "write_metadata"]));
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/v1/orgs/acme-corp/teams/release-engineering/package-access")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    let package_access = body["package_access"]
+        .as_array()
+        .expect("package access response should be an array");
+    assert_eq!(body["team"]["slug"], "release-engineering");
+    assert_eq!(package_access.len(), 1);
+    assert_eq!(package_access[0]["ecosystem"], "npm");
+    assert_eq!(package_access[0]["name"], "acme-widget");
+    assert_eq!(package_access[0]["permissions"], json!(["publish", "write_metadata"]));
+
+    let req = Request::builder()
+        .method(Method::PUT)
+        .uri("/v1/orgs/acme-corp/teams/release-engineering/package-access/npm/acme-widget")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::from(json!({ "permissions": ["admin"] }).to_string()))
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["permissions"], json!(["admin"]));
+
+    let req = Request::builder()
+        .method(Method::DELETE)
+        .uri("/v1/orgs/acme-corp/teams/release-engineering/package-access/npm/acme-widget")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["message"], "Team package access removed");
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/v1/orgs/acme-corp/teams/release-engineering/package-access")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    let package_access = body["package_access"]
+        .as_array()
+        .expect("package access response should be an array");
+    assert!(package_access.is_empty(), "package access should be removed");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_team_package_access_rejects_empty_permissions(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &jwt, "Acme Corp", "acme-corp").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id = org_body["id"].as_str().expect("org id should be returned");
+
+    let (status, _) = create_repository(
+        &app,
+        &jwt,
+        "Acme Packages",
+        "acme-packages",
+        Some(org_id),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_package(&app, &jwt, "npm", "acme-widget", "acme-packages").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_team(
+        &app,
+        &jwt,
+        "acme-corp",
+        "Release Engineering",
+        "release-engineering",
+        Some("Owns delegated package publication workflows"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let req = Request::builder()
+        .method(Method::PUT)
+        .uri("/v1/orgs/acme-corp/teams/release-engineering/package-access/npm/acme-widget")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::from(json!({ "permissions": [] }).to_string()))
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert!(
+        resp.status() == StatusCode::UNPROCESSABLE_ENTITY
+            || resp.status() == StatusCode::BAD_REQUEST,
+        "Expected 422 or 400, got {}",
+        resp.status()
+    );
+    let body = body_json(resp).await;
+    assert!(body["error"]
+        .as_str()
+        .expect("error should be present")
+        .contains("At least one team permission is required"));
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_team_package_access_rejects_unknown_permissions(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &jwt, "Acme Corp", "acme-corp").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id = org_body["id"].as_str().expect("org id should be returned");
+
+    let (status, _) = create_repository(
+        &app,
+        &jwt,
+        "Acme Packages",
+        "acme-packages",
+        Some(org_id),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_package(&app, &jwt, "npm", "acme-widget", "acme-packages").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_team(
+        &app,
+        &jwt,
+        "acme-corp",
+        "Release Engineering",
+        "release-engineering",
+        Some("Owns delegated package publication workflows"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let req = Request::builder()
+        .method(Method::PUT)
+        .uri("/v1/orgs/acme-corp/teams/release-engineering/package-access/npm/acme-widget")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::from(
+            json!({ "permissions": ["superpowers"] }).to_string(),
+        ))
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert!(
+        resp.status() == StatusCode::UNPROCESSABLE_ENTITY
+            || resp.status() == StatusCode::BAD_REQUEST,
+        "Expected 422 or 400, got {}",
+        resp.status()
+    );
+    let body = body_json(resp).await;
+    assert!(body["error"]
+        .as_str()
+        .expect("error should be present")
+        .contains("Unknown team permission: superpowers"));
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_team_package_access_rejects_packages_outside_org(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &jwt, "Acme Corp", "acme-corp").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id = org_body["id"].as_str().expect("org id should be returned");
+
+    let (status, _) = create_repository(
+        &app,
+        &jwt,
+        "Acme Packages",
+        "acme-packages",
+        Some(org_id),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_repository(
+        &app,
+        &jwt,
+        "Personal Packages",
+        "personal-packages",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_package(
+        &app,
+        &jwt,
+        "npm",
+        "personal-widget",
+        "personal-packages",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_team(
+        &app,
+        &jwt,
+        "acme-corp",
+        "Release Engineering",
+        "release-engineering",
+        Some("Owns delegated package publication workflows"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let req = Request::builder()
+        .method(Method::PUT)
+        .uri("/v1/orgs/acme-corp/teams/release-engineering/package-access/npm/personal-widget")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::from(json!({ "permissions": ["publish"] }).to_string()))
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let body = body_json(resp).await;
+    assert!(body["error"]
+        .as_str()
+        .expect("error should be present")
+        .contains("same organization"));
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

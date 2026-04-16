@@ -13,6 +13,8 @@ import type {
   TeamListResponse,
   TeamMember,
   TeamMemberListResponse,
+  TeamPackageAccessGrant,
+  TeamPackageAccessListResponse,
 } from '../api/orgs';
 import {
   addMember,
@@ -24,10 +26,13 @@ import {
   listMyOrganizations,
   listOrgInvitations,
   listOrgPackages,
+  listTeamPackageAccess,
   listTeamMembers,
   listTeams,
+  removeTeamPackageAccess,
   removeMember,
   removeTeamMember,
+  replaceTeamPackageAccess,
   revokeInvitation,
   sendInvitation,
   updateTeam,
@@ -46,8 +51,46 @@ const ORG_ROLE_OPTIONS = [
   { value: 'viewer', label: 'Viewer' },
 ] as const;
 
+const TEAM_PERMISSION_OPTIONS = [
+  {
+    value: 'admin',
+    label: 'Admin',
+    description: 'Archive packages and manage trusted publishers.',
+  },
+  {
+    value: 'publish',
+    label: 'Publish',
+    description: 'Create releases and manage package artifacts.',
+  },
+  {
+    value: 'write_metadata',
+    label: 'Write metadata',
+    description: 'Update package details such as README and metadata.',
+  },
+  {
+    value: 'read_private',
+    label: 'Read private',
+    description: 'Read-focused grant for future least-privilege workflows.',
+  },
+  {
+    value: 'security_review',
+    label: 'Security review',
+    description: 'Reserved for upcoming package security workflows.',
+  },
+  {
+    value: 'transfer_ownership',
+    label: 'Transfer ownership',
+    description: 'Transfer package ownership out of the organization.',
+  },
+] as const;
+
 interface TeamMemberState {
   members: TeamMember[];
+  load_error: string | null;
+}
+
+interface TeamPackageAccessState {
+  grants: TeamPackageAccessGrant[];
   load_error: string | null;
 }
 
@@ -63,6 +106,7 @@ interface OrgDetailViewState {
   teams: Team[];
   teamsError: string | null;
   teamMembersBySlug: Record<string, TeamMemberState>;
+  teamPackageAccessBySlug: Record<string, TeamPackageAccessState>;
   packages: OrgPackageSummary[];
   packagesError: string | null;
   invitations: OrgInvitation[];
@@ -130,25 +174,29 @@ async function loadAndRender(
     );
     const canAdminister = ADMIN_ROLES.has(membership?.role || '');
 
-    const [invitationData, teamMembersBySlug] = await Promise.all([
-      canAdminister
-        ? listOrgInvitations(slug).catch(
-            (caughtError: unknown): OrgInvitationListResponse => ({
+    const [invitationData, teamMembersBySlug, teamPackageAccessBySlug] =
+      await Promise.all([
+        canAdminister
+          ? listOrgInvitations(slug).catch(
+              (caughtError: unknown): OrgInvitationListResponse => ({
+                invitations: [],
+                load_error: toErrorMessage(
+                  caughtError,
+                  'Failed to load invitations.'
+                ),
+              })
+            )
+          : Promise.resolve<OrgInvitationListResponse>({
               invitations: [],
-              load_error: toErrorMessage(
-                caughtError,
-                'Failed to load invitations.'
-              ),
-            })
-          )
-        : Promise.resolve<OrgInvitationListResponse>({
-            invitations: [],
-            load_error: null,
-          }),
-      canAdminister
-        ? loadTeamMembers(slug, teamData.teams || [])
-        : Promise.resolve<Record<string, TeamMemberState>>({}),
-    ]);
+              load_error: null,
+            }),
+        canAdminister
+          ? loadTeamMembers(slug, teamData.teams || [])
+          : Promise.resolve<Record<string, TeamMemberState>>({}),
+        canAdminister
+          ? loadTeamPackageAccess(slug, teamData.teams || [])
+          : Promise.resolve<Record<string, TeamPackageAccessState>>({}),
+      ]);
 
     render(container, {
       slug,
@@ -162,6 +210,7 @@ async function loadAndRender(
       teams: teamData.teams || [],
       teamsError: teamData.load_error || null,
       teamMembersBySlug,
+      teamPackageAccessBySlug,
       packages: packageData.packages || [],
       packagesError: packageData.load_error || null,
       invitations: invitationData.invitations || [],
@@ -203,6 +252,7 @@ function render(container: HTMLElement, state: OrgDetailViewState): void {
     teams,
     teamsError,
     teamMembersBySlug,
+    teamPackageAccessBySlug,
     packages,
     packagesError,
     invitations,
@@ -284,8 +334,8 @@ function render(container: HTMLElement, state: OrgDetailViewState): void {
         <section class="card settings-section">
           <h2>About this organization</h2>
           <p class="settings-copy">
-            Use this page as the canonical workspace for organization ownership, members, teams, and visible packages.
-            Delegated package access, ownership transfer, and audit/security dashboards land here next.
+            Use this page as the canonical workspace for organization ownership, members, teams, delegated package access, and visible packages.
+            Ownership transfer plus audit and security dashboards land here next.
           </p>
         </section>
       </div>
@@ -430,7 +480,7 @@ function render(container: HTMLElement, state: OrgDetailViewState): void {
           <div class="org-section-header">
             <div>
               <h2>Teams</h2>
-              <p class="settings-copy">Create and manage organization teams here. Delegated package access management remains the next dedicated team-governance slice.</p>
+              <p class="settings-copy">Create and manage organization teams and their package responsibilities here.</p>
             </div>
           </div>
 
@@ -471,8 +521,16 @@ function render(container: HTMLElement, state: OrgDetailViewState): void {
                         const teamSlug = team.slug || '';
                         return renderTeamCard(team, {
                           canAdminister,
+                          packages,
+                          packagesError,
                           teamMemberState: teamMembersBySlug[teamSlug] || {
                             members: [],
+                            load_error: null,
+                          },
+                          teamPackageAccessState: teamPackageAccessBySlug[
+                            teamSlug
+                          ] || {
+                            grants: [],
                             load_error: null,
                           },
                         });
@@ -766,6 +824,78 @@ function render(container: HTMLElement, state: OrgDetailViewState): void {
     });
 
   container
+    .querySelectorAll<HTMLFormElement>(
+      '[data-replace-team-package-access-form]'
+    )
+    .forEach((form) => {
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+
+        const teamSlug = form.getAttribute(
+          'data-replace-team-package-access-form'
+        );
+        if (!teamSlug) {
+          return;
+        }
+
+        const formData = new FormData(form);
+        const packageSelection =
+          formData.get('package_key')?.toString().trim() || '';
+        const packageTarget = decodePackageSelection(packageSelection);
+
+        if (!packageTarget) {
+          await loadAndRender(container, slug, {
+            error: 'Select an organization package to manage access.',
+          });
+          return;
+        }
+
+        const permissions = formData
+          .getAll('permissions')
+          .map((entry) => entry.toString().trim())
+          .filter(Boolean);
+
+        if (permissions.length === 0) {
+          await loadAndRender(container, slug, {
+            error: 'Select at least one delegated package permission.',
+          });
+          return;
+        }
+
+        const submitButton = getSubmitButton(form);
+        if (!submitButton) {
+          return;
+        }
+
+        submitButton.disabled = true;
+        submitButton.textContent = 'Saving…';
+
+        try {
+          await replaceTeamPackageAccess(
+            slug,
+            teamSlug,
+            packageTarget.ecosystem,
+            packageTarget.name,
+            {
+              permissions,
+            }
+          );
+
+          await loadAndRender(container, slug, {
+            notice: `Saved package access for ${packageTarget.name} in ${teamSlug}.`,
+          });
+        } catch (caughtError: unknown) {
+          await loadAndRender(container, slug, {
+            error: toErrorMessage(
+              caughtError,
+              'Failed to update package access.'
+            ),
+          });
+        }
+      });
+    });
+
+  container
     .querySelectorAll<HTMLButtonElement>('[data-remove-team-member]')
     .forEach((button) => {
       button.addEventListener('click', async () => {
@@ -786,6 +916,36 @@ function render(container: HTMLElement, state: OrgDetailViewState): void {
         } catch (caughtError: unknown) {
           await loadAndRender(container, slug, {
             error: toErrorMessage(caughtError, 'Failed to remove team member.'),
+          });
+        }
+      });
+    });
+
+  container
+    .querySelectorAll<HTMLButtonElement>('[data-remove-team-package-access]')
+    .forEach((button) => {
+      button.addEventListener('click', async () => {
+        const teamSlug = button.getAttribute('data-team-slug');
+        const ecosystem = button.getAttribute('data-package-ecosystem');
+        const packageName = button.getAttribute('data-package-name');
+        if (!teamSlug || !ecosystem || !packageName) {
+          return;
+        }
+
+        button.disabled = true;
+        button.textContent = 'Revoking…';
+
+        try {
+          await removeTeamPackageAccess(slug, teamSlug, ecosystem, packageName);
+          await loadAndRender(container, slug, {
+            notice: `Revoked package access for ${packageName} in ${teamSlug}.`,
+          });
+        } catch (caughtError: unknown) {
+          await loadAndRender(container, slug, {
+            error: toErrorMessage(
+              caughtError,
+              'Failed to revoke package access.'
+            ),
           });
         }
       });
@@ -825,14 +985,56 @@ async function loadTeamMembers(
   return Object.fromEntries(teamEntries);
 }
 
+async function loadTeamPackageAccess(
+  slug: string,
+  teams: Team[]
+): Promise<Record<string, TeamPackageAccessState>> {
+  const teamEntries = await Promise.all(
+    teams.filter(hasTeamSlug).map(async (team) => {
+      try {
+        const data: TeamPackageAccessListResponse = await listTeamPackageAccess(
+          slug,
+          team.slug
+        );
+        return [
+          team.slug,
+          {
+            grants: data.package_access || [],
+            load_error: null,
+          },
+        ] as const;
+      } catch (caughtError: unknown) {
+        return [
+          team.slug,
+          {
+            grants: [],
+            load_error: toErrorMessage(
+              caughtError,
+              `Failed to load package access for ${team.name || team.slug}.`
+            ),
+          },
+        ] as const;
+      }
+    })
+  );
+
+  return Object.fromEntries(teamEntries);
+}
+
 function renderTeamCard(
   team: Team,
   {
     canAdminister,
+    packages,
+    packagesError,
     teamMemberState,
+    teamPackageAccessState,
   }: {
     canAdminister: boolean;
+    packages: OrgPackageSummary[];
+    packagesError: string | null;
     teamMemberState: TeamMemberState;
+    teamPackageAccessState: TeamPackageAccessState;
   }
 ): string {
   const members = teamMemberState.members || [];
@@ -907,6 +1109,23 @@ function renderTeamCard(
                   </form>
                 </div>
               </div>
+
+              <div class="settings-section mt-6">
+                <div class="org-section-header">
+                  <div>
+                    <h3>Package access</h3>
+                    <p class="settings-copy">Delegate package-scoped responsibilities to this team for organization-owned packages listed in this workspace. Saving replaces the full permission set for the selected package.</p>
+                  </div>
+                </div>
+
+                ${renderTeamPackageAccess(
+                  team,
+                  teamPackageAccessState.grants,
+                  teamPackageAccessState.load_error
+                )}
+
+                ${renderTeamPackageAccessForm(team, packages, packagesError)}
+              </div>
             </div>
           `
           : ''
@@ -960,6 +1179,167 @@ function renderTeamMembers(
   `;
 }
 
+function renderTeamPackageAccess(
+  team: Team,
+  grants: TeamPackageAccessGrant[],
+  loadError: string | null
+): string {
+  if (loadError) {
+    return `<div class="alert alert-error">${escapeHtml(loadError)}</div>`;
+  }
+
+  if (grants.length === 0) {
+    return `<p class="settings-copy">No package grants have been assigned to ${escapeHtml(team.name || team.slug || 'this team')} yet.</p>`;
+  }
+
+  return `
+    <div class="token-list">
+      ${grants
+        .map(
+          (grant) => `
+            <div class="token-row">
+              <div class="token-row__main">
+                <div class="token-row__title">
+                  <a href="/packages/${encodeURIComponent(grant.ecosystem || 'unknown')}/${encodeURIComponent(grant.name || '')}">${escapeHtml(grant.name || 'Unnamed package')}</a>
+                </div>
+                <div class="token-row__meta">
+                  <span>${escapeHtml(grant.ecosystem || 'unknown')}</span>
+                  <span>granted ${escapeHtml(formatDate(grant.granted_at))}</span>
+                </div>
+                ${renderPermissionBadges(grant.permissions || [])}
+              </div>
+              <div class="token-row__actions">
+                <button
+                  class="btn btn-secondary btn-sm"
+                  data-remove-team-package-access
+                  data-team-slug="${escapeHtml(team.slug || '')}"
+                  data-package-ecosystem="${escapeHtml(grant.ecosystem || '')}"
+                  data-package-name="${escapeHtml(grant.name || '')}"
+                  type="button"
+                >
+                  Revoke
+                </button>
+              </div>
+            </div>
+          `
+        )
+        .join('')}
+    </div>
+  `;
+}
+
+function renderTeamPackageAccessForm(
+  team: Team,
+  packages: OrgPackageSummary[],
+  packagesError: string | null
+): string {
+  const formDisabled = Boolean(packagesError) || packages.length === 0;
+
+  return `
+    <form data-replace-team-package-access-form="${escapeHtml(team.slug || '')}" class="settings-subsection">
+      <div class="form-group">
+        <label for="team-package-${escapeHtml(team.slug || 'team')}">Organization package</label>
+        ${
+          packagesError
+            ? `<div class="alert alert-error">${escapeHtml(packagesError)}</div>`
+            : packages.length === 0
+              ? '<p class="settings-copy">Create or transfer an organization-owned package before delegating team access.</p>'
+              : `
+                  <select id="team-package-${escapeHtml(team.slug || 'team')}" name="package_key" class="form-input" required>
+                    <option value="">Select a package</option>
+                    ${renderPackageSelectionOptions(packages)}
+                  </select>
+                `
+        }
+      </div>
+
+      <fieldset class="form-group">
+        <legend>Permissions</legend>
+        <p class="settings-copy">
+          Under the current backend model, any package grant also unlocks non-public reads for that package.
+          <strong>Security review</strong> remains reserved for future workflows.
+        </p>
+        <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+          ${renderTeamPermissionOptions(formDisabled)}
+        </div>
+      </fieldset>
+
+      <button type="submit" class="btn btn-primary"${formDisabled ? ' disabled' : ''}>Save package access</button>
+    </form>
+  `;
+}
+
+function renderTeamPermissionOptions(disabled: boolean): string {
+  return TEAM_PERMISSION_OPTIONS.map(
+    (permission) => `
+      <label class="rounded-lg border border-neutral-200 p-3 text-sm ${
+        disabled ? 'opacity-60' : ''
+      }">
+        <span class="flex items-start gap-3">
+          <input
+            type="checkbox"
+            name="permissions"
+            value="${permission.value}"
+            ${disabled ? 'disabled' : ''}
+          />
+          <span>
+            <span class="block font-medium">${permission.label}</span>
+            <span class="mt-1 block text-muted">${permission.description}</span>
+          </span>
+        </span>
+      </label>
+    `
+  ).join('');
+}
+
+function renderPermissionBadges(permissions: string[]): string {
+  if (permissions.length === 0) {
+    return '';
+  }
+
+  return `
+    <div class="token-row__scopes">
+      ${permissions
+        .map(
+          (permission) =>
+            `<span class="badge badge-ecosystem">${escapeHtml(formatPermission(permission))}</span>`
+        )
+        .join('')}
+    </div>
+  `;
+}
+
+function renderPackageSelectionOptions(packages: OrgPackageSummary[]): string {
+  return [...packages]
+    .sort((left, right) => {
+      const leftKey = `${left.ecosystem || ''}:${left.name || ''}`;
+      const rightKey = `${right.ecosystem || ''}:${right.name || ''}`;
+      return leftKey.localeCompare(rightKey);
+    })
+    .map((pkg) => {
+      const ecosystem = pkg.ecosystem || '';
+      const name = pkg.name || '';
+      const value = `${encodeURIComponent(ecosystem)}:${encodeURIComponent(name)}`;
+
+      return `<option value="${value}">${escapeHtml(`${ecosystem} · ${name}`)}</option>`;
+    })
+    .join('');
+}
+
+function decodePackageSelection(
+  value: string
+): { ecosystem: string; name: string } | null {
+  const separatorIndex = value.indexOf(':');
+  if (separatorIndex <= 0 || separatorIndex === value.length - 1) {
+    return null;
+  }
+
+  return {
+    ecosystem: decodeURIComponent(value.slice(0, separatorIndex)),
+    name: decodeURIComponent(value.slice(separatorIndex + 1)),
+  };
+}
+
 function renderRoleOptions(selectedValue: string): string {
   return ORG_ROLE_OPTIONS.map(
     (role) => `
@@ -972,6 +1352,14 @@ function renderRoleOptions(selectedValue: string): string {
 
 function formatRole(role: string): string {
   return role
+    .split('_')
+    .filter(Boolean)
+    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+    .join(' ');
+}
+
+function formatPermission(permission: string): string {
+  return permission
     .split('_')
     .filter(Boolean)
     .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))

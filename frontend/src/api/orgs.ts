@@ -59,6 +59,38 @@ export interface TeamMemberListResponse {
   load_error?: NullableString;
 }
 
+export interface TeamPackageAccessTeam {
+  id?: NullableString;
+  name?: NullableString;
+  slug?: NullableString;
+}
+
+export interface TeamPackageAccessGrant {
+  package_id?: NullableString;
+  name?: NullableString;
+  normalized_name?: NullableString;
+  ecosystem?: NullableString;
+  permissions?: string[] | null;
+  granted_at?: NullableString;
+}
+
+export interface TeamPackageAccessListResponse {
+  team?: TeamPackageAccessTeam | null;
+  package_access: TeamPackageAccessGrant[];
+  load_error?: NullableString;
+}
+
+export interface TeamPackageAccessMutationResult {
+  message?: NullableString;
+  package?: {
+    id?: NullableString;
+    ecosystem?: NullableString;
+    name?: NullableString;
+    normalized_name?: NullableString;
+  } | null;
+  permissions?: string[] | null;
+}
+
 export interface OrgPackageSummary {
   ecosystem?: NullableString;
   name?: NullableString;
@@ -144,6 +176,10 @@ export interface UpdateTeamInput {
 
 export interface AddTeamMemberInput {
   username: string;
+}
+
+export interface ReplaceTeamPackageAccessInput {
+  permissions: string[];
 }
 
 export interface SendInvitationInput {
@@ -323,6 +359,53 @@ export async function removeTeamMember(
 ): Promise<TeamMemberListResponse> {
   const { data } = await api.delete<TeamMemberListResponse>(
     `/v1/orgs/${enc(slug)}/teams/${enc(teamSlug)}/members/${enc(username)}`
+  );
+
+  return data;
+}
+
+export async function listTeamPackageAccess(
+  slug: string,
+  teamSlug: string
+): Promise<TeamPackageAccessListResponse> {
+  const { data } = await api.get<TeamPackageAccessListResponse>(
+    `/v1/orgs/${enc(slug)}/teams/${enc(teamSlug)}/package-access`
+  );
+
+  return data;
+}
+
+export async function replaceTeamPackageAccess(
+  slug: string,
+  teamSlug: string,
+  ecosystem: string,
+  packageName: string,
+  input: ReplaceTeamPackageAccessInput
+): Promise<TeamPackageAccessMutationResult> {
+  const { data } = await api.put<TeamPackageAccessMutationResult>(
+    `/v1/orgs/${enc(slug)}/teams/${enc(teamSlug)}/package-access/${enc(
+      ecosystem
+    )}/${enc(packageName)}`,
+    {
+      body: {
+        permissions: input.permissions,
+      },
+    }
+  );
+
+  return data;
+}
+
+export async function removeTeamPackageAccess(
+  slug: string,
+  teamSlug: string,
+  ecosystem: string,
+  packageName: string
+): Promise<TeamPackageAccessMutationResult> {
+  const { data } = await api.delete<TeamPackageAccessMutationResult>(
+    `/v1/orgs/${enc(slug)}/teams/${enc(teamSlug)}/package-access/${enc(
+      ecosystem
+    )}/${enc(packageName)}`
   );
 
   return data;
