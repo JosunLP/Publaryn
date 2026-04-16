@@ -53,7 +53,9 @@ async fn create_token(
     let token_hash = security::hash_token(&raw_token);
     let token_id = Uuid::new_v4();
     let kind = body.kind.as_deref().unwrap_or("personal");
-    let expires_at = body.expires_in_days.map(|d| Utc::now() + Duration::days(d as i64));
+    let expires_at = body
+        .expires_in_days
+        .map(|d| Utc::now() + Duration::days(d as i64));
 
     sqlx::query(
         "INSERT INTO tokens (id, kind, prefix, token_hash, name, user_id, scopes, \
@@ -149,14 +151,12 @@ async fn revoke_token(
 
     let user_id = identity.user_id;
 
-    let result = sqlx::query(
-        "UPDATE tokens SET is_revoked = true WHERE id = $1 AND user_id = $2",
-    )
-    .bind(id)
-    .bind(user_id)
-    .execute(&state.db)
-    .await
-    .map_err(|e| ApiError(Error::Database(e)))?;
+    let result = sqlx::query("UPDATE tokens SET is_revoked = true WHERE id = $1 AND user_id = $2")
+        .bind(id)
+        .bind(user_id)
+        .execute(&state.db)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
 
     if result.rows_affected() == 0 {
         return Err(ApiError(Error::NotFound("Token not found".into())));

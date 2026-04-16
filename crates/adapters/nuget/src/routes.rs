@@ -37,10 +37,11 @@ use publaryn_core::{
 
 use crate::{
     metadata::{
-        self, RegistrationInput, RegistrationVersionInput, SearchResultInput,
-        SearchVersionInput,
+        self, RegistrationInput, RegistrationVersionInput, SearchResultInput, SearchVersionInput,
     },
-    name::{normalize_nuget_id, normalize_nuget_version, nupkg_filename, validate_nuget_package_id},
+    name::{
+        normalize_nuget_id, normalize_nuget_version, nupkg_filename, validate_nuget_package_id,
+    },
     nuspec,
     publish::{self, ParsedNuGetPublish},
 };
@@ -120,10 +121,7 @@ pub fn router<S: NuGetAppState>() -> Router<S> {
             delete(unlist_package::<S>).post(relist_package::<S>),
         )
         // Flat container
-        .route(
-            "/v3-flatcontainer/:id/index.json",
-            get(get_versions::<S>),
-        )
+        .route("/v3-flatcontainer/:id/index.json", get(get_versions::<S>))
         .route(
             "/v3-flatcontainer/:id/:version/:filename",
             get(download_content::<S>),
@@ -351,10 +349,8 @@ async fn can_read_package(
         return false;
     };
 
-    let pkg_access =
-        is_owner_or_member(db, pkg_owner_user_id, pkg_owner_org_id, actor).await;
-    let repo_access =
-        is_owner_or_member(db, repo_owner_user_id, repo_owner_org_id, actor).await;
+    let pkg_access = is_owner_or_member(db, pkg_owner_user_id, pkg_owner_org_id, actor).await;
+    let repo_access = is_owner_or_member(db, repo_owner_user_id, repo_owner_org_id, actor).await;
 
     (pkg_anonymous || pkg_access) && (repo_anonymous || repo_access)
 }
@@ -514,9 +510,7 @@ async fn push_package<S: NuGetAppState>(
                 Err(resp) => return resp,
             }
         }
-        Err(_) => {
-            return nuget_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error")
-        }
+        Err(_) => return nuget_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error"),
     };
 
     // Check if version already exists
@@ -585,18 +579,13 @@ async fn push_package<S: NuGetAppState>(
             .bind(release.id)
             .execute(state.db())
             .await;
-        return nuget_error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Failed to store package",
-        );
+        return nuget_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to store package");
     }
 
     // Upload .nuspec separately for efficient serving
     let nuspec_key = format!(
         "releases/{}/artifacts/{}/{}.nuspec",
-        release.id,
-        parsed.sha256,
-        normalized
+        release.id, parsed.sha256, normalized
     );
     let _ = state
         .artifact_put(
@@ -661,8 +650,12 @@ async fn push_package<S: NuGetAppState>(
     .bind(&parsed.metadata.min_client_version)
     .bind(&parsed.metadata.summary)
     .bind(&parsed.metadata.tags)
-    .bind(nuspec::dependency_groups_to_json(&parsed.metadata.dependency_groups))
-    .bind(nuspec::package_types_to_json(&parsed.metadata.package_types))
+    .bind(nuspec::dependency_groups_to_json(
+        &parsed.metadata.dependency_groups,
+    ))
+    .bind(nuspec::package_types_to_json(
+        &parsed.metadata.package_types,
+    ))
     .execute(state.db())
     .await
     .is_err()
@@ -675,13 +668,11 @@ async fn push_package<S: NuGetAppState>(
     }
 
     // Finalize: move release to published
-    if sqlx::query(
-        "UPDATE releases SET status = 'published', updated_at = NOW() WHERE id = $1",
-    )
-    .bind(release.id)
-    .execute(state.db())
-    .await
-    .is_err()
+    if sqlx::query("UPDATE releases SET status = 'published', updated_at = NOW() WHERE id = $1")
+        .bind(release.id)
+        .execute(state.db())
+        .await
+        .is_err()
     {
         return nuget_error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -890,9 +881,7 @@ async fn unlist_package<S: NuGetAppState>(
     let pkg_row = match pkg_row {
         Ok(Some(r)) => r,
         Ok(None) => return (StatusCode::NOT_FOUND, "").into_response(),
-        Err(_) => {
-            return nuget_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error")
-        }
+        Err(_) => return nuget_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error"),
     };
 
     let package_id: Uuid = pkg_row.try_get("id").unwrap();
@@ -926,9 +915,7 @@ async fn unlist_package<S: NuGetAppState>(
     let release_id: Uuid = match release_row {
         Ok(Some(r)) => r.try_get("id").unwrap(),
         Ok(None) => return (StatusCode::NOT_FOUND, "").into_response(),
-        Err(_) => {
-            return nuget_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error")
-        }
+        Err(_) => return nuget_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error"),
     };
 
     let _ = sqlx::query(
@@ -939,12 +926,11 @@ async fn unlist_package<S: NuGetAppState>(
     .execute(state.db())
     .await;
 
-    let _ = sqlx::query(
-        "UPDATE nuget_release_metadata SET is_listed = false WHERE release_id = $1",
-    )
-    .bind(release_id)
-    .execute(state.db())
-    .await;
+    let _ =
+        sqlx::query("UPDATE nuget_release_metadata SET is_listed = false WHERE release_id = $1")
+            .bind(release_id)
+            .execute(state.db())
+            .await;
 
     // Audit
     let _ = sqlx::query(
@@ -1002,9 +988,7 @@ async fn relist_package<S: NuGetAppState>(
     let pkg_row = match pkg_row {
         Ok(Some(r)) => r,
         Ok(None) => return (StatusCode::NOT_FOUND, "").into_response(),
-        Err(_) => {
-            return nuget_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error")
-        }
+        Err(_) => return nuget_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error"),
     };
 
     let package_id: Uuid = pkg_row.try_get("id").unwrap();
@@ -1037,9 +1021,7 @@ async fn relist_package<S: NuGetAppState>(
     let release_id: Uuid = match release_row {
         Ok(Some(r)) => r.try_get("id").unwrap(),
         Ok(None) => return (StatusCode::NOT_FOUND, "").into_response(),
-        Err(_) => {
-            return nuget_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error")
-        }
+        Err(_) => return nuget_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error"),
     };
 
     let _ = sqlx::query(
@@ -1050,12 +1032,10 @@ async fn relist_package<S: NuGetAppState>(
     .execute(state.db())
     .await;
 
-    let _ = sqlx::query(
-        "UPDATE nuget_release_metadata SET is_listed = true WHERE release_id = $1",
-    )
-    .bind(release_id)
-    .execute(state.db())
-    .await;
+    let _ = sqlx::query("UPDATE nuget_release_metadata SET is_listed = true WHERE release_id = $1")
+        .bind(release_id)
+        .execute(state.db())
+        .await;
 
     // Audit
     let _ = sqlx::query(
@@ -1104,15 +1084,17 @@ async fn get_versions<S: NuGetAppState>(
     {
         Ok(Some(row)) => row,
         Ok(None) => return (StatusCode::NOT_FOUND, "").into_response(),
-        Err(_) => {
-            return nuget_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error")
-        }
+        Err(_) => return nuget_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error"),
     };
 
     if !can_read_package(
         state.db(),
-        &pkg_row.try_get::<String, _>("visibility").unwrap_or_default(),
-        &pkg_row.try_get::<String, _>("repo_visibility").unwrap_or_default(),
+        &pkg_row
+            .try_get::<String, _>("visibility")
+            .unwrap_or_default(),
+        &pkg_row
+            .try_get::<String, _>("repo_visibility")
+            .unwrap_or_default(),
         pkg_row.try_get("owner_user_id").unwrap_or(None),
         pkg_row.try_get("owner_org_id").unwrap_or(None),
         pkg_row.try_get("repo_owner_user_id").unwrap_or(None),
@@ -1179,15 +1161,17 @@ async fn download_content<S: NuGetAppState>(
     {
         Ok(Some(row)) => row,
         Ok(None) => return (StatusCode::NOT_FOUND, "").into_response(),
-        Err(_) => {
-            return nuget_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error")
-        }
+        Err(_) => return nuget_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error"),
     };
 
     if !can_read_package(
         state.db(),
-        &pkg_row.try_get::<String, _>("visibility").unwrap_or_default(),
-        &pkg_row.try_get::<String, _>("repo_visibility").unwrap_or_default(),
+        &pkg_row
+            .try_get::<String, _>("visibility")
+            .unwrap_or_default(),
+        &pkg_row
+            .try_get::<String, _>("repo_visibility")
+            .unwrap_or_default(),
         pkg_row.try_get("owner_user_id").unwrap_or(None),
         pkg_row.try_get("owner_org_id").unwrap_or(None),
         pkg_row.try_get("repo_owner_user_id").unwrap_or(None),
@@ -1224,10 +1208,7 @@ async fn download_content<S: NuGetAppState>(
             Ok(Some(r)) => r.try_get::<String, _>("storage_key").unwrap_or_default(),
             Ok(None) => return (StatusCode::NOT_FOUND, "").into_response(),
             Err(_) => {
-                return nuget_error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Database error",
-                )
+                return nuget_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error")
             }
         };
 
@@ -1255,10 +1236,7 @@ async fn download_content<S: NuGetAppState>(
             Ok(Some(obj)) => obj,
             Ok(None) => return (StatusCode::NOT_FOUND, "").into_response(),
             Err(_) => {
-                return nuget_error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Storage error",
-                )
+                return nuget_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Storage error")
             }
         };
 
@@ -1295,10 +1273,7 @@ async fn download_content<S: NuGetAppState>(
             Ok(Some(r)) => r,
             Ok(None) => return (StatusCode::NOT_FOUND, "").into_response(),
             Err(_) => {
-                return nuget_error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Database error",
-                )
+                return nuget_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error")
             }
         };
 
@@ -1308,20 +1283,16 @@ async fn download_content<S: NuGetAppState>(
             Ok(Some(obj)) => obj,
             Ok(None) => return (StatusCode::NOT_FOUND, "").into_response(),
             Err(_) => {
-                return nuget_error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Storage error",
-                )
+                return nuget_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Storage error")
             }
         };
 
         // Increment download count (fire-and-forget)
-        let _ = sqlx::query(
-            "UPDATE packages SET download_count = download_count + 1 WHERE id = $1",
-        )
-        .bind(package_id)
-        .execute(state.db())
-        .await;
+        let _ =
+            sqlx::query("UPDATE packages SET download_count = download_count + 1 WHERE id = $1")
+                .bind(package_id)
+                .execute(state.db())
+                .await;
 
         let size = stored.bytes.len();
         (
@@ -1361,15 +1332,17 @@ async fn get_registration_index<S: NuGetAppState>(
     {
         Ok(Some(row)) => row,
         Ok(None) => return (StatusCode::NOT_FOUND, "").into_response(),
-        Err(_) => {
-            return nuget_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error")
-        }
+        Err(_) => return nuget_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error"),
     };
 
     if !can_read_package(
         state.db(),
-        &pkg_row.try_get::<String, _>("visibility").unwrap_or_default(),
-        &pkg_row.try_get::<String, _>("repo_visibility").unwrap_or_default(),
+        &pkg_row
+            .try_get::<String, _>("visibility")
+            .unwrap_or_default(),
+        &pkg_row
+            .try_get::<String, _>("repo_visibility")
+            .unwrap_or_default(),
         pkg_row.try_get("owner_user_id").unwrap_or(None),
         pkg_row.try_get("owner_org_id").unwrap_or(None),
         pkg_row.try_get("repo_owner_user_id").unwrap_or(None),
@@ -1426,9 +1399,7 @@ async fn get_registration_index<S: NuGetAppState>(
                 is_listed: row.try_get("is_listed").unwrap_or(true),
                 is_deprecated: row.try_get("is_deprecated").unwrap_or(false),
                 deprecation_message: row.try_get("deprecation_message").unwrap_or(None),
-                published_at: row
-                    .try_get("published_at")
-                    .unwrap_or_else(|_| Utc::now()),
+                published_at: row.try_get("published_at").unwrap_or_else(|_| Utc::now()),
                 package_types: row
                     .try_get::<serde_json::Value, _>("package_types")
                     .unwrap_or(serde_json::json!([{"name": "Dependency"}])),
@@ -1478,9 +1449,7 @@ async fn search<S: NuGetAppState>(
 
     let hits = match state.search_packages(&query, take, skip).await {
         Ok(h) => h,
-        Err(_) => {
-            return nuget_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Search error")
-        }
+        Err(_) => return nuget_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Search error"),
     };
 
     let total_hits = hits.len() as i64;

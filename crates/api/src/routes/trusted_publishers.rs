@@ -88,7 +88,9 @@ async fn list_trusted_publishers(
         })
         .collect();
 
-    Ok(Json(serde_json::json!({ "trusted_publishers": publishers })))
+    Ok(Json(
+        serde_json::json!({ "trusted_publishers": publishers }),
+    ))
 }
 
 async fn create_trusted_publisher(

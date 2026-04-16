@@ -123,14 +123,8 @@ impl Worker {
                 None => {
                     let msg = format!("No handler registered for job kind {:?}", job.kind);
                     tracing::error!(job_id = %job.id, msg);
-                    let _ = queue::fail_job(
-                        &self.db,
-                        job.id,
-                        &msg,
-                        job.attempts,
-                        job.max_attempts,
-                    )
-                    .await;
+                    let _ = queue::fail_job(&self.db, job.id, &msg, job.attempts, job.max_attempts)
+                        .await;
                     continue;
                 }
             };
@@ -164,14 +158,9 @@ impl Worker {
                         error = %error,
                         "Job failed"
                     );
-                    if let Err(err) = queue::fail_job(
-                        &self.db,
-                        job.id,
-                        &error,
-                        job.attempts,
-                        job.max_attempts,
-                    )
-                    .await
+                    if let Err(err) =
+                        queue::fail_job(&self.db, job.id, &error, job.attempts, job.max_attempts)
+                            .await
                     {
                         tracing::error!(
                             job_id = %job.id,
@@ -191,8 +180,7 @@ impl Worker {
     }
 
     async fn cleanup_old(&self) {
-        if let Err(err) =
-            queue::cleanup_finished_jobs(&self.db, self.config.retention_hours).await
+        if let Err(err) = queue::cleanup_finished_jobs(&self.db, self.config.retention_hours).await
         {
             tracing::error!(error = %err, "Failed to clean up old jobs");
         }

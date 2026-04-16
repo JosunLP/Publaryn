@@ -15,7 +15,12 @@ impl PyPiAppState for AppState {
         &self.db
     }
 
-    async fn artifact_put(&self, key: String, content_type: String, bytes: Bytes) -> Result<(), Error> {
+    async fn artifact_put(
+        &self,
+        key: String,
+        content_type: String,
+        bytes: Bytes,
+    ) -> Result<(), Error> {
         self.artifact_store
             .put_object(PutArtifactObject {
                 storage_key: key,

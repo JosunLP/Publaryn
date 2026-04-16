@@ -104,7 +104,10 @@ mod tests {
 
         assert!(!content.is_empty());
         assert!(!etag.is_empty());
-        assert!(!content.contains('\n'), "single entry should not contain newlines");
+        assert!(
+            !content.contains('\n'),
+            "single entry should not contain newlines"
+        );
 
         let entry: IndexEntry = serde_json::from_str(&content).unwrap();
         assert_eq!(entry.name, "my-crate");
@@ -168,10 +171,7 @@ mod tests {
             }],
             features: {
                 let mut m = serde_json::Map::new();
-                m.insert(
-                    "serde".into(),
-                    serde_json::json!(["dep:serde"]),
-                );
+                m.insert("serde".into(), serde_json::json!(["dep:serde"]));
                 m
             },
             features2: None,

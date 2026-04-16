@@ -23,7 +23,9 @@ pub fn parse_metadata_path(path: &str) -> Result<(String, String)> {
     let artifact_id = segments[segments.len() - 2];
     let group_id = segments[..segments.len() - 2].join(".");
     if group_id.is_empty() {
-        return Err(Error::Validation("Maven metadata path is missing a groupId".into()));
+        return Err(Error::Validation(
+            "Maven metadata path is missing a groupId".into(),
+        ));
     }
 
     Ok((group_id, artifact_id.to_owned()))
@@ -41,7 +43,9 @@ pub fn parse_artifact_path(path: &str) -> Result<(String, String, String, String
     let group_id = segments[..segments.len() - 3].join(".");
 
     if group_id.is_empty() {
-        return Err(Error::Validation("Maven artifact path is missing a groupId".into()));
+        return Err(Error::Validation(
+            "Maven artifact path is missing a groupId".into(),
+        ));
     }
 
     Ok((group_id, artifact_id, version, filename))

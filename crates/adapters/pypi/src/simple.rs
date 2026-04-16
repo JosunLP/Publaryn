@@ -37,7 +37,10 @@ pub struct ProjectFile {
 }
 
 pub fn select_response_format(accept_header: Option<&str>) -> Result<SelectedFormat, ()> {
-    let Some(accept_header) = accept_header.map(str::trim).filter(|value| !value.is_empty()) else {
+    let Some(accept_header) = accept_header
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
         return Ok(SelectedFormat {
             format: ResponseFormat::Html,
             content_type: PYPI_SIMPLE_TEXT_HTML_CONTENT_TYPE,
@@ -72,26 +75,34 @@ pub fn select_response_format(accept_header: Option<&str>) -> Result<SelectedFor
         }
 
         let candidate = match media_type {
-            PYPI_SIMPLE_JSON_CONTENT_TYPE | "application/vnd.pypi.simple.latest+json" => {
-                Some((3, SelectedFormat {
+            PYPI_SIMPLE_JSON_CONTENT_TYPE | "application/vnd.pypi.simple.latest+json" => Some((
+                3,
+                SelectedFormat {
                     format: ResponseFormat::Json,
                     content_type: PYPI_SIMPLE_JSON_CONTENT_TYPE,
-                }))
-            }
-            PYPI_SIMPLE_HTML_CONTENT_TYPE | "application/vnd.pypi.simple.latest+html" => {
-                Some((2, SelectedFormat {
+                },
+            )),
+            PYPI_SIMPLE_HTML_CONTENT_TYPE | "application/vnd.pypi.simple.latest+html" => Some((
+                2,
+                SelectedFormat {
                     format: ResponseFormat::Html,
                     content_type: PYPI_SIMPLE_HTML_CONTENT_TYPE,
-                }))
-            }
-            "text/html" | "text/*" | "*/*" => Some((1, SelectedFormat {
-                format: ResponseFormat::Html,
-                content_type: PYPI_SIMPLE_TEXT_HTML_CONTENT_TYPE,
-            })),
-            "application/*" => Some((2, SelectedFormat {
-                format: ResponseFormat::Json,
-                content_type: PYPI_SIMPLE_JSON_CONTENT_TYPE,
-            })),
+                },
+            )),
+            "text/html" | "text/*" | "*/*" => Some((
+                1,
+                SelectedFormat {
+                    format: ResponseFormat::Html,
+                    content_type: PYPI_SIMPLE_TEXT_HTML_CONTENT_TYPE,
+                },
+            )),
+            "application/*" => Some((
+                2,
+                SelectedFormat {
+                    format: ResponseFormat::Json,
+                    content_type: PYPI_SIMPLE_JSON_CONTENT_TYPE,
+                },
+            )),
             _ => None,
         };
 
@@ -143,7 +154,11 @@ pub fn render_project_html(project_name: &str, files: &[ProjectFile]) -> String 
         html.push('"');
 
         if file.is_yanked {
-            match file.yanked_reason.as_deref().filter(|reason| !reason.is_empty()) {
+            match file
+                .yanked_reason
+                .as_deref()
+                .filter(|reason| !reason.is_empty())
+            {
                 Some(reason) => {
                     html.push_str(" data-yanked=\"");
                     html.push_str(&escape_html_attribute(reason));
@@ -200,7 +215,11 @@ fn project_file_to_json(file: &ProjectFile) -> Value {
     }
 
     if file.is_yanked {
-        match file.yanked_reason.as_deref().filter(|reason| !reason.is_empty()) {
+        match file
+            .yanked_reason
+            .as_deref()
+            .filter(|reason| !reason.is_empty())
+        {
             Some(reason) => {
                 object.insert("yanked".into(), Value::String(reason.to_owned()));
             }
@@ -250,9 +269,8 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::{
-        build_project_json, render_project_html, select_response_format, ProjectFile,
-        ProjectLink, ResponseFormat, PYPI_SIMPLE_JSON_CONTENT_TYPE,
-        PYPI_SIMPLE_TEXT_HTML_CONTENT_TYPE,
+        build_project_json, render_project_html, select_response_format, ProjectFile, ProjectLink,
+        ResponseFormat, PYPI_SIMPLE_JSON_CONTENT_TYPE, PYPI_SIMPLE_TEXT_HTML_CONTENT_TYPE,
     };
 
     #[test]
@@ -268,8 +286,8 @@ mod tests {
 
     #[test]
     fn negotiation_falls_back_to_text_html_for_wildcards() {
-        let selected = select_response_format(Some("text/html, */*;q=0.8"))
-            .expect("html should be selected");
+        let selected =
+            select_response_format(Some("text/html, */*;q=0.8")).expect("html should be selected");
 
         assert_eq!(selected.format, ResponseFormat::Html);
         assert_eq!(selected.content_type, PYPI_SIMPLE_TEXT_HTML_CONTENT_TYPE);

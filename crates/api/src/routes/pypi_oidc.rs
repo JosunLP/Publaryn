@@ -57,7 +57,13 @@ async fn mint_token(
 ) -> (StatusCode, Json<serde_json::Value>) {
     let payload = match parse_mint_token_request(&body) {
         Ok(payload) => payload,
-        Err(description) => return token_error_response(StatusCode::UNPROCESSABLE_ENTITY, "invalid-payload", description),
+        Err(description) => {
+            return token_error_response(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "invalid-payload",
+                description,
+            )
+        }
     };
 
     let audience = trusted_publishing_audience(&state.config.server.base_url);
@@ -94,7 +100,12 @@ async fn mint_token(
         }
     };
 
-    let jwt_id = match claims.jti.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+    let jwt_id = match claims
+        .jti
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
         Some(jwt_id) => jwt_id.to_owned(),
         None => {
             return token_error_response(
@@ -408,8 +419,9 @@ mod tests {
 
     #[test]
     fn select_single_trusted_publisher_rejects_ambiguous_matches() {
-        let error = select_single_trusted_publisher(vec![publisher_match("one"), publisher_match("two")])
-            .expect_err("multiple matches must be rejected");
+        let error =
+            select_single_trusted_publisher(vec![publisher_match("one"), publisher_match("two")])
+                .expect_err("multiple matches must be rejected");
 
         assert_eq!(error, PublisherSelectionError::Ambiguous);
     }

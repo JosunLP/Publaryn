@@ -139,10 +139,8 @@ pub fn parse_nuspec_xml(xml_bytes: &[u8]) -> Result<NuspecMetadata> {
                         // Check for minClientVersion attribute
                         for attr in e.attributes().flatten() {
                             if local_name_str(attr.key.as_ref()) == "minClientVersion" {
-                                min_client_version = attr
-                                    .unescape_value()
-                                    .ok()
-                                    .map(|v| v.to_string());
+                                min_client_version =
+                                    attr.unescape_value().ok().map(|v| v.to_string());
                             }
                         }
                     }
@@ -174,16 +172,10 @@ pub fn parse_nuspec_xml(xml_bytes: &[u8]) -> Result<NuspecMetadata> {
                                         .unwrap_or_default();
                                 }
                                 "version" => {
-                                    dep_version = attr
-                                        .unescape_value()
-                                        .ok()
-                                        .map(|v| v.to_string());
+                                    dep_version = attr.unescape_value().ok().map(|v| v.to_string());
                                 }
                                 "exclude" => {
-                                    dep_exclude = attr
-                                        .unescape_value()
-                                        .ok()
-                                        .map(|v| v.to_string());
+                                    dep_exclude = attr.unescape_value().ok().map(|v| v.to_string());
                                 }
                                 _ => {}
                             }
@@ -309,11 +301,7 @@ pub fn parse_nuspec_xml(xml_bytes: &[u8]) -> Result<NuspecMetadata> {
 
     // Parse tags — NuGet uses space-separated tags
     let tags: Vec<String> = tags_str
-        .map(|s| {
-            s.split_whitespace()
-                .map(|t| t.to_owned())
-                .collect()
-        })
+        .map(|s| s.split_whitespace().map(|t| t.to_owned()).collect())
         .unwrap_or_default();
 
     if package_types.is_empty() {
@@ -409,7 +397,10 @@ mod tests {
             Some(".NETStandard2.0")
         );
         assert_eq!(meta.dependency_groups[0].dependencies.len(), 1);
-        assert_eq!(meta.dependency_groups[0].dependencies[0].id, "Newtonsoft.Json");
+        assert_eq!(
+            meta.dependency_groups[0].dependencies[0].id,
+            "Newtonsoft.Json"
+        );
     }
 
     #[test]

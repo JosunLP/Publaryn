@@ -39,7 +39,10 @@ pub fn router() -> Router<AppState> {
         .route("/v1/orgs/:slug/members", get(list_members))
         .route("/v1/orgs/:slug/members", post(add_member))
         .route("/v1/orgs/:slug/members/:username", delete(remove_member))
-        .route("/v1/orgs/:slug/ownership-transfer", post(transfer_ownership))
+        .route(
+            "/v1/orgs/:slug/ownership-transfer",
+            post(transfer_ownership),
+        )
         .route("/v1/orgs/:slug/teams", get(list_teams))
         .route("/v1/orgs/:slug/teams", post(create_team))
         .route("/v1/orgs/:slug/teams/:team_slug", patch(update_team))
@@ -103,9 +106,9 @@ async fn create_org(
     .execute(&mut *tx)
     .await
     .map_err(|e| match &e {
-        sqlx::Error::Database(db) if db.is_unique_violation() => {
-            ApiError(Error::AlreadyExists("Organization slug already taken".into()))
-        }
+        sqlx::Error::Database(db) if db.is_unique_violation() => ApiError(Error::AlreadyExists(
+            "Organization slug already taken".into(),
+        )),
         _ => ApiError(Error::Database(e)),
     })?;
 
@@ -137,7 +140,10 @@ async fn create_org(
         .await
         .map_err(|e| ApiError(Error::Database(e)))?;
 
-    Ok((StatusCode::CREATED, Json(serde_json::json!({ "id": org.id, "slug": org.slug }))))
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::json!({ "id": org.id, "slug": org.slug })),
+    ))
 }
 
 async fn get_org(
@@ -168,9 +174,9 @@ async fn get_org(
 
 #[derive(Debug, Deserialize)]
 struct UpdateOrgRequest {
-    description: Option<String>,
-    website: Option<String>,
-    email: Option<String>,
+    description: Option<Option<String>>,
+    website: Option<Option<String>>,
+    email: Option<Option<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -188,25 +194,142 @@ async fn update_org(
     Json(body): Json<UpdateOrgRequest>,
 ) -> ApiResult<Json<serde_json::Value>> {
     ensure_scope(&identity, SCOPE_ORGS_WRITE)?;
-    ensure_org_admin_by_slug(&state.db, &slug, identity.user_id).await?;
+    let org_id = ensure_org_admin_by_slug(&state.db, &slug, identity.user_id).await?;
 
-    sqlx::query(
-        "UPDATE organizations \
-         SET description = COALESCE($1, description), \
-             website     = COALESCE($2, website), \
-             email       = COALESCE($3, email), \
-             updated_at  = NOW() \
-         WHERE slug = $4",
+    let current_org = sqlx::query(
+        "SELECT name, description, website, email \
+         FROM organizations \
+         WHERE id = $1",
     )
-    .bind(&body.description)
-    .bind(&body.website)
-    .bind(&body.email)
-    .bind(&slug)
-    .execute(&state.db)
+    .bind(org_id)
+    .fetch_one(&state.db)
     .await
     .map_err(|e| ApiError(Error::Database(e)))?;
 
-    Ok(Json(serde_json::json!({ "message": "Organization updated" })))
+    let org_name: String = current_org
+        .try_get("name")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let current_description = current_org
+        .try_get::<Option<String>, _>("description")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let current_website = current_org
+        .try_get::<Option<String>, _>("website")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let current_email = current_org
+        .try_get::<Option<String>, _>("email")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+
+    let updated_description = body
+        .description
+        .map(normalize_optional_org_field)
+        .unwrap_or_else(|| current_description.clone());
+    let updated_website = body
+        .website
+        .map(normalize_optional_org_field)
+        .unwrap_or_else(|| current_website.clone());
+    let updated_email = body
+        .email
+        .map(normalize_optional_org_field)
+        .unwrap_or_else(|| current_email.clone());
+
+    let mut changes = serde_json::Map::new();
+
+    if current_description != updated_description {
+        changes.insert(
+            "description".into(),
+            serde_json::json!({
+                "before": current_description,
+                "after": updated_description,
+            }),
+        );
+    }
+
+    if current_website != updated_website {
+        changes.insert(
+            "website".into(),
+            serde_json::json!({
+                "before": current_website,
+                "after": updated_website,
+            }),
+        );
+    }
+
+    if current_email != updated_email {
+        changes.insert(
+            "email".into(),
+            serde_json::json!({
+                "before": current_email,
+                "after": updated_email,
+            }),
+        );
+    }
+
+    if changes.is_empty() {
+        return Ok(Json(
+            serde_json::json!({ "message": "Organization updated" }),
+        ));
+    }
+
+    let changed_fields = changes.keys().cloned().collect::<Vec<_>>();
+
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    sqlx::query(
+        "UPDATE organizations \
+         SET description = $1, \
+             website     = $2, \
+             email       = $3, \
+             updated_at  = NOW() \
+         WHERE id = $4",
+    )
+    .bind(&updated_description)
+    .bind(&updated_website)
+    .bind(&updated_email)
+    .bind(org_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    sqlx::query(
+        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_org_id, metadata, occurred_at) \
+         VALUES ($1, 'org_update', $2, $3, $4, $5, NOW())",
+    )
+    .bind(Uuid::new_v4())
+    .bind(identity.user_id)
+    .bind(identity.audit_actor_token_id())
+    .bind(org_id)
+    .bind(serde_json::json!({
+        "org_slug": slug,
+        "org_name": org_name,
+        "changed_fields": changed_fields,
+        "changes": changes,
+    }))
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    Ok(Json(
+        serde_json::json!({ "message": "Organization updated" }),
+    ))
+}
+
+fn normalize_optional_org_field(value: Option<String>) -> Option<String> {
+    value.and_then(|raw_value| {
+        let trimmed = raw_value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_owned())
+        }
+    })
 }
 
 async fn list_org_audit_logs(
@@ -219,8 +342,9 @@ async fn list_org_audit_logs(
 
     let org_id = ensure_org_admin_by_slug(&state.db, &slug, identity.user_id).await?;
     let page = query.page.unwrap_or(1).max(1);
-    let limit = query.per_page.unwrap_or(20).min(100) as i64;
+    let limit = query.per_page.unwrap_or(20).max(1).min(100) as i64;
     let offset = ((page.saturating_sub(1)) as i64) * limit;
+    let fetch_limit = limit + 1;
 
     let mut builder = QueryBuilder::<Postgres>::new(
         "SELECT al.id, al.action::text AS action, al.actor_user_id, actor.username AS actor_username, \
@@ -242,20 +366,27 @@ async fn list_org_audit_logs(
             .push("::audit_action");
     }
     if let Some(actor_user_id) = query.actor_user_id {
-        builder.push(" AND al.actor_user_id = ").push_bind(actor_user_id);
+        builder
+            .push(" AND al.actor_user_id = ")
+            .push_bind(actor_user_id);
     }
 
     builder
         .push(" ORDER BY al.occurred_at DESC LIMIT ")
-        .push_bind(limit)
+        .push_bind(fetch_limit)
         .push(" OFFSET ")
         .push_bind(offset);
 
-    let rows = builder
+    let mut rows = builder
         .build()
         .fetch_all(&state.db)
         .await
         .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let has_next = rows.len() > limit as usize;
+    if has_next {
+        rows.truncate(limit as usize);
+    }
 
     let logs: Vec<serde_json::Value> = rows
         .iter()
@@ -282,6 +413,7 @@ async fn list_org_audit_logs(
     Ok(Json(serde_json::json!({
         "page": page,
         "per_page": limit,
+        "has_next": has_next,
         "logs": logs,
     })))
 }
@@ -350,9 +482,16 @@ async fn add_member(
         .fetch_optional(&state.db)
         .await
         .map_err(|e| ApiError(Error::Database(e)))?
-        .ok_or_else(|| ApiError(Error::NotFound(format!("User '{}' not found", body.username))))?;
+        .ok_or_else(|| {
+            ApiError(Error::NotFound(format!(
+                "User '{}' not found",
+                body.username
+            )))
+        })?;
 
-    let user_id: Uuid = user_row.try_get("id").map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let user_id: Uuid = user_row
+        .try_get("id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
 
     let previous_role = sqlx::query_scalar::<_, String>(
         "SELECT role::text AS role FROM org_memberships WHERE org_id = $1 AND user_id = $2",
@@ -370,7 +509,7 @@ async fn add_member(
         .map_err(|e| ApiError(Error::Database(e)))?;
 
     sqlx::query(
-           "INSERT INTO org_memberships (id, org_id, user_id, role, invited_by, joined_at) \
+        "INSERT INTO org_memberships (id, org_id, user_id, role, invited_by, joined_at) \
             VALUES ($1, $2, $3, $4::org_role, $5, NOW()) \
             ON CONFLICT (org_id, user_id) DO UPDATE \
             SET role = EXCLUDED.role, invited_by = EXCLUDED.invited_by",
@@ -482,11 +621,11 @@ async fn remove_member(
     }
 
     let result = sqlx::query("DELETE FROM org_memberships WHERE org_id = $1 AND user_id = $2")
-    .bind(org_id)
-    .bind(user_id)
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| ApiError(Error::Database(e)))?;
+        .bind(org_id)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
 
     if result.rows_affected() == 0 {
         return Err(ApiError(Error::NotFound("Membership not found".into())));
@@ -810,9 +949,9 @@ async fn create_team(
     .execute(&mut *tx)
     .await
     .map_err(|e| match &e {
-        sqlx::Error::Database(db) if db.is_unique_violation() => {
-            ApiError(Error::AlreadyExists("Team slug already exists in this organization".into()))
-        }
+        sqlx::Error::Database(db) if db.is_unique_violation() => ApiError(Error::AlreadyExists(
+            "Team slug already exists in this organization".into(),
+        )),
         _ => ApiError(Error::Database(e)),
     })?;
 
@@ -929,21 +1068,19 @@ async fn delete_team(
         .await
         .map_err(|e| ApiError(Error::Database(e)))?;
 
-    let member_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*)::BIGINT FROM team_memberships WHERE team_id = $1",
-    )
-    .bind(team.id)
-    .fetch_one(&mut *tx)
-    .await
-    .map_err(|e| ApiError(Error::Database(e)))?;
+    let member_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*)::BIGINT FROM team_memberships WHERE team_id = $1")
+            .bind(team.id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| ApiError(Error::Database(e)))?;
 
-    let package_access_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*)::BIGINT FROM team_package_access WHERE team_id = $1",
-    )
-    .bind(team.id)
-    .fetch_one(&mut *tx)
-    .await
-    .map_err(|e| ApiError(Error::Database(e)))?;
+    let package_access_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*)::BIGINT FROM team_package_access WHERE team_id = $1")
+            .bind(team.id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| ApiError(Error::Database(e)))?;
 
     sqlx::query("DELETE FROM teams WHERE id = $1")
         .bind(team.id)
@@ -1046,7 +1183,12 @@ async fn add_team_member(
     .fetch_optional(&state.db)
     .await
     .map_err(|e| ApiError(Error::Database(e)))?
-    .ok_or_else(|| ApiError(Error::NotFound(format!("User '{}' not found", body.username))))?;
+    .ok_or_else(|| {
+        ApiError(Error::NotFound(format!(
+            "User '{}' not found",
+            body.username
+        )))
+    })?;
 
     let user_id: Uuid = user_row
         .try_get("id")
@@ -1134,7 +1276,9 @@ async fn remove_team_member(
         .map_err(|e| ApiError(Error::Database(e)))?;
 
     if result.rows_affected() == 0 {
-        return Err(ApiError(Error::NotFound("Team membership not found".into())));
+        return Err(ApiError(Error::NotFound(
+            "Team membership not found".into(),
+        )));
     }
 
     sqlx::query(
@@ -1156,7 +1300,9 @@ async fn remove_team_member(
     .await
     .map_err(|e| ApiError(Error::Database(e)))?;
 
-    Ok(Json(serde_json::json!({ "message": "Team member removed" })))
+    Ok(Json(
+        serde_json::json!({ "message": "Team member removed" }),
+    ))
 }
 
 async fn list_team_package_access(
@@ -1220,7 +1366,8 @@ async fn replace_team_package_access(
     let org_id = ensure_org_admin_by_slug(&state.db, &slug, identity.user_id).await?;
     let team = load_team_record(&state.db, org_id, &team_slug).await?;
     let ecosystem = crate::routes::parse_ecosystem(&ecosystem_str)?;
-    let package = load_org_owned_package_for_team_access(&state.db, org_id, &ecosystem, &name).await?;
+    let package =
+        load_org_owned_package_for_team_access(&state.db, org_id, &ecosystem, &name).await?;
     let permissions = normalize_team_permissions(&body.permissions)?;
     let permission_strings = team_permission_strings(&permissions);
 
@@ -1328,7 +1475,8 @@ async fn remove_team_package_access(
     let org_id = ensure_org_admin_by_slug(&state.db, &slug, identity.user_id).await?;
     let team = load_team_record(&state.db, org_id, &team_slug).await?;
     let ecosystem = crate::routes::parse_ecosystem(&ecosystem_str)?;
-    let package = load_org_owned_package_for_team_access(&state.db, org_id, &ecosystem, &name).await?;
+    let package =
+        load_org_owned_package_for_team_access(&state.db, org_id, &ecosystem, &name).await?;
 
     let previous_permissions = sqlx::query(
         "SELECT permission::text AS permission \
@@ -1391,7 +1539,9 @@ async fn remove_team_package_access(
         .await
         .map_err(|e| ApiError(Error::Database(e)))?;
 
-    Ok(Json(serde_json::json!({ "message": "Team package access removed" })))
+    Ok(Json(
+        serde_json::json!({ "message": "Team package access removed" }),
+    ))
 }
 
 async fn list_org_packages(
@@ -1400,7 +1550,11 @@ async fn list_org_packages(
     Path(slug): Path<String>,
     Query(q): Query<HashMap<String, String>>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let limit: i64 = q.get("per_page").and_then(|s| s.parse().ok()).unwrap_or(20_i64).min(100);
+    let limit: i64 = q
+        .get("per_page")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(20_i64)
+        .min(100);
     let page: i64 = q.get("page").and_then(|s| s.parse().ok()).unwrap_or(1_i64);
     let offset = (page - 1) * limit;
     let org_row = sqlx::query("SELECT id FROM organizations WHERE slug = $1")
@@ -1452,7 +1606,11 @@ async fn list_org_packages(
     Ok(Json(serde_json::json!({ "packages": packages })))
 }
 
-async fn load_team_record(db: &sqlx::PgPool, org_id: Uuid, team_slug: &str) -> ApiResult<TeamRecord> {
+async fn load_team_record(
+    db: &sqlx::PgPool,
+    org_id: Uuid,
+    team_slug: &str,
+) -> ApiResult<TeamRecord> {
     let row = sqlx::query(
         "SELECT id, org_id, name, slug, description \
          FROM teams \
@@ -1569,7 +1727,19 @@ mod tests {
 
     use publaryn_core::domain::{organization::OrgRole, team::TeamPermission};
 
-    use super::{normalize_team_permissions, validate_ownership_transfer};
+    use super::{
+        normalize_optional_org_field, normalize_team_permissions, validate_ownership_transfer,
+    };
+
+    #[test]
+    fn normalize_optional_org_field_trims_and_clears_blank_values() {
+        assert_eq!(
+            normalize_optional_org_field(Some("  https://packages.example.com  ".into())),
+            Some("https://packages.example.com".into())
+        );
+        assert_eq!(normalize_optional_org_field(Some("   ".into())), None);
+        assert_eq!(normalize_optional_org_field(None), None);
+    }
 
     #[test]
     fn ownership_transfer_requires_current_owner() {
@@ -1590,8 +1760,9 @@ mod tests {
     #[test]
     fn ownership_transfer_rejects_self_transfer() {
         let actor_id = Uuid::new_v4();
-        let error = validate_ownership_transfer(actor_id, &OrgRole::Owner, actor_id, &OrgRole::Owner)
-            .expect_err("self-transfer must be rejected");
+        let error =
+            validate_ownership_transfer(actor_id, &OrgRole::Owner, actor_id, &OrgRole::Owner)
+                .expect_err("self-transfer must be rejected");
 
         assert_eq!(
             error.0.to_string(),
@@ -1635,13 +1806,16 @@ mod tests {
         ])
         .expect("permissions should normalize");
 
-        assert_eq!(permissions, vec![TeamPermission::Admin, TeamPermission::Publish]);
+        assert_eq!(
+            permissions,
+            vec![TeamPermission::Admin, TeamPermission::Publish]
+        );
     }
 
     #[test]
     fn normalize_team_permissions_rejects_empty_inputs() {
-        let error = normalize_team_permissions(&[])
-            .expect_err("empty permission lists must be rejected");
+        let error =
+            normalize_team_permissions(&[]).expect_err("empty permission lists must be rejected");
 
         assert_eq!(
             error.0.to_string(),

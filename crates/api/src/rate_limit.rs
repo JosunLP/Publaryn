@@ -133,7 +133,10 @@ pub async fn rate_limit_middleware(
     let tier = classify_request(request.method(), request.uri().path());
     let max_requests = tier.max_requests(config);
 
-    let peer_addr = request.extensions().get::<ConnectInfo<SocketAddr>>().map(|ci| &ci.0);
+    let peer_addr = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ci| &ci.0);
     let key = extract_key(request.headers(), peer_addr);
 
     // Fixed-window key: tier:identity:minute_timestamp
@@ -174,11 +177,7 @@ enum RateLimitResult {
     RedisError,
 }
 
-async fn check_rate_limit(
-    redis: &RedisClient,
-    key: &str,
-    max_requests: u64,
-) -> RateLimitResult {
+async fn check_rate_limit(redis: &RedisClient, key: &str, max_requests: u64) -> RateLimitResult {
     // INCR atomically increments and returns the new count.
     // If the key is new, Redis creates it with value 1.
     let count: u64 = match redis.incr(key).await {

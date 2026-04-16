@@ -60,10 +60,7 @@ async fn main() -> Result<()> {
 
     // Signal the background worker to shut down and wait for it.
     let _ = shutdown_tx.send(true);
-    let _ = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        worker_handle,
-    ).await;
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(10), worker_handle).await;
 
     tracing::info!("Publaryn shutdown complete");
     Ok(())

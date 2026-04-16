@@ -2,11 +2,8 @@ use axum::{routing::post, Json, Router};
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 
-use publaryn_auth::{hash_password, verify_password, verify_totp, verify_recovery_code};
-use publaryn_core::{
-    domain::user::User,
-    error::Error,
-};
+use publaryn_auth::{hash_password, verify_password, verify_recovery_code, verify_totp};
+use publaryn_core::{domain::user::User, error::Error};
 
 use crate::{
     error::{ApiError, ApiResult},
@@ -55,8 +52,8 @@ async fn register(
         )));
     }
 
-    let password_hash = hash_password(&body.password)
-        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let password_hash =
+        hash_password(&body.password).map_err(|e| ApiError(Error::Internal(e.to_string())))?;
 
     let user = User::new(
         body.username.clone(),
@@ -239,8 +236,7 @@ async fn mfa_setup(
         .try_get("username")
         .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
 
-    let setup = publaryn_auth::setup_totp(&username, "Publaryn")
-        .map_err(|e| ApiError(e))?;
+    let setup = publaryn_auth::setup_totp(&username, "Publaryn").map_err(|e| ApiError(e))?;
 
     // Store the pending secret so verify-setup can confirm it.
     sqlx::query(
@@ -274,19 +270,15 @@ async fn mfa_verify_setup(
     identity: AuthenticatedIdentity,
     Json(body): Json<MfaVerifySetupRequest>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let row = sqlx::query(
-        "SELECT mfa_enabled, mfa_totp_pending_secret FROM users WHERE id = $1",
-    )
-    .bind(identity.user_id)
-    .fetch_one(&state.db)
-    .await
-    .map_err(|e| ApiError(Error::Database(e)))?;
+    let row = sqlx::query("SELECT mfa_enabled, mfa_totp_pending_secret FROM users WHERE id = $1")
+        .bind(identity.user_id)
+        .fetch_one(&state.db)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
 
     let mfa_enabled: bool = row.try_get("mfa_enabled").unwrap_or(false);
     if mfa_enabled {
-        return Err(ApiError(Error::Validation(
-            "MFA is already enabled".into(),
-        )));
+        return Err(ApiError(Error::Validation("MFA is already enabled".into())));
     }
 
     let pending_secret: Option<String> = row.try_get("mfa_totp_pending_secret").ok().flatten();
@@ -296,13 +288,10 @@ async fn mfa_verify_setup(
         ))
     })?;
 
-    let valid = verify_totp(&pending_secret, &body.code)
-        .map_err(|e| ApiError(e))?;
+    let valid = verify_totp(&pending_secret, &body.code).map_err(|e| ApiError(e))?;
 
     if !valid {
-        return Err(ApiError(Error::Unauthorized(
-            "Invalid TOTP code".into(),
-        )));
+        return Err(ApiError(Error::Unauthorized("Invalid TOTP code".into())));
     }
 
     // Activate MFA: move pending secret to active, clear pending.
@@ -344,13 +333,11 @@ async fn mfa_disable(
     identity: AuthenticatedIdentity,
     Json(body): Json<MfaDisableRequest>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let row = sqlx::query(
-        "SELECT mfa_enabled, mfa_totp_secret FROM users WHERE id = $1",
-    )
-    .bind(identity.user_id)
-    .fetch_one(&state.db)
-    .await
-    .map_err(|e| ApiError(Error::Database(e)))?;
+    let row = sqlx::query("SELECT mfa_enabled, mfa_totp_secret FROM users WHERE id = $1")
+        .bind(identity.user_id)
+        .fetch_one(&state.db)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
 
     let mfa_enabled: bool = row.try_get("mfa_enabled").unwrap_or(false);
     if !mfa_enabled {
@@ -442,9 +429,7 @@ async fn mfa_challenge(
         .flatten()
         .ok_or_else(|| ApiError(Error::Internal("MFA secret missing".into())))?;
 
-    let recovery_hashes: Vec<String> = row
-        .try_get("mfa_recovery_code_hashes")
-        .unwrap_or_default();
+    let recovery_hashes: Vec<String> = row.try_get("mfa_recovery_code_hashes").unwrap_or_default();
 
     // Try TOTP first, then recovery code.
     let totp_valid = verify_totp(&secret, &body.code).map_err(|e| ApiError(e))?;
@@ -463,7 +448,9 @@ async fn mfa_challenge(
             .execute(&state.db)
             .await;
         } else {
-            return Err(ApiError(Error::Unauthorized("Invalid TOTP or recovery code".into())));
+            return Err(ApiError(Error::Unauthorized(
+                "Invalid TOTP or recovery code".into(),
+            )));
         }
     }
 

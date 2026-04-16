@@ -37,9 +37,7 @@ pub struct ParsedNuGetPublish {
 /// Validates the archive, extracts the `.nuspec`, and computes hashes.
 pub fn parse_nupkg(nupkg_bytes: Bytes) -> Result<ParsedNuGetPublish> {
     if nupkg_bytes.is_empty() {
-        return Err(Error::Validation(
-            "Empty .nupkg payload".into(),
-        ));
+        return Err(Error::Validation("Empty .nupkg payload".into()));
     }
 
     if nupkg_bytes.len() > MAX_NUPKG_SIZE {

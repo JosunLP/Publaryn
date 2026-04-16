@@ -230,9 +230,7 @@ impl JobHandler for ScanArtifactHandler {
             .artifact_store
             .get_object_bytes(&payload.storage_key)
             .await?
-            .ok_or_else(|| {
-                format!("Artifact not found in storage: {}", payload.storage_key)
-            })?;
+            .ok_or_else(|| format!("Artifact not found in storage: {}", payload.storage_key))?;
 
         // Run every scanner.
         let mut all_findings = Vec::new();
@@ -284,7 +282,11 @@ impl JobHandler for ScanArtifactHandler {
             .iter()
             .any(|f| f.severity == "critical" || f.kind == "malware");
 
-        let new_status = if has_blocking { "quarantine" } else { "published" };
+        let new_status = if has_blocking {
+            "quarantine"
+        } else {
+            "published"
+        };
 
         sqlx::query(
             "UPDATE releases SET status = $2::release_status, updated_at = NOW() \

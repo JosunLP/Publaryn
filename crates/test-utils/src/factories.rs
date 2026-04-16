@@ -83,10 +83,7 @@ pub async fn create_test_org(pool: &PgPool, owner_id: Uuid) -> (Uuid, String) {
 }
 
 /// Insert a test repository and return `(repo_id, repo_slug)`.
-pub async fn create_test_repository(
-    pool: &PgPool,
-    org_id: Uuid,
-) -> (Uuid, String) {
+pub async fn create_test_repository(pool: &PgPool, org_id: Uuid) -> (Uuid, String) {
     let suffix = &Uuid::new_v4().to_string()[..8];
     let slug = format!("testrepo-{suffix}");
     let repo_id = Uuid::new_v4();
@@ -144,11 +141,7 @@ pub async fn create_test_package(
 
 /// Insert a test API token for a user. Returns `(token_id, raw_token_value)`.
 /// The raw value is needed to set Bearer auth in tests.
-pub async fn create_test_token(
-    pool: &PgPool,
-    user_id: Uuid,
-    scopes: &[&str],
-) -> (Uuid, String) {
+pub async fn create_test_token(pool: &PgPool, user_id: Uuid, scopes: &[&str]) -> (Uuid, String) {
     let token_id = Uuid::new_v4();
     let raw_token = format!("pub_{}", publaryn_core::security::generate_random_token(24));
     let token_hash = publaryn_core::security::hash_token(&raw_token);

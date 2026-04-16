@@ -29,10 +29,19 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/orgs/:slug/invitations", get(list_org_invitations))
         .route("/v1/orgs/:slug/invitations", post(create_org_invitation))
-        .route("/v1/orgs/:slug/invitations/:id", delete(revoke_org_invitation))
+        .route(
+            "/v1/orgs/:slug/invitations/:id",
+            delete(revoke_org_invitation),
+        )
         .route("/v1/org-invitations", get(list_my_org_invitations))
-        .route("/v1/org-invitations/:id/accept", post(accept_org_invitation))
-        .route("/v1/org-invitations/:id/decline", post(decline_org_invitation))
+        .route(
+            "/v1/org-invitations/:id/accept",
+            post(accept_org_invitation),
+        )
+        .route(
+            "/v1/org-invitations/:id/decline",
+            post(decline_org_invitation),
+        )
 }
 
 #[derive(Debug, Deserialize)]
@@ -62,7 +71,9 @@ async fn create_org_invitation(
         )));
     }
 
-    let expires_in_days = body.expires_in_days.unwrap_or(DEFAULT_INVITATION_TTL_DAYS as u32);
+    let expires_in_days = body
+        .expires_in_days
+        .unwrap_or(DEFAULT_INVITATION_TTL_DAYS as u32);
     if expires_in_days == 0 || expires_in_days > MAX_INVITATION_TTL_DAYS {
         return Err(ApiError(Error::Validation(format!(
             "Invitation expiry must be between 1 and {MAX_INVITATION_TTL_DAYS} days"
@@ -147,14 +158,9 @@ async fn create_org_invitation(
     .map_err(|e| ApiError(Error::Database(e)))?;
 
     let expires_at = Utc::now() + Duration::days(expires_in_days as i64);
-    let invitation = OrganizationInvitation::new(
-        org_id,
-        invited_user_id,
-        role,
-        identity.user_id,
-        expires_at,
-    )
-    .map_err(ApiError::from)?;
+    let invitation =
+        OrganizationInvitation::new(org_id, invited_user_id, role, identity.user_id, expires_at)
+            .map_err(ApiError::from)?;
 
     sqlx::query(
         "INSERT INTO org_invitations (id, org_id, invited_user_id, role, invited_by, expires_at, created_at) \

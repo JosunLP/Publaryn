@@ -70,7 +70,10 @@ pub fn router<S: ComposerAppState>() -> Router<S> {
     Router::new()
         .route("/packages.json", get(packages_index::<S>))
         .route("/p/:vendor/:package", get(package_metadata::<S>))
-        .route("/files/:artifact_id/:filename", get(download_distribution::<S>))
+        .route(
+            "/files/:artifact_id/:filename",
+            get(download_distribution::<S>),
+        )
 }
 
 async fn packages_index<S: ComposerAppState>(
@@ -88,10 +91,7 @@ async fn packages_index<S: ComposerAppState>(
         Err(response) => return response,
     };
 
-    let document = build_packages_index(
-        &PackagesIndexInput { package_names },
-        state.base_url(),
-    );
+    let document = build_packages_index(&PackagesIndexInput { package_names }, state.base_url());
 
     (StatusCode::OK, Json(document)).into_response()
 }
@@ -129,16 +129,15 @@ async fn package_metadata<S: ComposerAppState>(
         Ok(Some(row)) => row,
         Ok(None) => return composer_error_response(StatusCode::NOT_FOUND, "Package not found"),
         Err(_) => {
-            return composer_error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Database error",
-            )
+            return composer_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error")
         }
     };
 
     if !can_read_package(
         state.db(),
-        &package_row.try_get::<String, _>("visibility").unwrap_or_default(),
+        &package_row
+            .try_get::<String, _>("visibility")
+            .unwrap_or_default(),
         &package_row
             .try_get::<String, _>("repo_visibility")
             .unwrap_or_default(),
@@ -156,10 +155,7 @@ async fn package_metadata<S: ComposerAppState>(
     let package_id: Uuid = match package_row.try_get("id") {
         Ok(id) => id,
         Err(_) => {
-            return composer_error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Internal error",
-            )
+            return composer_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error")
         }
     };
 
@@ -185,10 +181,7 @@ async fn package_metadata<S: ComposerAppState>(
     {
         Ok(rows) => rows,
         Err(_) => {
-            return composer_error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Database error",
-            )
+            return composer_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error")
         }
     };
 
@@ -221,7 +214,12 @@ async fn package_metadata<S: ComposerAppState>(
                     .try_get::<Option<String>, _>("description")
                     .ok()
                     .flatten()
-                    .or_else(|| package_row.try_get::<Option<String>, _>("description").ok().flatten()),
+                    .or_else(|| {
+                        package_row
+                            .try_get::<Option<String>, _>("description")
+                            .ok()
+                            .flatten()
+                    }),
                 homepage: package_row.try_get("homepage").ok().flatten(),
                 repository_url: package_row.try_get("repository_url").ok().flatten(),
                 licenses,
@@ -311,10 +309,16 @@ async fn download_distribution<S: ComposerAppState>(
         &artifact_row
             .try_get::<String, _>("repository_visibility")
             .unwrap_or_default(),
-        artifact_row.try_get("package_owner_user_id").unwrap_or(None),
+        artifact_row
+            .try_get("package_owner_user_id")
+            .unwrap_or(None),
         artifact_row.try_get("package_owner_org_id").unwrap_or(None),
-        artifact_row.try_get("repository_owner_user_id").unwrap_or(None),
-        artifact_row.try_get("repository_owner_org_id").unwrap_or(None),
+        artifact_row
+            .try_get("repository_owner_user_id")
+            .unwrap_or(None),
+        artifact_row
+            .try_get("repository_owner_org_id")
+            .unwrap_or(None),
         actor_user_id,
     )
     .await
@@ -326,10 +330,7 @@ async fn download_distribution<S: ComposerAppState>(
     let stored = match state.artifact_get(&storage_key).await {
         Ok(Some(stored)) => stored,
         Ok(None) => {
-            return composer_error_response(
-                StatusCode::NOT_FOUND,
-                "Distribution file not found",
-            )
+            return composer_error_response(StatusCode::NOT_FOUND, "Distribution file not found")
         }
         Err(_) => {
             return composer_error_response(
@@ -389,8 +390,10 @@ async fn load_visible_packages(
     for row in rows {
         if can_read_package(
             db,
-            &row.try_get::<String, _>("package_visibility").unwrap_or_default(),
-            &row.try_get::<String, _>("repository_visibility").unwrap_or_default(),
+            &row.try_get::<String, _>("package_visibility")
+                .unwrap_or_default(),
+            &row.try_get::<String, _>("repository_visibility")
+                .unwrap_or_default(),
             row.try_get("package_owner_user_id").unwrap_or(None),
             row.try_get("package_owner_org_id").unwrap_or(None),
             row.try_get("repository_owner_user_id").unwrap_or(None),
@@ -416,20 +419,21 @@ async fn authenticate_optional<S: ComposerAppState>(
         return Ok(None);
     };
 
-    let authorization = header_value
-        .to_str()
-        .map_err(|_| composer_error_response(StatusCode::UNAUTHORIZED, "Invalid Authorization header"))?;
+    let authorization = header_value.to_str().map_err(|_| {
+        composer_error_response(StatusCode::UNAUTHORIZED, "Invalid Authorization header")
+    })?;
 
     if let Some(token) = authorization.strip_prefix("Bearer ") {
         return authenticate_token(state, token.trim()).await.map(Some);
     }
 
     if let Some(encoded) = authorization.strip_prefix("Basic ") {
-        let decoded = BASE64_STANDARD
-            .decode(encoded.trim())
-            .map_err(|_| composer_error_response(StatusCode::UNAUTHORIZED, "Invalid Basic credentials"))?;
-        let decoded = String::from_utf8(decoded)
-            .map_err(|_| composer_error_response(StatusCode::UNAUTHORIZED, "Invalid Basic credentials"))?;
+        let decoded = BASE64_STANDARD.decode(encoded.trim()).map_err(|_| {
+            composer_error_response(StatusCode::UNAUTHORIZED, "Invalid Basic credentials")
+        })?;
+        let decoded = String::from_utf8(decoded).map_err(|_| {
+            composer_error_response(StatusCode::UNAUTHORIZED, "Invalid Basic credentials")
+        })?;
         let (username, password) = decoded.split_once(':').unwrap_or((decoded.as_str(), ""));
         let token = if password.starts_with("pub_") {
             password
@@ -470,7 +474,9 @@ async fn authenticate_token<S: ComposerAppState>(
         .fetch_optional(state.db())
         .await
         .map_err(|_| composer_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error"))?
-        .ok_or_else(|| composer_error_response(StatusCode::UNAUTHORIZED, "Invalid or revoked token"))?;
+        .ok_or_else(|| {
+            composer_error_response(StatusCode::UNAUTHORIZED, "Invalid or revoked token")
+        })?;
 
         let revoked = row.try_get::<bool, _>("is_revoked").unwrap_or(false);
         if revoked {
@@ -501,13 +507,20 @@ async fn authenticate_token<S: ComposerAppState>(
         let user_id = row
             .try_get::<Option<Uuid>, _>("user_id")
             .unwrap_or(None)
-            .ok_or_else(|| composer_error_response(StatusCode::UNAUTHORIZED, "Token is not associated with a user"))?;
+            .ok_or_else(|| {
+                composer_error_response(
+                    StatusCode::UNAUTHORIZED,
+                    "Token is not associated with a user",
+                )
+            })?;
 
         return Ok(ComposerIdentity { user_id });
     }
 
     let claims = publaryn_auth::validate_token(token, state.jwt_secret(), state.jwt_issuer())
-        .map_err(|_| composer_error_response(StatusCode::UNAUTHORIZED, "Invalid or expired token"))?;
+        .map_err(|_| {
+            composer_error_response(StatusCode::UNAUTHORIZED, "Invalid or expired token")
+        })?;
 
     let user_id = Uuid::parse_str(&claims.sub)
         .map_err(|_| composer_error_response(StatusCode::UNAUTHORIZED, "Invalid token subject"))?;

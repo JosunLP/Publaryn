@@ -29,6 +29,7 @@ pub enum AuditAction {
     // Org / Team
     OrgCreate,
     OrgDelete,
+    OrgUpdate,
     OrgMemberAdd,
     OrgMemberRemove,
     OrgRoleChange,

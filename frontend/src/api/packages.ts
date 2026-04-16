@@ -43,9 +43,43 @@ export interface PackageDetail {
   updated_at?: NullableString;
   owner_username?: NullableString;
   owner_org_slug?: NullableString;
+  can_transfer?: boolean;
   homepage?: NullableString;
   repository_url?: NullableString;
   keywords?: string[] | null;
+}
+
+interface ReleaseListResponse {
+  releases?: Release[] | null;
+}
+
+interface ArtifactListResponse {
+  artifacts?: Artifact[] | null;
+}
+
+interface TagListResponse {
+  tags?: Record<
+    string,
+    {
+      version?: NullableString;
+    } | null
+  > | null;
+}
+
+export interface PackageTransferOwnershipResult {
+  message?: NullableString;
+  package?: {
+    id?: NullableString;
+    ecosystem?: NullableString;
+    name?: NullableString;
+    normalized_name?: NullableString;
+  } | null;
+  owner?: {
+    type?: NullableString;
+    id?: NullableString;
+    slug?: NullableString;
+    name?: NullableString;
+  } | null;
 }
 
 export interface Release {
@@ -107,12 +141,12 @@ export async function listReleases(
   name: string,
   { page, perPage }: { page?: number; perPage?: number } = {}
 ): Promise<Release[]> {
-  const { data } = await api.get<Release[]>(
+  const { data } = await api.get<ReleaseListResponse>(
     `/v1/packages/${enc(ecosystem)}/${enc(name)}/releases`,
     { query: { page, per_page: perPage } }
   );
 
-  return data;
+  return data.releases || [];
 }
 
 export async function getRelease(
@@ -132,19 +166,40 @@ export async function listArtifacts(
   name: string,
   version: string
 ): Promise<Artifact[]> {
-  const { data } = await api.get<Artifact[]>(
+  const { data } = await api.get<ArtifactListResponse>(
     `/v1/packages/${enc(ecosystem)}/${enc(name)}/releases/${enc(version)}/artifacts`
   );
 
-  return data;
+  return data.artifacts || [];
 }
 
 export async function listTags(
   ecosystem: string,
   name: string
 ): Promise<Tag[]> {
-  const { data } = await api.get<Tag[]>(
+  const { data } = await api.get<TagListResponse>(
     `/v1/packages/${enc(ecosystem)}/${enc(name)}/tags`
+  );
+
+  return Object.entries(data.tags || {}).map(([tag, details]) => ({
+    tag,
+    name: tag,
+    version: details?.version || '',
+  }));
+}
+
+export async function transferPackageOwnership(
+  ecosystem: string,
+  name: string,
+  { targetOrgSlug }: { targetOrgSlug: string }
+): Promise<PackageTransferOwnershipResult> {
+  const { data } = await api.post<PackageTransferOwnershipResult>(
+    `/v1/packages/${enc(ecosystem)}/${enc(name)}/ownership-transfer`,
+    {
+      body: {
+        target_org_slug: targetOrgSlug,
+      },
+    }
   );
 
   return data;

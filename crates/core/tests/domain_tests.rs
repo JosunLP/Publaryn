@@ -1,3 +1,4 @@
+use chrono::{Duration, Utc};
 use publaryn_core::{
     domain::{
         namespace::Ecosystem,
@@ -7,10 +8,13 @@ use publaryn_core::{
         user::User,
     },
     error::Error,
-    policy::{check_name_policy, is_reserved_name, max_artifact_size, name_similarity, PolicyViolation},
-    validation::{validate_email, validate_package_name, validate_slug, validate_username, validate_version},
+    policy::{
+        check_name_policy, is_reserved_name, max_artifact_size, name_similarity, PolicyViolation,
+    },
+    validation::{
+        validate_email, validate_package_name, validate_slug, validate_username, validate_version,
+    },
 };
-use chrono::{Duration, Utc};
 use std::str::FromStr;
 use uuid::Uuid;
 
@@ -20,8 +24,14 @@ use uuid::Uuid;
 
 #[test]
 fn test_normalize_npm_name() {
-    assert_eq!(normalize_package_name("MyPackage", &Ecosystem::Npm), "mypackage");
-    assert_eq!(normalize_package_name("@acme/foo", &Ecosystem::Npm), "@acme/foo");
+    assert_eq!(
+        normalize_package_name("MyPackage", &Ecosystem::Npm),
+        "mypackage"
+    );
+    assert_eq!(
+        normalize_package_name("@acme/foo", &Ecosystem::Npm),
+        "@acme/foo"
+    );
 }
 
 #[test]
@@ -31,9 +41,18 @@ fn test_normalize_bun_uses_npm_rules() {
 
 #[test]
 fn test_normalize_pypi_name() {
-    assert_eq!(normalize_package_name("My-Package", &Ecosystem::Pypi), "my-package");
-    assert_eq!(normalize_package_name("my.package", &Ecosystem::Pypi), "my-package");
-    assert_eq!(normalize_package_name("my___package", &Ecosystem::Pypi), "my-package");
+    assert_eq!(
+        normalize_package_name("My-Package", &Ecosystem::Pypi),
+        "my-package"
+    );
+    assert_eq!(
+        normalize_package_name("my.package", &Ecosystem::Pypi),
+        "my-package"
+    );
+    assert_eq!(
+        normalize_package_name("my___package", &Ecosystem::Pypi),
+        "my-package"
+    );
 }
 
 #[test]
@@ -44,32 +63,50 @@ fn test_normalize_pypi_mixed_separators() {
 
 #[test]
 fn test_normalize_cargo_name() {
-    assert_eq!(normalize_package_name("my-crate", &Ecosystem::Cargo), "my_crate");
+    assert_eq!(
+        normalize_package_name("my-crate", &Ecosystem::Cargo),
+        "my_crate"
+    );
 }
 
 #[test]
 fn test_normalize_nuget_name() {
-    assert_eq!(normalize_package_name("Newtonsoft.Json", &Ecosystem::Nuget), "newtonsoft.json");
+    assert_eq!(
+        normalize_package_name("Newtonsoft.Json", &Ecosystem::Nuget),
+        "newtonsoft.json"
+    );
 }
 
 #[test]
 fn test_normalize_rubygems_name() {
-    assert_eq!(normalize_package_name("My-Gem", &Ecosystem::Rubygems), "my_gem");
+    assert_eq!(
+        normalize_package_name("My-Gem", &Ecosystem::Rubygems),
+        "my_gem"
+    );
 }
 
 #[test]
 fn test_normalize_composer_name() {
-    assert_eq!(normalize_package_name("Vendor/Pkg", &Ecosystem::Composer), "vendor/pkg");
+    assert_eq!(
+        normalize_package_name("Vendor/Pkg", &Ecosystem::Composer),
+        "vendor/pkg"
+    );
 }
 
 #[test]
 fn test_normalize_maven_name() {
-    assert_eq!(normalize_package_name("Com.Acme:Foo", &Ecosystem::Maven), "com.acme:foo");
+    assert_eq!(
+        normalize_package_name("Com.Acme:Foo", &Ecosystem::Maven),
+        "com.acme:foo"
+    );
 }
 
 #[test]
 fn test_normalize_oci_name() {
-    assert_eq!(normalize_package_name("My/Image", &Ecosystem::Oci), "my/image");
+    assert_eq!(
+        normalize_package_name("My/Image", &Ecosystem::Oci),
+        "my/image"
+    );
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -278,7 +315,9 @@ fn test_reserved_names() {
 
 #[test]
 fn test_reserved_names_full_list() {
-    for name in &["root", "system", "publaryn", "registry", "api", "docker", "oci", "security"] {
+    for name in &[
+        "root", "system", "publaryn", "registry", "api", "docker", "oci", "security",
+    ] {
         assert!(is_reserved_name(name), "Expected '{name}' to be reserved");
     }
 }
@@ -310,7 +349,10 @@ fn test_policy_violation_reserved() {
 
 #[test]
 fn test_policy_no_violation_unique_name() {
-    let existing = vec!["completely-different".to_owned(), "other-package".to_owned()];
+    let existing = vec![
+        "completely-different".to_owned(),
+        "other-package".to_owned(),
+    ];
     let violations = check_name_policy("my-new-package", &existing, &Ecosystem::Npm).unwrap();
     assert!(violations.is_empty());
 }
@@ -322,7 +364,10 @@ fn test_policy_similar_name_flagged() {
     let has_similar = violations
         .iter()
         .any(|v| matches!(v, PolicyViolation::SimilarNameExists { .. }));
-    assert!(has_similar, "Expected a similarity violation, got: {violations:?}");
+    assert!(
+        has_similar,
+        "Expected a similarity violation, got: {violations:?}"
+    );
 }
 
 #[test]
@@ -334,7 +379,10 @@ fn test_policy_exact_duplicate_not_flagged_as_similar() {
     let has_similar = violations
         .iter()
         .any(|v| matches!(v, PolicyViolation::SimilarNameExists { .. }));
-    assert!(!has_similar, "Exact match should not trigger similarity warning");
+    assert!(
+        !has_similar,
+        "Exact match should not trigger similarity warning"
+    );
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -460,7 +508,10 @@ fn test_verify_sha256() {
 fn test_sha256_hex_known_value() {
     // SHA-256("") = e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
     let hex = publaryn_core::security::sha256_hex(b"");
-    assert_eq!(hex, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+    assert_eq!(
+        hex,
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    );
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -490,7 +541,10 @@ fn test_org_role_as_str() {
 #[test]
 fn test_org_role_from_str() {
     assert_eq!(OrgRole::from_str("owner").unwrap(), OrgRole::Owner);
-    assert_eq!(OrgRole::from_str("security-manager").unwrap(), OrgRole::SecurityManager);
+    assert_eq!(
+        OrgRole::from_str("security-manager").unwrap(),
+        OrgRole::SecurityManager
+    );
     assert!(OrgRole::from_str("nonexistent").is_err());
 }
 
@@ -507,9 +561,15 @@ fn test_org_role_is_owner() {
 #[test]
 fn test_ecosystem_as_str_round_trip() {
     let ecosystems = [
-        Ecosystem::Npm, Ecosystem::Bun, Ecosystem::Pypi,
-        Ecosystem::Composer, Ecosystem::Nuget, Ecosystem::Rubygems,
-        Ecosystem::Maven, Ecosystem::Oci, Ecosystem::Cargo,
+        Ecosystem::Npm,
+        Ecosystem::Bun,
+        Ecosystem::Pypi,
+        Ecosystem::Composer,
+        Ecosystem::Nuget,
+        Ecosystem::Rubygems,
+        Ecosystem::Maven,
+        Ecosystem::Oci,
+        Ecosystem::Cargo,
     ];
     for eco in &ecosystems {
         let s = eco.as_str();
@@ -534,8 +594,14 @@ fn test_ecosystem_display() {
 #[test]
 fn test_org_role_parses_from_supported_strings() {
     assert_eq!(OrgRole::from_str("admin").unwrap(), OrgRole::Admin);
-    assert_eq!(OrgRole::from_str("security-manager").unwrap(), OrgRole::SecurityManager);
-    assert_eq!(OrgRole::from_str("billing_manager").unwrap(), OrgRole::BillingManager);
+    assert_eq!(
+        OrgRole::from_str("security-manager").unwrap(),
+        OrgRole::SecurityManager
+    );
+    assert_eq!(
+        OrgRole::from_str("billing_manager").unwrap(),
+        OrgRole::BillingManager
+    );
 }
 
 #[test]
@@ -567,7 +633,10 @@ fn test_org_invitation_status_pending() {
     )
     .unwrap();
 
-    assert_eq!(invitation.status_at(Utc::now()), OrganizationInvitationStatus::Pending);
+    assert_eq!(
+        invitation.status_at(Utc::now()),
+        OrganizationInvitationStatus::Pending
+    );
     assert!(invitation.is_actionable_at(Utc::now()));
 }
 
@@ -583,7 +652,10 @@ fn test_org_invitation_status_expired() {
     .unwrap();
     invitation.expires_at = Utc::now() - Duration::minutes(1);
 
-    assert_eq!(invitation.status_at(Utc::now()), OrganizationInvitationStatus::Expired);
+    assert_eq!(
+        invitation.status_at(Utc::now()),
+        OrganizationInvitationStatus::Expired
+    );
     assert!(!invitation.is_actionable_at(Utc::now()));
 }
 
@@ -600,6 +672,9 @@ fn test_org_invitation_status_accepted() {
     invitation.accepted_at = Some(Utc::now());
     invitation.accepted_by = Some(Uuid::new_v4());
 
-    assert_eq!(invitation.status_at(Utc::now()), OrganizationInvitationStatus::Accepted);
+    assert_eq!(
+        invitation.status_at(Utc::now()),
+        OrganizationInvitationStatus::Accepted
+    );
     assert!(!invitation.is_actionable_at(Utc::now()));
 }

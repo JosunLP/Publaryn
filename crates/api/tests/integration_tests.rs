@@ -75,12 +75,7 @@ async fn login_user(app: &axum::Router, username: &str, password: &str) -> Strin
 }
 
 /// Create an organization via POST /v1/orgs and return the response.
-async fn create_org(
-    app: &axum::Router,
-    jwt: &str,
-    name: &str,
-    slug: &str,
-) -> (StatusCode, Value) {
+async fn create_org(app: &axum::Router, jwt: &str, name: &str, slug: &str) -> (StatusCode, Value) {
     let req = Request::builder()
         .method(Method::POST)
         .uri("/v1/orgs")
@@ -93,6 +88,27 @@ async fn create_org(
             })
             .to_string(),
         ))
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// Update an organization profile and return the response.
+async fn update_org_profile(
+    app: &axum::Router,
+    jwt: &str,
+    org_slug: &str,
+    payload: Value,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::PATCH)
+        .uri(format!("/v1/orgs/{org_slug}"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::from(payload.to_string()))
         .unwrap();
 
     let resp = app.clone().oneshot(req).await.unwrap();
@@ -257,6 +273,54 @@ async fn create_package(
                 "repository_slug": repository_slug,
             })
             .to_string(),
+        ))
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// Get package detail and return the response.
+async fn get_package_detail(
+    app: &axum::Router,
+    jwt: Option<&str>,
+    ecosystem: &str,
+    name: &str,
+) -> (StatusCode, Value) {
+    let mut request = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/v1/packages/{ecosystem}/{name}"));
+
+    if let Some(jwt) = jwt {
+        request = request.header(header::AUTHORIZATION, format!("Bearer {jwt}"));
+    }
+
+    let req = request.body(Body::empty()).unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// Transfer package ownership and return the response.
+async fn transfer_package_ownership(
+    app: &axum::Router,
+    jwt: &str,
+    ecosystem: &str,
+    name: &str,
+    target_org_slug: &str,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri(format!(
+            "/v1/packages/{ecosystem}/{name}/ownership-transfer"
+        ))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::from(
+            json!({ "target_org_slug": target_org_slug }).to_string(),
         ))
         .unwrap();
 
@@ -556,7 +620,9 @@ async fn test_get_user_profile(pool: PgPool) {
 async fn test_get_nonexistent_user_returns_404(pool: PgPool) {
     let app = app(pool);
 
-    let req = Request::get("/v1/users/nobody").body(Body::empty()).unwrap();
+    let req = Request::get("/v1/users/nobody")
+        .body(Body::empty())
+        .unwrap();
     let resp = app.oneshot(req).await.unwrap();
 
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
@@ -646,10 +712,80 @@ async fn test_add_org_member_updates_existing_member_role(pool: PgPool) {
         "existing memberships should be updated in place; members response: {body}"
     );
     assert_eq!(
-        bob_memberships[0]["role"],
-        "maintainer",
+        bob_memberships[0]["role"], "maintainer",
         "members response: {body}"
     );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_update_org_profile_success(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, _) = create_org(&app, &jwt, "Acme Corp", "acme-corp").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = update_org_profile(
+        &app,
+        &jwt,
+        "acme-corp",
+        json!({
+            "description": "Maintains all Acme package distribution.",
+            "website": " https://packages.acme.test ",
+            "email": " registry@acme.test ",
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected org update response: {body}"
+    );
+    assert_eq!(body["message"], "Organization updated");
+
+    let req = Request::get("/v1/orgs/acme-corp")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(
+        body["description"],
+        "Maintains all Acme package distribution."
+    );
+    assert_eq!(body["website"], "https://packages.acme.test");
+    assert_eq!(body["email"], "registry@acme.test");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_update_org_profile_requires_org_admin(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let owner_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+
+    let (status, _) = create_org(&app, &owner_jwt, "Acme Corp", "acme-corp").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = add_org_member(&app, &owner_jwt, "acme-corp", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = update_org_profile(
+        &app,
+        &bob_jwt,
+        "acme-corp",
+        json!({
+            "description": "Should not be allowed",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(body["error"]
+        .as_str()
+        .expect("error should be present")
+        .contains("owner or admin"));
 }
 
 #[sqlx::test(migrations = "../../migrations")]
@@ -736,7 +872,9 @@ async fn test_org_audit_is_isolated_to_requested_org(pool: PgPool) {
     assert!(logs.iter().all(|log| log["target_org_id"] == acme_org_id));
     assert!(logs.iter().all(|log| log["target_org_id"] != beta_org_id));
     assert!(logs.iter().any(|log| log["metadata"]["username"] == "bob"));
-    assert!(logs.iter().all(|log| log["metadata"]["username"] != "charlie"));
+    assert!(logs
+        .iter()
+        .all(|log| log["metadata"]["username"] != "charlie"));
 }
 
 #[sqlx::test(migrations = "../../migrations")]
@@ -770,6 +908,91 @@ async fn test_org_audit_supports_action_filtering(pool: PgPool) {
     assert_eq!(logs[0]["action"], "org_role_change");
     assert_eq!(logs[0]["metadata"]["username"], "bob");
     assert_eq!(logs[0]["metadata"]["role"], "maintainer");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_org_audit_reports_pagination_metadata(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, _) = create_org(&app, &jwt, "Acme Corp", "acme-corp").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    for index in 1..=6 {
+        let username = format!("auditmember{:02}", index);
+        let email = format!("auditmember{:02}@test.dev", index);
+
+        let (status, _) = register_user(&app, &username, &email, "super_secret_pw!").await;
+        assert_eq!(status, StatusCode::OK);
+
+        let (status, _) = add_org_member(&app, &jwt, "acme-corp", &username, "viewer").await;
+        assert_eq!(status, StatusCode::CREATED);
+    }
+
+    let (status, first_page_body) = list_org_audit(
+        &app,
+        &jwt,
+        "acme-corp",
+        Some("action=org_member_add&per_page=5&page=1"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(first_page_body["page"], 1);
+    assert_eq!(first_page_body["per_page"], 5);
+    assert_eq!(first_page_body["has_next"], true);
+
+    let first_page_logs = first_page_body["logs"]
+        .as_array()
+        .expect("first page logs response should be an array");
+    assert_eq!(first_page_logs.len(), 5);
+    assert!(first_page_logs
+        .iter()
+        .all(|log| log["action"] == "org_member_add"));
+
+    let (status, second_page_body) = list_org_audit(
+        &app,
+        &jwt,
+        "acme-corp",
+        Some("action=org_member_add&per_page=5&page=2"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(second_page_body["page"], 2);
+    assert_eq!(second_page_body["per_page"], 5);
+    assert_eq!(second_page_body["has_next"], false);
+
+    let second_page_logs = second_page_body["logs"]
+        .as_array()
+        .expect("second page logs response should be an array");
+    assert_eq!(second_page_logs.len(), 1);
+    assert!(second_page_logs
+        .iter()
+        .all(|log| log["action"] == "org_member_add"));
+
+    let mut usernames = first_page_logs
+        .iter()
+        .chain(second_page_logs.iter())
+        .map(|log| {
+            log["metadata"]["username"]
+                .as_str()
+                .expect("audit username metadata should be present")
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
+    usernames.sort();
+
+    assert_eq!(
+        usernames,
+        vec![
+            "auditmember01".to_owned(),
+            "auditmember02".to_owned(),
+            "auditmember03".to_owned(),
+            "auditmember04".to_owned(),
+            "auditmember05".to_owned(),
+            "auditmember06".to_owned(),
+        ]
+    );
 }
 
 #[sqlx::test(migrations = "../../migrations")]
@@ -811,9 +1034,11 @@ async fn test_org_audit_includes_member_removal(pool: PgPool) {
 #[sqlx::test(migrations = "../../migrations")]
 async fn test_org_audit_includes_ownership_transfer(pool: PgPool) {
     let app = app(pool);
-    let (status, _) = register_user(&app, "owner_user", "owner@example.com", "Str0ngP@ssword!").await;
+    let (status, _) =
+        register_user(&app, "owner_user", "owner@example.com", "Str0ngP@ssword!").await;
     assert_eq!(status, StatusCode::OK);
-    let (status, _) = register_user(&app, "target_user", "target@example.com", "Str0ngP@ssword!").await;
+    let (status, _) =
+        register_user(&app, "target_user", "target@example.com", "Str0ngP@ssword!").await;
     assert_eq!(status, StatusCode::OK);
 
     let owner_jwt = login_user(&app, "owner_user", "Str0ngP@ssword!").await;
@@ -821,11 +1046,22 @@ async fn test_org_audit_includes_ownership_transfer(pool: PgPool) {
     let (status, _) = create_org(&app, &owner_jwt, "Transfer Org", "transfer-org").await;
     assert_eq!(status, StatusCode::CREATED);
 
-    let (status, _) = add_org_member(&app, &owner_jwt, "transfer-org", "target_user", "maintainer").await;
+    let (status, _) = add_org_member(
+        &app,
+        &owner_jwt,
+        "transfer-org",
+        "target_user",
+        "maintainer",
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED);
 
     let (status, body) = transfer_ownership(&app, &owner_jwt, "transfer-org", "target_user").await;
-    assert_eq!(status, StatusCode::OK, "unexpected ownership transfer response: {body}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected ownership transfer response: {body}"
+    );
 
     let (status, body) = list_org_audit(
         &app,
@@ -844,6 +1080,72 @@ async fn test_org_audit_includes_ownership_transfer(pool: PgPool) {
     assert_eq!(logs[0]["target_username"], "target_user");
     assert_eq!(logs[0]["metadata"]["new_owner_username"], "target_user");
     assert_eq!(logs[0]["metadata"]["former_owner_new_role"], "admin");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_org_audit_includes_org_updates(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &jwt, "Acme Corp", "acme-corp").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id = org_body["id"].as_str().expect("org id should be returned");
+
+    let (status, body) = update_org_profile(
+        &app,
+        &jwt,
+        "acme-corp",
+        json!({
+            "description": "Central package platform for Acme.",
+            "website": "https://packages.acme.test",
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected org update response: {body}"
+    );
+
+    let (status, body) = list_org_audit(
+        &app,
+        &jwt,
+        "acme-corp",
+        Some("action=org_update&per_page=10"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let logs = body["logs"]
+        .as_array()
+        .expect("logs response should be an array");
+    assert_eq!(logs.len(), 1);
+    assert_eq!(logs[0]["action"], "org_update");
+    assert_eq!(logs[0]["actor_username"], "alice");
+    assert_eq!(logs[0]["target_org_id"], org_id);
+    assert_eq!(logs[0]["metadata"]["org_slug"], "acme-corp");
+    assert_eq!(logs[0]["metadata"]["org_name"], "Acme Corp");
+    assert_eq!(
+        logs[0]["metadata"]["changed_fields"],
+        json!(["description", "website"])
+    );
+    assert_eq!(
+        logs[0]["metadata"]["changes"]["description"]["before"],
+        Value::Null
+    );
+    assert_eq!(
+        logs[0]["metadata"]["changes"]["description"]["after"],
+        "Central package platform for Acme."
+    );
+    assert_eq!(
+        logs[0]["metadata"]["changes"]["website"]["before"],
+        Value::Null
+    );
+    assert_eq!(
+        logs[0]["metadata"]["changes"]["website"]["after"],
+        "https://packages.acme.test"
+    );
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -881,10 +1183,15 @@ async fn test_team_crud_roundtrip(pool: PgPool) {
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    let teams = body["teams"].as_array().expect("teams response should be an array");
+    let teams = body["teams"]
+        .as_array()
+        .expect("teams response should be an array");
     assert_eq!(teams.len(), 1);
     assert_eq!(teams[0]["slug"], "release-engineering");
-    assert_eq!(teams[0]["description"], "Owns package publication workflows");
+    assert_eq!(
+        teams[0]["description"],
+        "Owns package publication workflows"
+    );
 
     let req = Request::builder()
         .method(Method::PATCH)
@@ -914,9 +1221,14 @@ async fn test_team_crud_roundtrip(pool: PgPool) {
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    let teams = body["teams"].as_array().expect("teams response should be an array");
+    let teams = body["teams"]
+        .as_array()
+        .expect("teams response should be an array");
     assert_eq!(teams[0]["name"], "Release Operations");
-    assert_eq!(teams[0]["description"], "Coordinates releases and publication");
+    assert_eq!(
+        teams[0]["description"],
+        "Coordinates releases and publication"
+    );
 
     let req = Request::builder()
         .method(Method::DELETE)
@@ -939,7 +1251,9 @@ async fn test_team_crud_roundtrip(pool: PgPool) {
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    let teams = body["teams"].as_array().expect("teams response should be an array");
+    let teams = body["teams"]
+        .as_array()
+        .expect("teams response should be an array");
     assert!(teams.is_empty(), "team should be removed after deletion");
 }
 
@@ -990,7 +1304,9 @@ async fn test_add_and_remove_team_member(pool: PgPool) {
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    let members = body["members"].as_array().expect("members response should be an array");
+    let members = body["members"]
+        .as_array()
+        .expect("members response should be an array");
     assert_eq!(body["team"]["slug"], "release-engineering");
     assert_eq!(members.len(), 1);
     assert_eq!(members[0]["username"], "bob");
@@ -1017,7 +1333,9 @@ async fn test_add_and_remove_team_member(pool: PgPool) {
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    let members = body["members"].as_array().expect("members response should be an array");
+    let members = body["members"]
+        .as_array()
+        .expect("members response should be an array");
     assert!(members.is_empty(), "team member should be removed");
 }
 
@@ -1069,14 +1387,8 @@ async fn test_team_package_access_roundtrip(pool: PgPool) {
     assert_eq!(status, StatusCode::CREATED);
     let org_id = org_body["id"].as_str().expect("org id should be returned");
 
-    let (status, _) = create_repository(
-        &app,
-        &jwt,
-        "Acme Packages",
-        "acme-packages",
-        Some(org_id),
-    )
-    .await;
+    let (status, _) =
+        create_repository(&app, &jwt, "Acme Packages", "acme-packages", Some(org_id)).await;
     assert_eq!(status, StatusCode::CREATED);
 
     let (status, _) = create_package(&app, &jwt, "npm", "acme-widget", "acme-packages").await;
@@ -1129,7 +1441,10 @@ async fn test_team_package_access_roundtrip(pool: PgPool) {
     assert_eq!(package_access.len(), 1);
     assert_eq!(package_access[0]["ecosystem"], "npm");
     assert_eq!(package_access[0]["name"], "acme-widget");
-    assert_eq!(package_access[0]["permissions"], json!(["publish", "write_metadata"]));
+    assert_eq!(
+        package_access[0]["permissions"],
+        json!(["publish", "write_metadata"])
+    );
 
     let req = Request::builder()
         .method(Method::PUT)
@@ -1169,7 +1484,10 @@ async fn test_team_package_access_roundtrip(pool: PgPool) {
     let package_access = body["package_access"]
         .as_array()
         .expect("package access response should be an array");
-    assert!(package_access.is_empty(), "package access should be removed");
+    assert!(
+        package_access.is_empty(),
+        "package access should be removed"
+    );
 }
 
 #[sqlx::test(migrations = "../../migrations")]
@@ -1182,14 +1500,8 @@ async fn test_team_package_access_rejects_empty_permissions(pool: PgPool) {
     assert_eq!(status, StatusCode::CREATED);
     let org_id = org_body["id"].as_str().expect("org id should be returned");
 
-    let (status, _) = create_repository(
-        &app,
-        &jwt,
-        "Acme Packages",
-        "acme-packages",
-        Some(org_id),
-    )
-    .await;
+    let (status, _) =
+        create_repository(&app, &jwt, "Acme Packages", "acme-packages", Some(org_id)).await;
     assert_eq!(status, StatusCode::CREATED);
 
     let (status, _) = create_package(&app, &jwt, "npm", "acme-widget", "acme-packages").await;
@@ -1238,14 +1550,8 @@ async fn test_team_package_access_rejects_unknown_permissions(pool: PgPool) {
     assert_eq!(status, StatusCode::CREATED);
     let org_id = org_body["id"].as_str().expect("org id should be returned");
 
-    let (status, _) = create_repository(
-        &app,
-        &jwt,
-        "Acme Packages",
-        "acme-packages",
-        Some(org_id),
-    )
-    .await;
+    let (status, _) =
+        create_repository(&app, &jwt, "Acme Packages", "acme-packages", Some(org_id)).await;
     assert_eq!(status, StatusCode::CREATED);
 
     let (status, _) = create_package(&app, &jwt, "npm", "acme-widget", "acme-packages").await;
@@ -1296,34 +1602,16 @@ async fn test_team_package_access_rejects_packages_outside_org(pool: PgPool) {
     assert_eq!(status, StatusCode::CREATED);
     let org_id = org_body["id"].as_str().expect("org id should be returned");
 
-    let (status, _) = create_repository(
-        &app,
-        &jwt,
-        "Acme Packages",
-        "acme-packages",
-        Some(org_id),
-    )
-    .await;
+    let (status, _) =
+        create_repository(&app, &jwt, "Acme Packages", "acme-packages", Some(org_id)).await;
     assert_eq!(status, StatusCode::CREATED);
 
-    let (status, _) = create_repository(
-        &app,
-        &jwt,
-        "Personal Packages",
-        "personal-packages",
-        None,
-    )
-    .await;
+    let (status, _) =
+        create_repository(&app, &jwt, "Personal Packages", "personal-packages", None).await;
     assert_eq!(status, StatusCode::CREATED);
 
-    let (status, _) = create_package(
-        &app,
-        &jwt,
-        "npm",
-        "personal-widget",
-        "personal-packages",
-    )
-    .await;
+    let (status, _) =
+        create_package(&app, &jwt, "npm", "personal-widget", "personal-packages").await;
     assert_eq!(status, StatusCode::CREATED);
 
     let (status, _) = create_team(
@@ -1342,7 +1630,9 @@ async fn test_team_package_access_rejects_packages_outside_org(pool: PgPool) {
         .uri("/v1/orgs/acme-corp/teams/release-engineering/package-access/npm/personal-widget")
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
-        .body(Body::from(json!({ "permissions": ["publish"] }).to_string()))
+        .body(Body::from(
+            json!({ "permissions": ["publish"] }).to_string(),
+        ))
         .unwrap();
 
     let resp = app.oneshot(req).await.unwrap();
@@ -1352,6 +1642,164 @@ async fn test_team_package_access_rejects_packages_outside_org(pool: PgPool) {
         .as_str()
         .expect("error should be present")
         .contains("same organization"));
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_package_ownership_transfer_success_updates_package_detail(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, _) = create_org(&app, &alice_jwt, "Acme Org", "acme-org").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, repository_body) =
+        create_repository(&app, &alice_jwt, "Alice Packages", "alice-packages", None).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, package_body) =
+        create_package(&app, &alice_jwt, "npm", "acme-widget", "alice-packages").await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let (status, detail_before) =
+        get_package_detail(&app, Some(&alice_jwt), "npm", "acme-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail_before["owner_username"], "alice");
+    assert_eq!(detail_before["owner_org_slug"], Value::Null);
+    assert_eq!(detail_before["can_transfer"], true);
+
+    let (status, transfer_body) =
+        transfer_package_ownership(&app, &alice_jwt, "npm", "acme-widget", "acme-org").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected package transfer response: {transfer_body}"
+    );
+    assert_eq!(transfer_body["message"], "Package ownership transferred");
+    assert_eq!(transfer_body["owner"]["type"], "organization");
+    assert_eq!(transfer_body["owner"]["slug"], "acme-org");
+
+    let (status, detail_after) =
+        get_package_detail(&app, Some(&alice_jwt), "npm", "acme-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail_after["owner_username"], Value::Null);
+    assert_eq!(detail_after["owner_org_slug"], "acme-org");
+    assert_eq!(detail_after["can_transfer"], true);
+
+    let (status, anonymous_detail) = get_package_detail(&app, None, "npm", "acme-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(anonymous_detail["owner_org_slug"], "acme-org");
+    assert_eq!(anonymous_detail["can_transfer"], false);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_package_ownership_transfer_requires_source_transfer_access(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+
+    let (status, _) = create_org(&app, &alice_jwt, "Alice Org", "alice-org").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, repository_body) =
+        create_repository(&app, &bob_jwt, "Bob Packages", "bob-packages", None).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, package_body) =
+        create_package(&app, &bob_jwt, "npm", "bob-widget", "bob-packages").await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let (status, detail) = get_package_detail(&app, Some(&alice_jwt), "npm", "bob-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail["owner_username"], "bob");
+    assert_eq!(detail["can_transfer"], false);
+
+    let (status, body) =
+        transfer_package_ownership(&app, &alice_jwt, "npm", "bob-widget", "alice-org").await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(body["error"]
+        .as_str()
+        .expect("error should be present")
+        .contains("transfer ownership"));
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_package_ownership_transfer_requires_target_org_admin_membership(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+
+    let (status, _) = create_org(&app, &bob_jwt, "Bob Org", "bob-org").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, repository_body) = create_repository(
+        &app,
+        &alice_jwt,
+        "Alice Packages",
+        "alice-source-packages",
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, package_body) = create_package(
+        &app,
+        &alice_jwt,
+        "npm",
+        "alice-widget",
+        "alice-source-packages",
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let (status, detail_before) =
+        get_package_detail(&app, Some(&alice_jwt), "npm", "alice-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail_before["owner_username"], "alice");
+    assert_eq!(detail_before["can_transfer"], true);
+
+    let (status, body) =
+        transfer_package_ownership(&app, &alice_jwt, "npm", "alice-widget", "bob-org").await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(body["error"]
+        .as_str()
+        .expect("error should be present")
+        .contains("target organization"));
+
+    let (status, detail_after) =
+        get_package_detail(&app, Some(&alice_jwt), "npm", "alice-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail_after["owner_username"], "alice");
+    assert_eq!(detail_after["owner_org_slug"], Value::Null);
+    assert_eq!(detail_after["can_transfer"], true);
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1386,9 +1834,11 @@ async fn test_ownership_transfer_success(pool: PgPool) {
     let app = app(pool);
 
     // Register owner and target user
-    let (status, _) = register_user(&app, "owner_user", "owner@example.com", "Str0ngP@ssword!").await;
+    let (status, _) =
+        register_user(&app, "owner_user", "owner@example.com", "Str0ngP@ssword!").await;
     assert_eq!(status, StatusCode::OK);
-    let (status, _) = register_user(&app, "target_user", "target@example.com", "Str0ngP@ssword!").await;
+    let (status, _) =
+        register_user(&app, "target_user", "target@example.com", "Str0ngP@ssword!").await;
     assert_eq!(status, StatusCode::OK);
 
     let owner_jwt = login_user(&app, "owner_user", "Str0ngP@ssword!").await;
@@ -1398,7 +1848,14 @@ async fn test_ownership_transfer_success(pool: PgPool) {
     assert_eq!(status, StatusCode::CREATED);
 
     // Add target_user as a maintainer
-    let (status, _) = add_org_member(&app, &owner_jwt, "transfer-org", "target_user", "maintainer").await;
+    let (status, _) = add_org_member(
+        &app,
+        &owner_jwt,
+        "transfer-org",
+        "target_user",
+        "maintainer",
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED);
 
     // Transfer ownership to target_user
@@ -1421,7 +1878,13 @@ async fn test_ownership_transfer_success(pool: PgPool) {
 async fn test_ownership_transfer_to_self_fails(pool: PgPool) {
     let app = app(pool);
 
-    let (status, _) = register_user(&app, "selfowner", "selfowner@example.com", "Str0ngP@ssword!").await;
+    let (status, _) = register_user(
+        &app,
+        "selfowner",
+        "selfowner@example.com",
+        "Str0ngP@ssword!",
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     let jwt = login_user(&app, "selfowner", "Str0ngP@ssword!").await;
 
@@ -1443,11 +1906,29 @@ async fn test_ownership_transfer_to_self_fails(pool: PgPool) {
 async fn test_ownership_transfer_by_non_owner_fails(pool: PgPool) {
     let app = app(pool);
 
-    let (status, _) = register_user(&app, "real_owner", "real_owner@example.com", "Str0ngP@ssword!").await;
+    let (status, _) = register_user(
+        &app,
+        "real_owner",
+        "real_owner@example.com",
+        "Str0ngP@ssword!",
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
-    let (status, _) = register_user(&app, "admin_user", "admin_user@example.com", "Str0ngP@ssword!").await;
+    let (status, _) = register_user(
+        &app,
+        "admin_user",
+        "admin_user@example.com",
+        "Str0ngP@ssword!",
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
-    let (status, _) = register_user(&app, "bystander", "bystander@example.com", "Str0ngP@ssword!").await;
+    let (status, _) = register_user(
+        &app,
+        "bystander",
+        "bystander@example.com",
+        "Str0ngP@ssword!",
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
 
     let owner_jwt = login_user(&app, "real_owner", "Str0ngP@ssword!").await;
@@ -1480,7 +1961,8 @@ async fn test_ownership_transfer_to_already_owner_fails(pool: PgPool) {
     // the original owner (now admin) can receive ownership, and then try transferring
     // to someone who is already owner.
 
-    let (status, _) = register_user(&app, "alice_ot", "alice_ot@example.com", "Str0ngP@ssword!").await;
+    let (status, _) =
+        register_user(&app, "alice_ot", "alice_ot@example.com", "Str0ngP@ssword!").await;
     assert_eq!(status, StatusCode::OK);
     let (status, _) = register_user(&app, "bob_ot", "bob_ot@example.com", "Str0ngP@ssword!").await;
     assert_eq!(status, StatusCode::OK);

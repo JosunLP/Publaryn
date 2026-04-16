@@ -40,13 +40,34 @@ import {
   revokeInvitation,
   sendInvitation,
   transferOwnership,
+  updateOrg,
   updateTeam,
 } from '../api/orgs';
 import type { RouteContext } from '../router';
+import { navigate } from '../router';
 import { escapeHtml, formatDate, formatNumber } from '../utils/format';
 
 const ADMIN_ROLES = new Set(['owner', 'admin']);
 const ORG_AUDIT_PAGE_SIZE = 20;
+const ORG_AUDIT_ACTION_VALUES = [
+  'org_create',
+  'org_update',
+  'org_member_add',
+  'org_role_change',
+  'org_member_remove',
+  'org_ownership_transfer',
+  'org_invitation_create',
+  'org_invitation_revoke',
+  'org_invitation_accept',
+  'org_invitation_decline',
+  'team_create',
+  'team_update',
+  'team_delete',
+  'team_member_add',
+  'team_member_remove',
+  'team_package_access_update',
+] as const;
+const ORG_AUDIT_ACTION_SET = new Set<string>(ORG_AUDIT_ACTION_VALUES);
 const ORG_ROLE_OPTIONS = [
   { value: 'admin', label: 'Admin' },
   { value: 'maintainer', label: 'Maintainer' },
@@ -117,6 +138,9 @@ interface OrgDetailViewState {
   packagesError: string | null;
   auditLogs: OrgAuditLog[];
   auditError: string | null;
+  auditAction: string;
+  auditPage: number;
+  auditHasNext: boolean;
   invitations: OrgInvitation[];
   invitationsError: string | null;
   isAuthenticated: boolean;
@@ -124,13 +148,17 @@ interface OrgDetailViewState {
 }
 
 export function orgDetailPage(
-  { params }: RouteContext,
+  { params, query }: RouteContext,
   container: HTMLElement
 ): void {
   const slug = params.slug ?? '';
+  const auditView = getAuditViewFromQuery(query);
 
   container.innerHTML = `<div class="loading"><span class="spinner"></span> Loading organization…</div>`;
-  void loadAndRender(container, slug);
+  void loadAndRender(container, slug, {
+    auditAction: auditView.action,
+    auditPage: auditView.page,
+  });
 }
 
 async function loadAndRender(
@@ -139,13 +167,29 @@ async function loadAndRender(
   {
     notice = null,
     error = null,
+    auditAction = null,
+    auditPage = null,
   }: {
     notice?: string | null;
     error?: string | null;
+    auditAction?: string | null;
+    auditPage?: number | null;
   } = {}
 ): Promise<void> {
   try {
     const isAuthenticated = Boolean(getAuthToken());
+    const currentAuditView = getAuditViewFromQuery(
+      new URLSearchParams(window.location.search)
+    );
+    const resolvedAuditAction = normalizeAuditAction(
+      auditAction ?? currentAuditView.action
+    );
+    const resolvedAuditPage =
+      typeof auditPage === 'number' &&
+      Number.isFinite(auditPage) &&
+      auditPage > 0
+        ? auditPage
+        : currentAuditView.page;
 
     const [org, memberData, teamData, packageData, myOrganizationsData] =
       await Promise.all([
@@ -210,8 +254,15 @@ async function loadAndRender(
         ? loadTeamPackageAccess(slug, teamData.teams || [])
         : Promise.resolve<Record<string, TeamPackageAccessState>>({}),
       canAdminister
-        ? listOrgAuditLogs(slug, { perPage: ORG_AUDIT_PAGE_SIZE }).catch(
+        ? listOrgAuditLogs(slug, {
+            action: resolvedAuditAction || undefined,
+            page: resolvedAuditPage,
+            perPage: ORG_AUDIT_PAGE_SIZE,
+          }).catch(
             (caughtError: unknown): OrgAuditListResponse => ({
+              page: resolvedAuditPage,
+              per_page: ORG_AUDIT_PAGE_SIZE,
+              has_next: false,
               logs: [],
               load_error: toErrorMessage(
                 caughtError,
@@ -220,6 +271,9 @@ async function loadAndRender(
             })
           )
         : Promise.resolve<OrgAuditListResponse>({
+            page: resolvedAuditPage,
+            per_page: ORG_AUDIT_PAGE_SIZE,
+            has_next: false,
             logs: [],
             load_error: null,
           }),
@@ -242,6 +296,12 @@ async function loadAndRender(
       packagesError: packageData.load_error || null,
       auditLogs: auditData.logs || [],
       auditError: auditData.load_error || null,
+      auditAction: resolvedAuditAction,
+      auditPage:
+        typeof auditData.page === 'number' && auditData.page > 0
+          ? auditData.page
+          : resolvedAuditPage,
+      auditHasNext: auditData.has_next === true,
       invitations: invitationData.invitations || [],
       invitationsError: invitationData.load_error || null,
       isAuthenticated,
@@ -287,6 +347,9 @@ function render(container: HTMLElement, state: OrgDetailViewState): void {
     packagesError,
     auditLogs,
     auditError,
+    auditAction,
+    auditPage,
+    auditHasNext,
     invitations,
     invitationsError,
     isAuthenticated,
@@ -344,16 +407,67 @@ function render(container: HTMLElement, state: OrgDetailViewState): void {
               <div class="org-section-header">
                 <div>
                   <h2>Activity log</h2>
-                  <p class="settings-copy">Showing the ${escapeHtml(String(ORG_AUDIT_PAGE_SIZE))} most recent governance events for this organization. This view is limited to owners and admins.</p>
+                  <p class="settings-copy">Browse governance activity for this organization with action filters and page-by-page navigation. This view is limited to owners and admins.</p>
                 </div>
               </div>
+
+              <form id="org-audit-filter-form" class="settings-subsection" style="padding-top:0;">
+                <div class="flex flex-wrap items-end gap-4">
+                  <div class="form-group" style="margin-bottom:0; min-width:240px;">
+                    <label for="org-audit-action">Filter by action</label>
+                    <select id="org-audit-action" name="action" class="form-input">
+                      <option value="">All governance events</option>
+                      ${renderAuditActionOptions(auditAction)}
+                    </select>
+                  </div>
+                  <button type="submit" class="btn btn-secondary">Apply filter</button>
+                  ${
+                    auditAction
+                      ? '<button type="button" class="btn btn-secondary" data-clear-audit-filter>Clear filter</button>'
+                      : ''
+                  }
+                </div>
+                <p class="settings-copy" style="margin-top:0.75rem; margin-bottom:0;">
+                  Showing page ${escapeHtml(String(auditPage))} with up to ${escapeHtml(String(ORG_AUDIT_PAGE_SIZE))} events${
+                    auditAction
+                      ? ` filtered to ${escapeHtml(formatAuditActionLabel(auditAction).toLowerCase())}`
+                      : ''
+                  }.
+                </p>
+              </form>
 
               ${
                 auditError
                   ? `<div class="alert alert-error">${escapeHtml(auditError)}</div>`
                   : auditLogs.length === 0
-                    ? '<div class="empty-state"><h3>No activity yet</h3><p>Recent governance events will appear here once members, invitations, teams, and package access change.</p></div>'
+                    ? `<div class="empty-state"><h3>${escapeHtml(
+                        auditAction || auditPage > 1
+                          ? 'No matching activity'
+                          : 'No activity yet'
+                      )}</h3><p>${escapeHtml(
+                        auditAction || auditPage > 1
+                          ? 'Try clearing the filter or moving back a page to review earlier governance events.'
+                          : 'Recent governance events will appear here once members, invitations, teams, and package access change.'
+                      )}</p></div>`
                     : `<div class="token-list">${auditLogs.map((log) => renderAuditLogRow(log)).join('')}</div>`
+              }
+
+              ${
+                !auditError && (auditPage > 1 || auditHasNext)
+                  ? `<div class="pagination">
+                      ${
+                        auditPage > 1
+                          ? `<button class="btn btn-secondary btn-sm" type="button" data-audit-page="${escapeHtml(String(auditPage - 1))}">← Prev</button>`
+                          : ''
+                      }
+                      <span class="current">Page ${escapeHtml(String(auditPage))}</span>
+                      ${
+                        auditHasNext
+                          ? `<button class="btn btn-secondary btn-sm" type="button" data-audit-page="${escapeHtml(String(auditPage + 1))}">Next →</button>`
+                          : ''
+                      }
+                    </div>`
+                  : ''
               }
             </section>
           `
@@ -395,6 +509,52 @@ function render(container: HTMLElement, state: OrgDetailViewState): void {
           </p>
         </section>
       </div>
+
+      ${
+        canAdminister
+          ? `
+            <section class="card settings-section">
+              <div class="org-section-header">
+                <div>
+                  <h2>Organization profile</h2>
+                  <p class="settings-copy">Update the shared description and contact metadata that appears across this workspace. Changes are recorded in the organization activity log.</p>
+                </div>
+              </div>
+
+              <form id="org-profile-form">
+                <div class="grid gap-4 xl:grid-cols-2">
+                  <div class="form-group">
+                    <label for="org-profile-name">Organization name</label>
+                    <input id="org-profile-name" class="form-input" value="${escapeHtml(org.name || slug)}" disabled />
+                  </div>
+                  <div class="form-group">
+                    <label for="org-profile-slug">Organization slug</label>
+                    <input id="org-profile-slug" class="form-input" value="${escapeHtml(org.slug || slug)}" disabled />
+                  </div>
+                </div>
+
+                <div class="form-group">
+                  <label for="org-profile-description">Description</label>
+                  <textarea id="org-profile-description" name="description" class="form-input" rows="3" placeholder="Describe what this organization maintains and why developers should trust it.">${escapeHtml(org.description || '')}</textarea>
+                </div>
+
+                <div class="grid gap-4 xl:grid-cols-2">
+                  <div class="form-group">
+                    <label for="org-profile-website">Website</label>
+                    <input id="org-profile-website" name="website" class="form-input" type="url" placeholder="https://packages.example.com" value="${escapeHtml(org.website || '')}" />
+                  </div>
+                  <div class="form-group">
+                    <label for="org-profile-email">Contact email</label>
+                    <input id="org-profile-email" name="email" class="form-input" type="email" placeholder="registry@example.com" value="${escapeHtml(org.email || '')}" />
+                  </div>
+                </div>
+
+                <button type="submit" class="btn btn-primary">Save profile</button>
+              </form>
+            </section>
+          `
+          : ''
+      }
 
       ${
         canAdminister
@@ -681,8 +841,108 @@ function render(container: HTMLElement, state: OrgDetailViewState): void {
     </div>
   `;
 
+  const auditFilterForm = container.querySelector<HTMLFormElement>(
+    '#org-audit-filter-form'
+  );
+  auditFilterForm?.addEventListener('submit', (event) => {
+    event.preventDefault();
+
+    const formData = new FormData(auditFilterForm);
+    navigate(
+      buildOrgAuditPath(slug, {
+        action: formData.get('action')?.toString() || '',
+        page: 1,
+      })
+    );
+  });
+
+  const clearAuditFilterButton = container.querySelector<HTMLButtonElement>(
+    '[data-clear-audit-filter]'
+  );
+  clearAuditFilterButton?.addEventListener('click', () => {
+    navigate(
+      buildOrgAuditPath(slug, {
+        action: '',
+        page: 1,
+      })
+    );
+  });
+
+  container
+    .querySelectorAll<HTMLButtonElement>('[data-audit-page]')
+    .forEach((button) => {
+      button.addEventListener('click', () => {
+        const nextPage = Number.parseInt(
+          button.getAttribute('data-audit-page') || '',
+          10
+        );
+
+        if (!Number.isFinite(nextPage) || nextPage < 1) {
+          return;
+        }
+
+        navigate(
+          buildOrgAuditPath(slug, {
+            action: auditAction,
+            page: nextPage,
+          })
+        );
+      });
+    });
+
   const inviteForm =
     container.querySelector<HTMLFormElement>('#org-invite-form');
+  const profileForm =
+    container.querySelector<HTMLFormElement>('#org-profile-form');
+  profileForm?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+
+    const formData = new FormData(profileForm);
+    const nextDescription = normalizeFormOptionalText(
+      formData.get('description')
+    );
+    const nextWebsite = normalizeFormOptionalText(formData.get('website'));
+    const nextEmail = normalizeFormOptionalText(formData.get('email'));
+
+    if (
+      nextDescription === normalizeExistingOptionalText(org.description) &&
+      nextWebsite === normalizeExistingOptionalText(org.website) &&
+      nextEmail === normalizeExistingOptionalText(org.email)
+    ) {
+      await loadAndRender(container, slug, {
+        notice: 'Organization profile is already up to date.',
+      });
+      return;
+    }
+
+    const submitButton = getSubmitButton(profileForm);
+    if (!submitButton) {
+      return;
+    }
+
+    submitButton.disabled = true;
+    submitButton.textContent = 'Saving…';
+
+    try {
+      await updateOrg(slug, {
+        description: nextDescription,
+        website: nextWebsite,
+        email: nextEmail,
+      });
+
+      await loadAndRender(container, slug, {
+        notice: 'Organization profile updated.',
+      });
+    } catch (caughtError: unknown) {
+      await loadAndRender(container, slug, {
+        error: toErrorMessage(
+          caughtError,
+          'Failed to update the organization profile.'
+        ),
+      });
+    }
+  });
+
   inviteForm?.addEventListener('submit', async (event) => {
     event.preventDefault();
 
@@ -1516,10 +1776,22 @@ function renderTeamPermissionOptions(disabled: boolean): string {
   ).join('');
 }
 
+function renderAuditActionOptions(selectedValue: string): string {
+  return ORG_AUDIT_ACTION_VALUES.map(
+    (action) => `
+      <option value="${action}" ${action === selectedValue ? 'selected' : ''}>
+        ${escapeHtml(formatAuditActionLabel(action))}
+      </option>
+    `
+  ).join('');
+}
+
 function formatAuditActionLabel(action: string): string {
   switch (action) {
     case 'org_create':
       return 'Organization created';
+    case 'org_update':
+      return 'Organization updated';
     case 'org_member_add':
       return 'Member added';
     case 'org_role_change':
@@ -1617,6 +1889,8 @@ function formatAuditSummary(log: OrgAuditLog): string | null {
         getAuditMetadataString(metadata, 'slug');
       return name ? `Created ${name}.` : 'Created the organization workspace.';
     }
+    case 'org_update':
+      return formatOrgUpdateSummary(metadata);
     case 'org_member_add': {
       const username = getAuditMetadataString(metadata, 'username');
       const role = getAuditMetadataString(metadata, 'role');
@@ -1784,6 +2058,73 @@ function getAuditMetadataStringArray(
   return value.filter((item): item is string => typeof item === 'string');
 }
 
+function getAuditMetadataRecord(
+  metadata: Record<string, unknown> | null | undefined,
+  key: string
+): Record<string, unknown> | null {
+  const value = metadata?.[key];
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+
+  return value as Record<string, unknown>;
+}
+
+function formatOrgUpdateSummary(
+  metadata: Record<string, unknown> | null | undefined
+): string {
+  const changes = getAuditMetadataRecord(metadata, 'changes');
+  if (!changes) {
+    return 'Updated the organization profile.';
+  }
+
+  const fieldUpdates = ['description', 'website', 'email']
+    .map((field) => {
+      const change = getAuditMetadataRecord(changes, field);
+      if (!change) {
+        return null;
+      }
+
+      const before = normalizeExistingOptionalText(
+        getAuditMetadataString(change, 'before')
+      );
+      const after = normalizeExistingOptionalText(
+        getAuditMetadataString(change, 'after')
+      );
+      const label = formatOrgProfileFieldLabel(field);
+
+      if (before && after) {
+        return `${label}: ${before} → ${after}`;
+      }
+      if (!before && after) {
+        return `${label}: set to ${after}`;
+      }
+      if (before && !after) {
+        return `${label}: cleared`;
+      }
+
+      return `${label}: updated`;
+    })
+    .filter((value): value is string => Boolean(value));
+
+  return fieldUpdates.length > 0
+    ? fieldUpdates.join('; ')
+    : 'Updated the organization profile.';
+}
+
+function formatOrgProfileFieldLabel(field: string): string {
+  switch (field) {
+    case 'description':
+      return 'Description';
+    case 'website':
+      return 'Website';
+    case 'email':
+      return 'Email';
+    default:
+      return formatIdentifierLabel(field);
+  }
+}
+
 function renderPermissionBadges(permissions: string[]): string {
   if (permissions.length === 0) {
     return '';
@@ -1868,6 +2209,81 @@ function formatIdentifierLabel(value: string): string {
 
 function getSubmitButton(form: HTMLFormElement): HTMLButtonElement | null {
   return form.querySelector<HTMLButtonElement>('button[type="submit"]');
+}
+
+function normalizeFormOptionalText(
+  value: FormDataEntryValue | null | undefined
+): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizeExistingOptionalText(
+  value: string | null | undefined
+): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function getAuditViewFromQuery(query: URLSearchParams): {
+  action: string;
+  page: number;
+} {
+  const parsedPage = Number.parseInt(query.get('page') ?? '1', 10);
+
+  return {
+    action: normalizeAuditAction(query.get('action')),
+    page: Number.isFinite(parsedPage) && parsedPage > 0 ? parsedPage : 1,
+  };
+}
+
+function normalizeAuditAction(value: string | null | undefined): string {
+  if (typeof value !== 'string') {
+    return '';
+  }
+
+  const trimmed = value.trim();
+  return trimmed && ORG_AUDIT_ACTION_SET.has(trimmed) ? trimmed : '';
+}
+
+function buildOrgAuditPath(
+  slug: string,
+  {
+    action,
+    page,
+  }: {
+    action: string | null | undefined;
+    page: number;
+  }
+): string {
+  const params = new URLSearchParams(window.location.search);
+  const normalizedAction = normalizeAuditAction(action);
+
+  if (normalizedAction) {
+    params.set('action', normalizedAction);
+  } else {
+    params.delete('action');
+  }
+
+  if (page > 1) {
+    params.set('page', String(page));
+  } else {
+    params.delete('page');
+  }
+
+  const queryString = params.toString();
+  const encodedSlug = encodeURIComponent(slug);
+  return queryString
+    ? `/orgs/${encodedSlug}?${queryString}`
+    : `/orgs/${encodedSlug}`;
 }
 
 function hasTeamSlug(team: Team): team is Team & { slug: string } {

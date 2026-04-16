@@ -1,8 +1,4 @@
-use publaryn_core::{
-    domain::namespace::Ecosystem,
-    error::Result,
-    validation,
-};
+use publaryn_core::{domain::namespace::Ecosystem, error::Result, validation};
 
 pub fn validate_rubygems_package_name(name: &str) -> Result<()> {
     validation::validate_package_name(name, &Ecosystem::Rubygems)

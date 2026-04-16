@@ -1,5 +1,8 @@
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use blake2::{digest::{Update, VariableOutput}, Blake2bVar};
+use blake2::{
+    digest::{Update, VariableOutput},
+    Blake2bVar,
+};
 use bytes::Bytes;
 use md5::{Digest as Md5Digest, Md5};
 use publaryn_core::domain::artifact::ArtifactKind;
@@ -138,9 +141,9 @@ impl LegacyUploadBuilder {
         let pyversion = required_single_field(&self.fields, "pyversion")?;
         let artifact_kind = parse_artifact_kind(&filetype, &pyversion)?;
 
-        let file = self
-            .file
-            .ok_or_else(|| "The upload payload must include a distribution file in the 'content' field".to_owned())?;
+        let file = self.file.ok_or_else(|| {
+            "The upload payload must include a distribution file in the 'content' field".to_owned()
+        })?;
 
         validate_filename_for_artifact_kind(&file.filename, artifact_kind.clone())?;
 
@@ -251,9 +254,7 @@ fn optional_single_field(fields: &BTreeMap<String, Vec<String>>, key: &str) -> O
         .filter(|value| !value.is_empty())
 }
 
-fn filter_metadata_fields(
-    fields: BTreeMap<String, Vec<String>>,
-) -> BTreeMap<String, Vec<String>> {
+fn filter_metadata_fields(fields: BTreeMap<String, Vec<String>>) -> BTreeMap<String, Vec<String>> {
     fields
         .into_iter()
         .filter(|(key, _)| !UPLOAD_ONLY_FIELDS.contains(&key.as_str()))
@@ -293,9 +294,7 @@ fn parse_artifact_kind(filetype: &str, pyversion: &str) -> Result<ArtifactKind, 
 
             Ok(ArtifactKind::Sdist)
         }
-        other => Err(format!(
-            "Unsupported PyPI distribution filetype '{other}'"
-        )),
+        other => Err(format!("Unsupported PyPI distribution filetype '{other}'")),
     }
 }
 
@@ -359,9 +358,8 @@ fn validate_supplied_digests(
         digest_count += 1;
         validate_hex_digest("blake2_256_digest", &blake2_digest)?;
 
-        let mut hasher = Blake2bVar::new(32).map_err(|_| {
-            "The server failed to initialize Blake2 digest validation".to_owned()
-        })?;
+        let mut hasher = Blake2bVar::new(32)
+            .map_err(|_| "The server failed to initialize Blake2 digest validation".to_owned())?;
         hasher.update(bytes);
         let mut output = [0_u8; 32];
         hasher
@@ -442,8 +440,11 @@ fn project_url_for_labels(values: &[String], labels: &[&str]) -> Option<String> 
 mod tests {
     use super::{LegacyUploadBuilder, LegacyUploadRequest};
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    use blake2::{
+        digest::{Update, VariableOutput},
+        Blake2bVar,
+    };
     use bytes::Bytes;
-    use blake2::{digest::{Update, VariableOutput}, Blake2bVar};
     use md5::{Digest as Md5Digest, Md5};
     use sha2::Sha256;
 
@@ -463,10 +464,7 @@ mod tests {
         builder.add_text_field("project_urls", "Source, https://example.test/src".into());
         builder.add_text_field("project_urls", "Homepage, https://example.test".into());
         builder.add_text_field("license_expression", "MIT".into());
-        builder.add_text_field(
-            "sha256_digest",
-            hex::encode(Sha256::digest(&content)),
-        );
+        builder.add_text_field("sha256_digest", hex::encode(Sha256::digest(&content)));
         builder
             .add_file_field(
                 "content",
@@ -496,7 +494,11 @@ mod tests {
         assert_eq!(metadata.license.as_deref(), Some("MIT"));
         assert_eq!(
             metadata.keywords,
-            vec!["demo".to_owned(), "packages".to_owned(), "python".to_owned()]
+            vec![
+                "demo".to_owned(),
+                "packages".to_owned(),
+                "python".to_owned()
+            ]
         );
     }
 
@@ -520,7 +522,9 @@ mod tests {
             .expect("file should be accepted");
 
         let error = builder.build().expect_err("digest should be required");
-        assert!(error.contains("must include one of md5_digest, sha256_digest, or blake2_256_digest"));
+        assert!(
+            error.contains("must include one of md5_digest, sha256_digest, or blake2_256_digest")
+        );
     }
 
     #[test]

@@ -156,7 +156,10 @@ mod tests {
 
         assert_eq!(
             normalized,
-            vec![SCOPE_PACKAGES_WRITE.to_owned(), SCOPE_PROFILE_WRITE.to_owned()]
+            vec![
+                SCOPE_PACKAGES_WRITE.to_owned(),
+                SCOPE_PROFILE_WRITE.to_owned()
+            ]
         );
     }
 

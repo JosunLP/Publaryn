@@ -33,7 +33,9 @@ pub trait ArtifactStore: Send + Sync {
 /// In-memory artifact store for testing.
 #[derive(Debug, Default)]
 pub struct MemoryArtifactStore {
-    objects: std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, StoredArtifactObject>>>,
+    objects: std::sync::Arc<
+        tokio::sync::RwLock<std::collections::HashMap<String, StoredArtifactObject>>,
+    >,
 }
 
 impl MemoryArtifactStore {

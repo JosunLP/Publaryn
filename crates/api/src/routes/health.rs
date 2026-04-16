@@ -56,11 +56,14 @@ fn readiness_response(database_ready: bool, redis_ready: bool) -> (StatusCode, J
         StatusCode::SERVICE_UNAVAILABLE
     };
 
-    (status, Json(json!({
-        "status": if all_ready { "ready" } else { "not_ready" },
-        "database": if database_ready { "ok" } else { "error" },
-        "redis": if redis_ready { "ok" } else { "error" },
-    })))
+    (
+        status,
+        Json(json!({
+            "status": if all_ready { "ready" } else { "not_ready" },
+            "database": if database_ready { "ok" } else { "error" },
+            "redis": if redis_ready { "ok" } else { "error" },
+        })),
+    )
 }
 
 #[cfg(test)]

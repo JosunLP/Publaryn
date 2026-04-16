@@ -77,9 +77,7 @@ pub fn parse_publish_payload(payload: NpmPublishPayload) -> Result<ParsedPublish
     let (version, version_metadata) = payload.versions.into_iter().next().unwrap();
 
     if version.is_empty() {
-        return Err(Error::Validation(
-            "Version string must not be empty".into(),
-        ));
+        return Err(Error::Validation("Version string must not be empty".into()));
     }
 
     if payload.attachments.is_empty() {
@@ -139,15 +137,13 @@ pub fn extract_version_fields(metadata: &Value) -> VersionFields {
         .get("homepage")
         .and_then(Value::as_str)
         .map(String::from);
-    let repository_url = metadata
-        .get("repository")
-        .and_then(|v| {
-            if let Some(s) = v.as_str() {
-                Some(s.to_owned())
-            } else {
-                v.get("url").and_then(Value::as_str).map(String::from)
-            }
-        });
+    let repository_url = metadata.get("repository").and_then(|v| {
+        if let Some(s) = v.as_str() {
+            Some(s.to_owned())
+        } else {
+            v.get("url").and_then(Value::as_str).map(String::from)
+        }
+    });
     let keywords = metadata
         .get("keywords")
         .and_then(Value::as_array)
@@ -178,7 +174,10 @@ mod tests {
         let filename = format!("{name}-{version}.tgz");
         NpmPublishPayload {
             name: name.to_owned(),
-            versions: HashMap::from([(version.to_owned(), json!({"name": name, "version": version}))]),
+            versions: HashMap::from([(
+                version.to_owned(),
+                json!({"name": name, "version": version}),
+            )]),
             dist_tags: HashMap::from([("latest".to_owned(), version.to_owned())]),
             attachments: HashMap::from([(
                 filename,

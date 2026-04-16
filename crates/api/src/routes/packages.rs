@@ -9,8 +9,8 @@ use axum::{
     routing::{delete, get, patch, post, put},
     Json, Router,
 };
-use sha2::{Digest, Sha256, Sha512};
 use serde::Deserialize;
+use sha2::{Digest, Sha256, Sha512};
 use sqlx::Row;
 use uuid::Uuid;
 
@@ -20,7 +20,7 @@ use publaryn_core::{
         namespace::Ecosystem,
         package::{normalize_package_name, Package},
         release::Release,
-        repository::Visibility,
+        repository::{RepositoryKind, Visibility},
     },
     error::Error,
     policy::{self, PolicyViolation},
@@ -31,9 +31,9 @@ use publaryn_search::{PackageDocument, SearchIndex};
 use crate::{
     error::{ApiError, ApiResult},
     request_auth::{
-        actor_can_write_package_by_id, ensure_package_admin_access,
-        ensure_package_metadata_write_access, ensure_package_publish_access,
-        ensure_package_read_access, ensure_package_transfer_access,
+        actor_can_transfer_package_by_id, actor_can_write_package_by_id,
+        ensure_package_admin_access, ensure_package_metadata_write_access,
+        ensure_package_publish_access, ensure_package_read_access, ensure_package_transfer_access,
         ensure_repository_write_access, AuthenticatedIdentity, OptionalAuthenticatedIdentity,
     },
     routes::parse_ecosystem,
@@ -42,11 +42,14 @@ use crate::{
     storage::PutArtifactObject,
 };
 
-const PACKAGE_CREATION_ALLOWED_REPOSITORY_KINDS: &[&str] =
-    &["public", "private", "staging", "release"];
 const RELEASE_HISTORY_VISIBLE_STATUSES: &[&str] = &["published", "deprecated", "yanked"];
-const RELEASE_MANAGEMENT_VISIBLE_STATUSES: &[&str] =
-    &["quarantine", "scanning", "published", "deprecated", "yanked"];
+const RELEASE_MANAGEMENT_VISIBLE_STATUSES: &[&str] = &[
+    "quarantine",
+    "scanning",
+    "published",
+    "deprecated",
+    "yanked",
+];
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -124,13 +127,27 @@ async fn get_package(
     let package_id =
         ensure_package_read_access(&state.db, eco.as_str(), &normalized, identity.user_id())
             .await?;
+    let can_transfer = match identity.0.as_ref() {
+        Some(identity)
+            if identity
+                .scopes()
+                .iter()
+                .any(|scope| scope == SCOPE_PACKAGES_TRANSFER) =>
+        {
+            actor_can_transfer_package_by_id(&state.db, package_id, Some(identity.user_id)).await?
+        }
+        _ => false,
+    };
 
     let row = sqlx::query(
-        "SELECT id, name, ecosystem, description, homepage, repository_url, license, keywords, \
-                visibility, is_deprecated, deprecation_message, is_archived, download_count, \
-                created_at, updated_at \
-         FROM packages \
-         WHERE id = $1",
+        "SELECT p.id, p.name, p.ecosystem, p.description, p.homepage, p.repository_url, \
+                p.license, p.keywords, p.visibility, p.is_deprecated, \
+                p.deprecation_message, p.is_archived, p.download_count, p.created_at, \
+                p.updated_at, u.username AS owner_username, o.slug AS owner_org_slug \
+         FROM packages p \
+         LEFT JOIN users u ON u.id = p.owner_user_id \
+         LEFT JOIN organizations o ON o.id = p.owner_org_id \
+         WHERE p.id = $1",
     )
     .bind(package_id)
     .fetch_optional(&state.db)
@@ -156,6 +173,9 @@ async fn get_package(
         "deprecation_message": row.try_get::<Option<String>, _>("deprecation_message").ok().flatten(),
         "is_archived": row.try_get::<bool, _>("is_archived").ok(),
         "download_count": row.try_get::<i64, _>("download_count").ok(),
+        "owner_username": row.try_get::<Option<String>, _>("owner_username").ok().flatten(),
+        "owner_org_slug": row.try_get::<Option<String>, _>("owner_org_slug").ok().flatten(),
+        "can_transfer": can_transfer,
         "created_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at").ok(),
         "updated_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("updated_at").ok(),
     })))
@@ -213,7 +233,7 @@ struct ArtifactUploadQuery {
 struct RepositoryPackageCreationTarget {
     id: Uuid,
     slug: String,
-    kind: String,
+    kind: RepositoryKind,
     visibility: Visibility,
     owner_user_id: Option<Uuid>,
     owner_org_id: Option<Uuid>,
@@ -481,8 +501,7 @@ async fn transfer_package_ownership(
     let eco = parse_ecosystem(&ecosystem_str)?;
     let normalized = normalize_package_name(&name, &eco);
 
-    ensure_package_transfer_access(&state.db, eco.as_str(), &normalized, identity.user_id)
-        .await?;
+    ensure_package_transfer_access(&state.db, eco.as_str(), &normalized, identity.user_id).await?;
 
     let mut tx = state
         .db
@@ -726,13 +745,12 @@ async fn list_releases(
     let pkg_id =
         ensure_package_read_access(&state.db, eco.as_str(), &normalized, identity.user_id())
             .await?;
-    let visible_statuses = if actor_can_write_package_by_id(&state.db, pkg_id, identity.user_id())
-        .await?
-    {
-        release_management_visible_statuses()
-    } else {
-        release_history_visible_statuses()
-    };
+    let visible_statuses =
+        if actor_can_write_package_by_id(&state.db, pkg_id, identity.user_id()).await? {
+            release_management_visible_statuses()
+        } else {
+            release_history_visible_statuses()
+        };
 
     let rows = sqlx::query(
         "SELECT version, status, is_yanked, is_deprecated, is_prerelease, published_at \
@@ -769,14 +787,8 @@ async fn get_release(
     Path((ecosystem_str, name, version)): Path<(String, String, String)>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let eco = parse_ecosystem(&ecosystem_str)?;
-    let release_access = ensure_release_read_access(
-        &state.db,
-        &eco,
-        &name,
-        &version,
-        identity.user_id(),
-    )
-    .await?;
+    let release_access =
+        ensure_release_read_access(&state.db, &eco, &name, &version, identity.user_id()).await?;
 
     let row = sqlx::query(
         "SELECT r.id, r.version, r.status, r.is_yanked, r.yank_reason, r.is_deprecated, \
@@ -1253,14 +1265,8 @@ async fn list_artifacts(
     Path((ecosystem_str, name, version)): Path<(String, String, String)>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let eco = parse_ecosystem(&ecosystem_str)?;
-    let release_access = ensure_release_read_access(
-        &state.db,
-        &eco,
-        &name,
-        &version,
-        identity.user_id(),
-    )
-    .await?;
+    let release_access =
+        ensure_release_read_access(&state.db, &eco, &name, &version, identity.user_id()).await?;
 
     let rows = sqlx::query(
         "SELECT id, kind, filename, content_type, size_bytes, sha256, sha512, is_signed, signature_key_id, uploaded_at \
@@ -1499,14 +1505,8 @@ async fn download_artifact(
     Path((ecosystem_str, name, version, filename)): Path<(String, String, String, String)>,
 ) -> ApiResult<Response> {
     let eco = parse_ecosystem(&ecosystem_str)?;
-    let release_access = ensure_release_read_access(
-        &state.db,
-        &eco,
-        &name,
-        &version,
-        identity.user_id(),
-    )
-    .await?;
+    let release_access =
+        ensure_release_read_access(&state.db, &eco, &name, &version, identity.user_id()).await?;
 
     let artifact_row = sqlx::query(
         "SELECT storage_key, content_type, size_bytes, sha256 \
@@ -1518,7 +1518,12 @@ async fn download_artifact(
     .fetch_optional(&state.db)
     .await
     .map_err(|e| ApiError(Error::Database(e)))?
-    .ok_or_else(|| ApiError(Error::NotFound(format!("Artifact '{}' not found", filename))))?;
+    .ok_or_else(|| {
+        ApiError(Error::NotFound(format!(
+            "Artifact '{}' not found",
+            filename
+        )))
+    })?;
 
     let storage_key = artifact_row
         .try_get::<String, _>("storage_key")
@@ -1712,7 +1717,11 @@ fn validate_expected_sha256(expected: Option<&str>, actual: &str) -> ApiResult<(
     };
 
     let normalized = expected.trim().to_ascii_lowercase();
-    if normalized.len() != 64 || !normalized.chars().all(|character| character.is_ascii_hexdigit()) {
+    if normalized.len() != 64
+        || !normalized
+            .chars()
+            .all(|character| character.is_ascii_hexdigit())
+    {
         return Err(ApiError(Error::Validation(
             "The supplied sha256 checksum must be a 64-character hexadecimal value".into(),
         )));
@@ -1767,7 +1776,8 @@ async fn ensure_release_read_access(
     actor_user_id: Option<Uuid>,
 ) -> ApiResult<ReleaseAccess> {
     let normalized = normalize_package_name(package_name, ecosystem);
-    let package_id = ensure_package_read_access(db, ecosystem.as_str(), &normalized, actor_user_id).await?;
+    let package_id =
+        ensure_package_read_access(db, ecosystem.as_str(), &normalized, actor_user_id).await?;
     let release = load_release_for_write(db, package_id, version).await?;
 
     if release_status_allows_direct_read(&release.status) {
@@ -1837,8 +1847,14 @@ async fn load_repository_package_creation_target(
     })
 }
 
-fn validate_package_creation_repository_kind(kind: &str) -> ApiResult<()> {
-    if PACKAGE_CREATION_ALLOWED_REPOSITORY_KINDS.contains(&kind) {
+fn validate_package_creation_repository_kind(kind: &RepositoryKind) -> ApiResult<()> {
+    if matches!(
+        kind,
+        RepositoryKind::Public
+            | RepositoryKind::Private
+            | RepositoryKind::Staging
+            | RepositoryKind::Release
+    ) {
         return Ok(());
     }
 
@@ -2010,7 +2026,11 @@ async fn reindex_package_document(state: &AppState, package_id: Uuid) -> publary
     let owner_name = row
         .try_get::<Option<String>, _>("owner_org_slug")
         .map_err(|e| Error::Internal(e.to_string()))?
-        .or_else(|| row.try_get::<Option<String>, _>("owner_username").ok().flatten());
+        .or_else(|| {
+            row.try_get::<Option<String>, _>("owner_username")
+                .ok()
+                .flatten()
+        });
 
     let document = PackageDocument {
         id: row
@@ -2060,21 +2080,24 @@ async fn reindex_package_document(state: &AppState, package_id: Uuid) -> publary
 #[cfg(test)]
 mod tests {
     use publaryn_core::{
-        domain::{namespace::Ecosystem, repository::Visibility},
+        domain::{
+            namespace::Ecosystem,
+            repository::{RepositoryKind, Visibility},
+        },
         policy::PolicyViolation,
     };
     use uuid::Uuid;
 
     use super::{
-        build_artifact_storage_key, derive_package_visibility, ensure_release_allows_status_mutation,
-        extract_namespace_claim_value, finalize_release_status, join_policy_violations,
-        package_owner_from_fields, release_history_visible_statuses,
-        release_management_visible_statuses, release_status_accepts_artifact_upload,
-        release_status_after_unyank, release_status_allows_direct_read,
-        release_status_can_be_published, validate_artifact_filename,
-        validate_expected_sha256, validate_package_creation_repository_kind,
-        validate_package_transfer_target, version_looks_prerelease, visibility_scope_rank,
-        PackageOwner,
+        build_artifact_storage_key, derive_package_visibility,
+        ensure_release_allows_status_mutation, extract_namespace_claim_value,
+        finalize_release_status, join_policy_violations, package_owner_from_fields,
+        release_history_visible_statuses, release_management_visible_statuses,
+        release_status_accepts_artifact_upload, release_status_after_unyank,
+        release_status_allows_direct_read, release_status_can_be_published,
+        validate_artifact_filename, validate_expected_sha256,
+        validate_package_creation_repository_kind, validate_package_transfer_target,
+        version_looks_prerelease, visibility_scope_rank, PackageOwner,
     };
 
     #[test]
@@ -2245,7 +2268,7 @@ mod tests {
 
     #[test]
     fn package_creation_rejects_proxy_repositories() {
-        let error = validate_package_creation_repository_kind("proxy")
+        let error = validate_package_creation_repository_kind(&RepositoryKind::Proxy)
             .expect_err("proxy repositories must not accept created packages");
 
         assert_eq!(

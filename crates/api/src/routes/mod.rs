@@ -8,8 +8,8 @@ pub mod auth;
 pub mod health;
 pub mod namespaces;
 pub mod openapi;
-pub mod orgs;
 pub mod org_invitations;
+pub mod orgs;
 pub mod packages;
 pub mod pypi_oidc;
 pub mod repositories;
@@ -30,6 +30,8 @@ pub(crate) fn parse_ecosystem(s: &str) -> Result<Ecosystem, ApiError> {
         "maven" => Ok(Ecosystem::Maven),
         "composer" => Ok(Ecosystem::Composer),
         "oci" => Ok(Ecosystem::Oci),
-        other => Err(ApiError(Error::Validation(format!("Unknown ecosystem: {other}")))),
+        other => Err(ApiError(Error::Validation(format!(
+            "Unknown ecosystem: {other}"
+        )))),
     }
 }

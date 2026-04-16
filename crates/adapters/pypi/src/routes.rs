@@ -2,7 +2,10 @@ use axum::{
     body::Body,
     extract::{DefaultBodyLimit, Multipart, Path, State},
     http::{
-        header::{ACCEPT, AUTHORIZATION, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE, LOCATION, WWW_AUTHENTICATE},
+        header::{
+            ACCEPT, AUTHORIZATION, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE, LOCATION,
+            WWW_AUTHENTICATE,
+        },
         HeaderMap, HeaderValue, StatusCode,
     },
     response::{IntoResponse, Response},
@@ -173,13 +176,23 @@ pub fn router<S: PyPiAppState>() -> Router<S> {
         )
         .route("/simple", get(redirect_simple_root::<S>))
         .route("/simple/", get(simple_index::<S>))
-        .route("/simple/:project", get(project_detail_without_trailing_slash::<S>))
+        .route(
+            "/simple/:project",
+            get(project_detail_without_trailing_slash::<S>),
+        )
         .route("/simple/:project/", get(project_detail::<S>))
-        .route("/files/:artifact_id/:filename", get(download_distribution::<S>))
+        .route(
+            "/files/:artifact_id/:filename",
+            get(download_distribution::<S>),
+        )
 }
 
 async fn redirect_simple_root<S: PyPiAppState>(State(state): State<S>) -> Response {
-    redirect_response(&format!("{}{}", trimmed_base_url(&state), PYPI_SIMPLE_ROOT_PATH))
+    redirect_response(&format!(
+        "{}{}",
+        trimmed_base_url(&state),
+        PYPI_SIMPLE_ROOT_PATH
+    ))
 }
 
 async fn project_detail_without_trailing_slash<S: PyPiAppState>(
@@ -345,10 +358,7 @@ async fn download_distribution<S: PyPiAppState>(
         .execute(state.db())
         .await;
 
-    let disposition = format!(
-        "attachment; filename=\"{}\"",
-        filename.replace('"', "")
-    );
+    let disposition = format!("attachment; filename=\"{}\"", filename.replace('"', ""));
     let sha256 = string_column(&artifact_row, "sha256");
     let content_type = if stored_object.content_type.is_empty() {
         string_column(&artifact_row, "content_type")
@@ -401,7 +411,9 @@ async fn upload_distribution_inner<S: PyPiAppState>(
     };
 
     if !identity_has_scope(&identity, "packages:write") {
-        return forbidden_response("The supplied credential does not include the packages:write scope");
+        return forbidden_response(
+            "The supplied credential does not include the packages:write scope",
+        );
     }
 
     let upload = match parse_legacy_upload(multipart).await {
@@ -421,7 +433,14 @@ async fn upload_distribution_inner<S: PyPiAppState>(
         Err(response) => return response,
     };
 
-    let release = match resolve_or_create_upload_release(state.db(), package.package_id, &upload, identity.user_id).await {
+    let release = match resolve_or_create_upload_release(
+        state.db(),
+        package.package_id,
+        &upload,
+        identity.user_id,
+    )
+    .await
+    {
         Ok(release) => release,
         Err(response) => return response,
     };
@@ -463,10 +482,9 @@ async fn parse_legacy_upload(mut multipart: Multipart) -> Result<LegacyUploadReq
     let mut builder = LegacyUploadBuilder::default();
 
     loop {
-        let field = multipart
-            .next_field()
-            .await
-            .map_err(|_| bad_request_response("The multipart upload payload could not be parsed"))?;
+        let field = multipart.next_field().await.map_err(|_| {
+            bad_request_response("The multipart upload payload could not be parsed")
+        })?;
 
         let Some(field) = field else {
             break;
@@ -482,23 +500,23 @@ async fn parse_legacy_upload(mut multipart: Multipart) -> Result<LegacyUploadReq
         let content_type = field.content_type().map(|value| value.to_string());
 
         if file_name.is_some() {
-            let bytes = field
-                .bytes()
-                .await
-                .map_err(|_| bad_request_response("The uploaded distribution file could not be read"))?;
+            let bytes = field.bytes().await.map_err(|_| {
+                bad_request_response("The uploaded distribution file could not be read")
+            })?;
             builder
                 .add_file_field(&name, file_name.as_deref(), content_type.as_deref(), bytes)
                 .map_err(|message| bad_request_response(&message))?;
         } else {
-            let text = field
-                .text()
-                .await
-                .map_err(|_| bad_request_response("A multipart text field could not be decoded as UTF-8"))?;
+            let text = field.text().await.map_err(|_| {
+                bad_request_response("A multipart text field could not be decoded as UTF-8")
+            })?;
             builder.add_text_field(&name, text);
         }
     }
 
-    builder.build().map_err(|message| bad_request_response(&message))
+    builder
+        .build()
+        .map_err(|message| bad_request_response(&message))
 }
 
 async fn load_visible_projects(
@@ -795,9 +813,7 @@ async fn authenticate_api_token<S: PyPiAppState>(
     let token_id = uuid_column(&row, "id");
     let user_id = optional_uuid_column(&row, "user_id")
         .ok_or_else(|| unauthorized_response("API token is not associated with a user account"))?;
-    let scopes = row
-        .try_get::<Vec<String>, _>("scopes")
-        .unwrap_or_default();
+    let scopes = row.try_get::<Vec<String>, _>("scopes").unwrap_or_default();
 
     let _ = sqlx::query("UPDATE tokens SET last_used_at = NOW() WHERE id = $1")
         .bind(token_id)
@@ -834,12 +850,9 @@ async fn can_read_package(
     )
     .await;
     let team_package_access = match actor_user_id {
-        Some(actor_user_id) if !package_access => actor_has_any_team_package_access(
-            db,
-            package_id,
-            actor_user_id,
-        )
-        .await,
+        Some(actor_user_id) if !package_access => {
+            actor_has_any_team_package_access(db, package_id, actor_user_id).await
+        }
         _ => false,
     };
     let repository_access = can_read_owned_resource(
@@ -899,7 +912,11 @@ async fn actor_is_org_member(db: &PgPool, org_id: Uuid, actor_user_id: Uuid) -> 
     .unwrap_or(false)
 }
 
-async fn actor_has_any_team_package_access(db: &PgPool, package_id: Uuid, actor_user_id: Uuid) -> bool {
+async fn actor_has_any_team_package_access(
+    db: &PgPool,
+    package_id: Uuid,
+    actor_user_id: Uuid,
+) -> bool {
     sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS (\
              SELECT 1 \
@@ -936,7 +953,9 @@ async fn resolve_or_create_upload_package<S: PyPiAppState>(
     let normalized_name = normalize_package_name(&upload.package_name, &Ecosystem::Pypi);
     let metadata = upload.package_metadata();
 
-    if let Some(existing_package) = load_existing_upload_package(state.db(), &normalized_name).await? {
+    if let Some(existing_package) =
+        load_existing_upload_package(state.db(), &normalized_name).await?
+    {
         let package_id = existing_package.package_id;
         if !identity_can_upload_existing_package(identity, package_id)
             && !actor_can_publish_package(
@@ -1426,7 +1445,11 @@ async fn resolve_or_create_upload_release(
             .fetch_optional(db)
             .await
             .map_err(|_| internal_error_response("Database error"))?
-            .ok_or_else(|| internal_error_response("Release creation raced but the release could not be reloaded"))?;
+            .ok_or_else(|| {
+                internal_error_response(
+                    "Release creation raced but the release could not be reloaded",
+                )
+            })?;
 
             let status = string_column(&existing_release, "status");
             if status == "deleted" {
@@ -1531,7 +1554,11 @@ async fn upload_artifact_for_release<S: PyPiAppState>(
         .fetch_optional(state.db())
         .await
         .map_err(|_| internal_error_response("Database error"))?
-        .ok_or_else(|| internal_error_response("Artifact creation raced but the artifact could not be reloaded"))?;
+        .ok_or_else(|| {
+            internal_error_response(
+                "Artifact creation raced but the artifact could not be reloaded",
+            )
+        })?;
 
         if string_column(&existing_artifact, "sha256") != upload.digests.sha256_hex.as_str() {
             return Err(conflict_response(
@@ -1680,7 +1707,10 @@ fn visibility_as_str(visibility: &Visibility) -> &'static str {
     }
 }
 
-fn header_value<'a>(headers: &'a HeaderMap, name: axum::http::header::HeaderName) -> Option<&'a str> {
+fn header_value<'a>(
+    headers: &'a HeaderMap,
+    name: axum::http::header::HeaderName,
+) -> Option<&'a str> {
     headers.get(name).and_then(|value| value.to_str().ok())
 }
 
@@ -1718,7 +1748,11 @@ fn not_acceptable_response() -> Response {
 }
 
 fn bad_request_response(message: &str) -> Response {
-    text_response(StatusCode::BAD_REQUEST, "text/plain; charset=utf-8", message)
+    text_response(
+        StatusCode::BAD_REQUEST,
+        "text/plain; charset=utf-8",
+        message,
+    )
 }
 
 fn forbidden_response(message: &str) -> Response {
@@ -1812,7 +1846,8 @@ fn trimmed_base_url<S: PyPiAppState>(state: &S) -> &str {
 fn encode_path_segment(input: &str) -> String {
     let mut encoded = String::with_capacity(input.len());
     for byte in input.bytes() {
-        let is_unreserved = matches!(byte, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~');
+        let is_unreserved =
+            matches!(byte, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~');
         if is_unreserved {
             encoded.push(byte as char);
         } else {
@@ -1856,11 +1891,10 @@ fn optional_datetime_column(
 
 #[cfg(test)]
 mod tests {
-    use axum::http::StatusCode;
     use super::{
-        derive_upload_package_visibility,
-        ensure_requested_repository_matches_existing_package,
+        derive_upload_package_visibility, ensure_requested_repository_matches_existing_package,
     };
+    use axum::http::StatusCode;
     use publaryn_core::domain::repository::Visibility;
 
     #[test]

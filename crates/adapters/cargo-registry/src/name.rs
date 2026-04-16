@@ -5,9 +5,8 @@ const MAX_CARGO_NAME_LENGTH: usize = 64;
 
 /// Windows reserved device names that must be rejected as crate names.
 const WINDOWS_RESERVED: &[&str] = &[
-    "con", "prn", "aux", "nul",
-    "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
-    "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+    "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
+    "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
 ];
 
 /// Validate a Cargo crate name.

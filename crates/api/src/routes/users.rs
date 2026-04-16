@@ -20,7 +20,10 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/users/me", get(get_current_user))
         .route("/v1/users/me", patch(update_current_user))
-    .route("/v1/users/me/organizations", get(list_current_user_organizations))
+        .route(
+            "/v1/users/me/organizations",
+            get(list_current_user_organizations),
+        )
         .route("/v1/users/:username", get(get_user))
         .route("/v1/users/:username", patch(update_user))
         .route("/v1/users/:username/packages", get(list_user_packages))
@@ -107,7 +110,9 @@ async fn get_user(
     .map_err(|e| ApiError(Error::Database(e)))?
     .ok_or_else(|| ApiError(Error::NotFound(format!("User '{username}' not found"))))?;
 
-    let id: Uuid = row.try_get("id").map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let id: Uuid = row
+        .try_get("id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
     let uname: String = row.try_get("username").unwrap_or_default();
     let display_name: Option<String> = row.try_get("display_name").ok().flatten();
     let avatar_url: Option<String> = row.try_get("avatar_url").ok().flatten();

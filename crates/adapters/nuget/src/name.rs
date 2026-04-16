@@ -198,10 +198,7 @@ mod tests {
 
     #[test]
     fn normalize_version_strips_build_metadata() {
-        assert_eq!(
-            normalize_nuget_version("1.0.0+build.123"),
-            "1.0.0"
-        );
+        assert_eq!(normalize_nuget_version("1.0.0+build.123"), "1.0.0");
     }
 
     #[test]

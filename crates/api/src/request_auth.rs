@@ -18,8 +18,7 @@ const ORG_ADMIN_ROLES: &[&str] = &["owner", "admin"];
 const PACKAGE_METADATA_ROLES: &[&str] = &["owner", "admin", "maintainer"];
 const PACKAGE_PUBLISH_ROLES: &[&str] = &["owner", "admin", "maintainer", "publisher"];
 const PACKAGE_ADMIN_ROLES: &[&str] = &["owner", "admin"];
-const PACKAGE_MANAGEMENT_VISIBILITY_ROLES: &[&str] =
-    &["owner", "admin", "maintainer", "publisher"];
+const PACKAGE_MANAGEMENT_VISIBILITY_ROLES: &[&str] = &["owner", "admin", "maintainer", "publisher"];
 
 const TEAM_PACKAGE_METADATA_PERMISSIONS: &[&str] = &["admin", "write_metadata"];
 const TEAM_PACKAGE_PUBLISH_PERMISSIONS: &[&str] = &["admin", "publish"];
@@ -63,7 +62,9 @@ impl PackageAccessRequirement {
     fn denial_message(self) -> &'static str {
         match self {
             Self::MetadataWrite => "You do not have permission to update this package's metadata",
-            Self::Publish => "You do not have permission to publish or mutate releases for this package",
+            Self::Publish => {
+                "You do not have permission to publish or mutate releases for this package"
+            }
             Self::Admin => "You do not have package administration permission",
             Self::TransferOwnership => {
                 "You do not have permission to transfer ownership of this package"
@@ -171,7 +172,10 @@ fn parse_bearer_token(header_value: &str) -> ApiResult<&str> {
     Ok(token)
 }
 
-async fn authenticate_bearer_token(token: &str, state: &AppState) -> ApiResult<AuthenticatedIdentity> {
+async fn authenticate_bearer_token(
+    token: &str,
+    state: &AppState,
+) -> ApiResult<AuthenticatedIdentity> {
     if token.starts_with("pub_") {
         authenticate_api_token(token, state).await
     } else {
@@ -225,7 +229,9 @@ async fn authenticate_api_token(token: &str, state: &AppState) -> ApiResult<Auth
         .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
 
     if expires_at.is_some_and(|value| value <= Utc::now()) {
-        return Err(ApiError(Error::Unauthorized("API token has expired".into())));
+        return Err(ApiError(Error::Unauthorized(
+            "API token has expired".into(),
+        )));
     }
 
     let token_kind = row
@@ -284,7 +290,10 @@ async fn actor_has_org_roles(
     actor_user_id: Uuid,
     allowed_roles: &[&str],
 ) -> ApiResult<bool> {
-    let allowed_roles: Vec<String> = allowed_roles.iter().map(|role| (*role).to_owned()).collect();
+    let allowed_roles: Vec<String> = allowed_roles
+        .iter()
+        .map(|role| (*role).to_owned())
+        .collect();
 
     sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS (\
@@ -481,7 +490,7 @@ pub async fn ensure_repository_read_access(
     actor_user_id: Option<Uuid>,
 ) -> ApiResult<RepositoryReadAccess> {
     let row = sqlx::query(
-        "SELECT id, visibility, owner_user_id, owner_org_id \
+        "SELECT id, visibility::text AS visibility, owner_user_id, owner_org_id \
          FROM repositories \
          WHERE slug = $1",
     )
@@ -527,7 +536,7 @@ pub async fn ensure_package_read_access(
 ) -> ApiResult<Uuid> {
     let row = sqlx::query(
         "SELECT p.id, p.visibility, p.owner_user_id, p.owner_org_id, \
-                r.visibility AS repository_visibility, \
+                r.visibility::text AS repository_visibility, \
                 r.owner_user_id AS repository_owner_user_id, \
                 r.owner_org_id AS repository_owner_org_id \
          FROM packages p \
@@ -601,7 +610,11 @@ pub async fn ensure_package_read_access(
     Ok(package_id)
 }
 
-pub async fn ensure_org_admin_by_id(db: &PgPool, org_id: Uuid, actor_user_id: Uuid) -> ApiResult<()> {
+pub async fn ensure_org_admin_by_id(
+    db: &PgPool,
+    org_id: Uuid,
+    actor_user_id: Uuid,
+) -> ApiResult<()> {
     if actor_has_org_roles(db, org_id, actor_user_id, ORG_ADMIN_ROLES).await? {
         return Ok(());
     }
@@ -611,7 +624,11 @@ pub async fn ensure_org_admin_by_id(db: &PgPool, org_id: Uuid, actor_user_id: Uu
     )))
 }
 
-pub async fn ensure_org_admin_by_slug(db: &PgPool, slug: &str, actor_user_id: Uuid) -> ApiResult<Uuid> {
+pub async fn ensure_org_admin_by_slug(
+    db: &PgPool,
+    slug: &str,
+    actor_user_id: Uuid,
+) -> ApiResult<Uuid> {
     let org_id = fetch_org_id_by_slug(db, slug).await?;
     ensure_org_admin_by_id(db, org_id, actor_user_id).await?;
     Ok(org_id)
@@ -746,15 +763,10 @@ pub async fn ensure_package_transfer_access(
     .await
 }
 
-pub async fn actor_can_write_package_by_id(
+async fn fetch_package_owner_fields_by_id(
     db: &PgPool,
     package_id: Uuid,
-    actor_user_id: Option<Uuid>,
-) -> ApiResult<bool> {
-    let Some(actor_user_id) = actor_user_id else {
-        return Ok(false);
-    };
-
+) -> ApiResult<(Option<Uuid>, Option<Uuid>)> {
     let row = sqlx::query(
         "SELECT owner_user_id, owner_org_id \
          FROM packages \
@@ -766,12 +778,54 @@ pub async fn actor_can_write_package_by_id(
     .map_err(|e| ApiError(Error::Database(e)))?
     .ok_or_else(|| ApiError(Error::NotFound(format!("Package '{package_id}' not found"))))?;
 
-    let owner_user_id = row
-        .try_get::<Option<Uuid>, _>("owner_user_id")
-        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
-    let owner_org_id = row
-        .try_get::<Option<Uuid>, _>("owner_org_id")
-        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    Ok((
+        row.try_get::<Option<Uuid>, _>("owner_user_id")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        row.try_get::<Option<Uuid>, _>("owner_org_id")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+    ))
+}
+
+pub async fn actor_can_transfer_package_by_id(
+    db: &PgPool,
+    package_id: Uuid,
+    actor_user_id: Option<Uuid>,
+) -> ApiResult<bool> {
+    let Some(actor_user_id) = actor_user_id else {
+        return Ok(false);
+    };
+
+    let (owner_user_id, owner_org_id) = fetch_package_owner_fields_by_id(db, package_id).await?;
+
+    if owner_user_id == Some(actor_user_id) {
+        return Ok(true);
+    }
+
+    if let Some(owner_org_id) = owner_org_id {
+        if actor_has_org_roles(db, owner_org_id, actor_user_id, PACKAGE_ADMIN_ROLES).await? {
+            return Ok(true);
+        }
+    }
+
+    actor_has_team_package_permissions(
+        db,
+        package_id,
+        actor_user_id,
+        TEAM_PACKAGE_TRANSFER_PERMISSIONS,
+    )
+    .await
+}
+
+pub async fn actor_can_write_package_by_id(
+    db: &PgPool,
+    package_id: Uuid,
+    actor_user_id: Option<Uuid>,
+) -> ApiResult<bool> {
+    let Some(actor_user_id) = actor_user_id else {
+        return Ok(false);
+    };
+
+    let (owner_user_id, owner_org_id) = fetch_package_owner_fields_by_id(db, package_id).await?;
 
     if owner_user_id == Some(actor_user_id) {
         return Ok(true);
@@ -801,67 +855,32 @@ pub async fn actor_can_write_package_by_id(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use axum::{extract::FromRequestParts, http::{header::AUTHORIZATION, Request}};
+    use axum::{
+        extract::FromRequestParts,
+        http::{header::AUTHORIZATION, Request},
+    };
     use sqlx::postgres::PgPoolOptions;
     use uuid::Uuid;
 
-    use publaryn_search::index::MeilisearchIndex;
-
-    use crate::{
-        config::{
-            AuthConfig, Config, DatabaseConfig, RedisConfig, SearchConfig, ServerConfig,
-            StorageConfig,
-        },
-        state::AppState,
-        storage::MemoryArtifactStore,
-    };
+    use crate::{config::Config, state::AppState};
 
     use super::{
-        visibility_allows_read, visibility_is_discoverable, AuthenticatedIdentity,
-        CredentialKind, OptionalAuthenticatedIdentity,
+        visibility_allows_read, visibility_is_discoverable, AuthenticatedIdentity, CredentialKind,
+        OptionalAuthenticatedIdentity,
     };
 
     fn test_state() -> AppState {
-        AppState {
-            db: PgPoolOptions::new()
-                .connect_lazy("postgres://publaryn:publaryn_dev@localhost/publaryn")
+        let database_url = "postgres://publaryn:publaryn_dev@localhost/publaryn";
+        let mut config = Config::test_config(database_url);
+        config.auth.jwt_secret = "test_secret_at_least_32_chars_long_!".into();
+        config.auth.issuer = "https://publaryn.example.com".into();
+
+        AppState::new_with_pool(
+            PgPoolOptions::new()
+                .connect_lazy(database_url)
                 .expect("lazy postgres pool"),
-            config: Arc::new(Config {
-                server: ServerConfig {
-                    bind_address: "127.0.0.1:3000".into(),
-                    base_url: "http://localhost:3000".into(),
-                    cors_allowed_origins: Vec::new(),
-                },
-                database: DatabaseConfig {
-                    url: "postgres://publaryn:publaryn_dev@localhost/publaryn".into(),
-                    max_connections: 5,
-                },
-                auth: AuthConfig {
-                    jwt_secret: "test_secret_at_least_32_chars_long_!".into(),
-                    jwt_ttl_seconds: 3600,
-                    session_ttl_seconds: 86400,
-                    issuer: "https://publaryn.example.com".into(),
-                },
-                storage: StorageConfig {
-                    endpoint: "http://localhost:9000".into(),
-                    bucket: "publaryn-artifacts".into(),
-                    access_key: "minioadmin".into(),
-                    secret_key: "minioadmin123".into(),
-                    region: "us-east-1".into(),
-                },
-                search: SearchConfig {
-                    url: "http://localhost:7700".into(),
-                    api_key: None,
-                },
-                redis: RedisConfig {
-                    url: "redis://localhost:6379".into(),
-                },
-            }),
-            search: Arc::new(MeilisearchIndex::new("http://localhost:7700", None)),
-            artifact_store: Arc::new(MemoryArtifactStore::new()),
-        }
+            config,
+        )
     }
 
     #[tokio::test]
@@ -893,7 +912,10 @@ mod tests {
         assert_eq!(identity.token_id, Some(token_id));
         assert_eq!(identity.credential_kind, CredentialKind::Jwt);
         assert_eq!(identity.scopes(), ["write:packages"]);
-        assert!(identity.scopes().iter().any(|scope| scope == "write:packages"));
+        assert!(identity
+            .scopes()
+            .iter()
+            .any(|scope| scope == "write:packages"));
         assert_eq!(identity.audit_actor_token_id(), None);
     }
 
@@ -909,7 +931,10 @@ mod tests {
             .await
             .expect_err("missing header must fail");
 
-        assert_eq!(error.0.to_string(), "Unauthorized: Missing Authorization header");
+        assert_eq!(
+            error.0.to_string(),
+            "Unauthorized: Missing Authorization header"
+        );
     }
 
     #[tokio::test]

@@ -7,10 +7,32 @@ use crate::error::{Error, Result};
 /// Well-known reserved package names that cannot be registered.
 static RESERVED_NAMES: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     [
-        "admin", "administrator", "root", "system", "publaryn", "registry",
-        "api", "www", "mail", "smtp", "ftp", "ssh", "npm", "pypi", "cargo",
-        "nuget", "rubygems", "maven", "docker", "oci", "composer",
-        "security", "internal", "private", "public", "official",
+        "admin",
+        "administrator",
+        "root",
+        "system",
+        "publaryn",
+        "registry",
+        "api",
+        "www",
+        "mail",
+        "smtp",
+        "ftp",
+        "ssh",
+        "npm",
+        "pypi",
+        "cargo",
+        "nuget",
+        "rubygems",
+        "maven",
+        "docker",
+        "oci",
+        "composer",
+        "security",
+        "internal",
+        "private",
+        "public",
+        "official",
     ]
     .into_iter()
     .collect()
@@ -48,7 +70,10 @@ impl std::fmt::Display for PolicyViolation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             PolicyViolation::ReservedName(n) => write!(f, "Package name '{n}' is reserved"),
-            PolicyViolation::SimilarNameExists { existing, similarity } => {
+            PolicyViolation::SimilarNameExists {
+                existing,
+                similarity,
+            } => {
                 write!(
                     f,
                     "Package name is {:.0}% similar to existing package '{existing}'",
@@ -58,7 +83,10 @@ impl std::fmt::Display for PolicyViolation {
             PolicyViolation::NamespaceMismatch => {
                 write!(f, "Package name does not match the claimed namespace")
             }
-            PolicyViolation::PackageTooLarge { size_bytes, limit_bytes } => {
+            PolicyViolation::PackageTooLarge {
+                size_bytes,
+                limit_bytes,
+            } => {
                 write!(
                     f,
                     "Package size {size_bytes} bytes exceeds limit {limit_bytes} bytes"
@@ -82,8 +110,8 @@ impl From<PolicyViolation> for Error {
 pub fn max_artifact_size(ecosystem: &Ecosystem) -> u64 {
     match ecosystem {
         Ecosystem::Oci => 10 * 1024 * 1024 * 1024, // 10 GiB
-        Ecosystem::Maven => 512 * 1024 * 1024,      // 512 MiB
-        _ => 256 * 1024 * 1024,                      // 256 MiB default
+        Ecosystem::Maven => 512 * 1024 * 1024,     // 512 MiB
+        _ => 256 * 1024 * 1024,                    // 256 MiB default
     }
 }
 

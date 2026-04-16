@@ -73,11 +73,7 @@ async fn repository_get<S: MavenAppState>(
     artifact_get(state, path, headers).await
 }
 
-async fn metadata_get<S: MavenAppState>(
-    state: S,
-    path: String,
-    headers: HeaderMap,
-) -> Response {
+async fn metadata_get<S: MavenAppState>(state: S, path: String, headers: HeaderMap) -> Response {
     let identity = match authenticate_optional(&state, &headers).await {
         Ok(identity) => identity,
         Err(response) => return response,
@@ -152,11 +148,7 @@ async fn metadata_get<S: MavenAppState>(
         .into_response()
 }
 
-async fn checksum_get<S: MavenAppState>(
-    state: S,
-    path: String,
-    headers: HeaderMap,
-) -> Response {
+async fn checksum_get<S: MavenAppState>(state: S, path: String, headers: HeaderMap) -> Response {
     let identity = match authenticate_optional(&state, &headers).await {
         Ok(identity) => identity,
         Err(response) => return response,
@@ -173,7 +165,8 @@ async fn checksum_get<S: MavenAppState>(
         Err(_) => return not_found_response("Checksum not found"),
     };
 
-    let artifact_row = match load_artifact_row(state.db(), &package_name, &version, &filename).await {
+    let artifact_row = match load_artifact_row(state.db(), &package_name, &version, &filename).await
+    {
         Ok(row) => row,
         Err(response) => return response,
     };
@@ -191,11 +184,7 @@ async fn checksum_get<S: MavenAppState>(
         .into_response()
 }
 
-async fn artifact_get<S: MavenAppState>(
-    state: S,
-    path: String,
-    headers: HeaderMap,
-) -> Response {
+async fn artifact_get<S: MavenAppState>(state: S, path: String, headers: HeaderMap) -> Response {
     let identity = match authenticate_optional(&state, &headers).await {
         Ok(identity) => identity,
         Err(response) => return response,
@@ -212,7 +201,8 @@ async fn artifact_get<S: MavenAppState>(
         Err(_) => return not_found_response("Artifact not found"),
     };
 
-    let artifact_row = match load_artifact_row(state.db(), &package_name, &version, &filename).await {
+    let artifact_row = match load_artifact_row(state.db(), &package_name, &version, &filename).await
+    {
         Ok(row) => row,
         Err(response) => return response,
     };
@@ -379,8 +369,8 @@ async fn authenticate_token<S: MavenAppState>(
 
     let claims = publaryn_auth::validate_token(token, state.jwt_secret(), state.jwt_issuer())
         .map_err(|_| unauthorized_response("Invalid or expired token"))?;
-    let user_id = Uuid::parse_str(&claims.sub)
-        .map_err(|_| unauthorized_response("Invalid token subject"))?;
+    let user_id =
+        Uuid::parse_str(&claims.sub).map_err(|_| unauthorized_response("Invalid token subject"))?;
     Ok(MavenIdentity { user_id })
 }
 
@@ -391,8 +381,12 @@ async fn package_readable(
 ) -> bool {
     can_read_package(
         db,
-        &package_row.try_get::<String, _>("visibility").unwrap_or_default(),
-        &package_row.try_get::<String, _>("repo_visibility").unwrap_or_default(),
+        &package_row
+            .try_get::<String, _>("visibility")
+            .unwrap_or_default(),
+        &package_row
+            .try_get::<String, _>("repo_visibility")
+            .unwrap_or_default(),
         package_row.try_get("owner_user_id").unwrap_or(None),
         package_row.try_get("owner_org_id").unwrap_or(None),
         package_row.try_get("repo_owner_user_id").unwrap_or(None),
@@ -412,8 +406,12 @@ async fn artifact_readable(
         &artifact_row
             .try_get::<String, _>("package_visibility")
             .unwrap_or_default(),
-        &artifact_row.try_get::<String, _>("repo_visibility").unwrap_or_default(),
-        artifact_row.try_get("package_owner_user_id").unwrap_or(None),
+        &artifact_row
+            .try_get::<String, _>("repo_visibility")
+            .unwrap_or_default(),
+        artifact_row
+            .try_get("package_owner_user_id")
+            .unwrap_or(None),
         artifact_row.try_get("package_owner_org_id").unwrap_or(None),
         artifact_row.try_get("repo_owner_user_id").unwrap_or(None),
         artifact_row.try_get("repo_owner_org_id").unwrap_or(None),

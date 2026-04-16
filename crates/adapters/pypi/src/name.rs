@@ -18,7 +18,10 @@ mod tests {
 
     #[test]
     fn canonicalization_collapses_separator_runs() {
-        assert_eq!(canonicalize_project_name("My..Package__Name---Core"), "my-package-name-core");
+        assert_eq!(
+            canonicalize_project_name("My..Package__Name---Core"),
+            "my-package-name-core"
+        );
     }
 
     #[test]

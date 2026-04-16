@@ -1,6 +1,13 @@
-import { ApiError } from '../api/client';
+import { ApiError, getAuthToken } from '../api/client';
+import type { OrganizationMembership } from '../api/orgs';
+import { listMyOrganizations } from '../api/orgs';
 import type { PackageDetail, Release, Tag } from '../api/packages';
-import { getPackage, listReleases, listTags } from '../api/packages';
+import {
+  getPackage,
+  listReleases,
+  listTags,
+  transferPackageOwnership,
+} from '../api/packages';
 import type { RouteContext } from '../router';
 import {
   ecosystemIcon,
@@ -14,6 +21,13 @@ import {
   formatNumber,
 } from '../utils/format';
 import { renderMarkdown } from '../utils/markdown';
+
+const ADMIN_ROLES = new Set(['owner', 'admin']);
+
+interface RenderOptions {
+  transferNotice?: string | null;
+  transferError?: string | null;
+}
 
 export function packageDetailPage(
   { params }: RouteContext,
@@ -29,7 +43,8 @@ export function packageDetailPage(
 async function render(
   container: HTMLElement,
   ecosystem: string,
-  name: string
+  name: string,
+  { transferNotice = null, transferError = null }: RenderOptions = {}
 ): Promise<void> {
   let pkg: PackageDetail;
 
@@ -59,6 +74,7 @@ async function render(
     listReleases(ecosystem, name, { perPage: 20 }).catch(() => [] as Release[]),
     listTags(ecosystem, name).catch(() => [] as Tag[]),
   ]);
+  const transferState = await loadTransferState(pkg);
 
   const latestVersion =
     pkg.latest_version ??
@@ -113,7 +129,14 @@ async function render(
         </div>
 
         <div class="pkg-detail__sidebar">
-          ${renderSidebar(pkg, tags)}
+          ${renderSidebar(
+            pkg,
+            tags,
+            renderTransferCard(pkg, transferState, {
+              notice: transferNotice,
+              error: transferError,
+            })
+          )}
         </div>
       </div>
     </div>
@@ -150,6 +173,62 @@ async function render(
       versionsPanel.style.display = target === 'versions' ? '' : 'none';
     });
   });
+
+  const transferForm = container.querySelector<HTMLFormElement>(
+    '#package-transfer-form'
+  );
+  transferForm?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+
+    const formData = new FormData(transferForm);
+    const targetOrgSlug =
+      formData.get('target_org_slug')?.toString().trim() || '';
+    const confirmBox = transferForm.querySelector<HTMLInputElement>(
+      '#package-transfer-confirm'
+    );
+
+    if (!targetOrgSlug) {
+      await render(container, ecosystem, name, {
+        transferError: 'Select an organization to receive this package.',
+      });
+      return;
+    }
+
+    if (!confirmBox?.checked) {
+      await render(container, ecosystem, name, {
+        transferError:
+          'Please confirm that you understand this transfer is immediate and revokes existing team grants.',
+      });
+      return;
+    }
+
+    const submitButton = getSubmitButton(transferForm);
+    if (!submitButton) {
+      return;
+    }
+
+    submitButton.disabled = true;
+    submitButton.textContent = 'Transferring…';
+
+    try {
+      const result = await transferPackageOwnership(ecosystem, name, {
+        targetOrgSlug,
+      });
+      const targetLabel =
+        result.owner?.name || result.owner?.slug || targetOrgSlug;
+
+      await render(container, ecosystem, name, {
+        transferNotice: `Package ownership transferred to ${targetLabel}.`,
+      });
+    } catch (caughtError: unknown) {
+      await render(container, ecosystem, name, {
+        transferError: toErrorMessage(
+          caughtError,
+          'Failed to transfer package ownership.'
+        ),
+      });
+    }
+  });
 }
 
 function renderReleasesTable(
@@ -178,7 +257,11 @@ function renderReleasesTable(
     .join('');
 }
 
-function renderSidebar(pkg: PackageDetail, tags: Tag[]): string {
+function renderSidebar(
+  pkg: PackageDetail,
+  tags: Tag[],
+  transferCard: string
+): string {
   const sections: string[] = [];
   const metadata: string[] = [];
 
@@ -217,6 +300,10 @@ function renderSidebar(pkg: PackageDetail, tags: Tag[]): string {
     sections.push(
       `<div class="card"><div class="sidebar-section"><h3>Owner</h3><a href="${ownerLink}">${escapeHtml(ownerName)}</a></div></div>`
     );
+  }
+
+  if (transferCard) {
+    sections.push(transferCard);
   }
 
   const links: string[] = [];
@@ -269,4 +356,142 @@ function renderSidebar(pkg: PackageDetail, tags: Tag[]): string {
 
 function row(label: string, value: string): string {
   return `<div class="sidebar-row"><span class="sidebar-row__label">${label}</span><span class="sidebar-row__value">${value}</span></div>`;
+}
+
+async function loadTransferState(pkg: PackageDetail): Promise<{
+  showTransfer: boolean;
+  organizations: OrganizationMembership[];
+  loadError: string | null;
+}> {
+  if (!getAuthToken() || pkg.can_transfer !== true) {
+    return {
+      showTransfer: false,
+      organizations: [],
+      loadError: null,
+    };
+  }
+
+  try {
+    const response = await listMyOrganizations();
+    const organizations = (response.organizations || [])
+      .filter((organization) => {
+        const slug = organization.slug?.trim();
+        const role = organization.role?.trim().toLowerCase() || '';
+
+        return (
+          Boolean(slug) && ADMIN_ROLES.has(role) && slug !== pkg.owner_org_slug
+        );
+      })
+      .sort((left, right) => {
+        const leftLabel = (left.name || left.slug || '').toLowerCase();
+        const rightLabel = (right.name || right.slug || '').toLowerCase();
+        return leftLabel.localeCompare(rightLabel);
+      });
+
+    return {
+      showTransfer: true,
+      organizations,
+      loadError: null,
+    };
+  } catch (caughtError: unknown) {
+    return {
+      showTransfer: true,
+      organizations: [],
+      loadError: toErrorMessage(
+        caughtError,
+        'Failed to load your organizations for package transfer.'
+      ),
+    };
+  }
+}
+
+function renderTransferCard(
+  pkg: PackageDetail,
+  transferState: {
+    showTransfer: boolean;
+    organizations: OrganizationMembership[];
+    loadError: string | null;
+  },
+  {
+    notice,
+    error,
+  }: {
+    notice: string | null;
+    error: string | null;
+  }
+): string {
+  if (!transferState.showTransfer) {
+    return '';
+  }
+
+  const ownerName =
+    pkg.owner_org_slug || pkg.owner_username || 'the current owner';
+  const organizationOptions = transferState.organizations
+    .map(
+      (organization) => `
+        <option value="${escapeHtml(organization.slug || '')}">
+          ${escapeHtml(organization.name || organization.slug || 'Unnamed organization')}
+        </option>
+      `
+    )
+    .join('');
+
+  return `
+    <div class="card">
+      <div class="sidebar-section">
+        <h3>Transfer ownership</h3>
+        <div class="alert alert-warning" style="margin-bottom:12px;">
+          This transfer is immediate and revokes existing team grants on the package.
+        </div>
+        ${notice ? `<div class="alert alert-success" style="margin-bottom:12px;">${escapeHtml(notice)}</div>` : ''}
+        ${error ? `<div class="alert alert-error" style="margin-bottom:12px;">${escapeHtml(error)}</div>` : ''}
+        ${
+          transferState.loadError
+            ? `<div class="alert alert-error" style="margin-bottom:12px;">${escapeHtml(transferState.loadError)}</div>`
+            : ''
+        }
+        <p class="settings-copy" style="margin-bottom:12px;">
+          Move this package away from ${escapeHtml(ownerName)} into an organization you already administer.
+        </p>
+        ${
+          transferState.organizations.length === 0
+            ? `<p class="settings-copy" style="margin-bottom:0;">You can transfer this package, but you do not currently administer another organization that can receive it.</p>`
+            : `
+                <form id="package-transfer-form">
+                  <div class="form-group" style="margin-bottom:12px;">
+                    <label for="package-transfer-target">Target organization</label>
+                    <select id="package-transfer-target" name="target_org_slug" class="form-input" required>
+                      <option value="">Select an organization</option>
+                      ${organizationOptions}
+                    </select>
+                  </div>
+                  <div class="form-group" style="margin-bottom:12px;">
+                    <label class="flex items-start gap-2">
+                      <input type="checkbox" id="package-transfer-confirm" name="confirm" required />
+                      <span>I understand this package transfer is immediate and existing team grants will be removed.</span>
+                    </label>
+                  </div>
+                  <button type="submit" class="btn btn-danger" style="width:100%; justify-content:center;">Transfer package</button>
+                </form>
+              `
+        }
+      </div>
+    </div>
+  `;
+}
+
+function getSubmitButton(form: HTMLFormElement): HTMLButtonElement | null {
+  return form.querySelector<HTMLButtonElement>('button[type="submit"]');
+}
+
+function toErrorMessage(caughtError: unknown, fallback: string): string {
+  if (caughtError instanceof ApiError) {
+    return caughtError.message;
+  }
+
+  if (caughtError instanceof Error && caughtError.message.trim()) {
+    return caughtError.message;
+  }
+
+  return fallback;
 }

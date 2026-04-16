@@ -26,9 +26,9 @@ pub fn split_composer_name(name: &str) -> Result<(&str, &str)> {
 
 /// Build a Composer package name from path segments.
 pub fn build_composer_package_name(vendor: &str, package_segment: &str) -> Result<String> {
-    let package = package_segment.strip_suffix(".json").ok_or_else(|| {
-        Error::Validation("Composer metadata URLs must end in .json".into())
-    })?;
+    let package = package_segment
+        .strip_suffix(".json")
+        .ok_or_else(|| Error::Validation("Composer metadata URLs must end in .json".into()))?;
 
     let name = format!("{vendor}/{package}");
     validate_composer_package_name(&name)?;
@@ -51,8 +51,14 @@ pub fn normalize_composer_version(version: &str) -> String {
     };
 
     let numeric_parts = core.split('.').collect::<Vec<_>>();
-    if numeric_parts.iter().all(|part| part.chars().all(|c| c.is_ascii_digit())) {
-        let mut padded = numeric_parts.iter().map(|part| (*part).to_owned()).collect::<Vec<_>>();
+    if numeric_parts
+        .iter()
+        .all(|part| part.chars().all(|c| c.is_ascii_digit()))
+    {
+        let mut padded = numeric_parts
+            .iter()
+            .map(|part| (*part).to_owned())
+            .collect::<Vec<_>>();
         while padded.len() < 4 {
             padded.push("0".into());
         }

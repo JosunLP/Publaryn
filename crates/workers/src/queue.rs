@@ -8,17 +8,7 @@ use uuid::Uuid;
 /// The kinds of background jobs the system supports.
 ///
 /// Must stay in sync with the `job_kind` enum in migration 010.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Hash,
-    Serialize,
-    Deserialize,
-    sqlx::Type,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, sqlx::Type)]
 #[sqlx(type_name = "job_kind", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub enum JobKind {
@@ -134,7 +124,7 @@ pub async fn claim_jobs(
             started_at,
             completed_at,
             created_at
-            "#
+            "#,
     )
     .bind(locked_until)
     .bind(worker_id)
@@ -144,11 +134,7 @@ pub async fn claim_jobs(
     .await?;
 
     if !rows.is_empty() {
-        tracing::debug!(
-            worker = worker_id,
-            count = rows.len(),
-            "Claimed jobs"
-        );
+        tracing::debug!(worker = worker_id, count = rows.len(), "Claimed jobs");
     }
 
     Ok(rows)
@@ -232,10 +218,7 @@ pub async fn recover_stale_jobs(db: &PgPool) -> anyhow::Result<u64> {
 }
 
 /// Delete completed and dead jobs older than the given retention period.
-pub async fn cleanup_finished_jobs(
-    db: &PgPool,
-    retention_hours: i64,
-) -> anyhow::Result<u64> {
+pub async fn cleanup_finished_jobs(db: &PgPool, retention_hours: i64) -> anyhow::Result<u64> {
     let cutoff = Utc::now() - chrono::Duration::hours(retention_hours);
     let result = sqlx::query(
         "DELETE FROM background_jobs \
@@ -262,7 +245,7 @@ pub async fn job_counts(db: &PgPool) -> anyhow::Result<JobCounts> {
             COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) AS failed,
             COALESCE(SUM(CASE WHEN status = 'dead' THEN 1 ELSE 0 END), 0) AS dead
         FROM background_jobs
-        "#
+        "#,
     )
     .fetch_one(db)
     .await?;

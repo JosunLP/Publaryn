@@ -124,6 +124,7 @@ export interface OrgAuditLog {
 export interface OrgAuditListResponse {
   page?: number | null;
   per_page?: number | null;
+  has_next?: boolean | null;
   logs: OrgAuditLog[];
   load_error?: NullableString;
 }

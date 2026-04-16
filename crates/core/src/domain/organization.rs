@@ -52,7 +52,9 @@ impl FromStr for OrgRole {
             "auditor" => Ok(Self::Auditor),
             "billing_manager" | "billing-manager" => Ok(Self::BillingManager),
             "viewer" => Ok(Self::Viewer),
-            other => Err(Error::Validation(format!("Unknown organization role: {other}"))),
+            other => Err(Error::Validation(format!(
+                "Unknown organization role: {other}"
+            ))),
         }
     }
 }

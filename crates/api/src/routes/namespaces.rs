@@ -8,10 +8,7 @@ use serde::Deserialize;
 use sqlx::{Postgres, QueryBuilder, Row};
 use uuid::Uuid;
 
-use publaryn_core::{
-    domain::namespace::NamespaceClaim,
-    error::Error,
-};
+use publaryn_core::{domain::namespace::NamespaceClaim, error::Error};
 
 use crate::{
     error::{ApiError, ApiResult},
@@ -58,7 +55,9 @@ async fn create_namespace(
     ensure_scope(&identity, SCOPE_NAMESPACES_WRITE)?;
 
     if body.namespace.trim().is_empty() {
-        return Err(ApiError(Error::Validation("Namespace must not be empty".into())));
+        return Err(ApiError(Error::Validation(
+            "Namespace must not be empty".into(),
+        )));
     }
 
     if body.owner_user_id.is_some() && body.owner_org_id.is_some() {
@@ -154,11 +153,15 @@ async fn list_namespaces(
 
     if let Some(ecosystem) = query.ecosystem.as_deref() {
         let ecosystem = parse_ecosystem(ecosystem)?;
-        builder.push(" AND ecosystem = ").push_bind(ecosystem.as_str());
+        builder
+            .push(" AND ecosystem = ")
+            .push_bind(ecosystem.as_str());
     }
 
     if let Some(owner_user_id) = query.owner_user_id {
-        builder.push(" AND owner_user_id = ").push_bind(owner_user_id);
+        builder
+            .push(" AND owner_user_id = ")
+            .push_bind(owner_user_id);
     }
 
     if let Some(owner_org_id) = query.owner_org_id {

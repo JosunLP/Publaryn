@@ -13,9 +13,7 @@ pub fn router() -> Router<AppState> {
 }
 
 /// GET /v1/stats — public platform statistics
-async fn platform_stats(
-    State(state): State<AppState>,
-) -> ApiResult<Json<serde_json::Value>> {
+async fn platform_stats(State(state): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
     let row = sqlx::query(
         "SELECT \
            (SELECT COUNT(*) FROM packages WHERE visibility = 'public') AS package_count, \

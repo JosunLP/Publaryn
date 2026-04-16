@@ -199,9 +199,7 @@ pub fn parse_cargo_publish(body: &[u8]) -> Result<ParsedCargoPublish> {
     }
 
     if crate_len == 0 {
-        return Err(Error::Validation(
-            ".crate file must not be empty".into(),
-        ));
+        return Err(Error::Validation(".crate file must not be empty".into()));
     }
 
     let crate_bytes = Bytes::copy_from_slice(&body[crate_start..crate_end]);

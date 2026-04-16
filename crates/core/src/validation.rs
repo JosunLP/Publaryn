@@ -4,21 +4,16 @@ use regex::Regex;
 use crate::domain::namespace::Ecosystem;
 use crate::error::{Error, Result};
 
-static SEMVER_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"^\d+\.\d+\.\d+([.-][0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)*$").unwrap()
-});
+static SEMVER_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"^\d+\.\d+\.\d+([.-][0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)*$").unwrap());
 
-static SLUG_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"^[a-z0-9][a-z0-9_-]{0,63}$").unwrap()
-});
+static SLUG_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[a-z0-9][a-z0-9_-]{0,63}$").unwrap());
 
-static USERNAME_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{1,38}$").unwrap()
-});
+static USERNAME_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{1,38}$").unwrap());
 
-static EMAIL_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$").unwrap()
-});
+static EMAIL_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$").unwrap());
 
 /// Validate a package name for a given ecosystem.
 pub fn validate_package_name(name: &str, ecosystem: &Ecosystem) -> Result<()> {
@@ -40,7 +35,9 @@ pub fn validate_package_name(name: &str, ecosystem: &Ecosystem) -> Result<()> {
 fn validate_npm_name(name: &str) -> Result<()> {
     let re = Regex::new(r"^(@[a-z0-9-~][a-z0-9-._~]*/)?[a-z0-9-~][a-z0-9-._~]*$").unwrap();
     if !re.is_match(name) || name.len() > 214 {
-        return Err(Error::Validation(format!("Invalid npm package name: {name}")));
+        return Err(Error::Validation(format!(
+            "Invalid npm package name: {name}"
+        )));
     }
     Ok(())
 }
@@ -48,7 +45,9 @@ fn validate_npm_name(name: &str) -> Result<()> {
 fn validate_pypi_name(name: &str) -> Result<()> {
     let re = Regex::new(r"^([A-Z0-9]|[A-Z0-9][A-Z0-9._-]*[A-Z0-9])$").unwrap();
     if !re.is_match(&name.to_uppercase()) || name.len() > 200 {
-        return Err(Error::Validation(format!("Invalid PyPI package name: {name}")));
+        return Err(Error::Validation(format!(
+            "Invalid PyPI package name: {name}"
+        )));
     }
     Ok(())
 }
@@ -56,7 +55,9 @@ fn validate_pypi_name(name: &str) -> Result<()> {
 fn validate_cargo_name(name: &str) -> Result<()> {
     let re = Regex::new(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$").unwrap();
     if !re.is_match(name) {
-        return Err(Error::Validation(format!("Invalid Cargo crate name: {name}")));
+        return Err(Error::Validation(format!(
+            "Invalid Cargo crate name: {name}"
+        )));
     }
     Ok(())
 }
@@ -71,7 +72,9 @@ fn validate_nuget_name(name: &str) -> Result<()> {
 fn validate_rubygems_name(name: &str) -> Result<()> {
     let re = Regex::new(r"^[A-Za-z0-9._-]+$").unwrap();
     if !re.is_match(name) || name.len() > 200 {
-        return Err(Error::Validation(format!("Invalid RubyGems gem name: {name}")));
+        return Err(Error::Validation(format!(
+            "Invalid RubyGems gem name: {name}"
+        )));
     }
     Ok(())
 }
@@ -79,7 +82,9 @@ fn validate_rubygems_name(name: &str) -> Result<()> {
 fn validate_composer_name(name: &str) -> Result<()> {
     let re = Regex::new(r"^[a-z0-9]([_.-]?[a-z0-9]+)*/[a-z0-9]([_.-]?[a-z0-9]+)*$").unwrap();
     if !re.is_match(name) {
-        return Err(Error::Validation(format!("Invalid Composer package name: {name}")));
+        return Err(Error::Validation(format!(
+            "Invalid Composer package name: {name}"
+        )));
     }
     Ok(())
 }

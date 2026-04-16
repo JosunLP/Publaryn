@@ -34,8 +34,6 @@ use crate::state::AppState;
 pub struct ApiDoc;
 
 pub fn router() -> Router<AppState> {
-    Router::new().merge(
-        SwaggerUi::new("/swagger-ui")
-            .url("/api-docs/openapi.json", ApiDoc::openapi()),
-    )
+    Router::new()
+        .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
 }

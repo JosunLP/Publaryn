@@ -74,7 +74,10 @@ fn build_version_document(package_name: &str, input: &ComposerVersionInput) -> V
     );
     doc.entry("type")
         .or_insert_with(|| Value::String("library".into()));
-    doc.insert("time".into(), Value::String(input.published_at.to_rfc3339()));
+    doc.insert(
+        "time".into(),
+        Value::String(input.published_at.to_rfc3339()),
+    );
 
     if let Some(description) = &input.description {
         doc.entry("description")
@@ -130,7 +133,10 @@ mod tests {
             },
             "http://localhost:3000",
         );
-        assert_eq!(doc["metadata-url"], "http://localhost:3000/composer/p/%package%.json");
+        assert_eq!(
+            doc["metadata-url"],
+            "http://localhost:3000/composer/p/%package%.json"
+        );
         assert_eq!(doc["available-packages"][0], "acme/demo");
     }
 

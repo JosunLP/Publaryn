@@ -5,8 +5,7 @@ use axum::{
         header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE},
         HeaderName, Method, Request,
     },
-    middleware,
-    Router,
+    middleware, Router,
 };
 use std::time::Duration;
 use tower_http::{
@@ -52,8 +51,14 @@ pub fn build_router(state: AppState) -> Result<Router> {
         // Maven repository adapter
         .nest("/maven", publaryn_adapter_maven::routes::router())
         // Cargo alternative registry adapter
-        .nest("/cargo/index", publaryn_adapter_cargo_registry::routes::index_router())
-        .nest("/cargo/api/v1", publaryn_adapter_cargo_registry::routes::api_router())
+        .nest(
+            "/cargo/index",
+            publaryn_adapter_cargo_registry::routes::index_router(),
+        )
+        .nest(
+            "/cargo/api/v1",
+            publaryn_adapter_cargo_registry::routes::api_router(),
+        )
         // NuGet V3 protocol adapter
         .nest("/nuget", publaryn_adapter_nuget::routes::router())
         // Swagger UI
@@ -66,39 +71,37 @@ pub fn build_router(state: AppState) -> Result<Router> {
     // Unknown paths fall back to index.html for client-side routing.
     let app = if let Some(ref dir) = static_dir {
         let index_path = format!("{}/index.html", dir);
-        let serve_dir = ServeDir::new(dir)
-            .not_found_service(ServeFile::new(&index_path));
+        let serve_dir = ServeDir::new(dir).not_found_service(ServeFile::new(&index_path));
         api_router.fallback_service(serve_dir)
     } else {
         api_router
     };
 
-    Ok(app
-        .layer(
-            tower::ServiceBuilder::new()
-                .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
-                .layer(
-                    TraceLayer::new_for_http().make_span_with(|req: &Request<_>| {
-                        let path = req
-                            .extensions()
-                            .get::<MatchedPath>()
-                            .map(|p| p.as_str())
-                            .unwrap_or(req.uri().path());
-                        tracing::info_span!(
-                            "http_request",
-                            method = %req.method(),
-                            path,
-                        )
-                    }),
-                )
-                .layer(cors_layer)
-                .layer(CompressionLayer::new())
-                .layer(TimeoutLayer::new(Duration::from_secs(30)))
-                .layer(middleware::from_fn_with_state(
-                    state.clone(),
-                    rate_limit::rate_limit_middleware,
-                )),
-        ))
+    Ok(app.layer(
+        tower::ServiceBuilder::new()
+            .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
+            .layer(
+                TraceLayer::new_for_http().make_span_with(|req: &Request<_>| {
+                    let path = req
+                        .extensions()
+                        .get::<MatchedPath>()
+                        .map(|p| p.as_str())
+                        .unwrap_or(req.uri().path());
+                    tracing::info_span!(
+                        "http_request",
+                        method = %req.method(),
+                        path,
+                    )
+                }),
+            )
+            .layer(cors_layer)
+            .layer(CompressionLayer::new())
+            .layer(TimeoutLayer::new(Duration::from_secs(30)))
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                rate_limit::rate_limit_middleware,
+            )),
+    ))
 }
 
 fn build_cors_layer(state: &AppState) -> Result<CorsLayer> {

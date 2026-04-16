@@ -1,7 +1,7 @@
-use publaryn_auth::{hash_password, verify_password};
-use publaryn_auth::oidc::{TrustedIssuer, TrustedPublishingClaims, assert_trusted_issuer};
+use publaryn_auth::oidc::{assert_trusted_issuer, TrustedIssuer, TrustedPublishingClaims};
 use publaryn_auth::session::Session;
 use publaryn_auth::token::{create_token, validate_token};
+use publaryn_auth::{hash_password, verify_password};
 use uuid::Uuid;
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -122,8 +122,15 @@ fn test_token_claims_contain_correct_scopes() {
     let issuer = "https://publaryn.example.com";
     let scopes = vec!["packages:write".into(), "tokens:read".into()];
 
-    let jwt = create_token(Uuid::new_v4(), Uuid::new_v4(), scopes.clone(), secret, 3600, issuer)
-        .unwrap();
+    let jwt = create_token(
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        scopes.clone(),
+        secret,
+        3600,
+        issuer,
+    )
+    .unwrap();
 
     let claims = validate_token(&jwt, secret, issuer).unwrap();
     assert_eq!(claims.scopes, scopes);
@@ -217,11 +224,7 @@ fn test_trusted_issuer_discovery_urls() {
 #[test]
 fn test_assert_trusted_issuer_allowed() {
     let allowed = vec![TrustedIssuer::GitHubActions];
-    assert!(assert_trusted_issuer(
-        "https://token.actions.githubusercontent.com",
-        &allowed
-    )
-    .is_ok());
+    assert!(assert_trusted_issuer("https://token.actions.githubusercontent.com", &allowed).is_ok());
 }
 
 #[test]

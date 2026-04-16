@@ -63,8 +63,8 @@ struct ErrorDocument<'a> {
 
 pub fn router<S: RubyGemsAppState>() -> Router<S> {
     Router::new()
-    .route("/api/v1/gems/:name", get(gem_metadata::<S>))
-    .route("/api/v1/versions/:name", get(gem_versions::<S>))
+        .route("/api/v1/gems/:name", get(gem_metadata::<S>))
+        .route("/api/v1/versions/:name", get(gem_versions::<S>))
         .route("/gems/:filename", get(download_gem::<S>))
 }
 
@@ -94,7 +94,9 @@ async fn gem_metadata<S: RubyGemsAppState>(
 
     if !can_read_package(
         state.db(),
-        &package_row.try_get::<String, _>("visibility").unwrap_or_default(),
+        &package_row
+            .try_get::<String, _>("visibility")
+            .unwrap_or_default(),
         &package_row
             .try_get::<String, _>("repo_visibility")
             .unwrap_or_default(),
@@ -143,7 +145,13 @@ async fn gem_metadata<S: RubyGemsAppState>(
     let provenance: Option<Value> = latest_release.try_get("provenance").ok().flatten();
     let authors = metadata_string_list(&provenance, &["authors", "author"]);
     let licenses = metadata_string_list(&provenance, &["licenses", "license"])
-        .or_else(|| package_row.try_get::<Option<String>, _>("license").ok().flatten().map(|license| vec![license]))
+        .or_else(|| {
+            package_row
+                .try_get::<Option<String>, _>("license")
+                .ok()
+                .flatten()
+                .map(|license| vec![license])
+        })
         .unwrap_or_default();
 
     let filename: Option<String> = latest_release.try_get("filename").ok().flatten();
@@ -166,7 +174,12 @@ async fn gem_metadata<S: RubyGemsAppState>(
             .try_get::<Option<String>, _>("description")
             .ok()
             .flatten()
-            .or_else(|| package_row.try_get::<Option<String>, _>("description").ok().flatten()),
+            .or_else(|| {
+                package_row
+                    .try_get::<Option<String>, _>("description")
+                    .ok()
+                    .flatten()
+            }),
         licenses,
         project_uri: package_row.try_get("homepage").ok().flatten(),
         homepage_uri: package_row.try_get("homepage").ok().flatten(),
@@ -175,9 +188,13 @@ async fn gem_metadata<S: RubyGemsAppState>(
         documentation_uri: metadata_string(&provenance, &["documentation_uri"]),
         sha: latest_release.try_get("sha256").ok().flatten(),
         gem_uri,
-        version_created_at: latest_release.try_get("published_at").unwrap_or_else(|_| Utc::now()),
+        version_created_at: latest_release
+            .try_get("published_at")
+            .unwrap_or_else(|_| Utc::now()),
         prerelease: latest_release.try_get("is_prerelease").unwrap_or(false),
-        metadata: provenance.as_ref().and_then(|value| value.get("metadata").cloned()),
+        metadata: provenance
+            .as_ref()
+            .and_then(|value| value.get("metadata").cloned()),
     });
 
     (StatusCode::OK, Json(document)).into_response()
@@ -209,7 +226,9 @@ async fn gem_versions<S: RubyGemsAppState>(
 
     if !can_read_package(
         state.db(),
-        &package_row.try_get::<String, _>("visibility").unwrap_or_default(),
+        &package_row
+            .try_get::<String, _>("visibility")
+            .unwrap_or_default(),
         &package_row
             .try_get::<String, _>("repo_visibility")
             .unwrap_or_default(),
@@ -260,7 +279,8 @@ async fn gem_versions<S: RubyGemsAppState>(
                 number: row.try_get("version").unwrap_or_default(),
                 prerelease: row.try_get("is_prerelease").unwrap_or(false),
                 created_at: row.try_get("published_at").unwrap_or_else(|_| Utc::now()),
-                platform: metadata_string(&provenance, &["platform"]).unwrap_or_else(|| "ruby".into()),
+                platform: metadata_string(&provenance, &["platform"])
+                    .unwrap_or_else(|| "ruby".into()),
                 sha: row.try_get("sha256").ok().flatten(),
                 gem_uri: filename.map(|filename| {
                     format!(
@@ -320,10 +340,16 @@ async fn download_gem<S: RubyGemsAppState>(
         &artifact_row
             .try_get::<String, _>("repository_visibility")
             .unwrap_or_default(),
-        artifact_row.try_get("package_owner_user_id").unwrap_or(None),
+        artifact_row
+            .try_get("package_owner_user_id")
+            .unwrap_or(None),
         artifact_row.try_get("package_owner_org_id").unwrap_or(None),
-        artifact_row.try_get("repository_owner_user_id").unwrap_or(None),
-        artifact_row.try_get("repository_owner_org_id").unwrap_or(None),
+        artifact_row
+            .try_get("repository_owner_user_id")
+            .unwrap_or(None),
+        artifact_row
+            .try_get("repository_owner_org_id")
+            .unwrap_or(None),
         actor_user_id,
     )
     .await
@@ -365,7 +391,10 @@ async fn download_gem<S: RubyGemsAppState>(
         .unwrap_or_else(|_| internal_error_response("Internal error"))
 }
 
-async fn load_package_row(db: &PgPool, package_name: &str) -> Result<sqlx::postgres::PgRow, Response> {
+async fn load_package_row(
+    db: &PgPool,
+    package_name: &str,
+) -> Result<sqlx::postgres::PgRow, Response> {
     let normalized = normalize_package_name(package_name, &Ecosystem::Rubygems);
     sqlx::query(
         "SELECT p.id, p.name, p.description, p.homepage, p.repository_url, p.license, p.download_count, \
@@ -395,7 +424,10 @@ async fn authenticate_optional<S: RubyGemsAppState>(
 }
 
 fn extract_token(headers: &HeaderMap) -> Option<String> {
-    if let Some(api_key) = headers.get("x-gem-api-key").and_then(|value| value.to_str().ok()) {
+    if let Some(api_key) = headers
+        .get("x-gem-api-key")
+        .and_then(|value| value.to_str().ok())
+    {
         let trimmed = api_key.trim();
         if !trimmed.is_empty() {
             return Some(trimmed.to_owned());
@@ -464,8 +496,8 @@ async fn authenticate_token<S: RubyGemsAppState>(
 
     let claims = publaryn_auth::validate_token(token, state.jwt_secret(), state.jwt_issuer())
         .map_err(|_| unauthorized_response("Invalid or expired token"))?;
-    let user_id = Uuid::parse_str(&claims.sub)
-        .map_err(|_| unauthorized_response("Invalid token subject"))?;
+    let user_id =
+        Uuid::parse_str(&claims.sub).map_err(|_| unauthorized_response("Invalid token subject"))?;
     Ok(RubyGemsIdentity { user_id })
 }
 
@@ -555,11 +587,19 @@ fn metadata_string_list(metadata: &Option<Value>, keys: &[&str]) -> Option<Vec<S
 }
 
 fn not_found_response(message: &str) -> Response {
-    (StatusCode::NOT_FOUND, Json(ErrorDocument { error: message })).into_response()
+    (
+        StatusCode::NOT_FOUND,
+        Json(ErrorDocument { error: message }),
+    )
+        .into_response()
 }
 
 fn unauthorized_response(message: &str) -> Response {
-    (StatusCode::UNAUTHORIZED, Json(ErrorDocument { error: message })).into_response()
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(ErrorDocument { error: message }),
+    )
+        .into_response()
 }
 
 fn internal_error_response(message: &str) -> Response {
@@ -577,13 +617,19 @@ mod tests {
     #[test]
     fn metadata_string_reads_value() {
         let metadata = serde_json::json!({ "platform": "ruby" });
-        assert_eq!(metadata_string(&Some(metadata), &["platform"]), Some("ruby".into()));
+        assert_eq!(
+            metadata_string(&Some(metadata), &["platform"]),
+            Some("ruby".into())
+        );
     }
 
     #[test]
     fn metadata_string_list_reads_array() {
         let metadata = serde_json::json!({ "authors": ["A", "B"] });
-        assert_eq!(metadata_string_list(&Some(metadata), &["authors"]), Some(vec!["A".into(), "B".into()]));
+        assert_eq!(
+            metadata_string_list(&Some(metadata), &["authors"]),
+            Some(vec!["A".into(), "B".into()])
+        );
     }
 
     #[test]

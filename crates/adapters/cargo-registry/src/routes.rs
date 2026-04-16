@@ -106,24 +106,15 @@ pub fn index_router<S: CargoAppState>() -> Router<S> {
 pub fn api_router<S: CargoAppState>() -> Router<S> {
     Router::new()
         .route("/crates/new", put(publish_crate::<S>))
-        .route(
-            "/crates/:name/:version/yank",
-            delete(yank_version::<S>),
-        )
-        .route(
-            "/crates/:name/:version/unyank",
-            put(unyank_version::<S>),
-        )
+        .route("/crates/:name/:version/yank", delete(yank_version::<S>))
+        .route("/crates/:name/:version/unyank", put(unyank_version::<S>))
         .route("/crates/:name/owners", get(list_owners::<S>))
         .route(
             "/crates/:name/owners",
             put(add_owners::<S>).delete(remove_owners::<S>),
         )
         .route("/crates", get(search_crates::<S>))
-        .route(
-            "/crates/:name/:version/download",
-            get(download_crate::<S>),
-        )
+        .route("/crates/:name/:version/download", get(download_crate::<S>))
 }
 
 // ─── Auth ────────────────────────────────────────────────────────────────────
@@ -230,11 +221,8 @@ async fn authenticate<S: CargoAppState>(
     }
 
     // Try JWT
-    let claims =
-        publaryn_auth::validate_token(token, state.jwt_secret(), state.jwt_issuer())
-            .map_err(|_| {
-                cargo_error_response(StatusCode::UNAUTHORIZED, "Invalid or expired token")
-            })?;
+    let claims = publaryn_auth::validate_token(token, state.jwt_secret(), state.jwt_issuer())
+        .map_err(|_| cargo_error_response(StatusCode::UNAUTHORIZED, "Invalid or expired token"))?;
 
     let user_id = Uuid::parse_str(&claims.sub)
         .map_err(|_| cargo_error_response(StatusCode::UNAUTHORIZED, "Invalid token subject"))?;
@@ -384,10 +372,8 @@ async fn serve_index_entry<S: CargoAppState>(
 
     let mut versions = Vec::with_capacity(rows.len());
     for row in &rows {
-        let deps_json: serde_json::Value =
-            row.try_get("deps").unwrap_or(serde_json::json!([]));
-        let deps: Vec<CargoIndexDep> =
-            serde_json::from_value(deps_json).unwrap_or_default();
+        let deps_json: serde_json::Value = row.try_get("deps").unwrap_or(serde_json::json!([]));
+        let deps: Vec<CargoIndexDep> = serde_json::from_value(deps_json).unwrap_or_default();
 
         let features: serde_json::Map<String, serde_json::Value> = row
             .try_get::<serde_json::Value, _>("features")
@@ -436,7 +422,9 @@ async fn serve_index_entry<S: CargoAppState>(
         .header("etag", format!("\"{etag}\""))
         .header("cache-control", "public, max-age=60")
         .body(Body::from(content))
-        .unwrap_or_else(|_| cargo_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error"))
+        .unwrap_or_else(|_| {
+            cargo_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error")
+        })
 }
 
 // ─── PUT /crates/new — Publish ───────────────────────────────────────────────
@@ -569,8 +557,7 @@ async fn publish_crate<S: CargoAppState>(
             };
 
             let repo_id: Uuid = repo_row.try_get("id").unwrap();
-            let repo_visibility: String =
-                repo_row.try_get("visibility").unwrap_or("public".into());
+            let repo_visibility: String = repo_row.try_get("visibility").unwrap_or("public".into());
 
             let visibility = match repo_visibility.as_str() {
                 "private" => "private",
@@ -663,9 +650,7 @@ async fn publish_crate<S: CargoAppState>(
                 }
             }
         }
-        Err(_) => {
-            return cargo_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error")
-        }
+        Err(_) => return cargo_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error"),
     };
 
     // Check version uniqueness (build metadata stripped)
@@ -803,13 +788,11 @@ async fn publish_crate<S: CargoAppState>(
     .await;
 
     // Finalize: move release to published
-    if sqlx::query(
-        "UPDATE releases SET status = 'published', updated_at = NOW() WHERE id = $1",
-    )
-    .bind(release_id)
-    .execute(state.db())
-    .await
-    .is_err()
+    if sqlx::query("UPDATE releases SET status = 'published', updated_at = NOW() WHERE id = $1")
+        .bind(release_id)
+        .execute(state.db())
+        .await
+        .is_err()
     {
         return cargo_error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1046,11 +1029,7 @@ async fn list_owners<S: CargoAppState>(
         }
     }
 
-    (
-        StatusCode::OK,
-        Json(serde_json::json!({ "users": users })),
-    )
-        .into_response()
+    (StatusCode::OK, Json(serde_json::json!({ "users": users }))).into_response()
 }
 
 // ─── PUT /crates/:name/owners — Add ─────────────────────────────────────────
@@ -1078,12 +1057,11 @@ async fn add_owners<S: CargoAppState>(
     }
 
     let normalized = normalize_crate_name(&name);
-    let _pkg_id = match resolve_cargo_package_for_write(state.db(), &normalized, identity.user_id)
-        .await
-    {
-        Ok(id) => id,
-        Err(resp) => return resp,
-    };
+    let _pkg_id =
+        match resolve_cargo_package_for_write(state.db(), &normalized, identity.user_id).await {
+            Ok(id) => id,
+            Err(resp) => return resp,
+        };
 
     // NOTE: Full co-owner model is deferred. For now we acknowledge the request
     // and return a message. Org-level membership changes should go through the
@@ -1120,12 +1098,11 @@ async fn remove_owners<S: CargoAppState>(
     }
 
     let normalized = normalize_crate_name(&name);
-    let _pkg_id = match resolve_cargo_package_for_write(state.db(), &normalized, identity.user_id)
-        .await
-    {
-        Ok(id) => id,
-        Err(resp) => return resp,
-    };
+    let _pkg_id =
+        match resolve_cargo_package_for_write(state.db(), &normalized, identity.user_id).await {
+            Ok(id) => id,
+            Err(resp) => return resp,
+        };
 
     let msg = format!(
         "Owner management for Cargo crates is handled via the Publaryn API. \
@@ -1189,7 +1166,10 @@ async fn download_crate<S: CargoAppState>(
     headers: HeaderMap,
 ) -> Response {
     let normalized = normalize_crate_name(&name);
-    let actor_user_id = authenticate(&state, &headers).await.ok().map(|id| id.user_id);
+    let actor_user_id = authenticate(&state, &headers)
+        .await
+        .ok()
+        .map(|id| id.user_id);
 
     // Find package with visibility check
     let package_row = match sqlx::query(
@@ -1212,8 +1192,12 @@ async fn download_crate<S: CargoAppState>(
 
     if !can_read_package(
         state.db(),
-        &package_row.try_get::<String, _>("visibility").unwrap_or_default(),
-        &package_row.try_get::<String, _>("repo_visibility").unwrap_or_default(),
+        &package_row
+            .try_get::<String, _>("visibility")
+            .unwrap_or_default(),
+        &package_row
+            .try_get::<String, _>("repo_visibility")
+            .unwrap_or_default(),
         package_row.try_get("owner_user_id").unwrap_or(None),
         package_row.try_get("owner_org_id").unwrap_or(None),
         package_row.try_get("repo_owner_user_id").unwrap_or(None),
@@ -1227,9 +1211,7 @@ async fn download_crate<S: CargoAppState>(
 
     let package_id: Uuid = match package_row.try_get("id") {
         Ok(id) => id,
-        Err(_) => {
-            return cargo_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error")
-        }
+        Err(_) => return cargo_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error"),
     };
 
     // Find the .crate artifact for this version
@@ -1249,9 +1231,7 @@ async fn download_crate<S: CargoAppState>(
     .await
     {
         Ok(Some(row)) => row,
-        Ok(None) => {
-            return cargo_error_response(StatusCode::NOT_FOUND, "Version not found")
-        }
+        Ok(None) => return cargo_error_response(StatusCode::NOT_FOUND, "Version not found"),
         Err(_) => return cargo_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error"),
     };
 
@@ -1267,12 +1247,10 @@ async fn download_crate<S: CargoAppState>(
     };
 
     // Increment download counter (fire-and-forget)
-    let _ = sqlx::query(
-        "UPDATE packages SET download_count = download_count + 1 WHERE id = $1",
-    )
-    .bind(package_id)
-    .execute(state.db())
-    .await;
+    let _ = sqlx::query("UPDATE packages SET download_count = download_count + 1 WHERE id = $1")
+        .bind(package_id)
+        .execute(state.db())
+        .await;
 
     Response::builder()
         .status(StatusCode::OK)

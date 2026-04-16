@@ -7,10 +7,7 @@ use serde::Deserialize;
 use sqlx::Row;
 use uuid::Uuid;
 
-use publaryn_core::{
-    domain::package::normalize_package_name,
-    error::Error,
-};
+use publaryn_core::{domain::package::normalize_package_name, error::Error};
 
 use crate::{
     error::{ApiError, ApiResult},

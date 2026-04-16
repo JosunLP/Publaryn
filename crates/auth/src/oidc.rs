@@ -120,9 +120,7 @@ impl TrustedIssuer {
     /// Parse an issuer URL into a known variant.
     pub fn from_issuer_url(url: &str) -> Self {
         match url {
-            s if s.contains("token.actions.githubusercontent.com") => {
-                TrustedIssuer::GitHubActions
-            }
+            s if s.contains("token.actions.githubusercontent.com") => TrustedIssuer::GitHubActions,
             s if s.contains("gitlab.com") => TrustedIssuer::GitLabCi,
             s if s.contains("vstoken.dev.azure.com") => TrustedIssuer::AzureDevOps,
             other => TrustedIssuer::Custom(other.to_owned()),
@@ -147,7 +145,8 @@ pub async fn verify_trusted_publishing_token(
     audience: &str,
 ) -> std::result::Result<TrustedPublishingClaims, TrustedPublishingError> {
     let unverified_claims = decode_unverified_claims(token)?;
-    let issuer = string_claim(&unverified_claims, "iss").ok_or(TrustedPublishingError::MalformedJwt)?;
+    let issuer =
+        string_claim(&unverified_claims, "iss").ok_or(TrustedPublishingError::MalformedJwt)?;
 
     assert_trusted_issuer(
         issuer,
@@ -184,9 +183,8 @@ pub async fn verify_trusted_publishing_token(
     validation.validate_nbf = true;
     validation.leeway = 30;
 
-    let decoded = decode::<Value>(token, &decoding_key, &validation).map_err(|_| {
-        TrustedPublishingError::InvalidToken("malformed or invalid token".into())
-    })?;
+    let decoded = decode::<Value>(token, &decoding_key, &validation)
+        .map_err(|_| TrustedPublishingError::InvalidToken("malformed or invalid token".into()))?;
 
     serde_json::from_value::<TrustedPublishingClaims>(decoded.claims).map_err(|_| {
         TrustedPublishingError::InvalidToken(
@@ -245,9 +243,9 @@ async fn fetch_decoding_key(
     }
 
     let jwks = response.json::<RsaJwkSet>().await.map_err(|error| {
-        TrustedPublishingError::Internal(format!(
-            "failed to decode the OIDC signing keys: {error}",
-        ))
+        TrustedPublishingError::Internal(
+            format!("failed to decode the OIDC signing keys: {error}",),
+        )
     })?;
 
     let key = select_rsa_key(&jwks, key_id)?;
@@ -307,9 +305,15 @@ fn select_rsa_key<'a>(
 
 fn decode_unverified_claims(token: &str) -> std::result::Result<Value, TrustedPublishingError> {
     let mut segments = token.split('.');
-    let _header = segments.next().ok_or(TrustedPublishingError::MalformedJwt)?;
-    let payload = segments.next().ok_or(TrustedPublishingError::MalformedJwt)?;
-    let _signature = segments.next().ok_or(TrustedPublishingError::MalformedJwt)?;
+    let _header = segments
+        .next()
+        .ok_or(TrustedPublishingError::MalformedJwt)?;
+    let payload = segments
+        .next()
+        .ok_or(TrustedPublishingError::MalformedJwt)?;
+    let _signature = segments
+        .next()
+        .ok_or(TrustedPublishingError::MalformedJwt)?;
     if segments.next().is_some() {
         return Err(TrustedPublishingError::MalformedJwt);
     }
@@ -346,7 +350,10 @@ mod tests {
 
         let claims = decode_unverified_claims(&token).expect("claims should decode");
 
-        assert_eq!(claims.get("iss").and_then(|value| value.as_str()), Some("https://token.actions.githubusercontent.com"));
+        assert_eq!(
+            claims.get("iss").and_then(|value| value.as_str()),
+            Some("https://token.actions.githubusercontent.com")
+        );
     }
 
     #[test]

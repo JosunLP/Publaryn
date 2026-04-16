@@ -50,8 +50,12 @@ use crate::{
 /// adapter crate free from circular dependencies.
 pub trait NpmAppState: Clone + Send + Sync + 'static {
     fn db(&self) -> &PgPool;
-    fn artifact_put(&self, key: String, content_type: String, bytes: Bytes)
-        -> impl std::future::Future<Output = Result<(), Error>> + Send;
+    fn artifact_put(
+        &self,
+        key: String,
+        content_type: String,
+        bytes: Bytes,
+    ) -> impl std::future::Future<Output = Result<(), Error>> + Send;
     fn artifact_get(
         &self,
         key: &str,
@@ -102,19 +106,22 @@ pub fn router<S: NpmAppState>() -> Router<S> {
         // Search
         .route("/-/v1/search", get(search_handler::<S>))
         // Dist-tags
-        .route(
-            "/-/package/:package/dist-tags",
-            get(list_dist_tags::<S>),
-        )
+        .route("/-/package/:package/dist-tags", get(list_dist_tags::<S>))
         .route(
             "/-/package/:package/dist-tags/:tag",
             put(set_dist_tag::<S>).delete(delete_dist_tag::<S>),
         )
         // Scoped package: packument, publish, tarball
-        .route("/:scope/:name", get(get_packument::<S>).put(publish_handler::<S>))
+        .route(
+            "/:scope/:name",
+            get(get_packument::<S>).put(publish_handler::<S>),
+        )
         .route("/:scope/:name/-/:filename", get(download_tarball::<S>))
         // Unscoped package: packument, publish, tarball
-        .route("/:package", get(get_packument_unscoped::<S>).put(publish_handler_unscoped::<S>))
+        .route(
+            "/:package",
+            get(get_packument_unscoped::<S>).put(publish_handler_unscoped::<S>),
+        )
         .route("/:package/-/:filename", get(download_tarball_unscoped::<S>))
 }
 
@@ -122,20 +129,16 @@ pub fn router<S: NpmAppState>() -> Router<S> {
 
 /// Parse a Bearer token from the Authorization header.
 fn extract_bearer_token(headers: &HeaderMap) -> Option<&str> {
-    headers
-        .get(AUTHORIZATION)?
-        .to_str()
-        .ok()
-        .and_then(|val| {
-            let mut parts = val.splitn(2, ' ');
-            let scheme = parts.next()?;
-            let token = parts.next()?.trim();
-            if scheme.eq_ignore_ascii_case("bearer") && !token.is_empty() {
-                Some(token)
-            } else {
-                None
-            }
-        })
+    headers.get(AUTHORIZATION)?.to_str().ok().and_then(|val| {
+        let mut parts = val.splitn(2, ' ');
+        let scheme = parts.next()?;
+        let token = parts.next()?.trim();
+        if scheme.eq_ignore_ascii_case("bearer") && !token.is_empty() {
+            Some(token)
+        } else {
+            None
+        }
+    })
 }
 
 /// Authenticate a bearer token. Returns the user identity or an npm-formatted
@@ -163,9 +166,7 @@ async fn authenticate<S: NpmAppState>(
         .fetch_optional(state.db())
         .await
         .map_err(|_| npm_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error"))?
-        .ok_or_else(|| {
-            npm_error_response(StatusCode::UNAUTHORIZED, "Invalid or revoked token")
-        })?;
+        .ok_or_else(|| npm_error_response(StatusCode::UNAUTHORIZED, "Invalid or revoked token"))?;
 
         let expires_at = row
             .try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("expires_at")
@@ -177,9 +178,9 @@ async fn authenticate<S: NpmAppState>(
             ));
         }
 
-        let token_kind: String = row.try_get("kind").map_err(|_| {
-            npm_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error")
-        })?;
+        let token_kind: String = row
+            .try_get("kind")
+            .map_err(|_| npm_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error"))?;
         if token_kind == "oidc_derived" {
             return Err(npm_error_response(
                 StatusCode::UNAUTHORIZED,
@@ -187,9 +188,9 @@ async fn authenticate<S: NpmAppState>(
             ));
         }
 
-        let token_id: Uuid = row.try_get("id").map_err(|_| {
-            npm_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error")
-        })?;
+        let token_id: Uuid = row
+            .try_get("id")
+            .map_err(|_| npm_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error"))?;
         let user_id: Option<Uuid> = row.try_get("user_id").unwrap_or(None);
         let user_id = user_id.ok_or_else(|| {
             npm_error_response(
@@ -216,9 +217,8 @@ async fn authenticate<S: NpmAppState>(
     let claims = publaryn_auth::validate_token(token, state.jwt_secret(), state.jwt_issuer())
         .map_err(|_| npm_error_response(StatusCode::UNAUTHORIZED, "Invalid or expired token"))?;
 
-    let user_id = Uuid::parse_str(&claims.sub).map_err(|_| {
-        npm_error_response(StatusCode::UNAUTHORIZED, "Invalid token subject")
-    })?;
+    let user_id = Uuid::parse_str(&claims.sub)
+        .map_err(|_| npm_error_response(StatusCode::UNAUTHORIZED, "Invalid token subject"))?;
     let token_id = Uuid::parse_str(&claims.jti).ok();
 
     Ok(NpmIdentity {
@@ -388,9 +388,7 @@ async fn get_packument_inner<S: NpmAppState>(
             tarball_sha256: sha256,
             tarball_sha512: sha512,
             tarball_size: size,
-            published_at: rr
-                .try_get("published_at")
-                .unwrap_or_else(|_| Utc::now()),
+            published_at: rr.try_get("published_at").unwrap_or_else(|_| Utc::now()),
             extra_metadata: rr.try_get("provenance").unwrap_or(None),
         });
     }
@@ -420,10 +418,7 @@ async fn get_packument_inner<S: NpmAppState>(
         .collect();
 
     let base_url = state.base_url().trim_end_matches('/');
-    let tarball_base = format!(
-        "{base_url}/npm/{}/-",
-        urlencoded_package_name(&db_name)
-    );
+    let tarball_base = format!("{base_url}/npm/{}/-", urlencoded_package_name(&db_name));
 
     let input = PackumentInput {
         name: db_name.clone(),
@@ -544,10 +539,7 @@ async fn publish_inner<S: NpmAppState>(
             let pkg_id: Uuid = match row.try_get("id") {
                 Ok(id) => id,
                 Err(_) => {
-                    return npm_error_response(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "Internal error",
-                    )
+                    return npm_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error")
                 }
             };
 
@@ -626,8 +618,7 @@ async fn publish_inner<S: NpmAppState>(
             };
 
             let repo_id: Uuid = repo_row.try_get("id").unwrap();
-            let repo_visibility: String =
-                repo_row.try_get("visibility").unwrap_or("public".into());
+            let repo_visibility: String = repo_row.try_get("visibility").unwrap_or("public".into());
 
             let visibility = match repo_visibility.as_str() {
                 "public" => "public",
@@ -658,7 +649,10 @@ async fn publish_inner<S: NpmAppState>(
             .bind(pkg.id)
             .bind(repo_id)
             .bind(&parsed.package_name)
-            .bind(&normalize_package_name(&parsed.package_name, &Ecosystem::Npm))
+            .bind(&normalize_package_name(
+                &parsed.package_name,
+                &Ecosystem::Npm,
+            ))
             .bind(&version_fields.description)
             .bind(&parsed.readme)
             .bind(&version_fields.homepage)
@@ -729,17 +723,16 @@ async fn publish_inner<S: NpmAppState>(
                 }
             }
         }
-        Err(_) => {
-            return npm_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error")
-        }
+        Err(_) => return npm_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error"),
     };
 
     // Check if version already exists
-    let existing_release = sqlx::query("SELECT id FROM releases WHERE package_id = $1 AND version = $2")
-        .bind(package_id)
-        .bind(&parsed.version)
-        .fetch_optional(state.db())
-        .await;
+    let existing_release =
+        sqlx::query("SELECT id FROM releases WHERE package_id = $1 AND version = $2")
+            .bind(package_id)
+            .bind(&parsed.version)
+            .fetch_optional(state.db())
+            .await;
 
     if matches!(existing_release, Ok(Some(_))) {
         return npm_error_response(
@@ -798,10 +791,7 @@ async fn publish_inner<S: NpmAppState>(
             .bind(release.id)
             .execute(state.db())
             .await;
-        return npm_error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Failed to store tarball",
-        );
+        return npm_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to store tarball");
     }
 
     // Create artifact record
@@ -840,12 +830,11 @@ async fn publish_inner<S: NpmAppState>(
     }
 
     // Finalize: move release to published
-    if let Err(_) = sqlx::query(
-        "UPDATE releases SET status = 'published', updated_at = NOW() WHERE id = $1",
-    )
-    .bind(release.id)
-    .execute(state.db())
-    .await
+    if let Err(_) =
+        sqlx::query("UPDATE releases SET status = 'published', updated_at = NOW() WHERE id = $1")
+            .bind(release.id)
+            .execute(state.db())
+            .await
     {
         return npm_error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -876,14 +865,7 @@ async fn publish_inner<S: NpmAppState>(
 
     // Set dist-tags
     for (tag, version) in &parsed.dist_tags {
-        let _ = set_dist_tag_inner(
-            state.db(),
-            package_id,
-            tag,
-            version,
-            identity.user_id,
-        )
-        .await;
+        let _ = set_dist_tag_inner(state.db(), package_id, tag, version, identity.user_id).await;
     }
 
     // Increment download count is not needed here (it's publish not download)
@@ -951,8 +933,12 @@ async fn download_tarball_inner<S: NpmAppState>(
     // Visibility check
     if !can_read_package(
         state.db(),
-        &package_row.try_get::<String, _>("visibility").unwrap_or_default(),
-        &package_row.try_get::<String, _>("repo_visibility").unwrap_or_default(),
+        &package_row
+            .try_get::<String, _>("visibility")
+            .unwrap_or_default(),
+        &package_row
+            .try_get::<String, _>("repo_visibility")
+            .unwrap_or_default(),
         package_row.try_get("owner_user_id").unwrap_or(None),
         package_row.try_get("owner_org_id").unwrap_or(None),
         package_row.try_get("repo_owner_user_id").unwrap_or(None),
@@ -999,31 +985,18 @@ async fn download_tarball_inner<S: NpmAppState>(
     let stored = match state.artifact_get(&storage_key).await {
         Ok(Some(obj)) => obj,
         Ok(None) => {
-            return npm_error_response(
-                StatusCode::NOT_FOUND,
-                "Tarball not found in storage",
-            )
+            return npm_error_response(StatusCode::NOT_FOUND, "Tarball not found in storage")
         }
-        Err(_) => {
-            return npm_error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Storage error",
-            )
-        }
+        Err(_) => return npm_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Storage error"),
     };
 
     // Increment download counter (fire-and-forget)
-    let _ = sqlx::query(
-        "UPDATE packages SET download_count = download_count + 1 WHERE id = $1",
-    )
-    .bind(package_id)
-    .execute(state.db())
-    .await;
+    let _ = sqlx::query("UPDATE packages SET download_count = download_count + 1 WHERE id = $1")
+        .bind(package_id)
+        .execute(state.db())
+        .await;
 
-    let disposition = format!(
-        "attachment; filename=\"{}\"",
-        filename.replace('"', "")
-    );
+    let disposition = format!("attachment; filename=\"{}\"", filename.replace('"', ""));
 
     Response::builder()
         .status(StatusCode::OK)
@@ -1032,9 +1005,7 @@ async fn download_tarball_inner<S: NpmAppState>(
         .header(CONTENT_DISPOSITION, disposition)
         .header("x-checksum-sha256", sha256)
         .body(Body::from(stored.bytes))
-        .unwrap_or_else(|_| {
-            npm_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error")
-        })
+        .unwrap_or_else(|_| npm_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error"))
 }
 
 // ─── GET /-/v1/search ────────────────────────────────────────────────────────
@@ -1097,7 +1068,10 @@ async fn list_dist_tags<S: NpmAppState>(
     // The package path here may be URL-encoded scoped name: @scope%2Fname
     let package_name = percent_decode(&package);
     let normalized = normalize_package_name(&package_name, &Ecosystem::Npm);
-    let actor_user_id = authenticate(&state, &headers).await.ok().map(|id| id.user_id);
+    let actor_user_id = authenticate(&state, &headers)
+        .await
+        .ok()
+        .map(|id| id.user_id);
 
     let package_id = match resolve_npm_package_id(state.db(), &normalized, actor_user_id).await {
         Ok(id) => id,
@@ -1162,17 +1136,16 @@ async fn set_dist_tag<S: NpmAppState>(
         };
 
     // npm sends the version as a JSON string (quoted)
-    let version = String::from_utf8_lossy(&body).trim().trim_matches('"').to_owned();
+    let version = String::from_utf8_lossy(&body)
+        .trim()
+        .trim_matches('"')
+        .to_owned();
     if version.is_empty() {
         return npm_error_response(StatusCode::BAD_REQUEST, "Version must not be empty");
     }
 
     match set_dist_tag_inner(state.db(), package_id, &tag, &version, identity.user_id).await {
-        Ok(_) => (
-            StatusCode::OK,
-            Json(serde_json::json!({"ok": true})),
-        )
-            .into_response(),
+        Ok(_) => (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response(),
         Err(resp) => resp,
     }
 }
@@ -1222,11 +1195,7 @@ async fn delete_dist_tag<S: NpmAppState>(
             if result.rows_affected() == 0 {
                 return npm_error_response(StatusCode::NOT_FOUND, "Dist-tag not found");
             }
-            (
-                StatusCode::OK,
-                Json(serde_json::json!({"ok": true})),
-            )
-                .into_response()
+            (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response()
         }
         Err(_) => npm_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error"),
     }
@@ -1299,7 +1268,8 @@ async fn resolve_npm_package_id(
     if !can_read_package(
         db,
         &row.try_get::<String, _>("visibility").unwrap_or_default(),
-        &row.try_get::<String, _>("repo_visibility").unwrap_or_default(),
+        &row.try_get::<String, _>("repo_visibility")
+            .unwrap_or_default(),
         row.try_get("owner_user_id").unwrap_or(None),
         row.try_get("owner_org_id").unwrap_or(None),
         row.try_get("repo_owner_user_id").unwrap_or(None),
@@ -1308,7 +1278,10 @@ async fn resolve_npm_package_id(
     )
     .await
     {
-        return Err(npm_error_response(StatusCode::NOT_FOUND, "Package not found"));
+        return Err(npm_error_response(
+            StatusCode::NOT_FOUND,
+            "Package not found",
+        ));
     }
 
     row.try_get("id")

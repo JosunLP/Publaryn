@@ -51,13 +51,19 @@ async fn list_audit_logs(
         builder.push(" AND action = ").push_bind(action);
     }
     if let Some(actor_user_id) = query.actor_user_id {
-        builder.push(" AND actor_user_id = ").push_bind(actor_user_id);
+        builder
+            .push(" AND actor_user_id = ")
+            .push_bind(actor_user_id);
     }
     if let Some(target_org_id) = query.target_org_id {
-        builder.push(" AND target_org_id = ").push_bind(target_org_id);
+        builder
+            .push(" AND target_org_id = ")
+            .push_bind(target_org_id);
     }
     if let Some(target_package_id) = query.target_package_id {
-        builder.push(" AND target_package_id = ").push_bind(target_package_id);
+        builder
+            .push(" AND target_package_id = ")
+            .push_bind(target_package_id);
     }
 
     builder

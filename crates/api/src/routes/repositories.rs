@@ -29,7 +29,10 @@ pub fn router() -> Router<AppState> {
         .route("/v1/repositories", post(create_repository))
         .route("/v1/repositories/:slug", get(get_repository))
         .route("/v1/repositories/:slug", patch(update_repository))
-        .route("/v1/repositories/:slug/packages", get(list_repository_packages))
+        .route(
+            "/v1/repositories/:slug/packages",
+            get(list_repository_packages),
+        )
 }
 
 #[derive(Debug, Deserialize)]
@@ -90,7 +93,7 @@ async fn create_repository(
         (Some(_), Some(_)) => unreachable!("validated above"),
     };
 
-    let mut repository = Repository::new(body.name, body.slug, kind, visibility);
+    let mut repository = Repository::new(body.name, body.slug, kind.clone(), visibility.clone());
     repository.description = body.description;
     repository.owner_user_id = owner_user_id;
     repository.owner_org_id = body.owner_org_id;
@@ -105,8 +108,8 @@ async fn create_repository(
     .bind(&repository.name)
     .bind(&repository.slug)
     .bind(&repository.description)
-    .bind(kind_str)
-    .bind(visibility_str)
+    .bind(repository.kind.clone())
+    .bind(repository.visibility.clone())
     .bind(repository.owner_user_id)
     .bind(repository.owner_org_id)
     .bind(&repository.upstream_url)
@@ -114,9 +117,9 @@ async fn create_repository(
     .execute(&state.db)
     .await
     .map_err(|e| match &e {
-        sqlx::Error::Database(db) if db.is_unique_violation() => {
-            ApiError(Error::AlreadyExists("Repository slug already exists".into()))
-        }
+        sqlx::Error::Database(db) if db.is_unique_violation() => ApiError(Error::AlreadyExists(
+            "Repository slug already exists".into(),
+        )),
         _ => ApiError(Error::Database(e)),
     })?;
 
@@ -139,7 +142,7 @@ async fn get_repository(
     let access = ensure_repository_read_access(&state.db, &slug, identity.user_id()).await?;
 
     let row = sqlx::query(
-        "SELECT id, name, slug, description, kind, visibility, owner_user_id, owner_org_id, \
+        "SELECT id, name, slug, description, kind::text AS kind, visibility::text AS visibility, owner_user_id, owner_org_id, \
                 upstream_url, created_at, updated_at \
          FROM repositories WHERE id = $1",
     )
@@ -188,7 +191,7 @@ async fn update_repository(
          WHERE id = $4",
     )
     .bind(&body.description)
-    .bind(visibility.map(|value| value.as_str()))
+    .bind(visibility)
     .bind(&body.upstream_url)
     .bind(repository_id)
     .execute(&state.db)

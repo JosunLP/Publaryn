@@ -94,9 +94,7 @@ pub fn build_registration_index(input: &RegistrationInput, base_url: &str) -> Va
         .map(|v| {
             let lower_version = normalize_nuget_version(&v.version);
             let leaf_url = format!("{reg_base}/{lower_version}.json");
-            let nupkg_url = format!(
-                "{flat_base}/{lower_version}/{lower_id}.{lower_version}.nupkg"
-            );
+            let nupkg_url = format!("{flat_base}/{lower_version}/{lower_id}.{lower_version}.nupkg");
 
             let published = if v.is_listed {
                 v.published_at.to_rfc3339()
@@ -274,11 +272,7 @@ pub struct SearchVersionInput {
 }
 
 /// Build a NuGet search query response.
-pub fn build_search_response(
-    hits: &[SearchResultInput],
-    total_hits: i64,
-    base_url: &str,
-) -> Value {
+pub fn build_search_response(hits: &[SearchResultInput], total_hits: i64, base_url: &str) -> Value {
     let base = base_url.trim_end_matches('/');
 
     let data: Vec<Value> = hits
@@ -388,10 +382,7 @@ mod tests {
 
     #[test]
     fn version_listing_normalizes() {
-        let versions = vec![
-            "1.0.0".to_string(),
-            "2.0.0-beta.1".to_string(),
-        ];
+        let versions = vec!["1.0.0".to_string(), "2.0.0-beta.1".to_string()];
         let listing = build_version_listing(&versions);
         let arr = listing["versions"].as_array().unwrap();
         assert_eq!(arr[0], "1.0.0");
