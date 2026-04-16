@@ -72,32 +72,32 @@ fn build_version_document(package_name: &str, input: &ComposerVersionInput) -> V
         "version_normalized".into(),
         Value::String(input.version_normalized.clone()),
     );
-    doc.entry("type".into())
+    doc.entry("type")
         .or_insert_with(|| Value::String("library".into()));
     doc.insert("time".into(), Value::String(input.published_at.to_rfc3339()));
 
     if let Some(description) = &input.description {
-        doc.entry("description".into())
+        doc.entry("description")
             .or_insert_with(|| Value::String(description.clone()));
     }
 
     if let Some(homepage) = &input.homepage {
-        doc.entry("homepage".into())
+        doc.entry("homepage")
             .or_insert_with(|| Value::String(homepage.clone()));
     }
 
     if !input.licenses.is_empty() {
-        doc.entry("license".into())
+        doc.entry("license")
             .or_insert_with(|| json!(input.licenses));
     }
 
     if !input.keywords.is_empty() {
-        doc.entry("keywords".into())
+        doc.entry("keywords")
             .or_insert_with(|| json!(input.keywords));
     }
 
     if let Some(repository_url) = &input.repository_url {
-        doc.entry("support".into()).or_insert_with(|| {
+        doc.entry("support").or_insert_with(|| {
             json!({
                 "source": repository_url,
             })

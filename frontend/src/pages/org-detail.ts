@@ -1,5 +1,7 @@
 import { ApiError, getAuthToken } from '../api/client';
 import type {
+  OrgAuditListResponse,
+  OrgAuditLog,
   MemberListResponse,
   OrgInvitation,
   OrgInvitationListResponse,
@@ -15,6 +17,7 @@ import type {
   TeamMemberListResponse,
   TeamPackageAccessGrant,
   TeamPackageAccessListResponse,
+  TransferOwnershipResult,
 } from '../api/orgs';
 import {
   addMember,
@@ -22,6 +25,7 @@ import {
   createTeam,
   deleteTeam,
   getOrg,
+  listOrgAuditLogs,
   listMembers,
   listMyOrganizations,
   listOrgInvitations,
@@ -35,12 +39,14 @@ import {
   replaceTeamPackageAccess,
   revokeInvitation,
   sendInvitation,
+  transferOwnership,
   updateTeam,
 } from '../api/orgs';
 import type { RouteContext } from '../router';
 import { escapeHtml, formatDate, formatNumber } from '../utils/format';
 
 const ADMIN_ROLES = new Set(['owner', 'admin']);
+const ORG_AUDIT_PAGE_SIZE = 20;
 const ORG_ROLE_OPTIONS = [
   { value: 'admin', label: 'Admin' },
   { value: 'maintainer', label: 'Maintainer' },
@@ -109,9 +115,12 @@ interface OrgDetailViewState {
   teamPackageAccessBySlug: Record<string, TeamPackageAccessState>;
   packages: OrgPackageSummary[];
   packagesError: string | null;
+  auditLogs: OrgAuditLog[];
+  auditError: string | null;
   invitations: OrgInvitation[];
   invitationsError: string | null;
   isAuthenticated: boolean;
+  isOwner: boolean;
 }
 
 export function orgDetailPage(
@@ -174,29 +183,47 @@ async function loadAndRender(
     );
     const canAdminister = ADMIN_ROLES.has(membership?.role || '');
 
-    const [invitationData, teamMembersBySlug, teamPackageAccessBySlug] =
-      await Promise.all([
-        canAdminister
-          ? listOrgInvitations(slug).catch(
-              (caughtError: unknown): OrgInvitationListResponse => ({
-                invitations: [],
-                load_error: toErrorMessage(
-                  caughtError,
-                  'Failed to load invitations.'
-                ),
-              })
-            )
-          : Promise.resolve<OrgInvitationListResponse>({
+    const [
+      invitationData,
+      teamMembersBySlug,
+      teamPackageAccessBySlug,
+      auditData,
+    ] = await Promise.all([
+      canAdminister
+        ? listOrgInvitations(slug).catch(
+            (caughtError: unknown): OrgInvitationListResponse => ({
               invitations: [],
-              load_error: null,
-            }),
-        canAdminister
-          ? loadTeamMembers(slug, teamData.teams || [])
-          : Promise.resolve<Record<string, TeamMemberState>>({}),
-        canAdminister
-          ? loadTeamPackageAccess(slug, teamData.teams || [])
-          : Promise.resolve<Record<string, TeamPackageAccessState>>({}),
-      ]);
+              load_error: toErrorMessage(
+                caughtError,
+                'Failed to load invitations.'
+              ),
+            })
+          )
+        : Promise.resolve<OrgInvitationListResponse>({
+            invitations: [],
+            load_error: null,
+          }),
+      canAdminister
+        ? loadTeamMembers(slug, teamData.teams || [])
+        : Promise.resolve<Record<string, TeamMemberState>>({}),
+      canAdminister
+        ? loadTeamPackageAccess(slug, teamData.teams || [])
+        : Promise.resolve<Record<string, TeamPackageAccessState>>({}),
+      canAdminister
+        ? listOrgAuditLogs(slug, { perPage: ORG_AUDIT_PAGE_SIZE }).catch(
+            (caughtError: unknown): OrgAuditListResponse => ({
+              logs: [],
+              load_error: toErrorMessage(
+                caughtError,
+                'Failed to load the organization activity log.'
+              ),
+            })
+          )
+        : Promise.resolve<OrgAuditListResponse>({
+            logs: [],
+            load_error: null,
+          }),
+    ]);
 
     render(container, {
       slug,
@@ -213,9 +240,12 @@ async function loadAndRender(
       teamPackageAccessBySlug,
       packages: packageData.packages || [],
       packagesError: packageData.load_error || null,
+      auditLogs: auditData.logs || [],
+      auditError: auditData.load_error || null,
       invitations: invitationData.invitations || [],
       invitationsError: invitationData.load_error || null,
       isAuthenticated,
+      isOwner: membership?.role === 'owner',
     });
   } catch (caughtError: unknown) {
     if (caughtError instanceof ApiError && caughtError.status === 404) {
@@ -255,9 +285,12 @@ function render(container: HTMLElement, state: OrgDetailViewState): void {
     teamPackageAccessBySlug,
     packages,
     packagesError,
+    auditLogs,
+    auditError,
     invitations,
     invitationsError,
     isAuthenticated,
+    isOwner,
   } = state;
 
   container.innerHTML = `
@@ -304,6 +337,29 @@ function render(container: HTMLElement, state: OrgDetailViewState): void {
         </div>
       </section>
 
+      ${
+        canAdminister
+          ? `
+            <section class="card settings-section">
+              <div class="org-section-header">
+                <div>
+                  <h2>Activity log</h2>
+                  <p class="settings-copy">Showing the ${escapeHtml(String(ORG_AUDIT_PAGE_SIZE))} most recent governance events for this organization. This view is limited to owners and admins.</p>
+                </div>
+              </div>
+
+              ${
+                auditError
+                  ? `<div class="alert alert-error">${escapeHtml(auditError)}</div>`
+                  : auditLogs.length === 0
+                    ? '<div class="empty-state"><h3>No activity yet</h3><p>Recent governance events will appear here once members, invitations, teams, and package access change.</p></div>'
+                    : `<div class="token-list">${auditLogs.map((log) => renderAuditLogRow(log)).join('')}</div>`
+              }
+            </section>
+          `
+          : ''
+      }
+
       <div class="settings-grid">
         <section class="card settings-section">
           <h2>Your access</h2>
@@ -335,7 +391,7 @@ function render(container: HTMLElement, state: OrgDetailViewState): void {
           <h2>About this organization</h2>
           <p class="settings-copy">
             Use this page as the canonical workspace for organization ownership, members, teams, delegated package access, and visible packages.
-            Ownership transfer plus audit and security dashboards land here next.
+            Audit and security dashboards continue to expand on this foundation.
           </p>
         </section>
       </div>
@@ -368,7 +424,7 @@ function render(container: HTMLElement, state: OrgDetailViewState): void {
 
               <section class="card settings-section">
                 <h2>Add existing member directly</h2>
-                <p class="settings-copy">This immediately grants membership to an existing user account. Ownership transfer remains a dedicated later flow.</p>
+                <p class="settings-copy">This immediately grants membership to an existing user account. Use the ownership transfer section below to hand off the owner role.</p>
                 <form id="org-member-form">
                   <div class="form-group">
                     <label for="org-member-username">Username</label>
@@ -384,6 +440,37 @@ function render(container: HTMLElement, state: OrgDetailViewState): void {
                 </form>
               </section>
             </div>
+          `
+          : ''
+      }
+
+      ${
+        isOwner
+          ? `
+            <section class="card settings-section">
+              <h2>Transfer ownership</h2>
+              <div class="alert alert-warning">
+                <strong>This action is immediate and cannot be undone from this page.</strong>
+                You will be demoted to Admin and the selected member will become the new organization Owner.
+              </div>
+              <p class="settings-copy">
+                Only existing organization members who are not already owners can receive ownership.
+                The transfer takes effect in a single transaction — no approval step is required.
+              </p>
+              <form id="org-transfer-form">
+                <div class="form-group">
+                  <label for="org-transfer-target">New owner username</label>
+                  <input id="org-transfer-target" name="username" class="form-input" placeholder="alice" required />
+                </div>
+                <div class="form-group">
+                  <label class="flex items-start gap-2">
+                    <input type="checkbox" id="org-transfer-confirm" name="confirm" required />
+                    <span>I understand this action is immediate and irreversible. I will be demoted to Admin.</span>
+                  </label>
+                </div>
+                <button type="submit" class="btn btn-danger">Transfer ownership</button>
+              </form>
+            </section>
           `
           : ''
       }
@@ -436,7 +523,7 @@ function render(container: HTMLElement, state: OrgDetailViewState): void {
         <div class="org-section-header">
           <div>
             <h2>Members</h2>
-            <p class="settings-copy">Public organization memberships and their effective organization roles.</p>
+            <p class="settings-copy">Public organization memberships and their effective organization roles. Owners stay on the dedicated transfer flow; non-owner roles can be updated inline.</p>
           </div>
         </div>
 
@@ -462,6 +549,22 @@ function render(container: HTMLElement, state: OrgDetailViewState): void {
                             canAdminister && member.role !== 'owner'
                               ? `
                                 <div class="token-row__actions">
+                                  <form
+                                    data-update-member-role-form="${escapeHtml(member.username || '')}"
+                                    data-current-role="${escapeHtml(member.role || 'viewer')}"
+                                    class="flex flex-wrap items-center gap-2"
+                                  >
+                                    <label for="member-role-${escapeHtml(member.username || 'member')}" class="text-sm text-muted">Role</label>
+                                    <select
+                                      id="member-role-${escapeHtml(member.username || 'member')}"
+                                      name="role"
+                                      class="form-input"
+                                      style="width:auto; min-width:150px;"
+                                    >
+                                      ${renderRoleOptions(member.role || 'viewer')}
+                                    </select>
+                                    <button class="btn btn-secondary btn-sm" type="submit">Save role</button>
+                                  </form>
                                   <button class="btn btn-danger btn-sm" data-remove-member="${escapeHtml(member.username || '')}" type="button">Remove</button>
                                 </div>
                               `
@@ -642,6 +745,51 @@ function render(container: HTMLElement, state: OrgDetailViewState): void {
     }
   });
 
+  const transferForm =
+    container.querySelector<HTMLFormElement>('#org-transfer-form');
+  transferForm?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+
+    const formData = new FormData(transferForm);
+    const confirmBox = container.querySelector<HTMLInputElement>(
+      '#org-transfer-confirm'
+    );
+
+    if (!confirmBox?.checked) {
+      await loadAndRender(container, slug, {
+        error:
+          'Please confirm that you understand the ownership transfer is immediate and irreversible.',
+      });
+      return;
+    }
+
+    const submitButton = getSubmitButton(transferForm);
+    if (!submitButton) {
+      return;
+    }
+
+    submitButton.disabled = true;
+    submitButton.textContent = 'Transferring…';
+
+    try {
+      const result: TransferOwnershipResult = await transferOwnership(slug, {
+        username: formData.get('username')?.toString().trim() || '',
+      });
+
+      const newOwner = result.new_owner?.username || 'the selected user';
+      await loadAndRender(container, slug, {
+        notice: `Ownership transferred to @${newOwner}. You are now an Admin.`,
+      });
+    } catch (caughtError: unknown) {
+      await loadAndRender(container, slug, {
+        error: toErrorMessage(
+          caughtError,
+          'Failed to transfer organization ownership.'
+        ),
+      });
+    }
+  });
+
   const teamCreateForm = container.querySelector<HTMLFormElement>(
     '#org-team-create-form'
   );
@@ -695,6 +843,54 @@ function render(container: HTMLElement, state: OrgDetailViewState): void {
         } catch (caughtError: unknown) {
           await loadAndRender(container, slug, {
             error: toErrorMessage(caughtError, 'Failed to revoke invitation.'),
+          });
+        }
+      });
+    });
+
+  container
+    .querySelectorAll<HTMLFormElement>('[data-update-member-role-form]')
+    .forEach((form) => {
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+
+        const username = form.getAttribute('data-update-member-role-form');
+        if (!username) {
+          return;
+        }
+
+        const formData = new FormData(form);
+        const role = formData.get('role')?.toString().trim() || 'viewer';
+        const currentRole =
+          form.getAttribute('data-current-role')?.toString().trim() || '';
+
+        if (currentRole === role) {
+          await loadAndRender(container, slug, {
+            notice: `@${username} already has the ${formatRole(role)} role.`,
+          });
+          return;
+        }
+
+        const submitButton = getSubmitButton(form);
+        if (!submitButton) {
+          return;
+        }
+
+        submitButton.disabled = true;
+        submitButton.textContent = 'Saving…';
+
+        try {
+          await addMember(slug, {
+            username,
+            role,
+          });
+
+          await loadAndRender(container, slug, {
+            notice: `Updated @${username} to ${formatRole(role)}.`,
+          });
+        } catch (caughtError: unknown) {
+          await loadAndRender(container, slug, {
+            error: toErrorMessage(caughtError, 'Failed to update member role.'),
           });
         }
       });
@@ -1179,6 +1375,34 @@ function renderTeamMembers(
   `;
 }
 
+function renderAuditLogRow(log: OrgAuditLog): string {
+  const title = formatAuditActionLabel(log.action || 'activity');
+  const actor = formatAuditActor(log);
+  const target = formatAuditTarget(log);
+  const summary = formatAuditSummary(log);
+  const meta = [
+    actor ? `by ${actor}` : null,
+    target,
+    log.occurred_at ? formatDate(log.occurred_at) : null,
+  ].filter((value): value is string => Boolean(value));
+
+  return `
+    <div class="token-row">
+      <div class="token-row__main">
+        <div class="token-row__title">${escapeHtml(title)}</div>
+        ${
+          meta.length > 0
+            ? `<div class="token-row__meta">${meta
+                .map((item) => `<span>${escapeHtml(item)}</span>`)
+                .join('')}</div>`
+            : ''
+        }
+        ${summary ? `<p class="settings-copy">${escapeHtml(summary)}</p>` : ''}
+      </div>
+    </div>
+  `;
+}
+
 function renderTeamPackageAccess(
   team: Team,
   grants: TeamPackageAccessGrant[],
@@ -1292,6 +1516,274 @@ function renderTeamPermissionOptions(disabled: boolean): string {
   ).join('');
 }
 
+function formatAuditActionLabel(action: string): string {
+  switch (action) {
+    case 'org_create':
+      return 'Organization created';
+    case 'org_member_add':
+      return 'Member added';
+    case 'org_role_change':
+      return 'Member role updated';
+    case 'org_member_remove':
+      return 'Member removed';
+    case 'org_ownership_transfer':
+      return 'Ownership transferred';
+    case 'org_invitation_create':
+      return 'Invitation sent';
+    case 'org_invitation_revoke':
+      return 'Invitation revoked';
+    case 'org_invitation_accept':
+      return 'Invitation accepted';
+    case 'org_invitation_decline':
+      return 'Invitation declined';
+    case 'team_create':
+      return 'Team created';
+    case 'team_update':
+      return 'Team updated';
+    case 'team_delete':
+      return 'Team deleted';
+    case 'team_member_add':
+      return 'Team member added';
+    case 'team_member_remove':
+      return 'Team member removed';
+    case 'team_package_access_update':
+      return 'Package access updated';
+    default:
+      return formatIdentifierLabel(action || 'activity');
+  }
+}
+
+function formatAuditActor(log: OrgAuditLog): string | null {
+  const displayName = log.actor_display_name?.trim();
+  const username = log.actor_username?.trim();
+
+  if (displayName && username && displayName !== username) {
+    return `${displayName} (@${username})`;
+  }
+  if (displayName) {
+    return displayName;
+  }
+  if (username) {
+    return `@${username}`;
+  }
+
+  return null;
+}
+
+function formatAuditTarget(log: OrgAuditLog): string | null {
+  const metadata = log.metadata;
+  const username =
+    log.target_username?.trim() ||
+    getAuditMetadataString(metadata, 'username') ||
+    getAuditMetadataString(metadata, 'invited_username') ||
+    getAuditMetadataString(metadata, 'new_owner_username');
+
+  if (username) {
+    return `target @${username}`;
+  }
+
+  const teamName =
+    getAuditMetadataString(metadata, 'team_name') ||
+    getAuditMetadataString(metadata, 'team_slug');
+  if (teamName) {
+    return `team ${teamName}`;
+  }
+
+  const packageName = getAuditMetadataString(metadata, 'package_name');
+  const ecosystem = getAuditMetadataString(metadata, 'ecosystem');
+  if (packageName && ecosystem) {
+    return `package ${ecosystem} · ${packageName}`;
+  }
+
+  const orgName =
+    getAuditMetadataString(metadata, 'org_name') ||
+    getAuditMetadataString(metadata, 'org_slug') ||
+    getAuditMetadataString(metadata, 'name') ||
+    getAuditMetadataString(metadata, 'slug');
+  if (orgName) {
+    return `org ${orgName}`;
+  }
+
+  return null;
+}
+
+function formatAuditSummary(log: OrgAuditLog): string | null {
+  const metadata = log.metadata;
+
+  switch (log.action) {
+    case 'org_create': {
+      const name =
+        getAuditMetadataString(metadata, 'name') ||
+        getAuditMetadataString(metadata, 'slug');
+      return name ? `Created ${name}.` : 'Created the organization workspace.';
+    }
+    case 'org_member_add': {
+      const username = getAuditMetadataString(metadata, 'username');
+      const role = getAuditMetadataString(metadata, 'role');
+      if (username && role) {
+        return `Granted ${formatRole(role)} to @${username}.`;
+      }
+      return username ? `Added @${username} to the organization.` : null;
+    }
+    case 'org_role_change': {
+      const username = getAuditMetadataString(metadata, 'username');
+      const previousRole = getAuditMetadataString(metadata, 'previous_role');
+      const role = getAuditMetadataString(metadata, 'role');
+      if (username && previousRole && role) {
+        return `Changed @${username} from ${formatRole(previousRole)} to ${formatRole(role)}.`;
+      }
+      return username ? `Updated @${username}'s role.` : null;
+    }
+    case 'org_member_remove': {
+      const username = getAuditMetadataString(metadata, 'username');
+      const role = getAuditMetadataString(metadata, 'role');
+      if (username && role) {
+        return `Removed @${username} from the organization (${formatRole(role)}).`;
+      }
+      return username ? `Removed @${username} from the organization.` : null;
+    }
+    case 'org_ownership_transfer': {
+      const newOwner = getAuditMetadataString(metadata, 'new_owner_username');
+      const formerOwnerRole = getAuditMetadataString(
+        metadata,
+        'former_owner_new_role'
+      );
+      if (newOwner && formerOwnerRole) {
+        return `Transferred ownership to @${newOwner}; the former owner is now ${formatRole(formerOwnerRole)}.`;
+      }
+      return newOwner
+        ? `Transferred organization ownership to @${newOwner}.`
+        : 'Transferred organization ownership.';
+    }
+    case 'org_invitation_create': {
+      const invitedUsername = getAuditMetadataString(
+        metadata,
+        'invited_username'
+      );
+      const invitedEmail = getAuditMetadataString(metadata, 'invited_email');
+      const role = getAuditMetadataString(metadata, 'role');
+      const target = invitedUsername
+        ? `@${invitedUsername}`
+        : invitedEmail
+          ? invitedEmail
+          : 'the selected user';
+      return role
+        ? `Sent a ${formatRole(role)} invitation to ${target}.`
+        : `Sent an invitation to ${target}.`;
+    }
+    case 'org_invitation_revoke': {
+      const role = getAuditMetadataString(metadata, 'role');
+      const username = log.target_username?.trim();
+      if (role && username) {
+        return `Revoked the ${formatRole(role)} invitation for @${username}.`;
+      }
+      return username
+        ? `Revoked the invitation for @${username}.`
+        : 'Revoked an active invitation.';
+    }
+    case 'org_invitation_accept': {
+      const role = getAuditMetadataString(metadata, 'role');
+      const username = log.target_username?.trim();
+      if (role && username) {
+        return `@${username} accepted a ${formatRole(role)} invitation.`;
+      }
+      return username ? `@${username} accepted an invitation.` : null;
+    }
+    case 'org_invitation_decline': {
+      const role = getAuditMetadataString(metadata, 'role');
+      const username = log.target_username?.trim();
+      if (role && username) {
+        return `@${username} declined a ${formatRole(role)} invitation.`;
+      }
+      return username ? `@${username} declined an invitation.` : null;
+    }
+    case 'team_create': {
+      const teamName =
+        getAuditMetadataString(metadata, 'team_name') ||
+        getAuditMetadataString(metadata, 'team_slug');
+      return teamName ? `Created team ${teamName}.` : 'Created a team.';
+    }
+    case 'team_update': {
+      const teamName =
+        getAuditMetadataString(metadata, 'team_name') ||
+        getAuditMetadataString(metadata, 'team_slug');
+      return teamName ? `Updated team ${teamName}.` : 'Updated a team.';
+    }
+    case 'team_delete': {
+      const teamName =
+        getAuditMetadataString(metadata, 'team_name') ||
+        getAuditMetadataString(metadata, 'team_slug');
+      return teamName ? `Deleted team ${teamName}.` : 'Deleted a team.';
+    }
+    case 'team_member_add': {
+      const teamName =
+        getAuditMetadataString(metadata, 'team_name') ||
+        getAuditMetadataString(metadata, 'team_slug');
+      const username = getAuditMetadataString(metadata, 'username');
+      if (teamName && username) {
+        return `Added @${username} to ${teamName}.`;
+      }
+      return username ? `Added @${username} to a team.` : null;
+    }
+    case 'team_member_remove': {
+      const teamName =
+        getAuditMetadataString(metadata, 'team_name') ||
+        getAuditMetadataString(metadata, 'team_slug');
+      const username = getAuditMetadataString(metadata, 'username');
+      if (teamName && username) {
+        return `Removed @${username} from ${teamName}.`;
+      }
+      return username ? `Removed @${username} from a team.` : null;
+    }
+    case 'team_package_access_update': {
+      const teamName =
+        getAuditMetadataString(metadata, 'team_name') ||
+        getAuditMetadataString(metadata, 'team_slug') ||
+        'the selected team';
+      const packageName = getAuditMetadataString(metadata, 'package_name');
+      const ecosystem = getAuditMetadataString(metadata, 'ecosystem');
+      const permissions = getAuditMetadataStringArray(metadata, 'permissions');
+
+      const packageLabel =
+        packageName && ecosystem
+          ? `${ecosystem} · ${packageName}`
+          : packageName || 'the selected package';
+
+      if (permissions.length === 0) {
+        return `Removed delegated access to ${packageLabel} from ${teamName}.`;
+      }
+
+      return `Updated ${teamName} access to ${packageLabel}: ${permissions
+        .map((permission) => formatPermission(permission))
+        .join(', ')}.`;
+    }
+    default:
+      return null;
+  }
+}
+
+function getAuditMetadataString(
+  metadata: Record<string, unknown> | null | undefined,
+  key: string
+): string | null {
+  const value = metadata?.[key];
+  return typeof value === 'string' && value.trim().length > 0
+    ? value.trim()
+    : null;
+}
+
+function getAuditMetadataStringArray(
+  metadata: Record<string, unknown> | null | undefined,
+  key: string
+): string[] {
+  const value = metadata?.[key];
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.filter((item): item is string => typeof item === 'string');
+}
+
 function renderPermissionBadges(permissions: string[]): string {
   if (permissions.length === 0) {
     return '';
@@ -1360,6 +1852,14 @@ function formatRole(role: string): string {
 
 function formatPermission(permission: string): string {
   return permission
+    .split('_')
+    .filter(Boolean)
+    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+    .join(' ');
+}
+
+function formatIdentifierLabel(value: string): string {
+  return value
     .split('_')
     .filter(Boolean)
     .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))

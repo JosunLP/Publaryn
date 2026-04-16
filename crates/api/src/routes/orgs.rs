@@ -5,7 +5,7 @@ use axum::{
     Json, Router,
 };
 use serde::Deserialize;
-use sqlx::Row;
+use sqlx::{Postgres, QueryBuilder, Row};
 use std::collections::{BTreeSet, HashMap};
 use std::str::FromStr;
 use uuid::Uuid;
@@ -35,6 +35,7 @@ pub fn router() -> Router<AppState> {
         .route("/v1/orgs", post(create_org))
         .route("/v1/orgs/:slug", get(get_org))
         .route("/v1/orgs/:slug", patch(update_org))
+        .route("/v1/orgs/:slug/audit", get(list_org_audit_logs))
         .route("/v1/orgs/:slug/members", get(list_members))
         .route("/v1/orgs/:slug/members", post(add_member))
         .route("/v1/orgs/:slug/members/:username", delete(remove_member))
@@ -172,6 +173,14 @@ struct UpdateOrgRequest {
     email: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct OrgAuditQuery {
+    action: Option<String>,
+    actor_user_id: Option<Uuid>,
+    page: Option<u32>,
+    per_page: Option<u32>,
+}
+
 async fn update_org(
     State(state): State<AppState>,
     identity: AuthenticatedIdentity,
@@ -200,12 +209,89 @@ async fn update_org(
     Ok(Json(serde_json::json!({ "message": "Organization updated" })))
 }
 
+async fn list_org_audit_logs(
+    State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
+    Path(slug): Path<String>,
+    Query(query): Query<OrgAuditQuery>,
+) -> ApiResult<Json<serde_json::Value>> {
+    ensure_scope(&identity, SCOPE_ORGS_WRITE)?;
+
+    let org_id = ensure_org_admin_by_slug(&state.db, &slug, identity.user_id).await?;
+    let page = query.page.unwrap_or(1).max(1);
+    let limit = query.per_page.unwrap_or(20).min(100) as i64;
+    let offset = ((page.saturating_sub(1)) as i64) * limit;
+
+    let mut builder = QueryBuilder::<Postgres>::new(
+        "SELECT al.id, al.action::text AS action, al.actor_user_id, actor.username AS actor_username, \
+                actor.display_name AS actor_display_name, al.actor_token_id, \
+                al.target_user_id, target_user.username AS target_username, \
+                target_user.display_name AS target_display_name, al.target_org_id, \
+                al.target_package_id, al.target_release_id, al.metadata, al.occurred_at \
+         FROM audit_logs al \
+         LEFT JOIN users actor ON actor.id = al.actor_user_id \
+         LEFT JOIN users target_user ON target_user.id = al.target_user_id \
+         WHERE al.target_org_id = ",
+    );
+    builder.push_bind(org_id);
+
+    if let Some(action) = query.action.as_deref() {
+        builder
+            .push(" AND al.action = ")
+            .push_bind(action)
+            .push("::audit_action");
+    }
+    if let Some(actor_user_id) = query.actor_user_id {
+        builder.push(" AND al.actor_user_id = ").push_bind(actor_user_id);
+    }
+
+    builder
+        .push(" ORDER BY al.occurred_at DESC LIMIT ")
+        .push_bind(limit)
+        .push(" OFFSET ")
+        .push_bind(offset);
+
+    let rows = builder
+        .build()
+        .fetch_all(&state.db)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let logs: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|row| {
+            serde_json::json!({
+                "id": row.try_get::<Uuid, _>("id").ok(),
+                "action": row.try_get::<String, _>("action").ok(),
+                "actor_user_id": row.try_get::<Option<Uuid>, _>("actor_user_id").ok().flatten(),
+                "actor_username": row.try_get::<Option<String>, _>("actor_username").ok().flatten(),
+                "actor_display_name": row.try_get::<Option<String>, _>("actor_display_name").ok().flatten(),
+                "actor_token_id": row.try_get::<Option<Uuid>, _>("actor_token_id").ok().flatten(),
+                "target_user_id": row.try_get::<Option<Uuid>, _>("target_user_id").ok().flatten(),
+                "target_username": row.try_get::<Option<String>, _>("target_username").ok().flatten(),
+                "target_display_name": row.try_get::<Option<String>, _>("target_display_name").ok().flatten(),
+                "target_org_id": row.try_get::<Option<Uuid>, _>("target_org_id").ok().flatten(),
+                "target_package_id": row.try_get::<Option<Uuid>, _>("target_package_id").ok().flatten(),
+                "target_release_id": row.try_get::<Option<Uuid>, _>("target_release_id").ok().flatten(),
+                "metadata": row.try_get::<Option<serde_json::Value>, _>("metadata").ok().flatten(),
+                "occurred_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("occurred_at").ok(),
+            })
+        })
+        .collect();
+
+    Ok(Json(serde_json::json!({
+        "page": page,
+        "per_page": limit,
+        "logs": logs,
+    })))
+}
+
 async fn list_members(
     State(state): State<AppState>,
     Path(slug): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let rows = sqlx::query(
-        "SELECT u.username, u.display_name, om.role, om.joined_at \
+        "SELECT u.username, u.display_name, om.role::text AS role, om.joined_at \
          FROM org_memberships om \
          JOIN users u ON u.id = om.user_id \
          JOIN organizations o ON o.id = om.org_id \
@@ -268,9 +354,24 @@ async fn add_member(
 
     let user_id: Uuid = user_row.try_get("id").map_err(|e| ApiError(Error::Internal(e.to_string())))?;
 
+    let previous_role = sqlx::query_scalar::<_, String>(
+        "SELECT role::text AS role FROM org_memberships WHERE org_id = $1 AND user_id = $2",
+    )
+    .bind(org_id)
+    .bind(user_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
     sqlx::query(
            "INSERT INTO org_memberships (id, org_id, user_id, role, invited_by, joined_at) \
-            VALUES ($1, $2, $3, $4, $5, NOW()) \
+            VALUES ($1, $2, $3, $4::org_role, $5, NOW()) \
             ON CONFLICT (org_id, user_id) DO UPDATE \
             SET role = EXCLUDED.role, invited_by = EXCLUDED.invited_by",
     )
@@ -278,12 +379,61 @@ async fn add_member(
     .bind(org_id)
     .bind(user_id)
     .bind(role.as_str())
-        .bind(identity.user_id)
-    .execute(&state.db)
+    .bind(identity.user_id)
+    .execute(&mut *tx)
     .await
     .map_err(|e| ApiError(Error::Database(e)))?;
 
-    Ok((StatusCode::CREATED, Json(serde_json::json!({ "message": "Member added" }))))
+    let (status, message) = match previous_role.as_deref() {
+        None => {
+            sqlx::query(
+                "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_user_id, target_org_id, metadata, occurred_at) \
+                 VALUES ($1, 'org_member_add', $2, $3, $4, $5, $6, NOW())",
+            )
+            .bind(Uuid::new_v4())
+            .bind(identity.user_id)
+            .bind(identity.audit_actor_token_id())
+            .bind(user_id)
+            .bind(org_id)
+            .bind(serde_json::json!({
+                "username": body.username,
+                "role": role.as_str(),
+            }))
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| ApiError(Error::Database(e)))?;
+
+            (StatusCode::CREATED, "Member added")
+        }
+        Some(existing_role) if existing_role != role.as_str() => {
+            sqlx::query(
+                "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_user_id, target_org_id, metadata, occurred_at) \
+                 VALUES ($1, 'org_role_change', $2, $3, $4, $5, $6, NOW())",
+            )
+            .bind(Uuid::new_v4())
+            .bind(identity.user_id)
+            .bind(identity.audit_actor_token_id())
+            .bind(user_id)
+            .bind(org_id)
+            .bind(serde_json::json!({
+                "username": body.username,
+                "previous_role": existing_role,
+                "role": role.as_str(),
+            }))
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| ApiError(Error::Database(e)))?;
+
+            (StatusCode::OK, "Member role updated")
+        }
+        Some(_) => (StatusCode::OK, "Member role unchanged"),
+    };
+
+    tx.commit()
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    Ok((status, Json(serde_json::json!({ "message": message }))))
 }
 
 async fn remove_member(
@@ -305,10 +455,18 @@ async fn remove_member(
         .try_get("id")
         .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
 
-    let membership_row = sqlx::query("SELECT role::text AS role FROM org_memberships WHERE org_id = $1 AND user_id = $2")
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let membership_row = sqlx::query(
+        "SELECT role::text AS role FROM org_memberships WHERE org_id = $1 AND user_id = $2 FOR UPDATE",
+    )
         .bind(org_id)
         .bind(user_id)
-        .fetch_optional(&state.db)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(|e| ApiError(Error::Database(e)))?
         .ok_or_else(|| ApiError(Error::NotFound("Membership not found".into())))?;
@@ -326,13 +484,34 @@ async fn remove_member(
     let result = sqlx::query("DELETE FROM org_memberships WHERE org_id = $1 AND user_id = $2")
     .bind(org_id)
     .bind(user_id)
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await
     .map_err(|e| ApiError(Error::Database(e)))?;
 
     if result.rows_affected() == 0 {
         return Err(ApiError(Error::NotFound("Membership not found".into())));
     }
+
+    sqlx::query(
+        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_user_id, target_org_id, metadata, occurred_at) \
+         VALUES ($1, 'org_member_remove', $2, $3, $4, $5, $6, NOW())",
+    )
+    .bind(Uuid::new_v4())
+    .bind(identity.user_id)
+    .bind(identity.audit_actor_token_id())
+    .bind(user_id)
+    .bind(org_id)
+    .bind(serde_json::json!({
+        "username": username,
+        "role": role,
+    }))
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
 
     Ok(Json(serde_json::json!({ "message": "Member removed" })))
 }

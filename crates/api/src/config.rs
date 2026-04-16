@@ -230,6 +230,7 @@ impl Config {
                 bind_address: "127.0.0.1:0".to_owned(),
                 base_url: "http://localhost:3000".to_owned(),
                 cors_allowed_origins: vec![],
+                static_dir: None,
             },
             database: DatabaseConfig {
                 url: database_url.to_owned(),
@@ -313,6 +314,7 @@ mod tests {
                 "http://localhost:5173/".into(),
                 "https://packages.example.com".into(),
             ],
+            static_dir: None,
         };
 
         let origins = server

@@ -3,10 +3,9 @@ use axum::{
     extract::MatchedPath,
     http::{
         header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE},
-        HeaderName, Method, Request, StatusCode, Uri,
+        HeaderName, Method, Request,
     },
     middleware,
-    response::IntoResponse,
     Router,
 };
 use std::time::Duration;
@@ -61,7 +60,7 @@ pub fn build_router(state: AppState) -> Result<Router> {
         .merge(routes::openapi::router())
         // Platform statistics
         .merge(routes::stats::router())
-        .with_state(state);
+        .with_state(state.clone());
 
     // Serve frontend SPA from static directory when configured.
     // Unknown paths fall back to index.html for client-side routing.

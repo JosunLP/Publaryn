@@ -39,7 +39,7 @@ async fn readiness_handler(
 
     let redis_ok = match state.redis.as_ref() {
         Some(redis) => {
-            let result: Result<String, _> = redis.ping(None).await;
+            let result: Result<String, _> = redis.ping().await;
             result.is_ok()
         }
         None => true, // Redis is optional; if not configured, don't block readiness

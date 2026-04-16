@@ -124,7 +124,7 @@ impl SecretsScanner {
             (
                 "AWS Secret Key",
                 regex::Regex::new(
-                    r"(?i)aws.{0,20}secret.{0,20}['\"][0-9a-zA-Z/+]{40}['\"]",
+                    r#"(?i)aws.{0,20}secret.{0,20}['"][0-9a-zA-Z/+]{40}['"]"#,
                 )
                 .unwrap(),
             ),
@@ -149,7 +149,7 @@ impl SecretsScanner {
             (
                 "Database Connection String",
                 regex::Regex::new(
-                    r"(?i)(postgres|mysql|mongodb)://[^\s'\"]{10,}",
+                    r#"(?i)(postgres|mysql|mongodb)://[^\s'"]{10,}"#,
                 )
                 .unwrap(),
             ),

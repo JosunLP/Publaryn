@@ -104,6 +104,37 @@ export interface OrgPackageListResponse {
   load_error?: NullableString;
 }
 
+export interface OrgAuditLog {
+  id?: NullableString;
+  action?: NullableString;
+  actor_user_id?: NullableString;
+  actor_username?: NullableString;
+  actor_display_name?: NullableString;
+  actor_token_id?: NullableString;
+  target_user_id?: NullableString;
+  target_username?: NullableString;
+  target_display_name?: NullableString;
+  target_org_id?: NullableString;
+  target_package_id?: NullableString;
+  target_release_id?: NullableString;
+  metadata?: Record<string, unknown> | null;
+  occurred_at?: NullableString;
+}
+
+export interface OrgAuditListResponse {
+  page?: number | null;
+  per_page?: number | null;
+  logs: OrgAuditLog[];
+  load_error?: NullableString;
+}
+
+export interface OrgAuditQuery {
+  action?: string;
+  actorUserId?: string;
+  page?: number;
+  perPage?: number;
+}
+
 export interface UserReference {
   username?: NullableString;
   email?: NullableString;
@@ -180,6 +211,28 @@ export interface AddTeamMemberInput {
 
 export interface ReplaceTeamPackageAccessInput {
   permissions: string[];
+}
+
+export interface TransferOwnershipInput {
+  username: string;
+}
+
+export interface TransferOwnershipResult {
+  message?: NullableString;
+  org?: {
+    id?: NullableString;
+    slug?: NullableString;
+    name?: NullableString;
+  } | null;
+  previous_owner?: {
+    id?: NullableString;
+    new_role?: NullableString;
+  } | null;
+  new_owner?: {
+    id?: NullableString;
+    username?: NullableString;
+    role?: NullableString;
+  } | null;
 }
 
 export interface SendInvitationInput {
@@ -271,6 +324,22 @@ export async function removeMember(
   username: string
 ): Promise<void> {
   await api.delete<null>(`/v1/orgs/${enc(slug)}/members/${enc(username)}`);
+}
+
+export async function transferOwnership(
+  slug: string,
+  input: TransferOwnershipInput
+): Promise<TransferOwnershipResult> {
+  const { data } = await api.post<TransferOwnershipResult>(
+    `/v1/orgs/${enc(slug)}/ownership-transfer`,
+    {
+      body: {
+        username: input.username,
+      },
+    }
+  );
+
+  return data;
 }
 
 export async function listTeams(slug: string): Promise<TeamListResponse> {
@@ -416,6 +485,25 @@ export async function listOrgPackages(
 ): Promise<OrgPackageListResponse> {
   const { data } = await api.get<OrgPackageListResponse>(
     `/v1/orgs/${enc(slug)}/packages`
+  );
+
+  return data;
+}
+
+export async function listOrgAuditLogs(
+  slug: string,
+  query: OrgAuditQuery = {}
+): Promise<OrgAuditListResponse> {
+  const { data } = await api.get<OrgAuditListResponse>(
+    `/v1/orgs/${enc(slug)}/audit`,
+    {
+      query: {
+        action: query.action,
+        actor_user_id: query.actorUserId,
+        page: query.page,
+        per_page: query.perPage,
+      },
+    }
   );
 
   return data;

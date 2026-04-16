@@ -55,7 +55,7 @@ blake2 = "0.10"
 hex = "0.4"
 jsonwebtoken = "9"
 md-5 = "0.10"
-totp-rs = { version = "5", features = ["gen_secret"] }
+totp-rs = { version = "5", features = ["gen_secret", "otpauth"] }
 
 # Tracing / observability
 tracing = "0.1"

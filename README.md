@@ -195,6 +195,7 @@ GET    /v1/users/:username/packages
 POST   /v1/orgs
 GET    /v1/orgs/:slug
 PATCH  /v1/orgs/:slug
+GET    /v1/orgs/:slug/audit
 GET    /v1/orgs/:slug/members
 POST   /v1/orgs/:slug/members
 DELETE /v1/orgs/:slug/members/:username

@@ -44,11 +44,13 @@ pub fn setup_totp(account_name: &str, issuer: &str) -> Result<TotpSetup, Error> 
         1, // skew: allow 1 step in each direction
         TOTP_STEP,
         secret_bytes,
+        Some(issuer.to_string()),
+        account_name.to_string(),
     )
     .map_err(|e| Error::Internal(format!("Failed to create TOTP instance: {e}")))?;
 
     let secret_base32 = secret.to_encoded().to_string();
-    let provisioning_uri = totp.get_url(account_name, issuer);
+    let provisioning_uri = totp.get_url();
 
     let (recovery_codes, recovery_code_hashes) = generate_recovery_codes();
 
@@ -69,8 +71,16 @@ pub fn verify_totp(secret_base32: &str, code: &str) -> Result<bool, Error> {
         .to_bytes()
         .map_err(|e| Error::Internal(format!("Failed to decode TOTP secret: {e}")))?;
 
-    let totp = TOTP::new(Algorithm::SHA1, TOTP_DIGITS, 1, TOTP_STEP, secret_bytes)
-        .map_err(|e| Error::Internal(format!("Failed to create TOTP instance: {e}")))?;
+    let totp = TOTP::new(
+        Algorithm::SHA1,
+        TOTP_DIGITS,
+        1,
+        TOTP_STEP,
+        secret_bytes,
+        None,
+        "".to_string(),
+    )
+    .map_err(|e| Error::Internal(format!("Failed to create TOTP instance: {e}")))?;
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

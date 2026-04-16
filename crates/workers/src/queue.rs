@@ -8,7 +8,17 @@ use uuid::Uuid;
 /// The kinds of background jobs the system supports.
 ///
 /// Must stay in sync with the `job_kind` enum in migration 010.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    sqlx::Type,
+)]
 #[sqlx(type_name = "job_kind", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub enum JobKind {
@@ -31,7 +41,7 @@ pub enum JobStatus {
 }
 
 /// A row from the `background_jobs` table.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, sqlx::FromRow)]
 pub struct Job {
     pub id: Uuid,
     pub kind: JobKind,
@@ -94,8 +104,7 @@ pub async fn claim_jobs(
     let now = Utc::now();
     let locked_until = now + chrono::Duration::seconds(lock_duration_seconds);
 
-    let rows = sqlx::query_as!(
-        Job,
+    let rows = sqlx::query_as::<_, Job>(
         r#"
         UPDATE background_jobs
         SET status = 'running'::job_status,
@@ -113,9 +122,9 @@ pub async fn claim_jobs(
         )
         RETURNING
             id,
-            kind AS "kind: JobKind",
+            kind,
             payload,
-            status AS "status: JobStatus",
+            status,
             attempts,
             max_attempts,
             last_error,
@@ -125,12 +134,12 @@ pub async fn claim_jobs(
             started_at,
             completed_at,
             created_at
-        "#,
-        locked_until,
-        worker_id,
-        now,
-        batch_size as i64,
+            "#
     )
+    .bind(locked_until)
+    .bind(worker_id)
+    .bind(now)
+    .bind(batch_size as i64)
     .fetch_all(db)
     .await?;
 
@@ -245,14 +254,13 @@ pub async fn cleanup_finished_jobs(
 
 /// Count jobs by status for metrics/observability.
 pub async fn job_counts(db: &PgPool) -> anyhow::Result<JobCounts> {
-    let row = sqlx::query_as!(
-        JobCounts,
+    let row = sqlx::query_as::<_, JobCounts>(
         r#"
         SELECT
-            COALESCE(SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END), 0) AS "pending!: i64",
-            COALESCE(SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END), 0) AS "running!: i64",
-            COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) AS "failed!: i64",
-            COALESCE(SUM(CASE WHEN status = 'dead' THEN 1 ELSE 0 END), 0) AS "dead!: i64"
+            COALESCE(SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END), 0) AS pending,
+            COALESCE(SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END), 0) AS running,
+            COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) AS failed,
+            COALESCE(SUM(CASE WHEN status = 'dead' THEN 1 ELSE 0 END), 0) AS dead
         FROM background_jobs
         "#
     )
@@ -262,7 +270,7 @@ pub async fn job_counts(db: &PgPool) -> anyhow::Result<JobCounts> {
     Ok(row)
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, sqlx::FromRow)]
 pub struct JobCounts {
     pub pending: i64,
     pub running: i64,
