@@ -1,3 +1,7 @@
-//! Ecosystem adapter implementation.
+//! RubyGems adapter.
 //!
-//! See the `npm` adapter for the shared `EcosystemAdapter` trait definition.
+//! Implements a RubyGems-compatible read surface for metadata and gem files.
+
+pub mod metadata;
+pub mod name;
+pub mod routes;

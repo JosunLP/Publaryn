@@ -15,6 +15,7 @@ pub mod pypi_oidc;
 pub mod repositories;
 pub mod search;
 pub mod security;
+pub mod stats;
 pub mod tokens;
 pub mod trusted_publishers;
 pub mod users;

@@ -1,3 +1,7 @@
-//! Ecosystem adapter implementation.
+//! Maven repository adapter.
 //!
-//! See the `npm` adapter for the shared `EcosystemAdapter` trait definition.
+//! Implements a minimal read-only Maven repository surface.
+
+pub mod metadata;
+pub mod name;
+pub mod routes;

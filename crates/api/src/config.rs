@@ -11,6 +11,16 @@ pub struct Config {
     pub storage: StorageConfig,
     pub search: SearchConfig,
     pub redis: RedisConfig,
+    #[serde(default)]
+    pub rate_limit: RateLimitConfig,
+    /// Enable artifact scanning pipeline. When false, releases go directly to
+    /// `published` status without enqueueing a scan job.
+    #[serde(default = "default_scanning_enabled")]
+    pub scanning_enabled: bool,
+}
+
+fn default_scanning_enabled() -> bool {
+    true
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -21,6 +31,8 @@ pub struct ServerConfig {
     pub base_url: String,
     #[serde(default)]
     pub cors_allowed_origins: Vec<String>,
+    #[serde(default)]
+    pub static_dir: Option<String>,
 }
 
 fn default_bind() -> String {
@@ -133,6 +145,53 @@ pub struct RedisConfig {
     pub url: String,
 }
 
+#[derive(Debug, Deserialize, Clone)]
+pub struct RateLimitConfig {
+    /// Enable or disable rate limiting globally.
+    #[serde(default = "default_rate_limit_enabled")]
+    pub enabled: bool,
+    /// Maximum requests per window for authentication endpoints (register, login).
+    #[serde(default = "default_auth_rpm")]
+    pub auth_requests_per_minute: u64,
+    /// Maximum requests per window for write/mutation endpoints.
+    #[serde(default = "default_write_rpm")]
+    pub write_requests_per_minute: u64,
+    /// Maximum requests per window for general read endpoints.
+    #[serde(default = "default_read_rpm")]
+    pub read_requests_per_minute: u64,
+    /// Maximum requests per window for native protocol adapter reads.
+    #[serde(default = "default_protocol_rpm")]
+    pub protocol_requests_per_minute: u64,
+}
+
+fn default_rate_limit_enabled() -> bool {
+    true
+}
+fn default_auth_rpm() -> u64 {
+    10
+}
+fn default_write_rpm() -> u64 {
+    60
+}
+fn default_read_rpm() -> u64 {
+    300
+}
+fn default_protocol_rpm() -> u64 {
+    1000
+}
+
+impl Default for RateLimitConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_rate_limit_enabled(),
+            auth_requests_per_minute: default_auth_rpm(),
+            write_requests_per_minute: default_write_rpm(),
+            read_requests_per_minute: default_read_rpm(),
+            protocol_requests_per_minute: default_protocol_rpm(),
+        }
+    }
+}
+
 impl Config {
     pub fn load() -> Result<Self> {
         let cfg = config::Config::builder()
@@ -150,6 +209,12 @@ impl Config {
             .set_default("storage.region", "us-east-1")?
             .set_default("search.url", "http://localhost:7700")?
             .set_default("redis.url", "redis://localhost:6379")?
+            .set_default("rate_limit.enabled", true)?
+            .set_default("rate_limit.auth_requests_per_minute", 10)?
+            .set_default("rate_limit.write_requests_per_minute", 60)?
+            .set_default("rate_limit.read_requests_per_minute", 300)?
+            .set_default("rate_limit.protocol_requests_per_minute", 1000)?
+            .set_default("scanning_enabled", true)?
             .build()
             .context("Failed to build configuration")?;
 
@@ -190,6 +255,14 @@ impl Config {
             redis: RedisConfig {
                 url: "redis://localhost:6379".to_owned(),
             },
+            rate_limit: RateLimitConfig {
+                enabled: false,
+                auth_requests_per_minute: 100,
+                write_requests_per_minute: 200,
+                read_requests_per_minute: 1000,
+                protocol_requests_per_minute: 5000,
+            },
+            scanning_enabled: false,
         }
     }
 }

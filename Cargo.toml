@@ -4,6 +4,7 @@ members = [
     "crates/api",
     "crates/auth",
     "crates/search",
+    "crates/workers",
     "crates/test-utils",
     "crates/adapters/npm",
     "crates/adapters/pypi",
@@ -24,7 +25,7 @@ tokio = { version = "1", features = ["full"] }
 axum = { version = "0.7", features = ["macros", "multipart"] }
 axum-extra = { version = "0.9", features = ["typed-header"] }
 tower = { version = "0.4" }
-tower-http = { version = "0.5", features = ["cors", "trace", "compression-gzip", "request-id", "timeout"] }
+tower-http = { version = "0.5", features = ["cors", "trace", "compression-gzip", "request-id", "timeout", "fs"] }
 hyper = { version = "1" }
 
 # Database
@@ -103,8 +104,12 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 publaryn-core = { path = "crates/core" }
 publaryn-auth = { path = "crates/auth" }
 publaryn-search = { path = "crates/search" }
+publaryn-workers = { path = "crates/workers" }
 publaryn-test-utils = { path = "crates/test-utils" }
 publaryn-adapter-npm = { path = "crates/adapters/npm" }
 publaryn-adapter-pypi = { path = "crates/adapters/pypi" }
 publaryn-adapter-cargo-registry = { path = "crates/adapters/cargo-registry" }
+publaryn-adapter-composer = { path = "crates/adapters/composer" }
+publaryn-adapter-maven = { path = "crates/adapters/maven" }
 publaryn-adapter-nuget = { path = "crates/adapters/nuget" }
+publaryn-adapter-rubygems = { path = "crates/adapters/rubygems" }

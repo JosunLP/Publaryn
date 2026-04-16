@@ -1,4 +1,5 @@
 use anyhow::Result;
+use fred::prelude::*;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -15,6 +16,7 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub search: Arc<MeilisearchIndex>,
     pub artifact_store: Arc<dyn ArtifactStore>,
+    pub redis: Option<Arc<RedisClient>>,
 }
 
 impl AppState {
@@ -33,11 +35,24 @@ impl AppState {
         ));
         let artifact_store = Arc::new(S3ArtifactStore::new(&cfg.storage).await?);
 
+        // Connect to Redis when configured.
+        let redis = match connect_redis(&cfg.redis.url).await {
+            Ok(client) => {
+                tracing::info!("Redis connected at {}", &cfg.redis.url);
+                Some(Arc::new(client))
+            }
+            Err(err) => {
+                tracing::warn!("Redis unavailable, rate limiting and caching disabled: {err}");
+                None
+            }
+        };
+
         Ok(Self {
             db,
             config: Arc::new(cfg.clone()),
             search,
             artifact_store,
+            redis,
         })
     }
 
@@ -53,6 +68,14 @@ impl AppState {
             config: Arc::new(config),
             search,
             artifact_store: Arc::new(crate::storage::MemoryArtifactStore::new()),
+            redis: None,
         }
     }
+}
+
+async fn connect_redis(url: &str) -> Result<RedisClient> {
+    let config = RedisConfig::from_url(url)?;
+    let client = RedisClient::new(config, None, None, None);
+    client.init().await?;
+    Ok(client)
 }

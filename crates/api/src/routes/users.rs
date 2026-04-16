@@ -18,9 +18,38 @@ use crate::{
 
 pub fn router() -> Router<AppState> {
     Router::new()
+        .route("/v1/users/me", get(get_current_user))
+        .route("/v1/users/me", patch(update_current_user))
         .route("/v1/users/:username", get(get_user))
         .route("/v1/users/:username", patch(update_user))
         .route("/v1/users/:username/packages", get(list_user_packages))
+}
+
+async fn get_current_user(
+    State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
+) -> ApiResult<Json<serde_json::Value>> {
+    let row = sqlx::query(
+        "SELECT id, username, email, display_name, avatar_url, bio, website, mfa_enabled, created_at \
+         FROM users WHERE id = $1 AND is_active = true",
+    )
+    .bind(identity.user_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?
+    .ok_or_else(|| ApiError(Error::NotFound("Current user not found".into())))?;
+
+    Ok(Json(serde_json::json!({
+        "id": row.try_get::<Uuid, _>("id").ok(),
+        "username": row.try_get::<String, _>("username").ok(),
+        "email": row.try_get::<String, _>("email").ok(),
+        "display_name": row.try_get::<Option<String>, _>("display_name").ok().flatten(),
+        "avatar_url": row.try_get::<Option<String>, _>("avatar_url").ok().flatten(),
+        "bio": row.try_get::<Option<String>, _>("bio").ok().flatten(),
+        "website": row.try_get::<Option<String>, _>("website").ok().flatten(),
+        "mfa_enabled": row.try_get::<bool, _>("mfa_enabled").unwrap_or(false),
+        "created_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at").ok(),
+    })))
 }
 
 async fn get_user(
@@ -108,6 +137,34 @@ async fn update_user(
     .map_err(|e| ApiError(Error::Database(e)))?;
 
     Ok(Json(serde_json::json!({ "message": "User updated" })))
+}
+
+async fn update_current_user(
+    State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
+    Json(body): Json<UpdateUserRequest>,
+) -> ApiResult<Json<serde_json::Value>> {
+    ensure_scope(&identity, SCOPE_PROFILE_WRITE)?;
+
+    sqlx::query(
+        "UPDATE users \
+         SET display_name = COALESCE($1, display_name), \
+             bio          = COALESCE($2, bio), \
+             website      = COALESCE($3, website), \
+             avatar_url   = COALESCE($4, avatar_url), \
+             updated_at   = NOW() \
+         WHERE id = $5 AND is_active = true",
+    )
+    .bind(&body.display_name)
+    .bind(&body.bio)
+    .bind(&body.website)
+    .bind(&body.avatar_url)
+    .bind(identity.user_id)
+    .execute(&state.db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    get_current_user(State(state), identity).await
 }
 
 #[derive(Debug, Deserialize)]

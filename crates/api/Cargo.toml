@@ -16,10 +16,14 @@ path = "src/main.rs"
 publaryn-core = { workspace = true }
 publaryn-auth = { workspace = true }
 publaryn-search = { workspace = true }
+publaryn-workers = { workspace = true }
 publaryn-adapter-npm = { workspace = true }
 publaryn-adapter-pypi = { workspace = true }
 publaryn-adapter-cargo-registry = { workspace = true }
+publaryn-adapter-composer = { workspace = true }
+publaryn-adapter-maven = { workspace = true }
 publaryn-adapter-nuget = { workspace = true }
+publaryn-adapter-rubygems = { workspace = true }
 
 tokio = { workspace = true }
 axum = { workspace = true }
@@ -42,6 +46,7 @@ tracing-subscriber = { workspace = true }
 
 config = { workspace = true }
 dotenvy = { workspace = true }
+fred = { workspace = true }
 aws-config = { workspace = true }
 aws-sdk-s3 = { workspace = true }
 

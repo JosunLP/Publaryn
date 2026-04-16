@@ -1,3 +1,7 @@
-//! Ecosystem adapter implementation.
+//! Composer package metadata adapter.
 //!
-//! See the `npm` adapter for the shared `EcosystemAdapter` trait definition.
+//! Implements a Packagist-style read surface for Composer clients.
+
+pub mod metadata;
+pub mod name;
+pub mod routes;

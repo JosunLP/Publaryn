@@ -151,6 +151,31 @@ impl ArtifactStore for S3ArtifactStore {
     }
 }
 
+// ── ArtifactStoreReader bridge ────────────────────────────────────────────────
+
+/// Adapter that implements the workers crate's [`ArtifactStoreReader`] trait
+/// by delegating to any [`ArtifactStore`] implementor.
+pub struct ArtifactStoreReaderAdapter {
+    inner: std::sync::Arc<dyn ArtifactStore>,
+}
+
+impl ArtifactStoreReaderAdapter {
+    pub fn new(store: std::sync::Arc<dyn ArtifactStore>) -> Self {
+        Self { inner: store }
+    }
+}
+
+#[async_trait]
+impl publaryn_workers::scanners::ArtifactStoreReader for ArtifactStoreReaderAdapter {
+    async fn get_object_bytes(&self, storage_key: &str) -> Result<Option<Bytes>, String> {
+        self.inner
+            .get_object(storage_key)
+            .await
+            .map(|opt| opt.map(|o| o.bytes))
+            .map_err(|e| e.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
