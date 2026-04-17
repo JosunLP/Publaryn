@@ -1,10 +1,13 @@
+/// <reference path="./bun-test.d.ts" />
+
 import { describe, expect, test } from 'bun:test';
 
 import {
+  formatRepositoryKindLabel,
+  formatRepositoryPackageCoverageLabel,
+  formatRepositoryVisibilityLabel,
   REPOSITORY_KIND_OPTIONS,
   REPOSITORY_VISIBILITY_OPTIONS,
-  formatRepositoryKindLabel,
-  formatRepositoryVisibilityLabel,
 } from '../src/utils/repositories';
 
 describe('repository option helpers', () => {
@@ -23,6 +26,21 @@ describe('repository option helpers', () => {
   test('falls back to title casing unknown values', () => {
     expect(formatRepositoryVisibilityLabel('partner_only')).toBe(
       'Partner Only'
+    );
+  });
+
+  test('summarizes visible package coverage for repository package lists', () => {
+    expect(formatRepositoryPackageCoverageLabel(0, 0)).toBe(
+      'No visible packages in this repository yet.'
+    );
+    expect(formatRepositoryPackageCoverageLabel(1, 1)).toBe(
+      'Showing 1 visible package.'
+    );
+    expect(formatRepositoryPackageCoverageLabel(3, 3)).toBe(
+      'Showing 3 visible packages.'
+    );
+    expect(formatRepositoryPackageCoverageLabel(20, 24)).toBe(
+      'Showing 20 of 24 visible packages.'
     );
   });
 

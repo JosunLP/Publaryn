@@ -32,6 +32,35 @@ export function formatRepositoryVisibilityLabel(
   return findRepositoryOptionLabel(REPOSITORY_VISIBILITY_OPTIONS, value);
 }
 
+export function formatRepositoryPackageCoverageLabel(
+  loadedCount: number,
+  totalCount: number | null | undefined
+): string {
+  const safeLoadedCount = Number.isFinite(loadedCount)
+    ? Math.max(0, Math.trunc(loadedCount))
+    : 0;
+  const safeTotalCount =
+    typeof totalCount === 'number' && Number.isFinite(totalCount)
+      ? Math.max(0, Math.trunc(totalCount))
+      : safeLoadedCount;
+
+  if (safeTotalCount === 0) {
+    return 'No visible packages in this repository yet.';
+  }
+
+  if (safeLoadedCount === 0) {
+    return `${safeTotalCount} visible packages belong to this repository.`;
+  }
+
+  if (safeTotalCount > safeLoadedCount) {
+    return `Showing ${safeLoadedCount} of ${safeTotalCount} visible packages.`;
+  }
+
+  return safeTotalCount === 1
+    ? 'Showing 1 visible package.'
+    : `Showing ${safeTotalCount} visible packages.`;
+}
+
 function findRepositoryOptionLabel(
   options: RepositoryOption[],
   value: string | null | undefined

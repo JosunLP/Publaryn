@@ -15,6 +15,26 @@ export interface RepositoryDetail {
   updated_at?: NullableString;
 }
 
+export interface RepositoryPackageSummary {
+  id?: NullableString;
+  name?: NullableString;
+  ecosystem?: NullableString;
+  description?: NullableString;
+  visibility?: NullableString;
+  download_count?: number | null;
+  created_at?: NullableString;
+}
+
+export interface RepositoryPackageListResponse {
+  packages: RepositoryPackageSummary[];
+  load_error?: NullableString;
+}
+
+export interface ListRepositoryPackagesQuery {
+  page?: number;
+  perPage?: number;
+}
+
 export interface CreateRepositoryInput {
   name: string;
   slug: string;
@@ -60,6 +80,23 @@ export async function updateRepository(
         description: updates.description,
         visibility: updates.visibility,
         upstream_url: updates.upstreamUrl,
+      },
+    }
+  );
+
+  return data;
+}
+
+export async function listRepositoryPackages(
+  slug: string,
+  query: ListRepositoryPackagesQuery = {}
+): Promise<RepositoryPackageListResponse> {
+  const { data } = await api.get<RepositoryPackageListResponse>(
+    `/v1/repositories/${encodeURIComponent(slug)}/packages`,
+    {
+      query: {
+        page: query.page,
+        per_page: query.perPage,
       },
     }
   );

@@ -386,6 +386,27 @@ async fn list_org_repositories(
     (status, body)
 }
 
+/// List packages inside a repository and return the response.
+async fn list_repository_packages(
+    app: &axum::Router,
+    jwt: Option<&str>,
+    repository_slug: &str,
+) -> (StatusCode, Value) {
+    let mut request = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/v1/repositories/{repository_slug}/packages"));
+
+    if let Some(jwt) = jwt {
+        request = request.header(header::AUTHORIZATION, format!("Bearer {jwt}"));
+    }
+
+    let req = request.body(Body::empty()).unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
 /// Create a package and return the response.
 async fn create_package(
     app: &axum::Router,
@@ -1221,6 +1242,113 @@ async fn test_org_admin_can_update_repository_details(pool: PgPool) {
     assert_eq!(repository_body["description"], "Canonical public repository for Acme releases.");
     assert_eq!(repository_body["visibility"], "unlisted");
     assert_eq!(repository_body["upstream_url"], "https://git.example.test/acme/public");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_repository_package_list_respects_visibility(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let owner_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let member_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &owner_jwt, "Acme Corp", "acme-corp").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id = org_body["id"].as_str().expect("org id should be returned");
+
+    let (status, body) = add_org_member(&app, &owner_jwt, "acme-corp", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED, "unexpected member response: {body}");
+
+    let (status, public_repo_body) = create_repository_with_options(
+        &app,
+        &owner_jwt,
+        "Acme Public",
+        "acme-public",
+        Some(org_id),
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected public repository response: {public_repo_body}"
+    );
+
+    let (status, internal_repo_body) = create_repository_with_options(
+        &app,
+        &owner_jwt,
+        "Acme Internal",
+        "acme-internal",
+        Some(org_id),
+        Some("private"),
+        Some("internal_org"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected internal repository response: {internal_repo_body}"
+    );
+
+    for (name, visibility) in [
+        ("acme-public-widget", Some("public")),
+        ("acme-unlisted-widget", Some("unlisted")),
+        ("acme-private-widget", Some("private")),
+    ] {
+        let (status, body) =
+            create_package_with_options(&app, &owner_jwt, "npm", name, "acme-public", visibility)
+                .await;
+        assert_eq!(status, StatusCode::CREATED, "unexpected package response: {body}");
+    }
+
+    let (status, body) = create_package_with_options(
+        &app,
+        &owner_jwt,
+        "npm",
+        "acme-internal-widget",
+        "acme-internal",
+        Some("internal_org"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "unexpected package response: {body}");
+
+    let (status, anonymous_public_body) = list_repository_packages(&app, None, "acme-public").await;
+    assert_eq!(status, StatusCode::OK);
+    let anonymous_public_packages = anonymous_public_body["packages"]
+        .as_array()
+        .expect("anonymous public package list should be an array");
+    assert_eq!(anonymous_public_packages.len(), 1, "response: {anonymous_public_body}");
+    assert_eq!(anonymous_public_packages[0]["name"], "acme-public-widget");
+
+    let (status, member_public_body) =
+        list_repository_packages(&app, Some(&member_jwt), "acme-public").await;
+    assert_eq!(status, StatusCode::OK);
+    let member_public_packages = member_public_body["packages"]
+        .as_array()
+        .expect("member public package list should be an array");
+    assert_eq!(member_public_packages.len(), 3, "response: {member_public_body}");
+
+    for package_name in ["acme-public-widget", "acme-unlisted-widget", "acme-private-widget"] {
+        assert!(
+            member_public_packages
+                .iter()
+                .any(|package| package["name"] == package_name),
+            "expected {package_name} in response: {member_public_body}"
+        );
+    }
+
+    let (status, anonymous_internal_body) = list_repository_packages(&app, None, "acme-internal").await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "response: {anonymous_internal_body}");
+
+    let (status, member_internal_body) =
+        list_repository_packages(&app, Some(&member_jwt), "acme-internal").await;
+    assert_eq!(status, StatusCode::OK);
+    let member_internal_packages = member_internal_body["packages"]
+        .as_array()
+        .expect("member internal package list should be an array");
+    assert_eq!(member_internal_packages.len(), 1, "response: {member_internal_body}");
+    assert_eq!(member_internal_packages[0]["name"], "acme-internal-widget");
 }
 
 #[sqlx::test(migrations = "../../migrations")]

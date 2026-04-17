@@ -48,7 +48,15 @@ import {
   updateTeam,
 } from '../api/orgs';
 import { transferPackageOwnership } from '../api/packages';
-import { createRepository, updateRepository } from '../api/repositories';
+import type {
+  RepositoryPackageListResponse,
+  RepositoryPackageSummary,
+} from '../api/repositories';
+import {
+  createRepository,
+  listRepositoryPackages,
+  updateRepository,
+} from '../api/repositories';
 import type { RouteContext } from '../router';
 import { navigate } from '../router';
 import { ECOSYSTEMS, ecosystemLabel } from '../utils/ecosystem';
@@ -61,6 +69,7 @@ import {
   REPOSITORY_KIND_OPTIONS,
   REPOSITORY_VISIBILITY_OPTIONS,
   formatRepositoryKindLabel,
+  formatRepositoryPackageCoverageLabel,
   formatRepositoryVisibilityLabel,
 } from '../utils/repositories';
 import {
@@ -129,6 +138,11 @@ interface TeamPackageAccessState {
   load_error: string | null;
 }
 
+interface RepositoryPackageState {
+  packages: RepositoryPackageSummary[];
+  load_error: string | null;
+}
+
 interface OrgDetailViewState {
   slug: string;
   org: OrganizationDetail;
@@ -145,6 +159,7 @@ interface OrgDetailViewState {
   namespaceClaims: NamespaceClaim[];
   namespaceError: string | null;
   repositories: OrgRepositorySummary[];
+  repositoryPackagesBySlug: Record<string, RepositoryPackageState>;
   repositoriesError: string | null;
   packages: OrgPackageSummary[];
   packagesError: string | null;
@@ -281,6 +296,7 @@ async function loadAndRender(
       teamPackageAccessBySlug,
       auditData,
       namespaceData,
+      repositoryPackagesBySlug,
     ] = await Promise.all([
       canAdminister
         ? listOrgInvitations(slug).catch(
@@ -342,6 +358,7 @@ async function loadAndRender(
             load_error:
               'Failed to load namespace claims because the organization id is unavailable.',
           }),
+      loadRepositoryPackages(repositoryData.repositories || []),
     ]);
 
     render(container, {
@@ -360,6 +377,7 @@ async function loadAndRender(
       namespaceClaims: namespaceData.namespaces || [],
       namespaceError: namespaceData.load_error || null,
       repositories: repositoryData.repositories || [],
+      repositoryPackagesBySlug,
       repositoriesError: repositoryData.load_error || null,
       packages: packageData.packages || [],
       packagesError: packageData.load_error || null,
@@ -418,6 +436,7 @@ function render(container: HTMLElement, state: OrgDetailViewState): void {
     namespaceClaims,
     namespaceError,
     repositories,
+    repositoryPackagesBySlug,
     repositoriesError,
     packages,
     packagesError,
@@ -896,11 +915,11 @@ function render(container: HTMLElement, state: OrgDetailViewState): void {
           <div class="org-section-header">
             <div>
               <h2>Repositories</h2>
-              <p class="settings-copy">Review the repositories that belong to this organization and manage hosted, staging, or mirrored sources from the same workspace.</p>
+              <p class="settings-copy">Review the repositories that belong to this organization, inspect their visible packages, and manage hosted, staging, or mirrored sources from the same workspace.</p>
             </div>
           </div>
 
-          ${renderOrgRepositories(repositories, repositoriesError, canAdminister)}
+          ${renderOrgRepositories(repositories, repositoryPackagesBySlug, repositoriesError, canAdminister)}
 
           ${canAdminister && org.id ? renderOrgRepositoryCreateForm() : ''}
         </section>
@@ -1946,6 +1965,50 @@ async function loadTeamPackageAccess(
   return Object.fromEntries(teamEntries);
 }
 
+async function loadRepositoryPackages(
+  repositories: OrgRepositorySummary[]
+): Promise<Record<string, RepositoryPackageState>> {
+  const repositoryEntries = await Promise.all(
+    repositories.filter(hasRepositorySlug).map(async (repository) => {
+      try {
+        const data: RepositoryPackageListResponse =
+          await listRepositoryPackages(repository.slug, {
+            perPage: 100,
+          });
+
+        return [
+          repository.slug,
+          {
+            packages: data.packages || [],
+            load_error: data.load_error || null,
+          },
+        ] as const;
+      } catch (caughtError: unknown) {
+        return [
+          repository.slug,
+          {
+            packages: [],
+            load_error: toErrorMessage(
+              caughtError,
+              `Failed to load packages for ${repository.name || repository.slug}.`
+            ),
+          },
+        ] as const;
+      }
+    })
+  );
+
+  return Object.fromEntries(repositoryEntries);
+}
+
+function hasRepositorySlug(
+  repository: OrgRepositorySummary
+): repository is OrgRepositorySummary & { slug: string } {
+  return (
+    typeof repository.slug === 'string' && repository.slug.trim().length > 0
+  );
+}
+
 function renderTeamCard(
   team: Team,
   {
@@ -2231,6 +2294,7 @@ function renderNamespaceClaimForm(): string {
 
 function renderOrgRepositories(
   repositories: OrgRepositorySummary[],
+  repositoryPackagesBySlug: Record<string, RepositoryPackageState>,
   repositoriesError: string | null,
   canAdminister: boolean
 ): string {
@@ -2254,7 +2318,15 @@ function renderOrgRepositories(
           const rightKey = (right.name || right.slug || '').toLowerCase();
           return leftKey.localeCompare(rightKey);
         })
-        .map((repository) => renderOrgRepositoryCard(repository, canAdminister))
+        .map((repository) =>
+          renderOrgRepositoryCard(
+            repository,
+            repository.slug
+              ? repositoryPackagesBySlug[repository.slug] || null
+              : null,
+            canAdminister
+          )
+        )
         .join('')}
     </div>
   `;
@@ -2262,6 +2334,7 @@ function renderOrgRepositories(
 
 function renderOrgRepositoryCard(
   repository: OrgRepositorySummary,
+  repositoryPackageState: RepositoryPackageState | null,
   canAdminister: boolean
 ): string {
   const repositorySlug = repository.slug || '';
@@ -2284,7 +2357,80 @@ function renderOrgRepositoryCard(
         </div>
       </div>
 
+      ${renderRepositoryPackageList(repository, repositoryPackageState)}
       ${canAdminister ? renderOrgRepositoryUpdateForm(repository) : ''}
+    </div>
+  `;
+}
+
+function renderRepositoryPackageList(
+  repository: OrgRepositorySummary,
+  repositoryPackageState: RepositoryPackageState | null
+): string {
+  const repositoryPackages = repositoryPackageState?.packages || [];
+  const coverageLabel = formatRepositoryPackageCoverageLabel(
+    repositoryPackages.length,
+    repository.package_count
+  );
+
+  if (repositoryPackageState?.load_error) {
+    return `
+      <div class="settings-section">
+        <div class="org-section-header">
+          <div>
+            <h3>Visible packages</h3>
+            <p class="settings-copy">${escapeHtml(coverageLabel)}</p>
+          </div>
+        </div>
+        <div class="alert alert-error">${escapeHtml(repositoryPackageState.load_error)}</div>
+      </div>
+    `;
+  }
+
+  if (repositoryPackages.length === 0) {
+    return `
+      <div class="settings-section">
+        <div class="org-section-header">
+          <div>
+            <h3>Visible packages</h3>
+            <p class="settings-copy">${escapeHtml(coverageLabel)}</p>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="settings-section">
+      <div class="org-section-header">
+        <div>
+          <h3>Visible packages</h3>
+          <p class="settings-copy">${escapeHtml(coverageLabel)}</p>
+        </div>
+      </div>
+
+      <div class="token-list">
+        ${repositoryPackages
+          .map(
+            (pkg) => `
+              <div class="token-row">
+                <div class="token-row__main">
+                  <div class="token-row__title">
+                    <a href="/packages/${encodeURIComponent(pkg.ecosystem || 'unknown')}/${encodeURIComponent(pkg.name || '')}">${escapeHtml(pkg.name || 'Unnamed package')}</a>
+                  </div>
+                  <div class="token-row__meta">
+                    <span>${escapeHtml(pkg.ecosystem || 'unknown')}</span>
+                    <span>${escapeHtml(formatRepositoryVisibilityLabel(pkg.visibility))}</span>
+                    <span>${escapeHtml(formatNumber(pkg.download_count))} downloads</span>
+                    ${pkg.created_at ? `<span>created ${escapeHtml(formatDate(pkg.created_at))}</span>` : ''}
+                  </div>
+                  ${pkg.description ? `<p class="settings-copy">${escapeHtml(pkg.description)}</p>` : ''}
+                </div>
+              </div>
+            `
+          )
+          .join('')}
+      </div>
     </div>
   `;
 }
