@@ -79,6 +79,6 @@ This prevents stale permissions from the previous organization from surviving th
 ## Follow-up work
 
 - extend delegation to repository- and namespace-scoped governance where appropriate
-- surface team package access clearly in the future bQuery frontend
+- surface team package access clearly in the SvelteKit frontend
 - add PostgreSQL-backed integration tests for delegated package authorization paths
 - expand security workflows that make active use of `security_review`

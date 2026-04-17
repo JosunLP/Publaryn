@@ -28,3 +28,10 @@ data/
 
 */node_modules/
 */dist/
+*/.svelte-kit/
+*/.cache/
+*/.parcel-cache/
+*/.next/
+*/.nuxt/
+*/.vercel/
+*/.vercel_build_output/

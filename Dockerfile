@@ -6,8 +6,7 @@ FROM oven/bun:1.3.12 AS frontend
 WORKDIR /app/frontend
 COPY frontend/package.json frontend/bun.lock ./
 RUN bun install --frozen-lockfile
-COPY frontend/index.html ./index.html
-COPY frontend/postcss.config.cjs frontend/tailwind.config.ts frontend/tsconfig.json frontend/vite.config.ts ./
+COPY frontend/postcss.config.cjs frontend/svelte.config.js frontend/tailwind.config.ts frontend/tsconfig.json frontend/vite.config.ts ./
 COPY frontend/public ./public
 COPY frontend/src ./src
 RUN bun run build

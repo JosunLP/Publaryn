@@ -127,15 +127,17 @@ async function request<T>(
     headers.set('Content-Type', 'application/json');
   }
 
+  const requestBody: BodyInit | undefined =
+    isFormData(body) || isBinaryBody(body)
+      ? (body as unknown as BodyInit)
+      : body
+        ? JSON.stringify(body)
+        : undefined;
+
   const response = await fetch(url.toString(), {
     method,
     headers,
-    body:
-      isFormData(body) || isBinaryBody(body)
-        ? body
-        : body
-          ? JSON.stringify(body)
-          : undefined,
+    body: requestBody,
   });
 
   const requestId = response.headers.get('x-request-id');

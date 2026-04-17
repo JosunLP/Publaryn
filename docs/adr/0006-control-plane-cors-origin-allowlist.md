@@ -12,7 +12,7 @@ Before this change, the API used permissive CORS behavior for every route.
 That was convenient for ad hoc browser clients, but it was not aligned with Publaryn's security-first posture.
 Permissive cross-origin access broadens the blast radius of frontend deployment mistakes, makes browser-based token use easier to misuse, and weakens the default boundary around administrative surfaces.
 
-Publaryn also needs a development path for the future bQuery frontend when it runs on a different origin from the API.
+Publaryn also needs a development path for the SvelteKit frontend when it runs on a different origin from the API.
 That path should remain explicit, environment-specific, and compatible with multi-replica deployments.
 
 ## Decision

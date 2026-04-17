@@ -57,4 +57,4 @@ Ownership transfer is intentionally handled by a separate dedicated workflow. Se
 - add invitation reminders and expiry notifications
 - support explicit invitation decline reasons if needed for enterprise workflows
 - continue refining ownership-transfer and last-owner safety rules across the broader org lifecycle after the dedicated handoff flow in ADR 0004
-- surface invitation state in the frontend once the bQuery web application is introduced
+- surface invitation state in the frontend through the SvelteKit web application

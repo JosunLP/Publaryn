@@ -126,6 +126,8 @@ The API is available at `http://localhost:3000`.
 The frontend is available at `http://localhost:5173`.
 Swagger UI at `http://localhost:3000/swagger-ui`.
 
+The web portal is a Bun-managed SvelteKit + Tailwind CSS application that builds to static assets under `frontend/dist` and is served by the API in containerized deployments.
+
 ### Full Stack (includes API container)
 
 ```bash

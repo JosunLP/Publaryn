@@ -3,7 +3,7 @@ services:
   # PostgreSQL — primary datastore
   # ──────────────────────────────────────────────────────────
   postgres:
-    image: postgres:16-alpine
+    image: postgres:18.3.0
     restart: unless-stopped
     environment:
       POSTGRES_USER: publaryn
@@ -23,7 +23,7 @@ services:
   # Redis — caching, rate limiting, session data
   # ──────────────────────────────────────────────────────────
   redis:
-    image: redis:7-alpine
+    image: redis:8-alpine
     restart: unless-stopped
     ports:
       - "6379:6379"

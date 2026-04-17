@@ -16,7 +16,7 @@ The initial ecosystems are:
 - pip
 - Rust Crates
 
-The platform is built around a Rust-based backend as the registry and domain core, combined with a Bun-managed TypeScript web interface built on bQuery, @bquery/ui, and Tailwind CSS. The current frontend baseline already covers landing, search, package detail, version detail, login, register, and a persisted theme-aware shell. The settings experience now includes profile editing, TOTP-based MFA with recovery codes, scoped token management, organization memberships, invitation acceptance and decline, and organization creation. Dedicated organization workspaces, team administration, audit dashboards, and broader governance/security surfaces continue to expand on that foundation. The goal is to match at least the functional baseline of established hosting and registry services such as npmjs.org, PyPI, RubyGems.org, NuGet.org, and OCI/container registries, while exceeding them in security, governance, user experience, and multi-ecosystem consistency.
+The platform is built around a Rust-based backend as the registry and domain core, combined with a Bun-managed TypeScript web interface built with SvelteKit and Tailwind CSS. The current frontend baseline already covers landing, search, package detail, version detail, login, register, settings, and dedicated organization workspaces through native SvelteKit routes and a persisted theme-aware shell. The settings experience includes profile editing, TOTP-based MFA with recovery codes, scoped token management, organization memberships, invitation acceptance and decline, and organization creation. Dedicated organization workspaces now cover member and invitation administration, teams, repository and namespace management, audit dashboards, security overviews, and package transfer flows. The goal is to match at least the functional baseline of established hosting and registry services such as npmjs.org, PyPI, RubyGems.org, NuGet.org, and OCI/container registries, while exceeding them in security, governance, user experience, and multi-ecosystem consistency.
 
 Publaryn should be designed from the beginning to work as:
 
@@ -119,7 +119,7 @@ Many platforms lack strong support for:
 - CI-based trusted publishing
 - security dashboards and audit workflows
 
-Publaryn already closes much of this gap at the domain and API layer: organizations, invitations, teams, ownership transfer, and delegated package access are present in the backend, while the frontend is now moving from personal settings flows into dedicated organization workspaces.
+Publaryn already closes much of this gap at the domain, API, and frontend layers: organizations, invitations, teams, ownership transfer, delegated package access, and dedicated organization workspaces are present in the current stack.
 
 ---
 
@@ -224,10 +224,10 @@ Later, selected components can be split out:
 
 ### Presentation Layer
 
-- Bun-managed TypeScript web portal built on bQuery, @bquery/ui, and Tailwind CSS
+- Bun-managed TypeScript web portal built with SvelteKit, Tailwind CSS, and lightweight client stores
 - public package discovery and detail pages
 - authentication and personal account settings for profile editing, TOTP MFA, scoped tokens, organization discovery, invitation review, and organization creation
-- dedicated organization workspaces, team management, audit views, and security dashboards delivered incrementally
+- dedicated organization workspaces, team management, audit views, and security dashboards delivered through native SvelteKit routes
 - future security and compliance views layered onto the same frontend foundation
 
 ### API Layer
@@ -905,7 +905,7 @@ Useful for:
 
 ---
 
-# 16. Frontend and UX Concept with bQuery
+# 16. Frontend and UX Concept with SvelteKit
 
 ## 16.1 Target Experience
 
@@ -916,7 +916,7 @@ The interface should be:
 - controllable for enterprises
 - informative for visitors
 
-The implemented frontend foundation already delivers the public landing, search, package detail, version detail, login, register, and settings flows together with a shared theme-aware shell. Routing already runs through a bQuery-backed compatibility layer, so the immediate frontend goal is to grow the governance baseline into dedicated organization workspaces and then expand into teams, package access, audit, and security surfaces.
+The implemented frontend foundation already delivers the public landing, search, package detail, version detail, login, register, settings, and organization workspace flows together with a shared theme-aware shell. Routing runs through native SvelteKit file-based routes with a static-adapter build, so the immediate frontend goal is to keep growing governance, repository, package, and security surfaces without a legacy compatibility layer.
 
 ## 16.2 Main Areas of the Web Application
 
@@ -933,15 +933,19 @@ Current implemented baseline:
 - organization membership overview
 - organization invitation acceptance and decline
 - organization creation
+- dedicated organization workspaces
+- team and delegated package access management
+- repository and namespace management
+- organization audit and security views
+- package transfer flows
 - shared theme-aware app shell
 
 Next major expansion areas on the same frontend foundation:
 
-- dedicated organization workspaces and member/invitation administration
-- team and role management
-- repository and namespace management
-- package management workflows
-- audit, activity, and security views
+- richer package management workflows
+- broader administration area
+- policy and compliance dashboards
+- notifications and event surfacing
 - administration area
 
 ## 16.3 Public Package Pages
@@ -981,7 +985,7 @@ For maintainers:
 
 Strong organization management can become a major competitive advantage.
 
-This remains a primary differentiator. The current implementation already lets users discover their organizations, accept or decline invitations, and create new organizations from settings; dedicated org workspaces, member administration, and team/package-governance views are the next step.
+This remains a primary differentiator. The current implementation already lets users discover their organizations, accept or decline invitations, create new organizations from settings, and work inside dedicated organization workspaces for profile, members, invitations, teams, repositories, namespace claims, audit review, security overview, and package transfer.
 
 Needs:
 
@@ -1000,18 +1004,18 @@ Needs:
 - actions should be understandable and reversible where possible
 - ecosystem-aware information architecture
 
-## 16.7 Role of bQuery
+## 16.7 Role of SvelteKit and Tailwind
 
-bQuery fits especially well for:
+SvelteKit and Tailwind fit especially well for:
 
-- reactive routing and management views
-- persisted theme and app-shell state
-- live publish and scan status updates
-- SSR for public package pages when needed
+- native file-based routing and nested layouts
+- persisted theme and session state via lightweight stores
+- static-adapter output with SPA fallback served by the API
 - safe rendering of README and markdown content
 - stateful security and audit interfaces
+- data-heavy governance forms without runtime framework ceremony
 
-In the implemented frontend stack, bQuery provides routing, reactive state, and platform primitives; @bquery/ui provides accessible Web Components and theme tokens; Tailwind CSS handles layout, spacing, and utility styling around those components; and Bun drives dependency management and local workflows.
+In the implemented frontend stack, SvelteKit provides routing, layouts, and compiled component delivery; Tailwind CSS handles layout, spacing, and utility styling; lightweight local stores manage session and theming concerns; and Bun drives dependency management and local workflows.
 
 ---
 
@@ -1513,7 +1517,7 @@ Goal:
 - solid domain model
 - auth, org, and package core
 - storage and publish transactions
-- Bun-managed TypeScript UI foundation with bQuery, @bquery/ui, Tailwind CSS, persisted theming, and initial public/account pages
+- Bun-managed TypeScript UI foundation with SvelteKit, Tailwind CSS, persisted theming, and initial public/account pages
 - audit and policy framework
 
 ## Phase 1 – Minimal Viable Multi-Ecosystem Platform
@@ -1741,18 +1745,18 @@ Rust is a strong fit for:
 - high reliability
 - protocol-serving and worker execution
 
-## 33.2 bQuery as the Web Platform
+## 33.2 SvelteKit as the Web Platform
 
-bQuery is a strong fit for the frontend runtime, routing, and reactive state layer. In practice, the web stack should be a Bun-managed TypeScript application that combines bQuery for platform primitives, @bquery/ui for accessible Web Components and design tokens, and Tailwind CSS for layout and utility styling.
+SvelteKit is a strong fit for the frontend runtime, routing, and route composition layer. In practice, the web stack should be a Bun-managed TypeScript application that combines SvelteKit for routing and compiled UI delivery, Tailwind CSS for layout and utility styling, and a small set of local stores for session and theming concerns.
 
 That combination is a strong fit for:
 
 - modern reactive UI
 - portal and admin functions
-- SSR for public pages when needed
+- static builds with SPA fallback when SSR is unnecessary
 - security-aware frontend behavior
 - efficient forms and data-heavy interfaces
-- incremental migration from simple public pages toward richer governance workflows
+- incremental growth from simple public pages toward richer governance workflows
 
 ## 33.3 PostgreSQL and Object Storage as the Base
 
@@ -1789,7 +1793,7 @@ That positioning is technically credible, market-relevant, and operationally rea
 Publaryn should:
 
 - have a Rust-based registry core
-- use a Bun-managed TypeScript frontend built on bQuery, @bquery/ui, and Tailwind CSS
+- use a Bun-managed TypeScript frontend built on SvelteKit and Tailwind CSS
 - use PostgreSQL for metadata and governance
 - use S3-compatible object storage for artifacts
 - run a dedicated search index
@@ -1839,4 +1843,4 @@ If you want, I can continue directly and turn this into one of the following:
 - a module and service architecture document
 - a security-by-design document
 - a roadmap with epics and user stories
-- a UI / information architecture concept for the bQuery frontend
+- a UI / information architecture concept for the SvelteKit frontend
