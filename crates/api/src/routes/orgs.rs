@@ -23,8 +23,8 @@ use publaryn_core::{
 use crate::{
     error::{ApiError, ApiResult},
     request_auth::{
-        ensure_org_admin_by_slug, is_org_member, AuthenticatedIdentity,
-        OptionalAuthenticatedIdentity,
+        actor_can_transfer_package_by_id, ensure_org_admin_by_slug, is_org_member,
+        AuthenticatedIdentity, OptionalAuthenticatedIdentity,
     },
     scopes::{ensure_scope, SCOPE_ORGS_TRANSFER, SCOPE_ORGS_WRITE},
     state::AppState,
@@ -1567,7 +1567,8 @@ async fn list_org_packages(
     let org_id: Uuid = org_row
         .try_get("id")
         .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
-    let can_view_non_public = match identity.user_id() {
+    let actor_user_id = identity.user_id();
+    let can_view_non_public = match actor_user_id {
         Some(actor_user_id) => is_org_member(&state.db, org_id, actor_user_id).await?,
         None => false,
     };
@@ -1589,19 +1590,24 @@ async fn list_org_packages(
     .await
     .map_err(|e| ApiError(Error::Database(e)))?;
 
-    let packages: Vec<serde_json::Value> = rows
-        .iter()
-        .map(|r| {
-            serde_json::json!({
-                "id": r.try_get::<Uuid, _>("id").ok(),
-                "name": r.try_get::<String, _>("name").ok(),
-                "ecosystem": r.try_get::<String, _>("ecosystem").ok(),
-                "description": r.try_get::<Option<String>, _>("description").ok().flatten(),
-                "download_count": r.try_get::<i64, _>("download_count").ok(),
-                "created_at": r.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at").ok(),
-            })
-        })
-        .collect();
+    let mut packages = Vec::with_capacity(rows.len());
+    for row in rows {
+        let package_id: Uuid = row
+            .try_get("id")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+        let can_transfer =
+            actor_can_transfer_package_by_id(&state.db, package_id, actor_user_id).await?;
+
+        packages.push(serde_json::json!({
+            "id": package_id,
+            "name": row.try_get::<String, _>("name").ok(),
+            "ecosystem": row.try_get::<String, _>("ecosystem").ok(),
+            "description": row.try_get::<Option<String>, _>("description").ok().flatten(),
+            "download_count": row.try_get::<i64, _>("download_count").ok(),
+            "created_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at").ok(),
+            "can_transfer": can_transfer,
+        }));
+    }
 
     Ok(Json(serde_json::json!({ "packages": packages })))
 }

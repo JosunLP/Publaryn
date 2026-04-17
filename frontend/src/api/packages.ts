@@ -205,6 +205,54 @@ export async function transferPackageOwnership(
   return data;
 }
 
+export interface SecurityFinding {
+  id: string;
+  kind: string;
+  severity: string;
+  title: string;
+  description?: NullableString;
+  advisory_id?: NullableString;
+  is_resolved: boolean;
+  resolved_at?: NullableString;
+  resolved_by?: NullableString;
+  detected_at: string;
+  release_version?: NullableString;
+  artifact_filename?: NullableString;
+}
+
+interface SecurityFindingsResponse {
+  findings: SecurityFinding[];
+}
+
+export interface ListSecurityFindingsOptions {
+  includeResolved?: boolean;
+}
+
+export async function listSecurityFindings(
+  ecosystem: string,
+  name: string,
+  { includeResolved = false }: ListSecurityFindingsOptions = {}
+): Promise<SecurityFinding[]> {
+  const { data } = await api.get<SecurityFindingsResponse>(
+    `/v1/packages/${enc(ecosystem)}/${enc(name)}/security-findings`,
+    { query: { include_resolved: includeResolved || undefined } }
+  );
+
+  return data.findings || [];
+}
+
+const SEVERITY_LEVELS: Record<string, number> = {
+  critical: 4,
+  high: 3,
+  medium: 2,
+  low: 1,
+  info: 0,
+};
+
+export function severityLevel(severity: string): number {
+  return SEVERITY_LEVELS[severity.toLowerCase()] ?? -1;
+}
+
 export async function getStats(): Promise<StatsResponse> {
   const { data } = await api.get<StatsResponse>('/v1/stats');
   return data;

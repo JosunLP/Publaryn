@@ -3,6 +3,7 @@ import { api } from './client';
 type NullableString = string | null;
 
 export interface OrganizationDetail {
+  id?: NullableString;
   name?: NullableString;
   slug?: NullableString;
   description?: NullableString;
@@ -92,11 +93,13 @@ export interface TeamPackageAccessMutationResult {
 }
 
 export interface OrgPackageSummary {
+  id?: NullableString;
   ecosystem?: NullableString;
   name?: NullableString;
   description?: NullableString;
   download_count?: number | null;
   created_at?: NullableString;
+  can_transfer?: boolean | null;
 }
 
 export interface OrgPackageListResponse {

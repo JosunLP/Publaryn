@@ -1,11 +1,18 @@
 import { ApiError, getAuthToken } from '../api/client';
 import type { OrganizationMembership } from '../api/orgs';
 import { listMyOrganizations } from '../api/orgs';
-import type { PackageDetail, Release, Tag } from '../api/packages';
+import type {
+  PackageDetail,
+  Release,
+  SecurityFinding,
+  Tag,
+} from '../api/packages';
 import {
   getPackage,
   listReleases,
+  listSecurityFindings,
   listTags,
+  severityLevel,
   transferPackageOwnership,
 } from '../api/packages';
 import type { RouteContext } from '../router';
@@ -21,8 +28,7 @@ import {
   formatNumber,
 } from '../utils/format';
 import { renderMarkdown } from '../utils/markdown';
-
-const ADMIN_ROLES = new Set(['owner', 'admin']);
+import { selectPackageTransferTargets } from '../utils/package-transfer';
 
 interface RenderOptions {
   transferNotice?: string | null;
@@ -70,12 +76,14 @@ async function render(
     return;
   }
 
-  const [releases, tags] = await Promise.all([
+  const [releases, tags, findings] = await Promise.all([
     listReleases(ecosystem, name, { perPage: 20 }).catch(() => [] as Release[]),
     listTags(ecosystem, name).catch(() => [] as Tag[]),
+    listSecurityFindings(ecosystem, name).catch(() => [] as SecurityFinding[]),
   ]);
   const transferState = await loadTransferState(pkg);
 
+  const openFindings = findings.filter((f) => !f.is_resolved);
   const latestVersion =
     pkg.latest_version ??
     (releases.length > 0 ? (releases[0]?.version ?? null) : null);
@@ -113,6 +121,7 @@ async function render(
           <div class="tabs">
             <div class="tab active" data-tab="readme">Readme</div>
             <div class="tab" data-tab="versions">Versions (${releases.length})</div>
+            <div class="tab" data-tab="security">Security${openFindings.length > 0 ? ` <span class="badge badge-severity-${worstSeverity(openFindings)}" style="margin-left:4px;">${openFindings.length}</span>` : ''}</div>
           </div>
 
           <div id="tab-readme">
@@ -126,12 +135,17 @@ async function render(
           <div id="tab-versions" style="display:none;">
             ${renderReleasesTable(releases, ecosystem, name)}
           </div>
+
+          <div id="tab-security" style="display:none;">
+            ${renderFindingsPanel(findings)}
+          </div>
         </div>
 
         <div class="pkg-detail__sidebar">
           ${renderSidebar(
             pkg,
             tags,
+            renderSecuritySummary(openFindings),
             renderTransferCard(pkg, transferState, {
               notice: transferNotice,
               error: transferError,
@@ -164,14 +178,32 @@ async function render(
       const readmePanel = container.querySelector<HTMLElement>('#tab-readme');
       const versionsPanel =
         container.querySelector<HTMLElement>('#tab-versions');
+      const securityPanel =
+        container.querySelector<HTMLElement>('#tab-security');
 
-      if (!readmePanel || !versionsPanel) {
+      if (!readmePanel || !versionsPanel || !securityPanel) {
         return;
       }
 
       readmePanel.style.display = target === 'readme' ? '' : 'none';
       versionsPanel.style.display = target === 'versions' ? '' : 'none';
+      securityPanel.style.display = target === 'security' ? '' : 'none';
     });
+  });
+
+  const resolvedToggle = container.querySelector<HTMLInputElement>(
+    '#findings-show-resolved'
+  );
+  resolvedToggle?.addEventListener('change', async () => {
+    const includeResolved = resolvedToggle.checked;
+    const refreshedFindings = await listSecurityFindings(ecosystem, name, {
+      includeResolved,
+    }).catch(() => [] as SecurityFinding[]);
+    const findingsContainer =
+      container.querySelector<HTMLElement>('#findings-list');
+    if (findingsContainer) {
+      findingsContainer.innerHTML = renderFindingsList(refreshedFindings);
+    }
   });
 
   const transferForm = container.querySelector<HTMLFormElement>(
@@ -260,6 +292,7 @@ function renderReleasesTable(
 function renderSidebar(
   pkg: PackageDetail,
   tags: Tag[],
+  securityCard: string,
   transferCard: string
 ): string {
   const sections: string[] = [];
@@ -300,6 +333,10 @@ function renderSidebar(
     sections.push(
       `<div class="card"><div class="sidebar-section"><h3>Owner</h3><a href="${ownerLink}">${escapeHtml(ownerName)}</a></div></div>`
     );
+  }
+
+  if (securityCard) {
+    sections.push(securityCard);
   }
 
   if (transferCard) {
@@ -373,20 +410,10 @@ async function loadTransferState(pkg: PackageDetail): Promise<{
 
   try {
     const response = await listMyOrganizations();
-    const organizations = (response.organizations || [])
-      .filter((organization) => {
-        const slug = organization.slug?.trim();
-        const role = organization.role?.trim().toLowerCase() || '';
-
-        return (
-          Boolean(slug) && ADMIN_ROLES.has(role) && slug !== pkg.owner_org_slug
-        );
-      })
-      .sort((left, right) => {
-        const leftLabel = (left.name || left.slug || '').toLowerCase();
-        const rightLabel = (right.name || right.slug || '').toLowerCase();
-        return leftLabel.localeCompare(rightLabel);
-      });
+    const organizations = selectPackageTransferTargets(
+      response.organizations || [],
+      pkg.owner_org_slug
+    );
 
     return {
       showTransfer: true,
@@ -494,4 +521,126 @@ function toErrorMessage(caughtError: unknown, fallback: string): string {
   }
 
   return fallback;
+}
+
+/* ── Security findings helpers ─────────────────────────── */
+
+function worstSeverity(findings: SecurityFinding[]): string {
+  if (findings.length === 0) {
+    return 'info';
+  }
+
+  let worst = 'info';
+  let worstLevel = -1;
+
+  for (const f of findings) {
+    const level = severityLevel(f.severity);
+    if (level > worstLevel) {
+      worstLevel = level;
+      worst = f.severity.toLowerCase();
+    }
+  }
+
+  return worst;
+}
+
+function renderFindingsPanel(findings: SecurityFinding[]): string {
+  return `
+    <div class="findings-toggle">
+      <label>
+        <input type="checkbox" id="findings-show-resolved" />
+        Show resolved findings
+      </label>
+    </div>
+    <div id="findings-list">
+      ${renderFindingsList(findings)}
+    </div>
+  `;
+}
+
+function renderFindingsList(findings: SecurityFinding[]): string {
+  if (findings.length === 0) {
+    return '<div class="empty-state"><p>No security findings.</p></div>';
+  }
+
+  const sorted = [...findings].sort(
+    (a, b) => severityLevel(b.severity) - severityLevel(a.severity)
+  );
+
+  return sorted.map((f) => renderFindingRow(f)).join('');
+}
+
+function renderFindingRow(f: SecurityFinding): string {
+  const sev = f.severity?.toLowerCase() || 'info';
+  const resolvedClass = f.is_resolved ? ' finding-resolved' : '';
+  const kindLabel = formatFindingKind(f.kind);
+  const advisoryLink =
+    f.advisory_id && f.advisory_id.startsWith('CVE-')
+      ? `<a href="https://nvd.nist.gov/vuln/detail/${encodeURIComponent(f.advisory_id)}" target="_blank" rel="noopener noreferrer">${escapeHtml(f.advisory_id)}</a>`
+      : f.advisory_id
+        ? escapeHtml(f.advisory_id)
+        : '';
+
+  const meta: string[] = [];
+  if (f.release_version) {
+    meta.push(`v${escapeHtml(f.release_version)}`);
+  }
+  if (f.artifact_filename) {
+    meta.push(escapeHtml(f.artifact_filename));
+  }
+  if (f.detected_at) {
+    meta.push(formatDate(f.detected_at));
+  }
+  if (f.is_resolved) {
+    meta.push(
+      `Resolved${f.resolved_at ? ` ${formatDate(f.resolved_at)}` : ''}`
+    );
+  }
+
+  return `
+    <div class="finding-row${resolvedClass}">
+      <div class="finding-row__header">
+        <span class="badge badge-severity-${sev}">${escapeHtml(sev)}</span>
+        <span class="badge badge-ecosystem">${escapeHtml(kindLabel)}</span>
+        <span class="finding-row__title">${escapeHtml(f.title)}</span>
+        ${advisoryLink ? `<span>${advisoryLink}</span>` : ''}
+      </div>
+      <div class="finding-row__meta">${meta.join(' · ')}</div>
+      ${f.description ? `<div class="finding-row__description">${escapeHtml(f.description)}</div>` : ''}
+    </div>
+  `;
+}
+
+function formatFindingKind(kind: string): string {
+  return kind.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function renderSecuritySummary(openFindings: SecurityFinding[]): string {
+  if (openFindings.length === 0) {
+    return '';
+  }
+
+  const counts: Record<string, number> = {};
+  for (const f of openFindings) {
+    const sev = f.severity?.toLowerCase() || 'info';
+    counts[sev] = (counts[sev] || 0) + 1;
+  }
+
+  const breakdown = ['critical', 'high', 'medium', 'low', 'info']
+    .filter((s) => counts[s])
+    .map(
+      (s) =>
+        `<span class="badge badge-severity-${s}" style="margin-right:4px;">${counts[s]} ${s}</span>`
+    )
+    .join('');
+
+  return `
+    <div class="card">
+      <div class="sidebar-section">
+        <h3>Security</h3>
+        <p style="margin-bottom:8px; font-size:0.875rem;">${openFindings.length} open finding${openFindings.length === 1 ? '' : 's'}</p>
+        <div>${breakdown}</div>
+      </div>
+    </div>
+  `;
 }

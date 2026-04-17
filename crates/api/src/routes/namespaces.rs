@@ -94,7 +94,7 @@ async fn create_namespace(
 
     sqlx::query(
         "INSERT INTO namespace_claims (id, ecosystem, namespace, owner_user_id, owner_org_id, is_verified, created_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            VALUES ($1, $2::ecosystem, $3, $4, $5, $6, $7)",
     )
     .bind(claim.id)
     .bind(claim.ecosystem.as_str())
@@ -147,7 +147,7 @@ async fn list_namespaces(
     Query(query): Query<NamespaceListQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let mut builder = QueryBuilder::<Postgres>::new(
-        "SELECT id, ecosystem, namespace, owner_user_id, owner_org_id, is_verified, created_at \
+        "SELECT id, ecosystem::text AS ecosystem, namespace, owner_user_id, owner_org_id, is_verified, created_at \
          FROM namespace_claims WHERE 1 = 1",
     );
 
@@ -155,7 +155,8 @@ async fn list_namespaces(
         let ecosystem = parse_ecosystem(ecosystem)?;
         builder
             .push(" AND ecosystem = ")
-            .push_bind(ecosystem.as_str());
+            .push_bind(ecosystem.as_str())
+            .push("::ecosystem");
     }
 
     if let Some(owner_user_id) = query.owner_user_id {
@@ -205,8 +206,8 @@ async fn lookup_namespace(
     let ecosystem = parse_ecosystem(&query.ecosystem)?;
 
     let row = sqlx::query(
-        "SELECT id, ecosystem, namespace, owner_user_id, owner_org_id, is_verified, created_at \
-         FROM namespace_claims WHERE ecosystem = $1 AND namespace = $2",
+        "SELECT id, ecosystem::text AS ecosystem, namespace, owner_user_id, owner_org_id, is_verified, created_at \
+            FROM namespace_claims WHERE ecosystem = $1::ecosystem AND namespace = $2",
     )
     .bind(ecosystem.as_str())
     .bind(&query.namespace)

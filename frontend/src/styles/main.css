@@ -362,6 +362,26 @@ bq-badge {
   background: #f0fdf4;
   color: var(--color-success);
 }
+.badge-severity-critical {
+  background: #fef2f2;
+  color: var(--color-danger);
+}
+.badge-severity-high {
+  background: #fff7ed;
+  color: #c2410c;
+}
+.badge-severity-medium {
+  background: #fffbeb;
+  color: var(--color-warning);
+}
+.badge-severity-low {
+  background: #eff6ff;
+  color: var(--color-primary);
+}
+.badge-severity-info {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-muted);
+}
 
 /* ── Code blocks ───────────────────────────────────────── */
 .code-block {
@@ -808,6 +828,49 @@ bq-badge {
 }
 .release-row__meta {
   color: var(--color-text-muted);
+}
+
+/* ── Security findings ─────────────────────────────────── */
+.finding-row {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--color-border);
+  font-size: 0.875rem;
+}
+.finding-row:last-child {
+  border-bottom: none;
+}
+.finding-row__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.finding-row__title {
+  font-weight: 600;
+}
+.finding-row__meta {
+  margin-top: 4px;
+  color: var(--color-text-muted);
+  font-size: 0.8125rem;
+}
+.finding-row__description {
+  margin-top: 6px;
+  font-size: 0.8125rem;
+  color: var(--color-text-secondary);
+}
+.finding-resolved {
+  opacity: 0.65;
+}
+.findings-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 12px;
+  font-size: 0.8125rem;
+  color: var(--color-text-secondary);
+}
+.findings-toggle input {
+  margin: 0;
 }
 
 /* ── Utility ───────────────────────────────────────────── */

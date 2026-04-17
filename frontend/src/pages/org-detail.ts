@@ -1,8 +1,10 @@
 import { ApiError, getAuthToken } from '../api/client';
+import type { NamespaceClaim, NamespaceListResponse } from '../api/namespaces';
+import { createNamespaceClaim, listOrgNamespaces } from '../api/namespaces';
 import type {
+  MemberListResponse,
   OrgAuditListResponse,
   OrgAuditLog,
-  MemberListResponse,
   OrgInvitation,
   OrgInvitationListResponse,
   OrgMember,
@@ -14,7 +16,6 @@ import type {
   Team,
   TeamListResponse,
   TeamMember,
-  TeamMemberListResponse,
   TeamPackageAccessGrant,
   TeamPackageAccessListResponse,
   TransferOwnershipResult,
@@ -25,17 +26,17 @@ import {
   createTeam,
   deleteTeam,
   getOrg,
-  listOrgAuditLogs,
   listMembers,
   listMyOrganizations,
+  listOrgAuditLogs,
   listOrgInvitations,
   listOrgPackages,
-  listTeamPackageAccess,
   listTeamMembers,
+  listTeamPackageAccess,
   listTeams,
-  removeTeamPackageAccess,
   removeMember,
   removeTeamMember,
+  removeTeamPackageAccess,
   replaceTeamPackageAccess,
   revokeInvitation,
   sendInvitation,
@@ -43,31 +44,28 @@ import {
   updateOrg,
   updateTeam,
 } from '../api/orgs';
+import { transferPackageOwnership } from '../api/packages';
 import type { RouteContext } from '../router';
 import { navigate } from '../router';
+import { ECOSYSTEMS, ecosystemLabel } from '../utils/ecosystem';
 import { escapeHtml, formatDate, formatNumber } from '../utils/format';
+import {
+  selectPackageTransferTargets,
+  selectTransferablePackages,
+} from '../utils/package-transfer';
+import {
+  ORG_AUDIT_ACTION_VALUES,
+  buildOrgAuditPath,
+  formatAuditActorQueryLabel,
+  getAuditViewFromQuery,
+  normalizeAuditAction,
+  normalizeAuditActorUserId,
+  normalizeAuditActorUsername,
+} from './org-audit-query';
 
 const ADMIN_ROLES = new Set(['owner', 'admin']);
 const ORG_AUDIT_PAGE_SIZE = 20;
-const ORG_AUDIT_ACTION_VALUES = [
-  'org_create',
-  'org_update',
-  'org_member_add',
-  'org_role_change',
-  'org_member_remove',
-  'org_ownership_transfer',
-  'org_invitation_create',
-  'org_invitation_revoke',
-  'org_invitation_accept',
-  'org_invitation_decline',
-  'team_create',
-  'team_update',
-  'team_delete',
-  'team_member_add',
-  'team_member_remove',
-  'team_package_access_update',
-] as const;
-const ORG_AUDIT_ACTION_SET = new Set<string>(ORG_AUDIT_ACTION_VALUES);
+const DEFAULT_NAMESPACE_ECOSYSTEM = 'npm';
 const ORG_ROLE_OPTIONS = [
   { value: 'admin', label: 'Admin' },
   { value: 'maintainer', label: 'Maintainer' },
@@ -134,11 +132,16 @@ interface OrgDetailViewState {
   teamsError: string | null;
   teamMembersBySlug: Record<string, TeamMemberState>;
   teamPackageAccessBySlug: Record<string, TeamPackageAccessState>;
+  namespaceClaims: NamespaceClaim[];
+  namespaceError: string | null;
   packages: OrgPackageSummary[];
   packagesError: string | null;
+  packageTransferTargets: OrganizationMembership[];
   auditLogs: OrgAuditLog[];
   auditError: string | null;
   auditAction: string;
+  auditActorUserId: string;
+  auditActorUsername: string;
   auditPage: number;
   auditHasNext: boolean;
   invitations: OrgInvitation[];
@@ -157,6 +160,8 @@ export function orgDetailPage(
   container.innerHTML = `<div class="loading"><span class="spinner"></span> Loading organization…</div>`;
   void loadAndRender(container, slug, {
     auditAction: auditView.action,
+    auditActorUserId: auditView.actorUserId,
+    auditActorUsername: auditView.actorUsername,
     auditPage: auditView.page,
   });
 }
@@ -168,11 +173,15 @@ async function loadAndRender(
     notice = null,
     error = null,
     auditAction = null,
+    auditActorUserId = null,
+    auditActorUsername = null,
     auditPage = null,
   }: {
     notice?: string | null;
     error?: string | null;
     auditAction?: string | null;
+    auditActorUserId?: string | null;
+    auditActorUsername?: string | null;
     auditPage?: number | null;
   } = {}
 ): Promise<void> {
@@ -184,6 +193,14 @@ async function loadAndRender(
     const resolvedAuditAction = normalizeAuditAction(
       auditAction ?? currentAuditView.action
     );
+    const resolvedAuditActorUserId = normalizeAuditActorUserId(
+      auditActorUserId ?? currentAuditView.actorUserId
+    );
+    const resolvedAuditActorUsername = resolvedAuditActorUserId
+      ? normalizeAuditActorUsername(
+          auditActorUsername ?? currentAuditView.actorUsername
+        )
+      : '';
     const resolvedAuditPage =
       typeof auditPage === 'number' &&
       Number.isFinite(auditPage) &&
@@ -226,12 +243,17 @@ async function loadAndRender(
       (item) => item.slug === slug
     );
     const canAdminister = ADMIN_ROLES.has(membership?.role || '');
+    const packageTransferTargets = selectPackageTransferTargets(
+      myOrganizationsData.organizations || [],
+      slug
+    );
 
     const [
       invitationData,
       teamMembersBySlug,
       teamPackageAccessBySlug,
       auditData,
+      namespaceData,
     ] = await Promise.all([
       canAdminister
         ? listOrgInvitations(slug).catch(
@@ -256,6 +278,7 @@ async function loadAndRender(
       canAdminister
         ? listOrgAuditLogs(slug, {
             action: resolvedAuditAction || undefined,
+            actorUserId: resolvedAuditActorUserId || undefined,
             page: resolvedAuditPage,
             perPage: ORG_AUDIT_PAGE_SIZE,
           }).catch(
@@ -277,6 +300,21 @@ async function loadAndRender(
             logs: [],
             load_error: null,
           }),
+      org.id
+        ? listOrgNamespaces(org.id).catch(
+            (caughtError: unknown): NamespaceListResponse => ({
+              namespaces: [],
+              load_error: toErrorMessage(
+                caughtError,
+                'Failed to load namespace claims.'
+              ),
+            })
+          )
+        : Promise.resolve<NamespaceListResponse>({
+            namespaces: [],
+            load_error:
+              'Failed to load namespace claims because the organization id is unavailable.',
+          }),
     ]);
 
     render(container, {
@@ -292,11 +330,16 @@ async function loadAndRender(
       teamsError: teamData.load_error || null,
       teamMembersBySlug,
       teamPackageAccessBySlug,
+      namespaceClaims: namespaceData.namespaces || [],
+      namespaceError: namespaceData.load_error || null,
       packages: packageData.packages || [],
       packagesError: packageData.load_error || null,
+      packageTransferTargets,
       auditLogs: auditData.logs || [],
       auditError: auditData.load_error || null,
       auditAction: resolvedAuditAction,
+      auditActorUserId: resolvedAuditActorUserId,
+      auditActorUsername: resolvedAuditActorUsername,
       auditPage:
         typeof auditData.page === 'number' && auditData.page > 0
           ? auditData.page
@@ -343,11 +386,16 @@ function render(container: HTMLElement, state: OrgDetailViewState): void {
     teamsError,
     teamMembersBySlug,
     teamPackageAccessBySlug,
+    namespaceClaims,
+    namespaceError,
     packages,
     packagesError,
+    packageTransferTargets,
     auditLogs,
     auditError,
     auditAction,
+    auditActorUserId,
+    auditActorUsername,
     auditPage,
     auditHasNext,
     invitations,
@@ -423,16 +471,24 @@ function render(container: HTMLElement, state: OrgDetailViewState): void {
                   <button type="submit" class="btn btn-secondary">Apply filter</button>
                   ${
                     auditAction
-                      ? '<button type="button" class="btn btn-secondary" data-clear-audit-filter>Clear filter</button>'
+                      ? '<button type="button" class="btn btn-secondary" data-clear-audit-action-filter>Clear action</button>'
+                      : ''
+                  }
+                  ${
+                    auditActorUserId
+                      ? `<button type="button" class="btn btn-secondary" data-clear-audit-actor-filter>Clear actor</button>`
                       : ''
                   }
                 </div>
                 <p class="settings-copy" style="margin-top:0.75rem; margin-bottom:0;">
-                  Showing page ${escapeHtml(String(auditPage))} with up to ${escapeHtml(String(ORG_AUDIT_PAGE_SIZE))} events${
-                    auditAction
-                      ? ` filtered to ${escapeHtml(formatAuditActionLabel(auditAction).toLowerCase())}`
-                      : ''
-                  }.
+                  ${escapeHtml(
+                    formatAuditFilterSummary(
+                      auditPage,
+                      auditAction,
+                      auditActorUserId,
+                      auditActorUsername
+                    )
+                  )}
                 </p>
               </form>
 
@@ -441,15 +497,17 @@ function render(container: HTMLElement, state: OrgDetailViewState): void {
                   ? `<div class="alert alert-error">${escapeHtml(auditError)}</div>`
                   : auditLogs.length === 0
                     ? `<div class="empty-state"><h3>${escapeHtml(
-                        auditAction || auditPage > 1
+                        auditAction || auditActorUserId || auditPage > 1
                           ? 'No matching activity'
                           : 'No activity yet'
                       )}</h3><p>${escapeHtml(
-                        auditAction || auditPage > 1
+                        auditAction || auditActorUserId || auditPage > 1
                           ? 'Try clearing the filter or moving back a page to review earlier governance events.'
                           : 'Recent governance events will appear here once members, invitations, teams, and package access change.'
                       )}</p></div>`
-                    : `<div class="token-list">${auditLogs.map((log) => renderAuditLogRow(log)).join('')}</div>`
+                    : `<div class="token-list">${auditLogs
+                        .map((log) => renderAuditLogRow(log, auditActorUserId))
+                        .join('')}</div>`
               }
 
               ${
@@ -504,7 +562,7 @@ function render(container: HTMLElement, state: OrgDetailViewState): void {
         <section class="card settings-section">
           <h2>About this organization</h2>
           <p class="settings-copy">
-            Use this page as the canonical workspace for organization ownership, members, teams, delegated package access, and visible packages.
+            Use this page as the canonical workspace for organization ownership, members, teams, delegated package access, namespace claims, and visible packages.
             Audit and security dashboards continue to expand on this foundation.
           </p>
         </section>
@@ -806,6 +864,19 @@ function render(container: HTMLElement, state: OrgDetailViewState): void {
         <section class="card settings-section">
           <div class="org-section-header">
             <div>
+              <h2>Namespace claims</h2>
+              <p class="settings-copy">Protect ecosystem-specific namespaces for this organization and make ownership clearer for publishers and consumers.</p>
+            </div>
+          </div>
+
+          ${renderNamespaceClaims(namespaceClaims, namespaceError, canAdminister)}
+
+          ${canAdminister && org.id ? renderNamespaceClaimForm() : ''}
+        </section>
+
+        <section class="card settings-section">
+          <div class="org-section-header">
+            <div>
               <h2>Visible packages</h2>
               <p class="settings-copy">Showing the packages currently visible from this organization. Public visitors see public packages only.</p>
             </div>
@@ -836,6 +907,17 @@ function render(container: HTMLElement, state: OrgDetailViewState): void {
                       .join('')}
                   </div>`
           }
+
+          ${
+            canAdminister
+              ? renderOrgPackageTransferForm(
+                  slug,
+                  packages,
+                  packagesError,
+                  packageTransferTargets
+                )
+              : ''
+          }
         </section>
       </div>
     </div>
@@ -849,22 +931,54 @@ function render(container: HTMLElement, state: OrgDetailViewState): void {
 
     const formData = new FormData(auditFilterForm);
     navigate(
-      buildOrgAuditPath(slug, {
-        action: formData.get('action')?.toString() || '',
-        page: 1,
-      })
+      buildOrgAuditPath(
+        slug,
+        {
+          action: formData.get('action')?.toString() || '',
+          actorUserId: auditActorUserId,
+          actorUsername: auditActorUsername,
+          page: 1,
+        },
+        window.location.search
+      )
     );
   });
 
-  const clearAuditFilterButton = container.querySelector<HTMLButtonElement>(
-    '[data-clear-audit-filter]'
-  );
-  clearAuditFilterButton?.addEventListener('click', () => {
+  const clearAuditActionFilterButton =
+    container.querySelector<HTMLButtonElement>(
+      '[data-clear-audit-action-filter]'
+    );
+  clearAuditActionFilterButton?.addEventListener('click', () => {
     navigate(
-      buildOrgAuditPath(slug, {
-        action: '',
-        page: 1,
-      })
+      buildOrgAuditPath(
+        slug,
+        {
+          action: '',
+          actorUserId: auditActorUserId,
+          actorUsername: auditActorUsername,
+          page: 1,
+        },
+        window.location.search
+      )
+    );
+  });
+
+  const clearAuditActorFilterButton =
+    container.querySelector<HTMLButtonElement>(
+      '[data-clear-audit-actor-filter]'
+    );
+  clearAuditActorFilterButton?.addEventListener('click', () => {
+    navigate(
+      buildOrgAuditPath(
+        slug,
+        {
+          action: auditAction,
+          actorUserId: '',
+          actorUsername: '',
+          page: 1,
+        },
+        window.location.search
+      )
     );
   });
 
@@ -882,10 +996,44 @@ function render(container: HTMLElement, state: OrgDetailViewState): void {
         }
 
         navigate(
-          buildOrgAuditPath(slug, {
-            action: auditAction,
-            page: nextPage,
-          })
+          buildOrgAuditPath(
+            slug,
+            {
+              action: auditAction,
+              actorUserId: auditActorUserId,
+              actorUsername: auditActorUsername,
+              page: nextPage,
+            },
+            window.location.search
+          )
+        );
+      });
+    });
+
+  container
+    .querySelectorAll<HTMLButtonElement>('[data-audit-actor-user-id]')
+    .forEach((button) => {
+      button.addEventListener('click', () => {
+        const nextActorUserId =
+          button.getAttribute('data-audit-actor-user-id') || '';
+        const nextActorUsername =
+          button.getAttribute('data-audit-actor-username') || '';
+
+        if (!nextActorUserId) {
+          return;
+        }
+
+        navigate(
+          buildOrgAuditPath(
+            slug,
+            {
+              action: auditAction,
+              actorUserId: nextActorUserId,
+              actorUsername: nextActorUsername,
+              page: 1,
+            },
+            window.location.search
+          )
         );
       });
     });
@@ -1406,6 +1554,146 @@ function render(container: HTMLElement, state: OrgDetailViewState): void {
         }
       });
     });
+
+  const namespaceForm = container.querySelector<HTMLFormElement>(
+    '#org-namespace-form'
+  );
+  namespaceForm?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+
+    const orgId = org.id?.trim();
+    if (!orgId) {
+      await loadAndRender(container, slug, {
+        error:
+          'Failed to create the namespace claim because the organization id is unavailable.',
+      });
+      return;
+    }
+
+    const formData = new FormData(namespaceForm);
+    const ecosystem =
+      formData.get('ecosystem')?.toString().trim().toLowerCase() || '';
+    const namespace = formData.get('namespace')?.toString().trim() || '';
+
+    if (!ecosystem) {
+      await loadAndRender(container, slug, {
+        error: 'Select an ecosystem before creating a namespace claim.',
+      });
+      return;
+    }
+
+    if (!namespace) {
+      await loadAndRender(container, slug, {
+        error: 'Enter the namespace you want this organization to claim.',
+      });
+      return;
+    }
+
+    const submitButton = getSubmitButton(namespaceForm);
+    if (!submitButton) {
+      return;
+    }
+
+    submitButton.disabled = true;
+    submitButton.textContent = 'Claiming…';
+
+    try {
+      await createNamespaceClaim({
+        ecosystem,
+        namespace,
+        ownerOrgId: orgId,
+      });
+
+      await loadAndRender(container, slug, {
+        notice: `Created the ${ecosystemLabel(ecosystem)} namespace claim ${namespace}.`,
+      });
+    } catch (caughtError: unknown) {
+      await loadAndRender(container, slug, {
+        error: toErrorMessage(
+          caughtError,
+          'Failed to create the namespace claim.'
+        ),
+      });
+    }
+  });
+
+  const packageTransferForm = container.querySelector<HTMLFormElement>(
+    '#org-package-transfer-form'
+  );
+  packageTransferForm?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+
+    const formData = new FormData(packageTransferForm);
+    const packageSelection =
+      formData.get('package_key')?.toString().trim() || '';
+    const packageTarget = decodePackageSelection(packageSelection);
+    const targetOrgSlug =
+      formData.get('target_org_slug')?.toString().trim() || '';
+    const confirmBox = packageTransferForm.querySelector<HTMLInputElement>(
+      '#org-package-transfer-confirm'
+    );
+
+    if (!packageTarget) {
+      await loadAndRender(container, slug, {
+        error: 'Select an organization package to transfer.',
+      });
+      return;
+    }
+
+    if (!targetOrgSlug) {
+      await loadAndRender(container, slug, {
+        error: 'Select the organization that should receive this package.',
+      });
+      return;
+    }
+
+    if (targetOrgSlug.trim().toLowerCase() === slug.trim().toLowerCase()) {
+      await loadAndRender(container, slug, {
+        error:
+          'Select a different organization before transferring package ownership.',
+      });
+      return;
+    }
+
+    if (!confirmBox?.checked) {
+      await loadAndRender(container, slug, {
+        error:
+          'Please confirm that you understand this transfer is immediate and revokes existing team grants.',
+      });
+      return;
+    }
+
+    const submitButton = getSubmitButton(packageTransferForm);
+    if (!submitButton) {
+      return;
+    }
+
+    submitButton.disabled = true;
+    submitButton.textContent = 'Transferring…';
+
+    try {
+      const result = await transferPackageOwnership(
+        packageTarget.ecosystem,
+        packageTarget.name,
+        {
+          targetOrgSlug,
+        }
+      );
+      const targetLabel =
+        result.owner?.name || result.owner?.slug || targetOrgSlug;
+
+      await loadAndRender(container, slug, {
+        notice: `Transferred ${packageTarget.name} to ${targetLabel}.`,
+      });
+    } catch (caughtError: unknown) {
+      await loadAndRender(container, slug, {
+        error: toErrorMessage(
+          caughtError,
+          'Failed to transfer package ownership.'
+        ),
+      });
+    }
+  });
 }
 
 async function loadTeamMembers(
@@ -1635,16 +1923,37 @@ function renderTeamMembers(
   `;
 }
 
-function renderAuditLogRow(log: OrgAuditLog): string {
+function renderAuditLogRow(
+  log: OrgAuditLog,
+  activeActorUserId: string
+): string {
   const title = formatAuditActionLabel(log.action || 'activity');
   const actor = formatAuditActor(log);
   const target = formatAuditTarget(log);
   const summary = formatAuditSummary(log);
+  const actorUserId = normalizeAuditActorUserId(log.actor_user_id);
+  const actorUsername = normalizeAuditActorUsername(log.actor_username);
   const meta = [
     actor ? `by ${actor}` : null,
     target,
     log.occurred_at ? formatDate(log.occurred_at) : null,
   ].filter((value): value is string => Boolean(value));
+  const actorFilterButton =
+    actorUserId && actorUserId !== activeActorUserId
+      ? `
+          <div class="token-row__actions">
+            <button
+              class="btn btn-secondary btn-sm"
+              type="button"
+              data-audit-actor-user-id="${escapeHtml(actorUserId)}"
+              data-audit-actor-username="${escapeHtml(actorUsername)}"
+              title="Filter this activity log to ${escapeHtml(actor || formatAuditActorQueryLabel(actorUsername))}"
+            >
+              Only this actor
+            </button>
+          </div>
+        `
+      : '';
 
   return `
     <div class="token-row">
@@ -1659,8 +1968,94 @@ function renderAuditLogRow(log: OrgAuditLog): string {
         }
         ${summary ? `<p class="settings-copy">${escapeHtml(summary)}</p>` : ''}
       </div>
+      ${actorFilterButton}
     </div>
   `;
+}
+
+function renderNamespaceClaims(
+  namespaceClaims: NamespaceClaim[],
+  namespaceError: string | null,
+  canAdminister: boolean
+): string {
+  if (namespaceError) {
+    return `<div class="alert alert-error">${escapeHtml(namespaceError)}</div>`;
+  }
+
+  if (namespaceClaims.length === 0) {
+    return `<div class="empty-state"><h3>No namespace claims yet</h3><p>${escapeHtml(
+      canAdminister
+        ? 'Claim a namespace below to reserve prefixes such as @acme, com.acme, or an ecosystem vendor string for this organization.'
+        : 'This organization has not claimed any ecosystem namespaces yet.'
+    )}</p></div>`;
+  }
+
+  return `
+    <div class="token-list">
+      ${[...namespaceClaims]
+        .sort((left, right) => {
+          const leftKey = `${left.ecosystem || ''}:${left.namespace || ''}`;
+          const rightKey = `${right.ecosystem || ''}:${right.namespace || ''}`;
+          return leftKey.localeCompare(rightKey);
+        })
+        .map(
+          (claim) => `
+            <div class="token-row">
+              <div class="token-row__main">
+                <div class="token-row__title">${escapeHtml(claim.namespace || 'Unnamed claim')}</div>
+                <div class="token-row__meta">
+                  <span>${escapeHtml(ecosystemLabel(claim.ecosystem))}</span>
+                  ${claim.created_at ? `<span>created ${escapeHtml(formatDate(claim.created_at))}</span>` : ''}
+                </div>
+              </div>
+              <div class="token-row__actions">
+                ${
+                  claim.is_verified
+                    ? '<span class="badge badge-verified">Verified</span>'
+                    : '<span class="badge badge-ecosystem">Pending verification</span>'
+                }
+              </div>
+            </div>
+          `
+        )
+        .join('')}
+    </div>
+  `;
+}
+
+function renderNamespaceClaimForm(): string {
+  return `
+    <form id="org-namespace-form" class="settings-subsection">
+      <h3>Claim a namespace</h3>
+      <p class="settings-copy">Claims are created immediately. Verification, transfer, and revocation workflows are future slices, so choose the namespace carefully.</p>
+
+      <div class="grid gap-4 xl:grid-cols-2">
+        <div class="form-group">
+          <label for="org-namespace-ecosystem">Ecosystem</label>
+          <select id="org-namespace-ecosystem" name="ecosystem" class="form-input" required>
+            ${renderNamespaceEcosystemOptions(DEFAULT_NAMESPACE_ECOSYSTEM)}
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="org-namespace-value">Namespace</label>
+          <input id="org-namespace-value" name="namespace" class="form-input" placeholder="@acme, acme, com.acme, ghcr.io/acme" required />
+        </div>
+      </div>
+
+      <button type="submit" class="btn btn-primary">Create namespace claim</button>
+    </form>
+  `;
+}
+
+function renderNamespaceEcosystemOptions(selectedValue: string): string {
+  return ECOSYSTEMS.map(
+    (ecosystem) => `
+      <option value="${ecosystem.id}" ${ecosystem.id === selectedValue ? 'selected' : ''}>
+        ${escapeHtml(ecosystem.label)}
+      </option>
+    `
+  ).join('');
 }
 
 function renderTeamPackageAccess(
@@ -1753,6 +2148,92 @@ function renderTeamPackageAccessForm(
   `;
 }
 
+function renderOrgPackageTransferForm(
+  currentOrgSlug: string,
+  packages: OrgPackageSummary[],
+  packagesError: string | null,
+  transferTargets: OrganizationMembership[]
+): string {
+  const transferablePackages = selectTransferablePackages(packages);
+
+  return `
+    <div class="settings-subsection">
+      <h3>Transfer package ownership</h3>
+      <div class="alert alert-warning" style="margin-bottom:12px;">
+        This transfer is immediate and revokes existing team grants on the package.
+      </div>
+      <p class="settings-copy">
+        Move an organization-owned package from @${escapeHtml(currentOrgSlug)} into another organization you already administer.
+      </p>
+      ${renderOrgPackageTransferFormBody(
+        transferablePackages,
+        packagesError,
+        transferTargets
+      )}
+    </div>
+  `;
+}
+
+function renderOrgPackageTransferFormBody(
+  transferablePackages: OrgPackageSummary[],
+  packagesError: string | null,
+  transferTargets: OrganizationMembership[]
+): string {
+  if (packagesError) {
+    return `<p class="settings-copy">Packages must load successfully before you can transfer one to another organization.</p>`;
+  }
+
+  if (transferablePackages.length === 0) {
+    return `<p class="settings-copy">No visible packages are currently transferable with this credential.</p>`;
+  }
+
+  if (transferTargets.length === 0) {
+    return `<p class="settings-copy">You do not currently administer another organization that can receive one of these packages.</p>`;
+  }
+
+  return `
+    <form id="org-package-transfer-form">
+      <div class="grid gap-4 xl:grid-cols-2">
+        <div class="form-group">
+          <label for="org-package-transfer-package">Organization package</label>
+          <select id="org-package-transfer-package" name="package_key" class="form-input" required>
+            <option value="">Select a package</option>
+            ${renderPackageSelectionOptions(transferablePackages)}
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="org-package-transfer-target">Target organization</label>
+          <select id="org-package-transfer-target" name="target_org_slug" class="form-input" required>
+            <option value="">Select an organization</option>
+            ${renderPackageTransferTargetOptions(transferTargets)}
+          </select>
+        </div>
+      </div>
+      <div class="form-group" style="margin-bottom:12px;">
+        <label class="flex items-start gap-2">
+          <input type="checkbox" id="org-package-transfer-confirm" name="confirm" required />
+          <span>I understand this package transfer is immediate and existing team grants will be removed.</span>
+        </label>
+      </div>
+      <button type="submit" class="btn btn-danger">Transfer package</button>
+    </form>
+  `;
+}
+
+function renderPackageTransferTargetOptions(
+  organizations: OrganizationMembership[]
+): string {
+  return organizations
+    .map(
+      (organization) => `
+        <option value="${escapeHtml(organization.slug || '')}">
+          ${escapeHtml(organization.name || organization.slug || 'Unnamed organization')}
+        </option>
+      `
+    )
+    .join('');
+}
+
 function renderTeamPermissionOptions(disabled: boolean): string {
   return TEAM_PERMISSION_OPTIONS.map(
     (permission) => `
@@ -1786,12 +2267,37 @@ function renderAuditActionOptions(selectedValue: string): string {
   ).join('');
 }
 
+function formatAuditFilterSummary(
+  auditPage: number,
+  auditAction: string,
+  auditActorUserId: string,
+  auditActorUsername: string
+): string {
+  const prefix = `Showing page ${auditPage} with up to ${ORG_AUDIT_PAGE_SIZE} events`;
+
+  if (auditAction && auditActorUserId) {
+    return `${prefix} filtered to ${formatAuditActionLabel(auditAction).toLowerCase()} activity by ${formatAuditActorQueryLabel(auditActorUsername)}.`;
+  }
+
+  if (auditAction) {
+    return `${prefix} filtered to ${formatAuditActionLabel(auditAction).toLowerCase()}.`;
+  }
+
+  if (auditActorUserId) {
+    return `${prefix} filtered to activity by ${formatAuditActorQueryLabel(auditActorUsername)}.`;
+  }
+
+  return `${prefix}.`;
+}
+
 function formatAuditActionLabel(action: string): string {
   switch (action) {
     case 'org_create':
       return 'Organization created';
     case 'org_update':
       return 'Organization updated';
+    case 'namespace_claim_create':
+      return 'Namespace claim created';
     case 'org_member_add':
       return 'Member added';
     case 'org_role_change':
@@ -1867,6 +2373,15 @@ function formatAuditTarget(log: OrgAuditLog): string | null {
     return `package ${ecosystem} · ${packageName}`;
   }
 
+  const namespace = getAuditMetadataString(metadata, 'namespace');
+  if (namespace && ecosystem) {
+    return `namespace ${ecosystem} · ${namespace}`;
+  }
+
+  if (namespace) {
+    return `namespace ${namespace}`;
+  }
+
   const orgName =
     getAuditMetadataString(metadata, 'org_name') ||
     getAuditMetadataString(metadata, 'org_slug') ||
@@ -1891,6 +2406,16 @@ function formatAuditSummary(log: OrgAuditLog): string | null {
     }
     case 'org_update':
       return formatOrgUpdateSummary(metadata);
+    case 'namespace_claim_create': {
+      const ecosystem = getAuditMetadataString(metadata, 'ecosystem');
+      const namespace = getAuditMetadataString(metadata, 'namespace');
+      if (ecosystem && namespace) {
+        return `Created the ${ecosystemLabel(ecosystem)} namespace claim ${namespace}.`;
+      }
+      return namespace
+        ? `Created the namespace claim ${namespace}.`
+        : 'Created a namespace claim.';
+    }
     case 'org_member_add': {
       const username = getAuditMetadataString(metadata, 'username');
       const role = getAuditMetadataString(metadata, 'role');
@@ -2231,59 +2756,6 @@ function normalizeExistingOptionalText(
 
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
-}
-
-function getAuditViewFromQuery(query: URLSearchParams): {
-  action: string;
-  page: number;
-} {
-  const parsedPage = Number.parseInt(query.get('page') ?? '1', 10);
-
-  return {
-    action: normalizeAuditAction(query.get('action')),
-    page: Number.isFinite(parsedPage) && parsedPage > 0 ? parsedPage : 1,
-  };
-}
-
-function normalizeAuditAction(value: string | null | undefined): string {
-  if (typeof value !== 'string') {
-    return '';
-  }
-
-  const trimmed = value.trim();
-  return trimmed && ORG_AUDIT_ACTION_SET.has(trimmed) ? trimmed : '';
-}
-
-function buildOrgAuditPath(
-  slug: string,
-  {
-    action,
-    page,
-  }: {
-    action: string | null | undefined;
-    page: number;
-  }
-): string {
-  const params = new URLSearchParams(window.location.search);
-  const normalizedAction = normalizeAuditAction(action);
-
-  if (normalizedAction) {
-    params.set('action', normalizedAction);
-  } else {
-    params.delete('action');
-  }
-
-  if (page > 1) {
-    params.set('page', String(page));
-  } else {
-    params.delete('page');
-  }
-
-  const queryString = params.toString();
-  const encodedSlug = encodeURIComponent(slug);
-  return queryString
-    ? `/orgs/${encodedSlug}?${queryString}`
-    : `/orgs/${encodedSlug}`;
 }
 
 function hasTeamSlug(team: Team): team is Team & { slug: string } {
