@@ -230,6 +230,28 @@ async fn create_repository(
     slug: &str,
     owner_org_id: Option<&str>,
 ) -> (StatusCode, Value) {
+    create_repository_with_options(
+        app,
+        jwt,
+        name,
+        slug,
+        owner_org_id,
+        Some("public"),
+        Some("public"),
+    )
+    .await
+}
+
+/// Create a repository with explicit kind/visibility settings and return the response.
+async fn create_repository_with_options(
+    app: &axum::Router,
+    jwt: &str,
+    name: &str,
+    slug: &str,
+    owner_org_id: Option<&str>,
+    kind: Option<&str>,
+    visibility: Option<&str>,
+) -> (StatusCode, Value) {
     let req = Request::builder()
         .method(Method::POST)
         .uri("/v1/repositories")
@@ -239,8 +261,8 @@ async fn create_repository(
             json!({
                 "name": name,
                 "slug": slug,
-                "kind": "public",
-                "visibility": "public",
+                "kind": kind,
+                "visibility": visibility,
                 "owner_org_id": owner_org_id,
             })
             .to_string(),
@@ -261,6 +283,18 @@ async fn create_package(
     name: &str,
     repository_slug: &str,
 ) -> (StatusCode, Value) {
+    create_package_with_options(app, jwt, ecosystem, name, repository_slug, None).await
+}
+
+/// Create a package with explicit visibility and return the response.
+async fn create_package_with_options(
+    app: &axum::Router,
+    jwt: &str,
+    ecosystem: &str,
+    name: &str,
+    repository_slug: &str,
+    visibility: Option<&str>,
+) -> (StatusCode, Value) {
     let req = Request::builder()
         .method(Method::POST)
         .uri("/v1/packages")
@@ -271,6 +305,7 @@ async fn create_package(
                 "ecosystem": ecosystem,
                 "name": name,
                 "repository_slug": repository_slug,
+                "visibility": visibility,
             })
             .to_string(),
         ))
@@ -321,6 +356,110 @@ async fn transfer_package_ownership(
         .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
         .body(Body::from(
             json!({ "target_org_slug": target_org_slug }).to_string(),
+        ))
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// Add an existing organization member to a team and return the response.
+async fn add_team_member_to_team(
+    app: &axum::Router,
+    jwt: &str,
+    org_slug: &str,
+    team_slug: &str,
+    username: &str,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri(format!(
+            "/v1/orgs/{org_slug}/teams/{team_slug}/members"
+        ))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::from(json!({ "username": username }).to_string()))
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// Replace delegated team package access and return the response.
+async fn grant_team_package_access(
+    app: &axum::Router,
+    jwt: &str,
+    org_slug: &str,
+    team_slug: &str,
+    ecosystem: &str,
+    name: &str,
+    permissions: &[&str],
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::PUT)
+        .uri(format!(
+            "/v1/orgs/{org_slug}/teams/{team_slug}/package-access/{ecosystem}/{name}"
+        ))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::from(
+            json!({
+                "permissions": permissions,
+            })
+            .to_string(),
+        ))
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// Update package metadata and return the response.
+async fn update_package_metadata(
+    app: &axum::Router,
+    jwt: &str,
+    ecosystem: &str,
+    name: &str,
+    payload: Value,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::PATCH)
+        .uri(format!("/v1/packages/{ecosystem}/{name}"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::from(payload.to_string()))
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// Create a release for a package and return the response.
+async fn create_release_for_package(
+    app: &axum::Router,
+    jwt: &str,
+    ecosystem: &str,
+    name: &str,
+    version: &str,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri(format!("/v1/packages/{ecosystem}/{name}/releases"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::from(
+            json!({
+                "version": version,
+            })
+            .to_string(),
         ))
         .unwrap();
 
@@ -528,7 +667,9 @@ async fn test_list_tokens(pool: PgPool) {
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    let tokens = body.as_array().expect("response should be an array");
+    let tokens = body["tokens"]
+        .as_array()
+        .expect("response should expose a tokens array");
     assert!(!tokens.is_empty());
 }
 
@@ -1800,6 +1941,604 @@ async fn test_package_ownership_transfer_requires_target_org_admin_membership(po
     assert_eq!(detail_after["owner_username"], "alice");
     assert_eq!(detail_after["owner_org_slug"], Value::Null);
     assert_eq!(detail_after["can_transfer"], true);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_team_publish_permission_allows_release_creation_but_not_metadata_updates(
+    pool: PgPool,
+) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+
+    let (status, source_org_body) = create_org(&app, &alice_jwt, "Source Org", "source-org").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let source_org_id = source_org_body["id"].as_str().expect("source org id");
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Source Packages",
+        "source-packages",
+        Some(source_org_id),
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "npm",
+        "release-widget",
+        "source-packages",
+        Some("private"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let (status, _) = add_org_member(&app, &alice_jwt, "source-org", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "Release Engineering",
+        "release-engineering",
+        Some("Owns release execution without metadata control."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = add_team_member_to_team(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "release-engineering",
+        "bob",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, grant_body) = grant_team_package_access(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "release-engineering",
+        "npm",
+        "release-widget",
+        &["publish"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team package access response: {grant_body}"
+    );
+
+    let (status, release_body) =
+        create_release_for_package(&app, &bob_jwt, "npm", "release-widget", "1.0.0").await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected release response: {release_body}"
+    );
+    assert_eq!(release_body["version"], "1.0.0");
+    assert_eq!(release_body["status"], "quarantine");
+
+    let (status, denied_update_body) = update_package_metadata(
+        &app,
+        &bob_jwt,
+        "npm",
+        "release-widget",
+        json!({
+            "description": "Should not be writable with publish-only delegation.",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(denied_update_body["error"]
+        .as_str()
+        .expect("error should be present")
+        .contains("update this package's metadata"));
+
+    let (status, detail_after) =
+        get_package_detail(&app, Some(&alice_jwt), "npm", "release-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail_after["description"], Value::Null);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_team_write_metadata_permission_allows_package_updates_but_not_release_creation(
+    pool: PgPool,
+) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+
+    let (status, source_org_body) = create_org(&app, &alice_jwt, "Docs Org", "docs-org").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let source_org_id = source_org_body["id"].as_str().expect("source org id");
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Docs Packages",
+        "docs-packages",
+        Some(source_org_id),
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "npm",
+        "docs-widget",
+        "docs-packages",
+        Some("private"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let (status, _) = add_org_member(&app, &alice_jwt, "docs-org", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "docs-org",
+        "Metadata Editors",
+        "metadata-editors",
+        Some("Owns package metadata updates without release authority."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = add_team_member_to_team(
+        &app,
+        &alice_jwt,
+        "docs-org",
+        "metadata-editors",
+        "bob",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, grant_body) = grant_team_package_access(
+        &app,
+        &alice_jwt,
+        "docs-org",
+        "metadata-editors",
+        "npm",
+        "docs-widget",
+        &["write_metadata"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team package access response: {grant_body}"
+    );
+
+    let (status, update_body) = update_package_metadata(
+        &app,
+        &bob_jwt,
+        "npm",
+        "docs-widget",
+        json!({
+            "description": "Maintained by the metadata-editors team.",
+            "homepage": "https://docs.example.test/widgets/docs-widget",
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected package update response: {update_body}"
+    );
+    assert_eq!(update_body["message"], "Package updated");
+
+    let (status, detail_after) =
+        get_package_detail(&app, Some(&bob_jwt), "npm", "docs-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        detail_after["description"],
+        "Maintained by the metadata-editors team."
+    );
+    assert_eq!(
+        detail_after["homepage"],
+        "https://docs.example.test/widgets/docs-widget"
+    );
+
+    let (status, denied_release_body) =
+        create_release_for_package(&app, &bob_jwt, "npm", "docs-widget", "2.0.0").await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(denied_release_body["error"]
+        .as_str()
+        .expect("error should be present")
+        .contains("publish or mutate releases"));
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_team_transfer_permission_surfaces_in_package_detail_and_allows_transfer(
+    pool: PgPool,
+) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+
+    let (status, source_org_body) = create_org(&app, &alice_jwt, "Source Org", "source-org").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let source_org_id = source_org_body["id"].as_str().expect("source org id");
+
+    let (status, _) = create_org(&app, &bob_jwt, "Target Org", "target-org").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Source Packages",
+        "source-packages",
+        Some(source_org_id),
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "npm",
+        "transfer-widget",
+        "source-packages",
+        Some("private"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let (status, _) = add_org_member(&app, &alice_jwt, "source-org", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "Transfer Team",
+        "transfer-team",
+        Some("Owns controlled package handoff workflows."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = add_team_member_to_team(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "transfer-team",
+        "bob",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, detail_before_grant) =
+        get_package_detail(&app, Some(&bob_jwt), "npm", "transfer-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail_before_grant["owner_org_slug"], "source-org");
+    assert_eq!(detail_before_grant["can_transfer"], false);
+
+    let (status, grant_body) = grant_team_package_access(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "transfer-team",
+        "npm",
+        "transfer-widget",
+        &["transfer_ownership"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team package access response: {grant_body}"
+    );
+
+    let (status, detail_after_grant) =
+        get_package_detail(&app, Some(&bob_jwt), "npm", "transfer-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail_after_grant["can_transfer"], true);
+
+    let (status, transfer_body) =
+        transfer_package_ownership(&app, &bob_jwt, "npm", "transfer-widget", "target-org")
+            .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected package transfer response: {transfer_body}"
+    );
+    assert_eq!(transfer_body["message"], "Package ownership transferred");
+    assert_eq!(transfer_body["owner"]["slug"], "target-org");
+
+    let (status, detail_after_transfer) =
+        get_package_detail(&app, Some(&bob_jwt), "npm", "transfer-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail_after_transfer["owner_org_slug"], "target-org");
+    assert_eq!(detail_after_transfer["can_transfer"], true);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_team_transfer_requires_transfer_specific_permission(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+
+    let (status, source_org_body) = create_org(&app, &alice_jwt, "Source Org", "source-org").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let source_org_id = source_org_body["id"].as_str().expect("source org id");
+
+    let (status, _) = create_org(&app, &bob_jwt, "Target Org", "target-org").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Source Packages",
+        "source-packages",
+        Some(source_org_id),
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "npm",
+        "limited-transfer-widget",
+        "source-packages",
+        Some("private"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let (status, _) = add_org_member(&app, &alice_jwt, "source-org", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "Release Team",
+        "release-team",
+        Some("Can publish releases but cannot transfer ownership."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = add_team_member_to_team(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "release-team",
+        "bob",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, grant_body) = grant_team_package_access(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "release-team",
+        "npm",
+        "limited-transfer-widget",
+        &["publish"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team package access response: {grant_body}"
+    );
+
+    let (status, detail_before_transfer) =
+        get_package_detail(&app, Some(&bob_jwt), "npm", "limited-transfer-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail_before_transfer["can_transfer"], false);
+
+    let (status, denied_transfer_body) = transfer_package_ownership(
+        &app,
+        &bob_jwt,
+        "npm",
+        "limited-transfer-widget",
+        "target-org",
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(denied_transfer_body["error"]
+        .as_str()
+        .expect("error should be present")
+        .contains("transfer ownership"));
+
+    let (status, detail_after_transfer_attempt) =
+        get_package_detail(&app, Some(&alice_jwt), "npm", "limited-transfer-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail_after_transfer_attempt["owner_org_slug"], "source-org");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_package_transfer_clears_stale_team_package_access_rows(pool: PgPool) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+
+    let (status, source_org_body) = create_org(&app, &alice_jwt, "Source Org", "source-org").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let source_org_id = source_org_body["id"].as_str().expect("source org id");
+
+    let (status, _) = create_org(&app, &alice_jwt, "Target Org", "target-org").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Source Packages",
+        "source-packages",
+        Some(source_org_id),
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "npm",
+        "cleanup-widget",
+        "source-packages",
+        Some("private"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+    let package_id = uuid::Uuid::parse_str(
+        package_body["id"]
+            .as_str()
+            .expect("package id should be returned"),
+    )
+    .expect("package id should be a UUID");
+
+    let (status, _) = add_org_member(&app, &alice_jwt, "source-org", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "Cleanup Team",
+        "cleanup-team",
+        Some("Receives temporary delegated package access before transfer."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = add_team_member_to_team(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "cleanup-team",
+        "bob",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, grant_body) = grant_team_package_access(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "cleanup-team",
+        "npm",
+        "cleanup-widget",
+        &["publish", "write_metadata"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team package access response: {grant_body}"
+    );
+
+    let team_grants_before_transfer: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::BIGINT FROM team_package_access WHERE package_id = $1",
+    )
+    .bind(package_id)
+    .fetch_one(&pool)
+    .await
+    .expect("team package access count before transfer");
+    assert_eq!(team_grants_before_transfer, 2);
+
+    let (status, transfer_body) =
+        transfer_package_ownership(&app, &alice_jwt, "npm", "cleanup-widget", "target-org")
+            .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected package transfer response: {transfer_body}"
+    );
+    assert_eq!(transfer_body["owner"]["slug"], "target-org");
+
+    let team_grants_after_transfer: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::BIGINT FROM team_package_access WHERE package_id = $1",
+    )
+    .bind(package_id)
+    .fetch_one(&pool)
+    .await
+    .expect("team package access count after transfer");
+    assert_eq!(team_grants_after_transfer, 0);
+
+    let (status, _) = get_package_detail(&app, Some(&bob_jwt), "npm", "cleanup-widget").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (status, owner_detail) =
+        get_package_detail(&app, Some(&alice_jwt), "npm", "cleanup-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(owner_detail["owner_org_slug"], "target-org");
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
