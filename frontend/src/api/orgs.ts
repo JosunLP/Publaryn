@@ -107,6 +107,23 @@ export interface OrgPackageListResponse {
   load_error?: NullableString;
 }
 
+export interface OrgRepositorySummary {
+  id?: NullableString;
+  name?: NullableString;
+  slug?: NullableString;
+  description?: NullableString;
+  kind?: NullableString;
+  visibility?: NullableString;
+  upstream_url?: NullableString;
+  package_count?: number | null;
+  created_at?: NullableString;
+}
+
+export interface OrgRepositoryListResponse {
+  repositories: OrgRepositorySummary[];
+  load_error?: NullableString;
+}
+
 export interface OrgAuditLog {
   id?: NullableString;
   action?: NullableString;
@@ -489,6 +506,16 @@ export async function listOrgPackages(
 ): Promise<OrgPackageListResponse> {
   const { data } = await api.get<OrgPackageListResponse>(
     `/v1/orgs/${enc(slug)}/packages`
+  );
+
+  return data;
+}
+
+export async function listOrgRepositories(
+  slug: string
+): Promise<OrgRepositoryListResponse> {
+  const { data } = await api.get<OrgRepositoryListResponse>(
+    `/v1/orgs/${enc(slug)}/repositories`
   );
 
   return data;

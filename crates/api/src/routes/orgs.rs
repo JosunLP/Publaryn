@@ -63,6 +63,7 @@ pub fn router() -> Router<AppState> {
             "/v1/orgs/:slug/teams/:team_slug/package-access/:ecosystem/:name",
             put(replace_team_package_access).delete(remove_team_package_access),
         )
+        .route("/v1/orgs/:slug/repositories", get(list_org_repositories))
         .route("/v1/orgs/:slug/packages", get(list_org_packages))
 }
 
@@ -1610,6 +1611,74 @@ async fn list_org_packages(
     }
 
     Ok(Json(serde_json::json!({ "packages": packages })))
+}
+
+async fn list_org_repositories(
+    State(state): State<AppState>,
+    identity: OptionalAuthenticatedIdentity,
+    Path(slug): Path<String>,
+    Query(q): Query<HashMap<String, String>>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let limit: i64 = q
+        .get("per_page")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(20_i64)
+        .min(100);
+    let page: i64 = q.get("page").and_then(|s| s.parse().ok()).unwrap_or(1_i64);
+    let offset = (page - 1) * limit;
+    let org_row = sqlx::query("SELECT id FROM organizations WHERE slug = $1")
+        .bind(&slug)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?
+        .ok_or_else(|| ApiError(Error::NotFound(format!("Organization '{slug}' not found"))))?;
+
+    let org_id: Uuid = org_row
+        .try_get("id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let can_view_non_public = match identity.user_id() {
+        Some(actor_user_id) => is_org_member(&state.db, org_id, actor_user_id).await?,
+        None => false,
+    };
+
+    let rows = sqlx::query(
+        "SELECT r.id, r.name, r.slug, r.description, r.kind::text AS kind, \
+                r.visibility::text AS visibility, r.upstream_url, r.created_at, \
+                COUNT(p.id) FILTER (WHERE $2::bool = true OR p.visibility = 'public')::BIGINT AS package_count \
+         FROM repositories r \
+         LEFT JOIN packages p ON p.repository_id = r.id \
+         WHERE r.owner_org_id = $1 \
+           AND ($2::bool = true OR r.visibility = 'public') \
+         GROUP BY r.id, r.name, r.slug, r.description, r.kind, r.visibility, r.upstream_url, r.created_at \
+         ORDER BY LOWER(r.name), LOWER(r.slug) \
+         LIMIT $3 OFFSET $4",
+    )
+    .bind(org_id)
+    .bind(can_view_non_public)
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let repositories: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|row| {
+            serde_json::json!({
+                "id": row.try_get::<Uuid, _>("id").ok(),
+                "name": row.try_get::<String, _>("name").ok(),
+                "slug": row.try_get::<String, _>("slug").ok(),
+                "description": row.try_get::<Option<String>, _>("description").ok().flatten(),
+                "kind": row.try_get::<String, _>("kind").ok(),
+                "visibility": row.try_get::<String, _>("visibility").ok(),
+                "upstream_url": row.try_get::<Option<String>, _>("upstream_url").ok().flatten(),
+                "package_count": row.try_get::<i64, _>("package_count").ok(),
+                "created_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at").ok(),
+            })
+        })
+        .collect();
+
+    Ok(Json(serde_json::json!({ "repositories": repositories })))
 }
 
 async fn load_team_record(

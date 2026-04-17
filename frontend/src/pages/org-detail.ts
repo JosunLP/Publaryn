@@ -10,6 +10,8 @@ import type {
   OrgMember,
   OrgPackageListResponse,
   OrgPackageSummary,
+  OrgRepositoryListResponse,
+  OrgRepositorySummary,
   OrganizationDetail,
   OrganizationListResponse,
   OrganizationMembership,
@@ -31,6 +33,7 @@ import {
   listOrgAuditLogs,
   listOrgInvitations,
   listOrgPackages,
+  listOrgRepositories,
   listTeamMembers,
   listTeamPackageAccess,
   listTeams,
@@ -45,6 +48,7 @@ import {
   updateTeam,
 } from '../api/orgs';
 import { transferPackageOwnership } from '../api/packages';
+import { createRepository, updateRepository } from '../api/repositories';
 import type { RouteContext } from '../router';
 import { navigate } from '../router';
 import { ECOSYSTEMS, ecosystemLabel } from '../utils/ecosystem';
@@ -53,6 +57,12 @@ import {
   selectPackageTransferTargets,
   selectTransferablePackages,
 } from '../utils/package-transfer';
+import {
+  REPOSITORY_KIND_OPTIONS,
+  REPOSITORY_VISIBILITY_OPTIONS,
+  formatRepositoryKindLabel,
+  formatRepositoryVisibilityLabel,
+} from '../utils/repositories';
 import {
   ORG_AUDIT_ACTION_VALUES,
   buildOrgAuditPath,
@@ -134,6 +144,8 @@ interface OrgDetailViewState {
   teamPackageAccessBySlug: Record<string, TeamPackageAccessState>;
   namespaceClaims: NamespaceClaim[];
   namespaceError: string | null;
+  repositories: OrgRepositorySummary[];
+  repositoriesError: string | null;
   packages: OrgPackageSummary[];
   packagesError: string | null;
   packageTransferTargets: OrganizationMembership[];
@@ -208,36 +220,51 @@ async function loadAndRender(
         ? auditPage
         : currentAuditView.page;
 
-    const [org, memberData, teamData, packageData, myOrganizationsData] =
-      await Promise.all([
-        getOrg(slug),
-        listMembers(slug).catch(
-          (caughtError: unknown): MemberListResponse => ({
-            members: [],
-            load_error: toErrorMessage(
-              caughtError,
-              'Failed to load organization members.'
-            ),
-          })
-        ),
-        listTeams(slug).catch(
-          (caughtError: unknown): TeamListResponse => ({
-            teams: [],
-            load_error: toErrorMessage(caughtError, 'Failed to load teams.'),
-          })
-        ),
-        listOrgPackages(slug).catch(
-          (caughtError: unknown): OrgPackageListResponse => ({
-            packages: [],
-            load_error: toErrorMessage(caughtError, 'Failed to load packages.'),
-          })
-        ),
-        isAuthenticated
-          ? listMyOrganizations().catch(
-              (): OrganizationListResponse => ({ organizations: [] })
-            )
-          : Promise.resolve<OrganizationListResponse>({ organizations: [] }),
-      ]);
+    const [
+      org,
+      memberData,
+      teamData,
+      repositoryData,
+      packageData,
+      myOrganizationsData,
+    ] = await Promise.all([
+      getOrg(slug),
+      listMembers(slug).catch(
+        (caughtError: unknown): MemberListResponse => ({
+          members: [],
+          load_error: toErrorMessage(
+            caughtError,
+            'Failed to load organization members.'
+          ),
+        })
+      ),
+      listTeams(slug).catch(
+        (caughtError: unknown): TeamListResponse => ({
+          teams: [],
+          load_error: toErrorMessage(caughtError, 'Failed to load teams.'),
+        })
+      ),
+      listOrgRepositories(slug).catch(
+        (caughtError: unknown): OrgRepositoryListResponse => ({
+          repositories: [],
+          load_error: toErrorMessage(
+            caughtError,
+            'Failed to load repositories.'
+          ),
+        })
+      ),
+      listOrgPackages(slug).catch(
+        (caughtError: unknown): OrgPackageListResponse => ({
+          packages: [],
+          load_error: toErrorMessage(caughtError, 'Failed to load packages.'),
+        })
+      ),
+      isAuthenticated
+        ? listMyOrganizations().catch(
+            (): OrganizationListResponse => ({ organizations: [] })
+          )
+        : Promise.resolve<OrganizationListResponse>({ organizations: [] }),
+    ]);
 
     const membership = (myOrganizationsData.organizations || []).find(
       (item) => item.slug === slug
@@ -332,6 +359,8 @@ async function loadAndRender(
       teamPackageAccessBySlug,
       namespaceClaims: namespaceData.namespaces || [],
       namespaceError: namespaceData.load_error || null,
+      repositories: repositoryData.repositories || [],
+      repositoriesError: repositoryData.load_error || null,
       packages: packageData.packages || [],
       packagesError: packageData.load_error || null,
       packageTransferTargets,
@@ -388,6 +417,8 @@ function render(container: HTMLElement, state: OrgDetailViewState): void {
     teamPackageAccessBySlug,
     namespaceClaims,
     namespaceError,
+    repositories,
+    repositoriesError,
     packages,
     packagesError,
     packageTransferTargets,
@@ -562,7 +593,7 @@ function render(container: HTMLElement, state: OrgDetailViewState): void {
         <section class="card settings-section">
           <h2>About this organization</h2>
           <p class="settings-copy">
-            Use this page as the canonical workspace for organization ownership, members, teams, delegated package access, namespace claims, and visible packages.
+            Use this page as the canonical workspace for organization ownership, members, teams, repositories, delegated package access, namespace claims, and visible packages.
             Audit and security dashboards continue to expand on this foundation.
           </p>
         </section>
@@ -859,6 +890,19 @@ function render(container: HTMLElement, state: OrgDetailViewState): void {
                       .join('')}
                   </div>`
           }
+        </section>
+
+        <section class="card settings-section">
+          <div class="org-section-header">
+            <div>
+              <h2>Repositories</h2>
+              <p class="settings-copy">Review the repositories that belong to this organization and manage hosted, staging, or mirrored sources from the same workspace.</p>
+            </div>
+          </div>
+
+          ${renderOrgRepositories(repositories, repositoriesError, canAdminister)}
+
+          ${canAdminister && org.id ? renderOrgRepositoryCreateForm() : ''}
         </section>
 
         <section class="card settings-section">
@@ -1617,6 +1661,143 @@ function render(container: HTMLElement, state: OrgDetailViewState): void {
     }
   });
 
+  const repositoryCreateForm = container.querySelector<HTMLFormElement>(
+    '#org-repository-form'
+  );
+  repositoryCreateForm?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+
+    const orgId = org.id?.trim();
+    if (!orgId) {
+      await loadAndRender(container, slug, {
+        error:
+          'Failed to create the repository because the organization id is unavailable.',
+      });
+      return;
+    }
+
+    const formData = new FormData(repositoryCreateForm);
+    const name = formData.get('name')?.toString().trim() || '';
+    const repositorySlug = formData.get('slug')?.toString().trim() || '';
+    const kind = formData.get('kind')?.toString().trim() || 'public';
+    const visibility =
+      formData.get('visibility')?.toString().trim() || 'public';
+
+    if (!name) {
+      await loadAndRender(container, slug, {
+        error: 'Enter a repository name before creating it.',
+      });
+      return;
+    }
+
+    if (!repositorySlug) {
+      await loadAndRender(container, slug, {
+        error: 'Enter a repository slug before creating it.',
+      });
+      return;
+    }
+
+    const submitButton = getSubmitButton(repositoryCreateForm);
+    if (!submitButton) {
+      return;
+    }
+
+    submitButton.disabled = true;
+    submitButton.textContent = 'Creating…';
+
+    try {
+      await createRepository({
+        name,
+        slug: repositorySlug,
+        kind,
+        visibility,
+        description: normalizeFormOptionalText(formData.get('description')),
+        upstreamUrl: normalizeFormOptionalText(formData.get('upstream_url')),
+        ownerOrgId: orgId,
+      });
+
+      await loadAndRender(container, slug, {
+        notice: `Created the repository ${repositorySlug}.`,
+      });
+    } catch (caughtError: unknown) {
+      await loadAndRender(container, slug, {
+        error: toErrorMessage(caughtError, 'Failed to create the repository.'),
+      });
+    }
+  });
+
+  container
+    .querySelectorAll<HTMLFormElement>('[data-update-repository-form]')
+    .forEach((form) => {
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+
+        const repositorySlug = form.getAttribute('data-update-repository-form');
+        if (!repositorySlug) {
+          return;
+        }
+
+        const repository = repositories.find(
+          (candidate) => candidate.slug === repositorySlug
+        );
+        if (!repository) {
+          await loadAndRender(container, slug, {
+            error: `Failed to find the repository ${repositorySlug}.`,
+          });
+          return;
+        }
+
+        const formData = new FormData(form);
+        const nextDescription =
+          formData.get('description')?.toString().trim() ?? '';
+        const nextVisibility =
+          formData.get('visibility')?.toString().trim() || 'public';
+        const nextUpstreamUrl =
+          formData.get('upstream_url')?.toString().trim() ?? '';
+        const currentDescription = repository.description?.trim() || '';
+        const currentVisibility = repository.visibility?.trim() || 'public';
+        const currentUpstreamUrl = repository.upstream_url?.trim() || '';
+
+        if (
+          nextDescription === currentDescription &&
+          nextVisibility === currentVisibility &&
+          nextUpstreamUrl === currentUpstreamUrl
+        ) {
+          await loadAndRender(container, slug, {
+            notice: `${repository.name || repositorySlug} is already up to date.`,
+          });
+          return;
+        }
+
+        const submitButton = getSubmitButton(form);
+        if (!submitButton) {
+          return;
+        }
+
+        submitButton.disabled = true;
+        submitButton.textContent = 'Saving…';
+
+        try {
+          await updateRepository(repositorySlug, {
+            description: nextDescription,
+            visibility: nextVisibility,
+            upstreamUrl: nextUpstreamUrl,
+          });
+
+          await loadAndRender(container, slug, {
+            notice: `Updated the repository ${repository.name || repositorySlug}.`,
+          });
+        } catch (caughtError: unknown) {
+          await loadAndRender(container, slug, {
+            error: toErrorMessage(
+              caughtError,
+              'Failed to update the repository.'
+            ),
+          });
+        }
+      });
+    });
+
   const packageTransferForm = container.querySelector<HTMLFormElement>(
     '#org-package-transfer-form'
   );
@@ -2046,6 +2227,171 @@ function renderNamespaceClaimForm(): string {
       <button type="submit" class="btn btn-primary">Create namespace claim</button>
     </form>
   `;
+}
+
+function renderOrgRepositories(
+  repositories: OrgRepositorySummary[],
+  repositoriesError: string | null,
+  canAdminister: boolean
+): string {
+  if (repositoriesError) {
+    return `<div class="alert alert-error">${escapeHtml(repositoriesError)}</div>`;
+  }
+
+  if (repositories.length === 0) {
+    return `<div class="empty-state"><h3>No repositories yet</h3><p>${escapeHtml(
+      canAdminister
+        ? 'Create the first organization repository below to separate public, internal, staging, or mirrored package sources.'
+        : 'This organization has not exposed any public repositories yet.'
+    )}</p></div>`;
+  }
+
+  return `
+    <div class="settings-section">
+      ${[...repositories]
+        .sort((left, right) => {
+          const leftKey = (left.name || left.slug || '').toLowerCase();
+          const rightKey = (right.name || right.slug || '').toLowerCase();
+          return leftKey.localeCompare(rightKey);
+        })
+        .map((repository) => renderOrgRepositoryCard(repository, canAdminister))
+        .join('')}
+    </div>
+  `;
+}
+
+function renderOrgRepositoryCard(
+  repository: OrgRepositorySummary,
+  canAdminister: boolean
+): string {
+  const repositorySlug = repository.slug || '';
+  const repositoryName = repository.name || repositorySlug || 'Repository';
+
+  return `
+    <div class="settings-subsection">
+      <div class="org-section-header">
+        <div class="token-row__main">
+          <div class="token-row__title">${escapeHtml(repositoryName)}</div>
+          <div class="token-row__meta">
+            <span>@${escapeHtml(repositorySlug || 'no-slug')}</span>
+            <span>${escapeHtml(formatRepositoryKindLabel(repository.kind))}</span>
+            <span>${escapeHtml(formatRepositoryVisibilityLabel(repository.visibility))}</span>
+            <span>${escapeHtml(formatNumber(repository.package_count))} packages</span>
+            ${repository.created_at ? `<span>created ${escapeHtml(formatDate(repository.created_at))}</span>` : ''}
+          </div>
+          ${repository.description ? `<p class="settings-copy">${escapeHtml(repository.description)}</p>` : ''}
+          ${repository.upstream_url ? `<p class="settings-copy"><a href="${escapeHtml(repository.upstream_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(repository.upstream_url)}</a></p>` : ''}
+        </div>
+      </div>
+
+      ${canAdminister ? renderOrgRepositoryUpdateForm(repository) : ''}
+    </div>
+  `;
+}
+
+function renderOrgRepositoryCreateForm(): string {
+  return `
+    <form id="org-repository-form" class="settings-subsection">
+      <h3>Create a repository</h3>
+      <p class="settings-copy">Repositories define visibility boundaries and source-of-truth lanes for package publication, staging, and mirroring.</p>
+
+      <div class="grid gap-4 xl:grid-cols-2">
+        <div class="form-group">
+          <label for="org-repository-name">Repository name</label>
+          <input id="org-repository-name" name="name" class="form-input" placeholder="Acme Public" required />
+        </div>
+        <div class="form-group">
+          <label for="org-repository-slug">Repository slug</label>
+          <input id="org-repository-slug" name="slug" class="form-input" placeholder="acme-public" required />
+        </div>
+      </div>
+
+      <div class="grid gap-4 xl:grid-cols-2">
+        <div class="form-group">
+          <label for="org-repository-kind">Repository kind</label>
+          <select id="org-repository-kind" name="kind" class="form-input" required>
+            ${renderRepositoryKindOptions('public')}
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="org-repository-visibility">Visibility</label>
+          <select id="org-repository-visibility" name="visibility" class="form-input" required>
+            ${renderRepositoryVisibilityOptions('public')}
+          </select>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label for="org-repository-upstream">Upstream URL</label>
+        <input id="org-repository-upstream" name="upstream_url" class="form-input" type="url" placeholder="https://registry.npmjs.org" />
+      </div>
+
+      <div class="form-group">
+        <label for="org-repository-description">Description</label>
+        <textarea id="org-repository-description" name="description" class="form-input" rows="3" placeholder="Public release channel for Acme packages."></textarea>
+      </div>
+
+      <button type="submit" class="btn btn-primary">Create repository</button>
+    </form>
+  `;
+}
+
+function renderOrgRepositoryUpdateForm(
+  repository: OrgRepositorySummary
+): string {
+  const repositorySlug = repository.slug || '';
+
+  return `
+    <form data-update-repository-form="${escapeHtml(repositorySlug)}" class="settings-section">
+      <h3>Repository settings</h3>
+      <p class="settings-copy">Repository kind and slug stay stable; visibility, upstream URL, and description can evolve over time.</p>
+
+      <div class="grid gap-4 xl:grid-cols-2">
+        <div class="form-group">
+          <label for="repository-kind-${escapeHtml(repositorySlug || 'repository')}">Repository kind</label>
+          <input id="repository-kind-${escapeHtml(repositorySlug || 'repository')}" class="form-input" value="${escapeHtml(formatRepositoryKindLabel(repository.kind))}" disabled />
+        </div>
+        <div class="form-group">
+          <label for="repository-visibility-${escapeHtml(repositorySlug || 'repository')}">Visibility</label>
+          <select id="repository-visibility-${escapeHtml(repositorySlug || 'repository')}" name="visibility" class="form-input">
+            ${renderRepositoryVisibilityOptions(repository.visibility || 'public')}
+          </select>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label for="repository-upstream-${escapeHtml(repositorySlug || 'repository')}">Upstream URL</label>
+        <input id="repository-upstream-${escapeHtml(repositorySlug || 'repository')}" name="upstream_url" class="form-input" type="url" placeholder="https://registry.npmjs.org" value="${escapeHtml(repository.upstream_url || '')}" />
+      </div>
+
+      <div class="form-group">
+        <label for="repository-description-${escapeHtml(repositorySlug || 'repository')}">Description</label>
+        <textarea id="repository-description-${escapeHtml(repositorySlug || 'repository')}" name="description" class="form-input" rows="3">${escapeHtml(repository.description || '')}</textarea>
+      </div>
+
+      <button type="submit" class="btn btn-secondary">Save repository</button>
+    </form>
+  `;
+}
+
+function renderRepositoryKindOptions(selectedValue: string): string {
+  return REPOSITORY_KIND_OPTIONS.map(
+    (option) => `
+      <option value="${option.value}" ${option.value === selectedValue ? 'selected' : ''}>
+        ${escapeHtml(option.label)}
+      </option>
+    `
+  ).join('');
+}
+
+function renderRepositoryVisibilityOptions(selectedValue: string): string {
+  return REPOSITORY_VISIBILITY_OPTIONS.map(
+    (option) => `
+      <option value="${option.value}" ${option.value === selectedValue ? 'selected' : ''}>
+        ${escapeHtml(option.label)}
+      </option>
+    `
+  ).join('');
 }
 
 function renderNamespaceEcosystemOptions(selectedValue: string): string {

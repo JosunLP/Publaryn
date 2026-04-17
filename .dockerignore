@@ -1,0 +1,19 @@
+# Git metadata and local editor state
+.git/
+.github/
+.vscode/
+
+# Rust build outputs
+target/
+
+# Frontend local artifacts
+frontend/node_modules/
+frontend/dist/
+
+# Local environment files
+.env
+.env.*
+
+# Documentation and local-only repo assets not needed for image builds
+docs/
+README.md

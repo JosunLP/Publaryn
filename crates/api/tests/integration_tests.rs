@@ -323,6 +323,69 @@ async fn create_repository_with_options(
     (status, body)
 }
 
+/// Get repository detail and return the response.
+async fn get_repository_detail(
+    app: &axum::Router,
+    jwt: Option<&str>,
+    slug: &str,
+) -> (StatusCode, Value) {
+    let mut request = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/v1/repositories/{slug}"));
+
+    if let Some(jwt) = jwt {
+        request = request.header(header::AUTHORIZATION, format!("Bearer {jwt}"));
+    }
+
+    let req = request.body(Body::empty()).unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// Update repository detail and return the response.
+async fn update_repository_detail(
+    app: &axum::Router,
+    jwt: &str,
+    slug: &str,
+    payload: Value,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::PATCH)
+        .uri(format!("/v1/repositories/{slug}"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::from(payload.to_string()))
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// List repositories owned by an organization and return the response.
+async fn list_org_repositories(
+    app: &axum::Router,
+    jwt: Option<&str>,
+    org_slug: &str,
+) -> (StatusCode, Value) {
+    let mut request = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/v1/orgs/{org_slug}/repositories"));
+
+    if let Some(jwt) = jwt {
+        request = request.header(header::AUTHORIZATION, format!("Bearer {jwt}"));
+    }
+
+    let req = request.body(Body::empty()).unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
 /// Create a package and return the response.
 async fn create_package(
     app: &axum::Router,
@@ -994,6 +1057,170 @@ async fn test_update_org_profile_requires_org_admin(pool: PgPool) {
         .as_str()
         .expect("error should be present")
         .contains("owner or admin"));
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_org_repository_list_respects_visibility_and_package_counts(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &jwt, "Acme Corp", "acme-corp").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id = org_body["id"].as_str().expect("org id should be returned");
+
+    let (status, public_repo_body) = create_repository_with_options(
+        &app,
+        &jwt,
+        "Acme Public",
+        "acme-public",
+        Some(org_id),
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected public repository response: {public_repo_body}"
+    );
+
+    let (status, internal_repo_body) = create_repository_with_options(
+        &app,
+        &jwt,
+        "Acme Internal",
+        "acme-internal",
+        Some(org_id),
+        Some("private"),
+        Some("internal_org"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected internal repository response: {internal_repo_body}"
+    );
+
+    let (status, body) = create_package_with_options(
+        &app,
+        &jwt,
+        "npm",
+        "acme-public-widget",
+        "acme-public",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "unexpected package response: {body}");
+
+    let (status, body) = create_package_with_options(
+        &app,
+        &jwt,
+        "npm",
+        "acme-private-widget",
+        "acme-public",
+        Some("private"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "unexpected package response: {body}");
+
+    let (status, body) = create_package_with_options(
+        &app,
+        &jwt,
+        "npm",
+        "acme-internal-widget",
+        "acme-internal",
+        Some("internal_org"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "unexpected package response: {body}");
+
+    let (status, owner_body) = list_org_repositories(&app, Some(&jwt), "acme-corp").await;
+    assert_eq!(status, StatusCode::OK);
+    let owner_repositories = owner_body["repositories"]
+        .as_array()
+        .expect("owner repositories response should be an array");
+    assert_eq!(owner_repositories.len(), 2, "owner repositories response: {owner_body}");
+
+    let public_repository = owner_repositories
+        .iter()
+        .find(|repo| repo["slug"] == "acme-public")
+        .expect("public repository should be returned to the owner");
+    assert_eq!(public_repository["kind"], "public");
+    assert_eq!(public_repository["visibility"], "public");
+    assert_eq!(public_repository["package_count"], 2);
+
+    let internal_repository = owner_repositories
+        .iter()
+        .find(|repo| repo["slug"] == "acme-internal")
+        .expect("internal repository should be returned to the owner");
+    assert_eq!(internal_repository["kind"], "private");
+    assert_eq!(internal_repository["visibility"], "internal_org");
+    assert_eq!(internal_repository["package_count"], 1);
+
+    let (status, anonymous_body) = list_org_repositories(&app, None, "acme-corp").await;
+    assert_eq!(status, StatusCode::OK);
+    let anonymous_repositories = anonymous_body["repositories"]
+        .as_array()
+        .expect("anonymous repositories response should be an array");
+    assert_eq!(
+        anonymous_repositories.len(),
+        1,
+        "anonymous repositories response: {anonymous_body}"
+    );
+    assert_eq!(anonymous_repositories[0]["slug"], "acme-public");
+    assert_eq!(anonymous_repositories[0]["visibility"], "public");
+    assert_eq!(anonymous_repositories[0]["package_count"], 1);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_org_admin_can_update_repository_details(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &jwt, "Acme Corp", "acme-corp").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id = org_body["id"].as_str().expect("org id should be returned");
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &jwt,
+        "Acme Public",
+        "acme-public",
+        Some(org_id),
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, body) = update_repository_detail(
+        &app,
+        &jwt,
+        "acme-public",
+        json!({
+            "description": "Canonical public repository for Acme releases.",
+            "visibility": "unlisted",
+            "upstream_url": "https://git.example.test/acme/public",
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected repository update response: {body}"
+    );
+    assert_eq!(body["message"], "Repository updated");
+
+    let (status, repository_body) = get_repository_detail(&app, Some(&jwt), "acme-public").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(repository_body["description"], "Canonical public repository for Acme releases.");
+    assert_eq!(repository_body["visibility"], "unlisted");
+    assert_eq!(repository_body["upstream_url"], "https://git.example.test/acme/public");
 }
 
 #[sqlx::test(migrations = "../../migrations")]

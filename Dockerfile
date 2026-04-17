@@ -1,27 +1,31 @@
 # syntax=docker/dockerfile:1
 
 # ── Frontend build stage ───────────────────────────────────
-FROM node:22-slim AS frontend
+FROM oven/bun:1.3.12 AS frontend
 
 WORKDIR /app/frontend
-COPY frontend/package.json frontend/package-lock.json* ./
-RUN npm ci --ignore-scripts
-COPY frontend/ .
-RUN npm run build
+COPY frontend/package.json frontend/bun.lock ./
+RUN bun install --frozen-lockfile
+COPY frontend/index.html ./index.html
+COPY frontend/postcss.config.cjs frontend/tailwind.config.ts frontend/tsconfig.json frontend/vite.config.ts ./
+COPY frontend/public ./public
+COPY frontend/src ./src
+RUN bun run build
 
 # ── Rust build stage ──────────────────────────────────────
-FROM rust:1.77-slim-bookworm AS builder
+FROM rust:slim-bookworm AS builder
 
 WORKDIR /app
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    pkg-config libssl-dev \
+    curl pkg-config libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Cache dependency build layer
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
+COPY migrations/ migrations/
 
 RUN cargo build --release --bin publaryn
 

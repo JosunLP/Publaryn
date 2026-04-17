@@ -213,6 +213,7 @@ DELETE /v1/orgs/:slug/teams/:team_slug/members/:username
 GET    /v1/orgs/:slug/teams/:team_slug/package-access
 PUT    /v1/orgs/:slug/teams/:team_slug/package-access/:ecosystem/:name
 DELETE /v1/orgs/:slug/teams/:team_slug/package-access/:ecosystem/:name
+GET    /v1/orgs/:slug/repositories
 GET    /v1/orgs/:slug/packages
 GET    /v1/org-invitations
 POST   /v1/org-invitations/:id/accept
