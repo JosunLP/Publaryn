@@ -196,6 +196,7 @@ POST   /v1/orgs
 GET    /v1/orgs/:slug
 PATCH  /v1/orgs/:slug
 GET    /v1/orgs/:slug/audit
+GET    /v1/orgs/:slug/audit/export
 GET    /v1/orgs/:slug/members
 POST   /v1/orgs/:slug/members
 DELETE /v1/orgs/:slug/members/:username
@@ -214,6 +215,7 @@ GET    /v1/orgs/:slug/teams/:team_slug/package-access
 PUT    /v1/orgs/:slug/teams/:team_slug/package-access/:ecosystem/:name
 DELETE /v1/orgs/:slug/teams/:team_slug/package-access/:ecosystem/:name
 GET    /v1/orgs/:slug/repositories
+GET    /v1/orgs/:slug/security-findings
 GET    /v1/orgs/:slug/packages
 GET    /v1/org-invitations
 POST   /v1/org-invitations/:id/accept
@@ -223,6 +225,9 @@ POST   /v1/org-invitations/:id/decline
 Organization administrators can delegate package responsibilities to teams for organization-owned packages.
 Current package-scoped team permissions are `admin`, `publish`, `write_metadata`, `read_private`, `security_review`, and `transfer_ownership`.
 These grants are stored in PostgreSQL, enforced by the management API, and automatically cleared when package ownership moves to a different organization.
+The organization workspace also includes an aggregated security overview backed by `GET /v1/orgs/:slug/security-findings`, scoped to the packages currently visible to the requesting actor.
+Organization audit reads now support action, actor, pagination, and UTC date-range filtering through the `occurred_from` and `occurred_until` query parameters.
+Organization administrators can also export the full filtered audit view as CSV through `GET /v1/orgs/:slug/audit/export`; the export applies the same action, actor, and UTC date filters but ignores pagination.
 
 ### Namespace Claims
 

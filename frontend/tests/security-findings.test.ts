@@ -1,6 +1,11 @@
 import { describe, expect, test } from 'bun:test';
 
 import { severityLevel } from '../src/api/packages';
+import {
+  normalizeSecuritySeverityCounts,
+  securitySeverityRank,
+  worstSecuritySeverityFromCounts,
+} from '../src/utils/security';
 
 describe('severityLevel', () => {
   test('maps known severity strings to numeric levels', () => {
@@ -23,5 +28,42 @@ describe('severityLevel', () => {
     expect(severityLevel('unknown')).toBe(-1);
     expect(severityLevel('')).toBe(-1);
     expect(severityLevel('emergency')).toBe(-1);
+  });
+
+  test('normalizes sparse severity counts into a complete map', () => {
+    expect(
+      normalizeSecuritySeverityCounts({
+        critical: 2,
+        medium: null,
+        low: 1.8,
+      })
+    ).toEqual({
+      critical: 2,
+      high: 0,
+      medium: 0,
+      low: 1,
+      info: 0,
+    });
+  });
+
+  test('derives the worst severity from aggregated counts', () => {
+    expect(
+      worstSecuritySeverityFromCounts({
+        high: 1,
+        low: 4,
+      })
+    ).toBe('high');
+    expect(worstSecuritySeverityFromCounts({ info: 3 })).toBe('info');
+    expect(worstSecuritySeverityFromCounts({})).toBe('info');
+  });
+
+  test('ranks normalized severities consistently', () => {
+    expect(securitySeverityRank('critical')).toBeGreaterThan(
+      securitySeverityRank('high')
+    );
+    expect(securitySeverityRank('high')).toBeGreaterThan(
+      securitySeverityRank('medium')
+    );
+    expect(securitySeverityRank('unknown')).toBe(0);
   });
 });

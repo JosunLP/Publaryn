@@ -12,6 +12,9 @@ import type {
   OrgPackageSummary,
   OrgRepositoryListResponse,
   OrgRepositorySummary,
+  OrgSecurityFindingsResponse,
+  OrgSecurityPackageSummary,
+  OrgSecuritySummary,
   OrganizationDetail,
   OrganizationListResponse,
   OrganizationMembership,
@@ -27,6 +30,7 @@ import {
   addTeamMember,
   createTeam,
   deleteTeam,
+  exportOrgAuditLogsCsv,
   getOrg,
   listMembers,
   listMyOrganizations,
@@ -34,6 +38,7 @@ import {
   listOrgInvitations,
   listOrgPackages,
   listOrgRepositories,
+  listOrgSecurityFindings,
   listTeamMembers,
   listTeamPackageAccess,
   listTeams,
@@ -73,7 +78,16 @@ import {
   formatRepositoryVisibilityLabel,
 } from '../utils/repositories';
 import {
+  SECURITY_SEVERITIES,
+  normalizeSecuritySeverity,
+  normalizeSecuritySeverityCounts,
+  securitySeverityRank,
+  totalSecuritySeverityCounts,
+  worstSecuritySeverityFromCounts,
+} from '../utils/security';
+import {
   ORG_AUDIT_ACTION_VALUES,
+  buildOrgAuditExportFilename,
   buildOrgAuditPath,
   formatAuditActorQueryLabel,
   getAuditViewFromQuery,
@@ -164,11 +178,16 @@ interface OrgDetailViewState {
   packages: OrgPackageSummary[];
   packagesError: string | null;
   packageTransferTargets: OrganizationMembership[];
+  securitySummary: OrgSecuritySummary | null;
+  securityPackages: OrgSecurityPackageSummary[];
+  securityError: string | null;
   auditLogs: OrgAuditLog[];
   auditError: string | null;
   auditAction: string;
   auditActorUserId: string;
   auditActorUsername: string;
+  auditOccurredFrom: string;
+  auditOccurredUntil: string;
   auditPage: number;
   auditHasNext: boolean;
   invitations: OrgInvitation[];
@@ -202,6 +221,8 @@ async function loadAndRender(
     auditAction = null,
     auditActorUserId = null,
     auditActorUsername = null,
+    auditOccurredFrom = null,
+    auditOccurredUntil = null,
     auditPage = null,
   }: {
     notice?: string | null;
@@ -209,6 +230,8 @@ async function loadAndRender(
     auditAction?: string | null;
     auditActorUserId?: string | null;
     auditActorUsername?: string | null;
+    auditOccurredFrom?: string | null;
+    auditOccurredUntil?: string | null;
     auditPage?: number | null;
   } = {}
 ): Promise<void> {
@@ -228,6 +251,10 @@ async function loadAndRender(
           auditActorUsername ?? currentAuditView.actorUsername
         )
       : '';
+    const resolvedAuditOccurredFrom =
+      auditOccurredFrom ?? currentAuditView.occurredFrom;
+    const resolvedAuditOccurredUntil =
+      auditOccurredUntil ?? currentAuditView.occurredUntil;
     const resolvedAuditPage =
       typeof auditPage === 'number' &&
       Number.isFinite(auditPage) &&
@@ -241,6 +268,7 @@ async function loadAndRender(
       teamData,
       repositoryData,
       packageData,
+      securityData,
       myOrganizationsData,
     ] = await Promise.all([
       getOrg(slug),
@@ -272,6 +300,16 @@ async function loadAndRender(
         (caughtError: unknown): OrgPackageListResponse => ({
           packages: [],
           load_error: toErrorMessage(caughtError, 'Failed to load packages.'),
+        })
+      ),
+      listOrgSecurityFindings(slug).catch(
+        (caughtError: unknown): OrgSecurityFindingsResponse => ({
+          summary: null,
+          packages: [],
+          load_error: toErrorMessage(
+            caughtError,
+            'Failed to load the security overview.'
+          ),
         })
       ),
       isAuthenticated
@@ -322,6 +360,8 @@ async function loadAndRender(
         ? listOrgAuditLogs(slug, {
             action: resolvedAuditAction || undefined,
             actorUserId: resolvedAuditActorUserId || undefined,
+            occurredFrom: resolvedAuditOccurredFrom || undefined,
+            occurredUntil: resolvedAuditOccurredUntil || undefined,
             page: resolvedAuditPage,
             perPage: ORG_AUDIT_PAGE_SIZE,
           }).catch(
@@ -382,11 +422,16 @@ async function loadAndRender(
       packages: packageData.packages || [],
       packagesError: packageData.load_error || null,
       packageTransferTargets,
+      securitySummary: securityData.summary || null,
+      securityPackages: securityData.packages || [],
+      securityError: securityData.load_error || null,
       auditLogs: auditData.logs || [],
       auditError: auditData.load_error || null,
       auditAction: resolvedAuditAction,
       auditActorUserId: resolvedAuditActorUserId,
       auditActorUsername: resolvedAuditActorUsername,
+      auditOccurredFrom: resolvedAuditOccurredFrom,
+      auditOccurredUntil: resolvedAuditOccurredUntil,
       auditPage:
         typeof auditData.page === 'number' && auditData.page > 0
           ? auditData.page
@@ -441,11 +486,16 @@ function render(container: HTMLElement, state: OrgDetailViewState): void {
     packages,
     packagesError,
     packageTransferTargets,
+    securitySummary,
+    securityPackages,
+    securityError,
     auditLogs,
     auditError,
     auditAction,
     auditActorUserId,
     auditActorUsername,
+    auditOccurredFrom,
+    auditOccurredUntil,
     auditPage,
     auditHasNext,
     invitations,
@@ -518,7 +568,16 @@ function render(container: HTMLElement, state: OrgDetailViewState): void {
                       ${renderAuditActionOptions(auditAction)}
                     </select>
                   </div>
+                  <div class="form-group" style="margin-bottom:0; min-width:180px;">
+                    <label for="org-audit-occurred-from">From (UTC date)</label>
+                    <input id="org-audit-occurred-from" name="occurred_from" type="date" class="form-input" value="${escapeHtml(auditOccurredFrom)}" />
+                  </div>
+                  <div class="form-group" style="margin-bottom:0; min-width:180px;">
+                    <label for="org-audit-occurred-until">Until (UTC date)</label>
+                    <input id="org-audit-occurred-until" name="occurred_until" type="date" class="form-input" value="${escapeHtml(auditOccurredUntil)}" />
+                  </div>
                   <button type="submit" class="btn btn-secondary">Apply filter</button>
+                  <button type="button" class="btn btn-secondary" data-export-org-audit>Export CSV</button>
                   ${
                     auditAction
                       ? '<button type="button" class="btn btn-secondary" data-clear-audit-action-filter>Clear action</button>'
@@ -529,6 +588,11 @@ function render(container: HTMLElement, state: OrgDetailViewState): void {
                       ? `<button type="button" class="btn btn-secondary" data-clear-audit-actor-filter>Clear actor</button>`
                       : ''
                   }
+                  ${
+                    auditOccurredFrom || auditOccurredUntil
+                      ? '<button type="button" class="btn btn-secondary" data-clear-audit-date-filter>Clear dates</button>'
+                      : ''
+                  }
                 </div>
                 <p class="settings-copy" style="margin-top:0.75rem; margin-bottom:0;">
                   ${escapeHtml(
@@ -536,10 +600,14 @@ function render(container: HTMLElement, state: OrgDetailViewState): void {
                       auditPage,
                       auditAction,
                       auditActorUserId,
-                      auditActorUsername
+                      auditActorUsername,
+                      auditOccurredFrom,
+                      auditOccurredUntil
                     )
                   )}
                 </p>
+                <p class="settings-copy" style="margin-top:0.5rem; margin-bottom:0;">Date filters use UTC calendar days so compliance reviews stay consistent across time zones.</p>
+                <p class="settings-copy" style="margin-top:0.5rem; margin-bottom:0;">CSV export includes all matching events for the current filters, not just the page shown below.</p>
               </form>
 
               ${
@@ -547,11 +615,19 @@ function render(container: HTMLElement, state: OrgDetailViewState): void {
                   ? `<div class="alert alert-error">${escapeHtml(auditError)}</div>`
                   : auditLogs.length === 0
                     ? `<div class="empty-state"><h3>${escapeHtml(
-                        auditAction || auditActorUserId || auditPage > 1
+                        auditAction ||
+                          auditActorUserId ||
+                          auditOccurredFrom ||
+                          auditOccurredUntil ||
+                          auditPage > 1
                           ? 'No matching activity'
                           : 'No activity yet'
                       )}</h3><p>${escapeHtml(
-                        auditAction || auditActorUserId || auditPage > 1
+                        auditAction ||
+                          auditActorUserId ||
+                          auditOccurredFrom ||
+                          auditOccurredUntil ||
+                          auditPage > 1
                           ? 'Try clearing the filter or moving back a page to review earlier governance events.'
                           : 'Recent governance events will appear here once members, invitations, teams, and package access change.'
                       )}</p></div>`
@@ -914,6 +990,17 @@ function render(container: HTMLElement, state: OrgDetailViewState): void {
         <section class="card settings-section">
           <div class="org-section-header">
             <div>
+              <h2>Security overview</h2>
+              <p class="settings-copy">Track open findings across the organization packages currently visible to you, then jump into package detail pages for deeper triage.</p>
+            </div>
+          </div>
+
+          ${renderOrgSecurityOverview(securitySummary, securityPackages, securityError)}
+        </section>
+
+        <section class="card settings-section">
+          <div class="org-section-header">
+            <div>
               <h2>Repositories</h2>
               <p class="settings-copy">Review the repositories that belong to this organization, inspect their visible packages, and manage hosted, staging, or mirrored sources from the same workspace.</p>
             </div>
@@ -989,10 +1076,42 @@ function render(container: HTMLElement, state: OrgDetailViewState): void {
   const auditFilterForm = container.querySelector<HTMLFormElement>(
     '#org-audit-filter-form'
   );
+  const auditOccurredFromInput =
+    auditFilterForm?.querySelector<HTMLInputElement>(
+      '#org-audit-occurred-from'
+    ) || null;
+  const auditOccurredUntilInput =
+    auditFilterForm?.querySelector<HTMLInputElement>(
+      '#org-audit-occurred-until'
+    ) || null;
+
+  [auditOccurredFromInput, auditOccurredUntilInput].forEach((input) => {
+    input?.addEventListener('input', () => {
+      input.setCustomValidity('');
+    });
+  });
+
   auditFilterForm?.addEventListener('submit', (event) => {
     event.preventDefault();
 
     const formData = new FormData(auditFilterForm);
+    const nextOccurredFrom =
+      formData.get('occurred_from')?.toString().trim() || '';
+    const nextOccurredUntil =
+      formData.get('occurred_until')?.toString().trim() || '';
+
+    if (
+      nextOccurredFrom &&
+      nextOccurredUntil &&
+      nextOccurredFrom > nextOccurredUntil
+    ) {
+      auditOccurredUntilInput?.setCustomValidity(
+        'End date must be on or after the start date.'
+      );
+      auditOccurredUntilInput?.reportValidity();
+      return;
+    }
+
     navigate(
       buildOrgAuditPath(
         slug,
@@ -1000,6 +1119,8 @@ function render(container: HTMLElement, state: OrgDetailViewState): void {
           action: formData.get('action')?.toString() || '',
           actorUserId: auditActorUserId,
           actorUsername: auditActorUsername,
+          occurredFrom: nextOccurredFrom,
+          occurredUntil: nextOccurredUntil,
           page: 1,
         },
         window.location.search
@@ -1011,6 +1132,51 @@ function render(container: HTMLElement, state: OrgDetailViewState): void {
     container.querySelector<HTMLButtonElement>(
       '[data-clear-audit-action-filter]'
     );
+  const exportAuditButton = container.querySelector<HTMLButtonElement>(
+    '[data-export-org-audit]'
+  );
+  exportAuditButton?.addEventListener('click', async () => {
+    const originalLabel = exportAuditButton.textContent || 'Export CSV';
+    exportAuditButton.disabled = true;
+    exportAuditButton.textContent = 'Exporting…';
+
+    try {
+      const csv = await exportOrgAuditLogsCsv(slug, {
+        action: auditAction || undefined,
+        actorUserId: auditActorUserId || undefined,
+        occurredFrom: auditOccurredFrom || undefined,
+        occurredUntil: auditOccurredUntil || undefined,
+      });
+
+      downloadTextFile(
+        buildOrgAuditExportFilename(slug, {
+          action: auditAction,
+          actorUsername: auditActorUsername,
+          occurredFrom: auditOccurredFrom,
+          occurredUntil: auditOccurredUntil,
+        }),
+        csv,
+        'text/csv;charset=utf-8'
+      );
+
+      exportAuditButton.disabled = false;
+      exportAuditButton.textContent = originalLabel;
+    } catch (caughtError: unknown) {
+      await loadAndRender(container, slug, {
+        error: toErrorMessage(
+          caughtError,
+          'Failed to export the organization activity log.'
+        ),
+        auditAction,
+        auditActorUserId,
+        auditActorUsername,
+        auditOccurredFrom,
+        auditOccurredUntil,
+        auditPage,
+      });
+    }
+  });
+
   clearAuditActionFilterButton?.addEventListener('click', () => {
     navigate(
       buildOrgAuditPath(
@@ -1019,6 +1185,8 @@ function render(container: HTMLElement, state: OrgDetailViewState): void {
           action: '',
           actorUserId: auditActorUserId,
           actorUsername: auditActorUsername,
+          occurredFrom: auditOccurredFrom,
+          occurredUntil: auditOccurredUntil,
           page: 1,
         },
         window.location.search
@@ -1038,6 +1206,28 @@ function render(container: HTMLElement, state: OrgDetailViewState): void {
           action: auditAction,
           actorUserId: '',
           actorUsername: '',
+          occurredFrom: auditOccurredFrom,
+          occurredUntil: auditOccurredUntil,
+          page: 1,
+        },
+        window.location.search
+      )
+    );
+  });
+
+  const clearAuditDateFilterButton = container.querySelector<HTMLButtonElement>(
+    '[data-clear-audit-date-filter]'
+  );
+  clearAuditDateFilterButton?.addEventListener('click', () => {
+    navigate(
+      buildOrgAuditPath(
+        slug,
+        {
+          action: auditAction,
+          actorUserId: auditActorUserId,
+          actorUsername: auditActorUsername,
+          occurredFrom: '',
+          occurredUntil: '',
           page: 1,
         },
         window.location.search
@@ -1065,6 +1255,8 @@ function render(container: HTMLElement, state: OrgDetailViewState): void {
               action: auditAction,
               actorUserId: auditActorUserId,
               actorUsername: auditActorUsername,
+              occurredFrom: auditOccurredFrom,
+              occurredUntil: auditOccurredUntil,
               page: nextPage,
             },
             window.location.search
@@ -1093,6 +1285,8 @@ function render(container: HTMLElement, state: OrgDetailViewState): void {
               action: auditAction,
               actorUserId: nextActorUserId,
               actorUsername: nextActorUsername,
+              occurredFrom: auditOccurredFrom,
+              occurredUntil: auditOccurredUntil,
               page: 1,
             },
             window.location.search
@@ -2267,6 +2461,171 @@ function renderNamespaceClaims(
   `;
 }
 
+function renderOrgSecurityOverview(
+  securitySummary: OrgSecuritySummary | null,
+  securityPackages: OrgSecurityPackageSummary[],
+  securityError: string | null
+): string {
+  if (securityError) {
+    return `<div class="alert alert-error">${escapeHtml(securityError)}</div>`;
+  }
+
+  const severityCounts = normalizeSecuritySeverityCounts(
+    securitySummary?.severities
+  );
+  const openFindingCount =
+    typeof securitySummary?.open_findings === 'number' &&
+    Number.isFinite(securitySummary.open_findings)
+      ? Math.max(0, Math.trunc(securitySummary.open_findings))
+      : totalSecuritySeverityCounts(severityCounts);
+  const affectedPackageCount =
+    typeof securitySummary?.affected_packages === 'number' &&
+    Number.isFinite(securitySummary.affected_packages)
+      ? Math.max(0, Math.trunc(securitySummary.affected_packages))
+      : securityPackages.length;
+
+  if (openFindingCount === 0 || securityPackages.length === 0) {
+    return `
+      <div class="empty-state">
+        <h3>No open security findings</h3>
+        <p>The packages currently visible to you do not have any unresolved findings yet.</p>
+      </div>
+    `;
+  }
+
+  const sortedPackages = [...securityPackages].sort((left, right) => {
+    const leftWorstSeverity = left.worst_severity
+      ? normalizeSecuritySeverity(left.worst_severity)
+      : worstSecuritySeverityFromCounts(left.severities);
+    const rightWorstSeverity = right.worst_severity
+      ? normalizeSecuritySeverity(right.worst_severity)
+      : worstSecuritySeverityFromCounts(right.severities);
+    const leftOpenFindings =
+      typeof left.open_findings === 'number' &&
+      Number.isFinite(left.open_findings)
+        ? Math.max(0, Math.trunc(left.open_findings))
+        : totalSecuritySeverityCounts(left.severities);
+    const rightOpenFindings =
+      typeof right.open_findings === 'number' &&
+      Number.isFinite(right.open_findings)
+        ? Math.max(0, Math.trunc(right.open_findings))
+        : totalSecuritySeverityCounts(right.severities);
+    const leftKey = `${left.ecosystem || ''}:${left.name || ''}`.toLowerCase();
+    const rightKey =
+      `${right.ecosystem || ''}:${right.name || ''}`.toLowerCase();
+
+    const severityDelta =
+      securitySeverityRank(rightWorstSeverity) -
+      securitySeverityRank(leftWorstSeverity);
+    if (severityDelta !== 0) {
+      return severityDelta;
+    }
+
+    const findingDelta = rightOpenFindings - leftOpenFindings;
+    if (findingDelta !== 0) {
+      return findingDelta;
+    }
+
+    return leftKey.localeCompare(rightKey);
+  });
+
+  return `
+    <div class="settings-section" style="padding-top:0;">
+      <div class="org-kpi-grid">
+        <div class="org-kpi">
+          <span class="org-kpi__value">${escapeHtml(formatNumber(openFindingCount))}</span>
+          <span class="org-kpi__label">Open findings</span>
+        </div>
+        <div class="org-kpi">
+          <span class="org-kpi__value">${escapeHtml(formatNumber(affectedPackageCount))}</span>
+          <span class="org-kpi__label">Affected packages</span>
+        </div>
+        <div class="org-kpi">
+          <span class="org-kpi__value">${escapeHtml(formatNumber(severityCounts.critical))}</span>
+          <span class="org-kpi__label">Critical</span>
+        </div>
+        <div class="org-kpi">
+          <span class="org-kpi__value">${escapeHtml(formatNumber(severityCounts.high))}</span>
+          <span class="org-kpi__label">High</span>
+        </div>
+      </div>
+
+      <p class="settings-copy" style="margin-top:1rem;">
+        This overview respects current package visibility. Public visitors see only public packages in public repositories, while organization members also see non-public findings they can already access.
+      </p>
+
+      <div class="token-row__scopes" style="margin-top:0.75rem; margin-bottom:1rem;">
+        ${renderSecuritySeverityBadges(severityCounts)}
+      </div>
+
+      <div class="token-list">
+        ${sortedPackages.map(renderOrgSecurityPackageRow).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function renderOrgSecurityPackageRow(pkg: OrgSecurityPackageSummary): string {
+  const severityCounts = normalizeSecuritySeverityCounts(pkg.severities);
+  const openFindingCount =
+    typeof pkg.open_findings === 'number' && Number.isFinite(pkg.open_findings)
+      ? Math.max(0, Math.trunc(pkg.open_findings))
+      : totalSecuritySeverityCounts(severityCounts);
+  const worstSeverity = pkg.worst_severity
+    ? normalizeSecuritySeverity(pkg.worst_severity)
+    : worstSecuritySeverityFromCounts(severityCounts);
+  const packageName = pkg.name || 'Unnamed package';
+  const ecosystem = pkg.ecosystem || 'unknown';
+  const visibility = pkg.visibility || 'public';
+
+  return `
+    <div class="token-row">
+      <div class="token-row__main">
+        <div class="token-row__title">
+          <a href="/packages/${encodeURIComponent(ecosystemOrFallback(ecosystem))}/${encodeURIComponent(packageName)}">${escapeHtml(packageName)}</a>
+        </div>
+        <div class="token-row__meta">
+          <span>${escapeHtml(ecosystemLabel(ecosystem))}</span>
+          <span>${escapeHtml(formatIdentifierLabel(visibility))}</span>
+          <span>${escapeHtml(formatOpenFindingLabel(openFindingCount))}</span>
+          ${pkg.latest_detected_at ? `<span>latest ${escapeHtml(formatDate(pkg.latest_detected_at))}</span>` : ''}
+        </div>
+        ${pkg.description ? `<p class="settings-copy">${escapeHtml(pkg.description)}</p>` : ''}
+        <div class="token-row__scopes">
+          <span class="badge badge-severity-${worstSeverity}">${escapeHtml(`${formatIdentifierLabel(worstSeverity)} highest`)}</span>
+          ${renderSecuritySeverityBadges(severityCounts)}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderSecuritySeverityBadges(
+  counts:
+    | Partial<
+        Record<(typeof SECURITY_SEVERITIES)[number], number | null | undefined>
+      >
+    | null
+    | undefined
+): string {
+  const normalizedCounts = normalizeSecuritySeverityCounts(counts);
+
+  return SECURITY_SEVERITIES.filter(
+    (severity) => normalizedCounts[severity] > 0
+  )
+    .map(
+      (severity) =>
+        `<span class="badge badge-severity-${severity}">${escapeHtml(`${formatNumber(normalizedCounts[severity])} ${severity}`)}</span>`
+    )
+    .join('');
+}
+
+function formatOpenFindingLabel(openFindingCount: number): string {
+  return openFindingCount === 1
+    ? '1 open finding'
+    : `${formatNumber(openFindingCount)} open findings`;
+}
+
 function renderNamespaceClaimForm(): string {
   return `
     <form id="org-namespace-form" class="settings-subsection">
@@ -2767,23 +3126,64 @@ function formatAuditFilterSummary(
   auditPage: number,
   auditAction: string,
   auditActorUserId: string,
-  auditActorUsername: string
+  auditActorUsername: string,
+  auditOccurredFrom: string,
+  auditOccurredUntil: string
 ): string {
   const prefix = `Showing page ${auditPage} with up to ${ORG_AUDIT_PAGE_SIZE} events`;
+  const dateSummary = formatAuditDateRangeSummary(
+    auditOccurredFrom,
+    auditOccurredUntil
+  );
+
+  if (auditAction && auditActorUserId && dateSummary) {
+    return `${prefix} ${dateSummary}, filtered to ${formatAuditActionLabel(auditAction).toLowerCase()} activity by ${formatAuditActorQueryLabel(auditActorUsername)}.`;
+  }
 
   if (auditAction && auditActorUserId) {
     return `${prefix} filtered to ${formatAuditActionLabel(auditAction).toLowerCase()} activity by ${formatAuditActorQueryLabel(auditActorUsername)}.`;
+  }
+
+  if (auditAction && dateSummary) {
+    return `${prefix} ${dateSummary}, filtered to ${formatAuditActionLabel(auditAction).toLowerCase()}.`;
   }
 
   if (auditAction) {
     return `${prefix} filtered to ${formatAuditActionLabel(auditAction).toLowerCase()}.`;
   }
 
+  if (auditActorUserId && dateSummary) {
+    return `${prefix} ${dateSummary}, filtered to activity by ${formatAuditActorQueryLabel(auditActorUsername)}.`;
+  }
+
   if (auditActorUserId) {
     return `${prefix} filtered to activity by ${formatAuditActorQueryLabel(auditActorUsername)}.`;
   }
 
+  if (dateSummary) {
+    return `${prefix} ${dateSummary}.`;
+  }
+
   return `${prefix}.`;
+}
+
+function formatAuditDateRangeSummary(
+  occurredFrom: string,
+  occurredUntil: string
+): string {
+  if (occurredFrom && occurredUntil) {
+    return `for UTC dates ${occurredFrom} through ${occurredUntil}`;
+  }
+
+  if (occurredFrom) {
+    return `for UTC dates on or after ${occurredFrom}`;
+  }
+
+  if (occurredUntil) {
+    return `for UTC dates on or before ${occurredUntil}`;
+  }
+
+  return '';
 }
 
 function formatAuditActionLabel(action: string): string {
@@ -3226,6 +3626,30 @@ function formatIdentifierLabel(value: string): string {
     .filter(Boolean)
     .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
     .join(' ');
+}
+
+function ecosystemOrFallback(ecosystem: string): string {
+  const normalized = ecosystem.trim();
+  return normalized.length > 0 ? normalized : 'unknown';
+}
+
+function downloadTextFile(
+  filename: string,
+  contents: string,
+  contentType: string
+): void {
+  const blob = new Blob([contents], { type: contentType });
+  const objectUrl = window.URL.createObjectURL(blob);
+  const link = document.createElement('a');
+
+  link.href = objectUrl;
+  link.download = filename;
+  link.style.display = 'none';
+
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.URL.revokeObjectURL(objectUrl);
 }
 
 function getSubmitButton(form: HTMLFormElement): HTMLButtonElement | null {

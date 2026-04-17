@@ -1,9 +1,11 @@
 use axum::{
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{header, HeaderMap, HeaderValue, StatusCode},
+    response::IntoResponse,
     routing::{delete, get, patch, post, put},
     Json, Router,
 };
+use csv::WriterBuilder;
 use serde::Deserialize;
 use sqlx::{Postgres, QueryBuilder, Row};
 use std::collections::{BTreeSet, HashMap};
@@ -36,6 +38,10 @@ pub fn router() -> Router<AppState> {
         .route("/v1/orgs/:slug", get(get_org))
         .route("/v1/orgs/:slug", patch(update_org))
         .route("/v1/orgs/:slug/audit", get(list_org_audit_logs))
+        .route(
+            "/v1/orgs/:slug/audit/export",
+            get(export_org_audit_logs_csv),
+        )
         .route("/v1/orgs/:slug/members", get(list_members))
         .route("/v1/orgs/:slug/members", post(add_member))
         .route("/v1/orgs/:slug/members/:username", delete(remove_member))
@@ -64,6 +70,10 @@ pub fn router() -> Router<AppState> {
             put(replace_team_package_access).delete(remove_team_package_access),
         )
         .route("/v1/orgs/:slug/repositories", get(list_org_repositories))
+        .route(
+            "/v1/orgs/:slug/security-findings",
+            get(list_org_security_findings),
+        )
         .route("/v1/orgs/:slug/packages", get(list_org_packages))
 }
 
@@ -184,8 +194,18 @@ struct UpdateOrgRequest {
 struct OrgAuditQuery {
     action: Option<String>,
     actor_user_id: Option<Uuid>,
+    occurred_from: Option<String>,
+    occurred_until: Option<String>,
     page: Option<u32>,
     per_page: Option<u32>,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedOrgAuditFilters {
+    action: Option<String>,
+    actor_user_id: Option<Uuid>,
+    occurred_from: Option<chrono::NaiveDate>,
+    occurred_until: Option<chrono::NaiveDate>,
 }
 
 async fn update_org(
@@ -342,36 +362,14 @@ async fn list_org_audit_logs(
     ensure_scope(&identity, SCOPE_ORGS_WRITE)?;
 
     let org_id = ensure_org_admin_by_slug(&state.db, &slug, identity.user_id).await?;
+    let filters = resolve_org_audit_filters(&query)?;
     let page = query.page.unwrap_or(1).max(1);
     let limit = query.per_page.unwrap_or(20).max(1).min(100) as i64;
     let offset = ((page.saturating_sub(1)) as i64) * limit;
     let fetch_limit = limit + 1;
 
-    let mut builder = QueryBuilder::<Postgres>::new(
-        "SELECT al.id, al.action::text AS action, al.actor_user_id, actor.username AS actor_username, \
-                actor.display_name AS actor_display_name, al.actor_token_id, \
-                al.target_user_id, target_user.username AS target_username, \
-                target_user.display_name AS target_display_name, al.target_org_id, \
-                al.target_package_id, al.target_release_id, al.metadata, al.occurred_at \
-         FROM audit_logs al \
-         LEFT JOIN users actor ON actor.id = al.actor_user_id \
-         LEFT JOIN users target_user ON target_user.id = al.target_user_id \
-         WHERE al.target_org_id = ",
-    );
-    builder.push_bind(org_id);
-
-    if let Some(action) = query.action.as_deref() {
-        builder
-            .push(" AND al.action = ")
-            .push_bind(action)
-            .push("::audit_action");
-    }
-    if let Some(actor_user_id) = query.actor_user_id {
-        builder
-            .push(" AND al.actor_user_id = ")
-            .push_bind(actor_user_id);
-    }
-
+    let mut builder = build_org_audit_query(org_id);
+    apply_org_audit_filters(&mut builder, &filters)?;
     builder
         .push(" ORDER BY al.occurred_at DESC LIMIT ")
         .push_bind(fetch_limit)
@@ -417,6 +415,264 @@ async fn list_org_audit_logs(
         "has_next": has_next,
         "logs": logs,
     })))
+}
+
+async fn export_org_audit_logs_csv(
+    State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
+    Path(slug): Path<String>,
+    Query(query): Query<OrgAuditQuery>,
+) -> ApiResult<impl IntoResponse> {
+    ensure_scope(&identity, SCOPE_ORGS_WRITE)?;
+
+    let org_id = ensure_org_admin_by_slug(&state.db, &slug, identity.user_id).await?;
+    let filters = resolve_org_audit_filters(&query)?;
+
+    let mut builder = build_org_audit_query(org_id);
+    apply_org_audit_filters(&mut builder, &filters)?;
+    builder.push(" ORDER BY al.occurred_at DESC");
+
+    let rows = builder
+        .build()
+        .fetch_all(&state.db)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let csv_body = build_org_audit_csv(&rows)?;
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/csv; charset=utf-8"),
+    );
+    headers.insert(
+        header::CONTENT_DISPOSITION,
+        HeaderValue::from_str(&format!(
+            "attachment; filename=\"org-audit-{slug}.csv\""
+        ))
+        .map_err(|error| ApiError(Error::Internal(error.to_string())))?,
+    );
+
+    Ok((headers, csv_body))
+}
+
+fn build_org_audit_query(org_id: Uuid) -> QueryBuilder<'static, Postgres> {
+    let mut builder = QueryBuilder::<Postgres>::new(
+        "SELECT al.id, al.action::text AS action, al.actor_user_id, actor.username AS actor_username, \
+                actor.display_name AS actor_display_name, al.actor_token_id, \
+                al.target_user_id, target_user.username AS target_username, \
+                target_user.display_name AS target_display_name, al.target_org_id, \
+                al.target_package_id, al.target_release_id, al.metadata, al.occurred_at \
+         FROM audit_logs al \
+         LEFT JOIN users actor ON actor.id = al.actor_user_id \
+         LEFT JOIN users target_user ON target_user.id = al.target_user_id \
+         WHERE al.target_org_id = ",
+    );
+    builder.push_bind(org_id);
+
+    builder
+}
+
+fn apply_org_audit_filters(
+    builder: &mut QueryBuilder<'_, Postgres>,
+    filters: &ResolvedOrgAuditFilters,
+) -> ApiResult<()> {
+    if let Some(action) = &filters.action {
+        builder
+            .push(" AND al.action = ")
+            .push_bind(action.clone())
+            .push("::audit_action");
+    }
+    if let Some(actor_user_id) = filters.actor_user_id {
+        builder
+            .push(" AND al.actor_user_id = ")
+            .push_bind(actor_user_id);
+    }
+    if let Some(occurred_from) = filters.occurred_from {
+        builder
+            .push(" AND al.occurred_at >= ")
+            .push_bind(org_audit_filter_start(occurred_from)?);
+    }
+    if let Some(occurred_until) = filters.occurred_until {
+        builder
+            .push(" AND al.occurred_at < ")
+            .push_bind(org_audit_filter_end_exclusive(occurred_until)?);
+    }
+
+    Ok(())
+}
+
+fn resolve_org_audit_filters(query: &OrgAuditQuery) -> ApiResult<ResolvedOrgAuditFilters> {
+    let occurred_from = parse_org_audit_date_filter(
+        "occurred_from",
+        query.occurred_from.as_deref(),
+    )?;
+    let occurred_until = parse_org_audit_date_filter(
+        "occurred_until",
+        query.occurred_until.as_deref(),
+    )?;
+
+    if let (Some(occurred_from), Some(occurred_until)) = (occurred_from, occurred_until) {
+        if occurred_from > occurred_until {
+            return Err(ApiError(Error::Validation(
+                "'occurred_from' must be on or before 'occurred_until'".into(),
+            )));
+        }
+    }
+
+    Ok(ResolvedOrgAuditFilters {
+        action: normalize_optional_query_string(query.action.as_deref()),
+        actor_user_id: query.actor_user_id,
+        occurred_from,
+        occurred_until,
+    })
+}
+
+fn normalize_optional_query_string(value: Option<&str>) -> Option<String> {
+    let trimmed = value?.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_owned())
+    }
+}
+
+fn build_org_audit_csv(rows: &[sqlx::postgres::PgRow]) -> ApiResult<String> {
+    let mut writer = WriterBuilder::new().from_writer(Vec::new());
+    writer
+        .write_record([
+            "id",
+            "occurred_at",
+            "action",
+            "actor_user_id",
+            "actor_username",
+            "actor_display_name",
+            "actor_token_id",
+            "target_user_id",
+            "target_username",
+            "target_display_name",
+            "target_org_id",
+            "target_package_id",
+            "target_release_id",
+            "metadata_json",
+        ])
+        .map_err(csv_write_error)?;
+
+    for row in rows {
+        let metadata_json = row
+            .try_get::<Option<serde_json::Value>, _>("metadata")
+            .map_err(|error| ApiError(Error::Internal(error.to_string())))?
+            .map(|metadata| metadata.to_string())
+            .unwrap_or_default();
+
+        writer
+            .write_record([
+                row.try_get::<Uuid, _>("id")
+                    .map_err(|error| ApiError(Error::Internal(error.to_string())))?
+                    .to_string(),
+                row.try_get::<chrono::DateTime<chrono::Utc>, _>("occurred_at")
+                    .map_err(|error| ApiError(Error::Internal(error.to_string())))?
+                    .to_rfc3339(),
+                row.try_get::<String, _>("action")
+                    .map_err(|error| ApiError(Error::Internal(error.to_string())))?,
+                row.try_get::<Option<Uuid>, _>("actor_user_id")
+                    .map_err(|error| ApiError(Error::Internal(error.to_string())))?
+                    .map(|value| value.to_string())
+                    .unwrap_or_default(),
+                row.try_get::<Option<String>, _>("actor_username")
+                    .map_err(|error| ApiError(Error::Internal(error.to_string())))?
+                    .unwrap_or_default(),
+                row.try_get::<Option<String>, _>("actor_display_name")
+                    .map_err(|error| ApiError(Error::Internal(error.to_string())))?
+                    .unwrap_or_default(),
+                row.try_get::<Option<Uuid>, _>("actor_token_id")
+                    .map_err(|error| ApiError(Error::Internal(error.to_string())))?
+                    .map(|value| value.to_string())
+                    .unwrap_or_default(),
+                row.try_get::<Option<Uuid>, _>("target_user_id")
+                    .map_err(|error| ApiError(Error::Internal(error.to_string())))?
+                    .map(|value| value.to_string())
+                    .unwrap_or_default(),
+                row.try_get::<Option<String>, _>("target_username")
+                    .map_err(|error| ApiError(Error::Internal(error.to_string())))?
+                    .unwrap_or_default(),
+                row.try_get::<Option<String>, _>("target_display_name")
+                    .map_err(|error| ApiError(Error::Internal(error.to_string())))?
+                    .unwrap_or_default(),
+                row.try_get::<Option<Uuid>, _>("target_org_id")
+                    .map_err(|error| ApiError(Error::Internal(error.to_string())))?
+                    .map(|value| value.to_string())
+                    .unwrap_or_default(),
+                row.try_get::<Option<Uuid>, _>("target_package_id")
+                    .map_err(|error| ApiError(Error::Internal(error.to_string())))?
+                    .map(|value| value.to_string())
+                    .unwrap_or_default(),
+                row.try_get::<Option<Uuid>, _>("target_release_id")
+                    .map_err(|error| ApiError(Error::Internal(error.to_string())))?
+                    .map(|value| value.to_string())
+                    .unwrap_or_default(),
+                metadata_json,
+            ])
+            .map_err(csv_write_error)?;
+    }
+
+    let bytes = writer
+        .into_inner()
+        .map_err(|error| ApiError(Error::Internal(error.to_string())))?;
+
+    String::from_utf8(bytes).map_err(|error| ApiError(Error::Internal(error.to_string())))
+}
+
+fn csv_write_error(error: csv::Error) -> ApiError {
+    ApiError(Error::Internal(error.to_string()))
+}
+
+fn parse_org_audit_date_filter(
+    field_name: &str,
+    value: Option<&str>,
+) -> ApiResult<Option<chrono::NaiveDate>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+
+    chrono::NaiveDate::parse_from_str(trimmed, "%Y-%m-%d")
+        .map(Some)
+        .map_err(|_| {
+            ApiError(Error::Validation(format!(
+                "'{field_name}' must use the YYYY-MM-DD format"
+            )))
+        })
+}
+
+fn org_audit_filter_start(
+    date: chrono::NaiveDate,
+) -> ApiResult<chrono::DateTime<chrono::Utc>> {
+    let Some(naive_datetime) = date.and_hms_opt(0, 0, 0) else {
+        return Err(ApiError(Error::Internal(
+            "Failed to construct the audit start timestamp".into(),
+        )));
+    };
+
+    Ok(chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(
+        naive_datetime,
+        chrono::Utc,
+    ))
+}
+
+fn org_audit_filter_end_exclusive(
+    date: chrono::NaiveDate,
+) -> ApiResult<chrono::DateTime<chrono::Utc>> {
+    let Some(next_day) = date.succ_opt() else {
+        return Err(ApiError(Error::Validation(
+            "'occurred_until' must be earlier than the maximum supported audit date".into(),
+        )));
+    };
+
+    org_audit_filter_start(next_day)
 }
 
 async fn list_members(
@@ -1679,6 +1935,225 @@ async fn list_org_repositories(
         .collect();
 
     Ok(Json(serde_json::json!({ "repositories": repositories })))
+}
+
+#[derive(Debug, Clone, Default)]
+struct SecuritySeverityCounts {
+    critical: i64,
+    high: i64,
+    medium: i64,
+    low: i64,
+    info: i64,
+}
+
+impl SecuritySeverityCounts {
+    fn total(&self) -> i64 {
+        self.critical + self.high + self.medium + self.low + self.info
+    }
+
+    fn worst_severity(&self) -> &'static str {
+        if self.critical > 0 {
+            "critical"
+        } else if self.high > 0 {
+            "high"
+        } else if self.medium > 0 {
+            "medium"
+        } else if self.low > 0 {
+            "low"
+        } else {
+            "info"
+        }
+    }
+
+    fn worst_rank(&self) -> i32 {
+        match self.worst_severity() {
+            "critical" => 4,
+            "high" => 3,
+            "medium" => 2,
+            "low" => 1,
+            _ => 0,
+        }
+    }
+
+    fn merge_from(&mut self, other: &Self) {
+        self.critical += other.critical;
+        self.high += other.high;
+        self.medium += other.medium;
+        self.low += other.low;
+        self.info += other.info;
+    }
+
+    fn as_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "critical": self.critical,
+            "high": self.high,
+            "medium": self.medium,
+            "low": self.low,
+            "info": self.info,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+struct OrgSecurityPackageSummary {
+    package_id: Uuid,
+    ecosystem: String,
+    name: String,
+    description: Option<String>,
+    visibility: String,
+    latest_detected_at: Option<chrono::DateTime<chrono::Utc>>,
+    severities: SecuritySeverityCounts,
+}
+
+impl OrgSecurityPackageSummary {
+    fn open_findings(&self) -> i64 {
+        self.severities.total()
+    }
+
+    fn worst_rank(&self) -> i32 {
+        self.severities.worst_rank()
+    }
+
+    fn as_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "package_id": self.package_id,
+            "ecosystem": self.ecosystem,
+            "name": self.name,
+            "description": self.description,
+            "visibility": self.visibility,
+            "open_findings": self.open_findings(),
+            "worst_severity": self.severities.worst_severity(),
+            "latest_detected_at": self.latest_detected_at,
+            "severities": self.severities.as_json(),
+        })
+    }
+}
+
+async fn list_org_security_findings(
+    State(state): State<AppState>,
+    identity: OptionalAuthenticatedIdentity,
+    Path(slug): Path<String>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let org_row = sqlx::query("SELECT id FROM organizations WHERE slug = $1")
+        .bind(&slug)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?
+        .ok_or_else(|| ApiError(Error::NotFound(format!("Organization '{slug}' not found"))))?;
+
+    let org_id: Uuid = org_row
+        .try_get("id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let actor_user_id = identity.user_id();
+    let can_view_non_public = match actor_user_id {
+        Some(actor_user_id) => is_org_member(&state.db, org_id, actor_user_id).await?,
+        None => false,
+    };
+
+    let rows = sqlx::query(
+        "SELECT p.id, p.ecosystem, p.name, p.description, p.visibility::text AS visibility, \
+                MAX(sf.detected_at) AS latest_detected_at, \
+                COUNT(sf.id) FILTER (WHERE sf.severity = 'critical'::security_severity)::BIGINT AS critical_count, \
+                COUNT(sf.id) FILTER (WHERE sf.severity = 'high'::security_severity)::BIGINT AS high_count, \
+                COUNT(sf.id) FILTER (WHERE sf.severity = 'medium'::security_severity)::BIGINT AS medium_count, \
+                COUNT(sf.id) FILTER (WHERE sf.severity = 'low'::security_severity)::BIGINT AS low_count, \
+                COUNT(sf.id) FILTER (WHERE sf.severity = 'info'::security_severity)::BIGINT AS info_count \
+         FROM packages p \
+         JOIN repositories r ON r.id = p.repository_id \
+         JOIN releases rel ON rel.package_id = p.id \
+         JOIN security_findings sf ON sf.release_id = rel.id \
+         WHERE p.owner_org_id = $1 \
+           AND sf.is_resolved = false \
+           AND ($2::bool = true OR (p.visibility = 'public' AND r.visibility = 'public')) \
+         GROUP BY p.id, p.ecosystem, p.name, p.description, p.visibility",
+    )
+    .bind(org_id)
+    .bind(can_view_non_public)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let mut packages = rows
+        .iter()
+        .map(build_org_security_package_summary)
+        .collect::<ApiResult<Vec<_>>>()?;
+
+    packages.sort_by(|left, right| {
+        right
+            .worst_rank()
+            .cmp(&left.worst_rank())
+            .then_with(|| right.open_findings().cmp(&left.open_findings()))
+            .then_with(|| left.ecosystem.cmp(&right.ecosystem))
+            .then_with(|| left.name.cmp(&right.name))
+    });
+
+    let mut summary_severities = SecuritySeverityCounts::default();
+    for package in &packages {
+        summary_severities.merge_from(&package.severities);
+    }
+
+    let package_count = packages.len();
+    let packages = packages
+        .iter()
+        .map(OrgSecurityPackageSummary::as_json)
+        .collect::<Vec<_>>();
+
+    Ok(Json(serde_json::json!({
+        "summary": {
+            "open_findings": summary_severities.total(),
+            "affected_packages": package_count,
+            "severities": summary_severities.as_json(),
+        },
+        "packages": packages,
+    })))
+}
+
+fn build_org_security_package_summary(
+    row: &sqlx::postgres::PgRow,
+) -> ApiResult<OrgSecurityPackageSummary> {
+    Ok(OrgSecurityPackageSummary {
+        package_id: row
+            .try_get("id")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        ecosystem: row
+            .try_get("ecosystem")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        name: row
+            .try_get("name")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        description: row
+            .try_get::<Option<String>, _>("description")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        visibility: row
+            .try_get("visibility")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        latest_detected_at: row
+            .try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("latest_detected_at")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        severities: security_severity_counts_from_row(row)?,
+    })
+}
+
+fn security_severity_counts_from_row(
+    row: &sqlx::postgres::PgRow,
+) -> ApiResult<SecuritySeverityCounts> {
+    Ok(SecuritySeverityCounts {
+        critical: row
+            .try_get("critical_count")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        high: row
+            .try_get("high_count")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        medium: row
+            .try_get("medium_count")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        low: row
+            .try_get("low_count")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        info: row
+            .try_get("info_count")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+    })
 }
 
 async fn load_team_record(

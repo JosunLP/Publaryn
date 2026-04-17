@@ -31,7 +31,8 @@ use publaryn_search::{PackageDocument, SearchIndex};
 use crate::{
     error::{ApiError, ApiResult},
     request_auth::{
-        actor_can_transfer_package_by_id, actor_can_write_package_by_id,
+        actor_can_publish_package_by_id, actor_can_transfer_package_by_id,
+        actor_can_write_package_by_id,
         ensure_package_admin_access, ensure_package_metadata_write_access,
         ensure_package_publish_access, ensure_package_read_access, ensure_package_transfer_access,
         ensure_repository_write_access, AuthenticatedIdentity, OptionalAuthenticatedIdentity,
@@ -117,6 +118,24 @@ struct ReleaseAccess {
     status: String,
 }
 
+async fn can_manage_releases_for_package(
+    db: &sqlx::PgPool,
+    package_id: Uuid,
+    identity: &OptionalAuthenticatedIdentity,
+) -> ApiResult<bool> {
+    match identity.0.as_ref() {
+        Some(identity)
+            if identity
+                .scopes()
+                .iter()
+                .any(|scope| scope == SCOPE_PACKAGES_WRITE) =>
+        {
+            actor_can_publish_package_by_id(db, package_id, Some(identity.user_id)).await
+        }
+        _ => Ok(false),
+    }
+}
+
 async fn get_package(
     State(state): State<AppState>,
     identity: OptionalAuthenticatedIdentity,
@@ -127,6 +146,8 @@ async fn get_package(
     let package_id =
         ensure_package_read_access(&state.db, eco.as_str(), &normalized, identity.user_id())
             .await?;
+    let can_manage_releases =
+        can_manage_releases_for_package(&state.db, package_id, &identity).await?;
     let can_transfer = match identity.0.as_ref() {
         Some(identity)
             if identity
@@ -140,8 +161,8 @@ async fn get_package(
     };
 
     let row = sqlx::query(
-        "SELECT p.id, p.name, p.ecosystem, p.description, p.homepage, p.repository_url, \
-                p.license, p.keywords, p.visibility, p.is_deprecated, \
+        "SELECT p.id, p.name, p.display_name, p.ecosystem, p.description, p.readme, \
+            p.homepage, p.repository_url, p.license, p.keywords, p.visibility, p.is_deprecated, \
                 p.deprecation_message, p.is_archived, p.download_count, p.created_at, \
                 p.updated_at, u.username AS owner_username, o.slug AS owner_org_slug \
          FROM packages p \
@@ -162,8 +183,10 @@ async fn get_package(
     Ok(Json(serde_json::json!({
         "id": row.try_get::<Uuid, _>("id").ok(),
         "name": row.try_get::<String, _>("name").ok(),
+        "display_name": row.try_get::<Option<String>, _>("display_name").ok().flatten(),
         "ecosystem": row.try_get::<String, _>("ecosystem").ok(),
         "description": row.try_get::<Option<String>, _>("description").ok().flatten(),
+        "readme": row.try_get::<Option<String>, _>("readme").ok().flatten(),
         "homepage": row.try_get::<Option<String>, _>("homepage").ok().flatten(),
         "repository_url": row.try_get::<Option<String>, _>("repository_url").ok().flatten(),
         "license": row.try_get::<Option<String>, _>("license").ok().flatten(),
@@ -175,6 +198,7 @@ async fn get_package(
         "download_count": row.try_get::<i64, _>("download_count").ok(),
         "owner_username": row.try_get::<Option<String>, _>("owner_username").ok().flatten(),
         "owner_org_slug": row.try_get::<Option<String>, _>("owner_org_slug").ok().flatten(),
+        "can_manage_releases": can_manage_releases,
         "can_transfer": can_transfer,
         "created_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at").ok(),
         "updated_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("updated_at").ok(),
@@ -789,10 +813,13 @@ async fn get_release(
     let eco = parse_ecosystem(&ecosystem_str)?;
     let release_access =
         ensure_release_read_access(&state.db, &eco, &name, &version, identity.user_id()).await?;
+    let can_manage_releases =
+        can_manage_releases_for_package(&state.db, release_access.package_id, &identity).await?;
 
     let row = sqlx::query(
         "SELECT r.id, r.version, r.status, r.is_yanked, r.yank_reason, r.is_deprecated, \
-                r.deprecation_message, r.is_prerelease, r.changelog, r.source_ref, r.published_at \
+                r.deprecation_message, r.is_prerelease, r.description, r.changelog, \
+                r.source_ref, r.published_at \
          FROM releases r \
          WHERE r.package_id = $1 AND r.version = $2",
     )
@@ -811,11 +838,13 @@ async fn get_release(
         "id": row.try_get::<Uuid, _>("id").ok(),
         "version": row.try_get::<String, _>("version").ok(),
         "status": Some(release_access.status),
+        "can_manage_releases": can_manage_releases,
         "is_yanked": row.try_get::<bool, _>("is_yanked").ok(),
         "yank_reason": row.try_get::<Option<String>, _>("yank_reason").ok().flatten(),
         "is_deprecated": row.try_get::<bool, _>("is_deprecated").ok(),
         "deprecation_message": row.try_get::<Option<String>, _>("deprecation_message").ok().flatten(),
         "is_prerelease": row.try_get::<bool, _>("is_prerelease").ok(),
+        "description": row.try_get::<Option<String>, _>("description").ok().flatten(),
         "changelog": row.try_get::<Option<String>, _>("changelog").ok().flatten(),
         "source_ref": row.try_get::<Option<String>, _>("source_ref").ok().flatten(),
         "published_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("published_at").ok(),

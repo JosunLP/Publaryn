@@ -21,11 +21,14 @@ export const ORG_AUDIT_ACTION_VALUES = [
 const ORG_AUDIT_ACTION_SET = new Set<string>(ORG_AUDIT_ACTION_VALUES);
 const AUDIT_ACTOR_USER_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const AUDIT_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 export interface OrgAuditView {
   action: string;
   actorUserId: string;
   actorUsername: string;
+  occurredFrom: string;
+  occurredUntil: string;
   page: number;
 }
 
@@ -59,6 +62,26 @@ export function normalizeAuditActorUsername(
   return value.trim();
 }
 
+export function normalizeAuditDateValue(
+  value: string | null | undefined
+): string {
+  if (typeof value !== 'string') {
+    return '';
+  }
+
+  const trimmed = value.trim();
+  if (!AUDIT_DATE_PATTERN.test(trimmed)) {
+    return '';
+  }
+
+  const parsedDate = new Date(`${trimmed}T00:00:00Z`);
+  if (Number.isNaN(parsedDate.getTime())) {
+    return '';
+  }
+
+  return parsedDate.toISOString().slice(0, 10) === trimmed ? trimmed : '';
+}
+
 export function formatAuditActorQueryLabel(
   actorUsername: string | null | undefined
 ): string {
@@ -76,6 +99,8 @@ export function getAuditViewFromQuery(query: URLSearchParams): OrgAuditView {
     actorUsername: actorUserId
       ? normalizeAuditActorUsername(query.get('actor_username'))
       : '',
+    occurredFrom: normalizeAuditDateValue(query.get('occurred_from')),
+    occurredUntil: normalizeAuditDateValue(query.get('occurred_until')),
     page: Number.isFinite(parsedPage) && parsedPage > 0 ? parsedPage : 1,
   };
 }
@@ -86,11 +111,15 @@ export function buildOrgAuditPath(
     action,
     actorUserId,
     actorUsername,
+    occurredFrom,
+    occurredUntil,
     page,
   }: {
     action: string | null | undefined;
     actorUserId: string | null | undefined;
     actorUsername?: string | null | undefined;
+    occurredFrom?: string | null | undefined;
+    occurredUntil?: string | null | undefined;
     page: number;
   },
   currentSearch: string | URLSearchParams = ''
@@ -104,6 +133,8 @@ export function buildOrgAuditPath(
   const normalizedActorUsername = normalizedActorUserId
     ? normalizeAuditActorUsername(actorUsername)
     : '';
+  const normalizedOccurredFrom = normalizeAuditDateValue(occurredFrom);
+  const normalizedOccurredUntil = normalizeAuditDateValue(occurredUntil);
 
   if (normalizedAction) {
     params.set('action', normalizedAction);
@@ -123,6 +154,18 @@ export function buildOrgAuditPath(
     params.delete('actor_username');
   }
 
+  if (normalizedOccurredFrom) {
+    params.set('occurred_from', normalizedOccurredFrom);
+  } else {
+    params.delete('occurred_from');
+  }
+
+  if (normalizedOccurredUntil) {
+    params.set('occurred_until', normalizedOccurredUntil);
+  } else {
+    params.delete('occurred_until');
+  }
+
   if (page > 1) {
     params.set('page', String(page));
   } else {
@@ -134,4 +177,68 @@ export function buildOrgAuditPath(
   return queryString
     ? `/orgs/${encodedSlug}?${queryString}`
     : `/orgs/${encodedSlug}`;
+}
+
+export function buildOrgAuditExportFilename(
+  slug: string,
+  {
+    action,
+    actorUsername,
+    occurredFrom,
+    occurredUntil,
+  }: {
+    action?: string | null | undefined;
+    actorUsername?: string | null | undefined;
+    occurredFrom?: string | null | undefined;
+    occurredUntil?: string | null | undefined;
+  },
+  exportedAt: Date = new Date()
+): string {
+  const normalizedSlug =
+    normalizeAuditExportFilenamePart(slug) || 'organization';
+  const normalizedAction = normalizeAuditAction(action);
+  const normalizedActorUsername = normalizeAuditExportFilenamePart(
+    normalizeAuditActorUsername(actorUsername)
+  );
+  const normalizedOccurredFrom = normalizeAuditDateValue(occurredFrom);
+  const normalizedOccurredUntil = normalizeAuditDateValue(occurredUntil);
+  const exportDate = Number.isNaN(exportedAt.getTime())
+    ? new Date().toISOString().slice(0, 10)
+    : exportedAt.toISOString().slice(0, 10);
+  const parts = [`org-audit-${normalizedSlug}`];
+
+  if (normalizedAction) {
+    parts.push(normalizedAction);
+  }
+
+  if (normalizedActorUsername) {
+    parts.push(`actor-${normalizedActorUsername}`);
+  }
+
+  if (normalizedOccurredFrom && normalizedOccurredUntil) {
+    parts.push(`${normalizedOccurredFrom}_to_${normalizedOccurredUntil}`);
+  } else if (normalizedOccurredFrom) {
+    parts.push(`from_${normalizedOccurredFrom}`);
+  } else if (normalizedOccurredUntil) {
+    parts.push(`until_${normalizedOccurredUntil}`);
+  }
+
+  parts.push(exportDate);
+
+  return `${parts.join('--')}.csv`;
+}
+
+function normalizeAuditExportFilenamePart(
+  value: string | null | undefined
+): string {
+  if (typeof value !== 'string') {
+    return '';
+  }
+
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
 }

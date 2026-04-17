@@ -43,6 +43,7 @@ export interface PackageDetail {
   updated_at?: NullableString;
   owner_username?: NullableString;
   owner_org_slug?: NullableString;
+  can_manage_releases?: boolean;
   can_transfer?: boolean;
   homepage?: NullableString;
   repository_url?: NullableString;
@@ -87,17 +88,52 @@ export interface Release {
   published_at?: NullableString;
   created_at?: NullableString;
   is_yanked?: boolean;
+  is_deprecated?: boolean;
   status?: NullableString;
   description?: NullableString;
   changelog?: NullableString;
   is_prerelease?: boolean;
+  yank_reason?: NullableString;
+  deprecation_message?: NullableString;
+  source_ref?: NullableString;
+  can_manage_releases?: boolean;
   sha256?: NullableString;
 }
 
 export interface Artifact {
+  kind?: NullableString;
   filename: string;
   content_type?: NullableString;
   size_bytes?: number | null;
+  sha256?: NullableString;
+  sha512?: NullableString;
+  uploaded_at?: NullableString;
+  is_signed?: boolean;
+  signature_key_id?: NullableString;
+}
+
+export interface CreateReleaseInput {
+  version: string;
+  description?: NullableString;
+  changelog?: NullableString;
+  sourceRef?: NullableString;
+  isPrerelease?: boolean;
+}
+
+export interface UploadReleaseArtifactInput {
+  filename: string;
+  kind: string;
+  file: File;
+  sha256?: NullableString;
+  isSigned?: boolean;
+  signatureKeyId?: NullableString;
+}
+
+export interface ReleaseMutationResult {
+  message?: NullableString;
+  version?: NullableString;
+  status?: NullableString;
+  artifact_count?: number | null;
 }
 
 export interface Tag {
@@ -171,6 +207,114 @@ export async function listArtifacts(
   );
 
   return data.artifacts || [];
+}
+
+export async function createRelease(
+  ecosystem: string,
+  name: string,
+  input: CreateReleaseInput
+): Promise<Release> {
+  const { data } = await api.post<Release>(
+    `/v1/packages/${enc(ecosystem)}/${enc(name)}/releases`,
+    {
+      body: {
+        version: input.version,
+        description: emptyToUndefined(input.description),
+        changelog: emptyToUndefined(input.changelog),
+        source_ref: emptyToUndefined(input.sourceRef),
+        is_prerelease: input.isPrerelease || undefined,
+      },
+    }
+  );
+
+  return data;
+}
+
+export async function uploadReleaseArtifact(
+  ecosystem: string,
+  name: string,
+  version: string,
+  input: UploadReleaseArtifactInput
+): Promise<Artifact> {
+  const { data } = await api.put<Artifact>(
+    `/v1/packages/${enc(ecosystem)}/${enc(name)}/releases/${enc(version)}/artifacts/${enc(input.filename)}`,
+    {
+      query: {
+        kind: input.kind,
+        sha256: emptyToUndefined(input.sha256),
+        is_signed: input.isSigned,
+        signature_key_id: emptyToUndefined(input.signatureKeyId),
+      },
+      headers: input.file.type
+        ? {
+            'Content-Type': input.file.type,
+          }
+        : undefined,
+      body: input.file,
+    }
+  );
+
+  return data;
+}
+
+export async function publishRelease(
+  ecosystem: string,
+  name: string,
+  version: string
+): Promise<ReleaseMutationResult> {
+  const { data } = await api.post<ReleaseMutationResult>(
+    `/v1/packages/${enc(ecosystem)}/${enc(name)}/releases/${enc(version)}/publish`
+  );
+
+  return data;
+}
+
+export async function yankRelease(
+  ecosystem: string,
+  name: string,
+  version: string,
+  { reason }: { reason?: NullableString } = {}
+): Promise<ReleaseMutationResult> {
+  const { data } = await api.put<ReleaseMutationResult>(
+    `/v1/packages/${enc(ecosystem)}/${enc(name)}/releases/${enc(version)}/yank`,
+    {
+      body: {
+        reason: emptyToUndefined(reason),
+      },
+    }
+  );
+
+  return data;
+}
+
+export async function unyankRelease(
+  ecosystem: string,
+  name: string,
+  version: string
+): Promise<ReleaseMutationResult> {
+  const { data } = await api.put<ReleaseMutationResult>(
+    `/v1/packages/${enc(ecosystem)}/${enc(name)}/releases/${enc(version)}/unyank`
+  );
+
+  return data;
+}
+
+export async function deprecateRelease(
+  ecosystem: string,
+  name: string,
+  version: string,
+  { message }: { message?: NullableString } = {}
+): Promise<ReleaseMutationResult> {
+  const { data } = await api.put<ReleaseMutationResult>(
+    `/v1/packages/${enc(ecosystem)}/${enc(name)}/releases/${enc(version)}/deprecate`,
+    {
+      body: {
+        message: emptyToUndefined(message),
+      },
+    }
+  );
+
+  return data;
 }
 
 export async function listTags(
@@ -260,4 +404,15 @@ export async function getStats(): Promise<StatsResponse> {
 
 function enc(value: string): string {
   return encodeURIComponent(value);
+}
+
+function emptyToUndefined(
+  value: NullableString | undefined
+): string | undefined {
+  if (value == null) {
+    return undefined;
+  }
+
+  const trimmed = value.trim();
+  return trimmed ? trimmed : undefined;
 }

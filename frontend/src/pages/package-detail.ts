@@ -8,6 +8,7 @@ import type {
   Tag,
 } from '../api/packages';
 import {
+  createRelease,
   getPackage,
   listReleases,
   listSecurityFindings,
@@ -15,7 +16,7 @@ import {
   severityLevel,
   transferPackageOwnership,
 } from '../api/packages';
-import type { RouteContext } from '../router';
+import { navigate, type RouteContext } from '../router';
 import {
   ecosystemIcon,
   ecosystemLabel,
@@ -31,6 +32,8 @@ import { renderMarkdown } from '../utils/markdown';
 import { selectPackageTransferTargets } from '../utils/package-transfer';
 
 interface RenderOptions {
+  releaseNotice?: string | null;
+  releaseError?: string | null;
   transferNotice?: string | null;
   transferError?: string | null;
 }
@@ -50,7 +53,12 @@ async function render(
   container: HTMLElement,
   ecosystem: string,
   name: string,
-  { transferNotice = null, transferError = null }: RenderOptions = {}
+  {
+    releaseNotice = null,
+    releaseError = null,
+    transferNotice = null,
+    transferError = null,
+  }: RenderOptions = {}
 ): Promise<void> {
   let pkg: PackageDetail;
 
@@ -146,6 +154,10 @@ async function render(
             pkg,
             tags,
             renderSecuritySummary(openFindings),
+            renderReleaseCard(pkg, {
+              notice: releaseNotice,
+              error: releaseError,
+            }),
             renderTransferCard(pkg, transferState, {
               notice: transferNotice,
               error: transferError,
@@ -203,6 +215,52 @@ async function render(
       container.querySelector<HTMLElement>('#findings-list');
     if (findingsContainer) {
       findingsContainer.innerHTML = renderFindingsList(refreshedFindings);
+    }
+  });
+
+  const createReleaseForm = container.querySelector<HTMLFormElement>(
+    '#package-create-release-form'
+  );
+  createReleaseForm?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+
+    const formData = new FormData(createReleaseForm);
+    const version = formData.get('version')?.toString().trim() || '';
+
+    if (!version) {
+      await render(container, ecosystem, name, {
+        releaseError: 'Enter a version to create a release.',
+      });
+      return;
+    }
+
+    const submitButton = getSubmitButton(createReleaseForm);
+    if (!submitButton) {
+      return;
+    }
+
+    submitButton.disabled = true;
+    submitButton.textContent = 'Creating…';
+
+    try {
+      await createRelease(ecosystem, name, {
+        version,
+        description: readOptionalFormValue(formData, 'description'),
+        changelog: readOptionalFormValue(formData, 'changelog'),
+        sourceRef: readOptionalFormValue(formData, 'source_ref'),
+        isPrerelease: formData.get('is_prerelease') ? true : undefined,
+      });
+
+      const notice = encodeURIComponent(
+        `Release ${version} created in quarantine. Upload at least one artifact before publishing.`
+      );
+      navigate(
+        `/packages/${encodeURIComponent(ecosystem)}/${encodeURIComponent(name)}/versions/${encodeURIComponent(version)}?notice=${notice}`
+      );
+    } catch (caughtError: unknown) {
+      await render(container, ecosystem, name, {
+        releaseError: toErrorMessage(caughtError, 'Failed to create release.'),
+      });
     }
   });
 
@@ -293,6 +351,7 @@ function renderSidebar(
   pkg: PackageDetail,
   tags: Tag[],
   securityCard: string,
+  releaseCard: string,
   transferCard: string
 ): string {
   const sections: string[] = [];
@@ -337,6 +396,10 @@ function renderSidebar(
 
   if (securityCard) {
     sections.push(securityCard);
+  }
+
+  if (releaseCard) {
+    sections.push(releaseCard);
   }
 
   if (transferCard) {
@@ -432,6 +495,61 @@ async function loadTransferState(pkg: PackageDetail): Promise<{
   }
 }
 
+function renderReleaseCard(
+  pkg: PackageDetail,
+  {
+    notice,
+    error,
+  }: {
+    notice: string | null;
+    error: string | null;
+  }
+): string {
+  if (pkg.can_manage_releases !== true) {
+    return '';
+  }
+
+  return `
+    <div class="card">
+      <div class="sidebar-section">
+        <h3>Create release</h3>
+        <p class="settings-copy" style="margin-bottom:12px;">
+          Start a new release in quarantine, then upload immutable artifacts and publish when it is ready.
+        </p>
+        ${notice ? `<div class="alert alert-success" style="margin-bottom:12px;">${escapeHtml(notice)}</div>` : ''}
+        ${error ? `<div class="alert alert-error" style="margin-bottom:12px;">${escapeHtml(error)}</div>` : ''}
+        <form id="package-create-release-form">
+          <div class="form-group" style="margin-bottom:12px;">
+            <label for="release-version">Version</label>
+            <input id="release-version" name="version" class="form-input" placeholder="1.0.0" required />
+          </div>
+          <div class="form-group" style="margin-bottom:12px;">
+            <label for="release-description">Description</label>
+            <textarea id="release-description" name="description" class="form-input" rows="2" placeholder="Optional release summary"></textarea>
+          </div>
+          <div class="form-group" style="margin-bottom:12px;">
+            <label for="release-changelog">Changelog</label>
+            <textarea id="release-changelog" name="changelog" class="form-input" rows="4" placeholder="Optional changelog notes"></textarea>
+          </div>
+          <div class="form-group" style="margin-bottom:12px;">
+            <label for="release-source-ref">Source ref</label>
+            <input id="release-source-ref" name="source_ref" class="form-input" placeholder="refs/tags/v1.0.0" />
+          </div>
+          <div class="form-group" style="margin-bottom:12px;">
+            <label class="flex items-start gap-2">
+              <input type="checkbox" name="is_prerelease" />
+              <span>Mark this version as a pre-release instead of relying on version suffix detection.</span>
+            </label>
+          </div>
+          <button type="submit" class="btn btn-primary" style="width:100%; justify-content:center;">
+            Create release
+          </button>
+        </form>
+      </div>
+    </div>
+  `;
+}
+
 function renderTransferCard(
   pkg: PackageDetail,
   transferState: {
@@ -509,6 +627,14 @@ function renderTransferCard(
 
 function getSubmitButton(form: HTMLFormElement): HTMLButtonElement | null {
   return form.querySelector<HTMLButtonElement>('button[type="submit"]');
+}
+
+function readOptionalFormValue(
+  formData: FormData,
+  key: string
+): string | undefined {
+  const value = formData.get(key)?.toString().trim();
+  return value ? value : undefined;
 }
 
 function toErrorMessage(caughtError: unknown, fallback: string): string {

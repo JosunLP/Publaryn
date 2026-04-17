@@ -124,6 +124,38 @@ export interface OrgRepositoryListResponse {
   load_error?: NullableString;
 }
 
+export interface OrgSecuritySeverityCounts {
+  critical?: number | null;
+  high?: number | null;
+  medium?: number | null;
+  low?: number | null;
+  info?: number | null;
+}
+
+export interface OrgSecuritySummary {
+  open_findings?: number | null;
+  affected_packages?: number | null;
+  severities?: OrgSecuritySeverityCounts | null;
+}
+
+export interface OrgSecurityPackageSummary {
+  package_id?: NullableString;
+  ecosystem?: NullableString;
+  name?: NullableString;
+  description?: NullableString;
+  visibility?: NullableString;
+  open_findings?: number | null;
+  worst_severity?: NullableString;
+  latest_detected_at?: NullableString;
+  severities?: OrgSecuritySeverityCounts | null;
+}
+
+export interface OrgSecurityFindingsResponse {
+  summary?: OrgSecuritySummary | null;
+  packages: OrgSecurityPackageSummary[];
+  load_error?: NullableString;
+}
+
 export interface OrgAuditLog {
   id?: NullableString;
   action?: NullableString;
@@ -152,6 +184,8 @@ export interface OrgAuditListResponse {
 export interface OrgAuditQuery {
   action?: string;
   actorUserId?: string;
+  occurredFrom?: string;
+  occurredUntil?: string;
   page?: number;
   perPage?: number;
 }
@@ -521,6 +555,16 @@ export async function listOrgRepositories(
   return data;
 }
 
+export async function listOrgSecurityFindings(
+  slug: string
+): Promise<OrgSecurityFindingsResponse> {
+  const { data } = await api.get<OrgSecurityFindingsResponse>(
+    `/v1/orgs/${enc(slug)}/security-findings`
+  );
+
+  return data;
+}
+
 export async function listOrgAuditLogs(
   slug: string,
   query: OrgAuditQuery = {}
@@ -531,11 +575,32 @@ export async function listOrgAuditLogs(
       query: {
         action: query.action,
         actor_user_id: query.actorUserId,
+        occurred_from: query.occurredFrom,
+        occurred_until: query.occurredUntil,
         page: query.page,
         per_page: query.perPage,
       },
     }
   );
+
+  return data;
+}
+
+export async function exportOrgAuditLogsCsv(
+  slug: string,
+  query: OrgAuditQuery = {}
+): Promise<string> {
+  const { data } = await api.get<string>(`/v1/orgs/${enc(slug)}/audit/export`, {
+    headers: {
+      Accept: 'text/csv',
+    },
+    query: {
+      action: query.action,
+      actor_user_id: query.actorUserId,
+      occurred_from: query.occurredFrom,
+      occurred_until: query.occurredUntil,
+    },
+  });
 
   return data;
 }

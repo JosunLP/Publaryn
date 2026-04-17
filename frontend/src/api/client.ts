@@ -8,7 +8,8 @@
 const AUTH_TOKEN_STORAGE_KEY = 'publaryn.authToken';
 
 type QueryValue = string | number | boolean | null | undefined;
-type RequestBody = FormData | object | null | undefined;
+type BinaryRequestBody = Blob | ArrayBuffer | Uint8Array;
+type RequestBody = FormData | BinaryRequestBody | object | null | undefined;
 type UnauthorizedCallback = () => void;
 
 export interface RequestOptions {
@@ -83,6 +84,14 @@ function isFormData(value: RequestBody): value is FormData {
   return typeof FormData !== 'undefined' && value instanceof FormData;
 }
 
+function isBinaryBody(value: RequestBody): value is BinaryRequestBody {
+  return (
+    (typeof Blob !== 'undefined' && value instanceof Blob) ||
+    value instanceof ArrayBuffer ||
+    value instanceof Uint8Array
+  );
+}
+
 async function parseResponseBody(response: Response): Promise<unknown> {
   const contentType = response.headers.get('content-type') || '';
 
@@ -114,14 +123,19 @@ async function request<T>(
     headers.set('Authorization', `Bearer ${authToken}`);
   }
 
-  if (body && !isFormData(body)) {
+  if (body && !isFormData(body) && !isBinaryBody(body)) {
     headers.set('Content-Type', 'application/json');
   }
 
   const response = await fetch(url.toString(), {
     method,
     headers,
-    body: isFormData(body) ? body : body ? JSON.stringify(body) : undefined,
+    body:
+      isFormData(body) || isBinaryBody(body)
+        ? body
+        : body
+          ? JSON.stringify(body)
+          : undefined,
   });
 
   const requestId = response.headers.get('x-request-id');
