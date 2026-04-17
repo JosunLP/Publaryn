@@ -3,6 +3,11 @@ export interface RepositoryOption {
   label: string;
 }
 
+export interface RepositoryOwnerSummary {
+  label: string;
+  href: string | null;
+}
+
 export const REPOSITORY_KIND_OPTIONS: RepositoryOption[] = [
   { value: 'public', label: 'Public' },
   { value: 'private', label: 'Private' },
@@ -59,6 +64,41 @@ export function formatRepositoryPackageCoverageLabel(
   return safeTotalCount === 1
     ? 'Showing 1 visible package.'
     : `Showing ${safeTotalCount} visible packages.`;
+}
+
+export function resolveRepositoryOwnerSummary({
+  ownerOrgName,
+  ownerOrgSlug,
+  ownerUsername,
+}: {
+  ownerOrgName?: string | null;
+  ownerOrgSlug?: string | null;
+  ownerUsername?: string | null;
+}): RepositoryOwnerSummary {
+  const normalizedOrgSlug = ownerOrgSlug?.trim() || null;
+  const normalizedOrgName = ownerOrgName?.trim() || null;
+  const normalizedUsername = ownerUsername?.trim() || null;
+
+  if (normalizedOrgSlug) {
+    return {
+      label: normalizedOrgName
+        ? `${normalizedOrgName} (@${normalizedOrgSlug})`
+        : `@${normalizedOrgSlug}`,
+      href: `/orgs/${encodeURIComponent(normalizedOrgSlug)}`,
+    };
+  }
+
+  if (normalizedUsername) {
+    return {
+      label: normalizedUsername,
+      href: `/search?q=${encodeURIComponent(normalizedUsername)}`,
+    };
+  }
+
+  return {
+    label: 'Unknown owner',
+    href: null,
+  };
 }
 
 function findRepositoryOptionLabel(

@@ -10,9 +10,11 @@ import { notFoundPage } from './pages/not-found';
 import { orgDetailPage } from './pages/org-detail';
 import { packageDetailPage } from './pages/package-detail';
 import { registerPage } from './pages/register';
+import { repositoryDetailPage } from './pages/repository-detail';
 import { searchPage } from './pages/search';
 import { settingsPage } from './pages/settings';
 import { versionDetailPage } from './pages/version-detail';
+import type { PageCleanup } from './router';
 import {
   currentRoute,
   isNavigating,
@@ -21,7 +23,6 @@ import {
   resolve,
   route,
 } from './router';
-import type { PageCleanup } from './router';
 import './styles/main.css';
 import { initializeTheme } from './theme';
 
@@ -78,6 +79,10 @@ function titleForPath(path: string, isNotFound: boolean) {
     return 'Organization — Publaryn';
   }
 
+  if (path.startsWith('/repositories/')) {
+    return 'Repository details — Publaryn';
+  }
+
   if (path.startsWith('/packages/') && path.includes('/versions/')) {
     return 'Package version — Publaryn';
   }
@@ -112,6 +117,7 @@ function page<TContext>(handler: PageHandler<TContext>) {
 route('/', page(landingPage));
 route('/search', page(searchPage));
 route('/orgs/:slug', page(orgDetailPage));
+route('/repositories/:slug', page(repositoryDetailPage));
 route('/packages/:ecosystem/:name', page(packageDetailPage));
 route('/packages/:ecosystem/:name/versions/:version', page(versionDetailPage));
 route('/login', page(loginPage));

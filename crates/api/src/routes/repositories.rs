@@ -142,9 +142,12 @@ async fn get_repository(
     let access = ensure_repository_read_access(&state.db, &slug, identity.user_id()).await?;
 
     let row = sqlx::query(
-        "SELECT id, name, slug, description, kind::text AS kind, visibility::text AS visibility, owner_user_id, owner_org_id, \
-                upstream_url, created_at, updated_at \
-         FROM repositories WHERE id = $1",
+        "SELECT r.id, r.name, r.slug, r.description, r.kind::text AS kind, r.visibility::text AS visibility, r.owner_user_id, r.owner_org_id, \
+            r.upstream_url, r.created_at, r.updated_at, u.username AS owner_username, o.slug AS owner_org_slug, o.name AS owner_org_name \
+         FROM repositories r \
+         LEFT JOIN users u ON u.id = r.owner_user_id \
+         LEFT JOIN organizations o ON o.id = r.owner_org_id \
+         WHERE r.id = $1",
     )
     .bind(access.repository_id)
     .fetch_optional(&state.db)
@@ -161,6 +164,9 @@ async fn get_repository(
         "visibility": row.try_get::<String, _>("visibility").ok(),
         "owner_user_id": row.try_get::<Option<Uuid>, _>("owner_user_id").ok().flatten(),
         "owner_org_id": row.try_get::<Option<Uuid>, _>("owner_org_id").ok().flatten(),
+        "owner_username": row.try_get::<Option<String>, _>("owner_username").ok().flatten(),
+        "owner_org_slug": row.try_get::<Option<String>, _>("owner_org_slug").ok().flatten(),
+        "owner_org_name": row.try_get::<Option<String>, _>("owner_org_name").ok().flatten(),
         "upstream_url": row.try_get::<Option<String>, _>("upstream_url").ok().flatten(),
         "created_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at").ok(),
         "updated_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("updated_at").ok(),

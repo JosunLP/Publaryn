@@ -2344,7 +2344,11 @@ function renderOrgRepositoryCard(
     <div class="settings-subsection">
       <div class="org-section-header">
         <div class="token-row__main">
-          <div class="token-row__title">${escapeHtml(repositoryName)}</div>
+          <div class="token-row__title">${
+            repositorySlug
+              ? `<a href="/repositories/${encodeURIComponent(repositorySlug)}">${escapeHtml(repositoryName)}</a>`
+              : escapeHtml(repositoryName)
+          }</div>
           <div class="token-row__meta">
             <span>@${escapeHtml(repositorySlug || 'no-slug')}</span>
             <span>${escapeHtml(formatRepositoryKindLabel(repository.kind))}</span>

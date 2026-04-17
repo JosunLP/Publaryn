@@ -8,6 +8,7 @@ import {
   formatRepositoryVisibilityLabel,
   REPOSITORY_KIND_OPTIONS,
   REPOSITORY_VISIBILITY_OPTIONS,
+  resolveRepositoryOwnerSummary,
 } from '../src/utils/repositories';
 
 describe('repository option helpers', () => {
@@ -42,6 +43,32 @@ describe('repository option helpers', () => {
     expect(formatRepositoryPackageCoverageLabel(20, 24)).toBe(
       'Showing 20 of 24 visible packages.'
     );
+  });
+
+  test('resolves repository owner summaries for org and user owners', () => {
+    expect(
+      resolveRepositoryOwnerSummary({
+        ownerOrgName: 'Acme Corp',
+        ownerOrgSlug: 'acme-corp',
+      })
+    ).toEqual({
+      label: 'Acme Corp (@acme-corp)',
+      href: '/orgs/acme-corp',
+    });
+
+    expect(
+      resolveRepositoryOwnerSummary({
+        ownerUsername: 'alice',
+      })
+    ).toEqual({
+      label: 'alice',
+      href: '/search?q=alice',
+    });
+
+    expect(resolveRepositoryOwnerSummary({})).toEqual({
+      label: 'Unknown owner',
+      href: null,
+    });
   });
 
   test('exposes the supported option sets', () => {

@@ -1352,6 +1352,73 @@ async fn test_repository_package_list_respects_visibility(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = "../../migrations")]
+async fn test_repository_detail_respects_direct_read_visibility(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let owner_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let member_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &owner_jwt, "Acme Corp", "acme-corp").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id = org_body["id"].as_str().expect("org id should be returned");
+
+    let (status, body) = add_org_member(&app, &owner_jwt, "acme-corp", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED, "unexpected member response: {body}");
+
+    let (status, body) = create_repository_with_options(
+        &app,
+        &owner_jwt,
+        "Acme Public",
+        "acme-public",
+        Some(org_id),
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "unexpected repository response: {body}");
+
+    let (status, public_body) = get_repository_detail(&app, None, "acme-public").await;
+    assert_eq!(status, StatusCode::OK, "unexpected public repository response: {public_body}");
+    assert_eq!(public_body["slug"], "acme-public");
+    assert_eq!(public_body["owner_org_slug"], "acme-corp");
+    assert_eq!(public_body["owner_org_name"], "Acme Corp");
+
+    let (status, body) = update_repository_detail(
+        &app,
+        &owner_jwt,
+        "acme-public",
+        json!({ "visibility": "unlisted" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "unexpected repository update response: {body}");
+
+    let (status, unlisted_body) = get_repository_detail(&app, None, "acme-public").await;
+    assert_eq!(status, StatusCode::OK, "unexpected unlisted repository response: {unlisted_body}");
+    assert_eq!(unlisted_body["visibility"], "unlisted");
+
+    let (status, body) = create_repository_with_options(
+        &app,
+        &owner_jwt,
+        "Acme Internal",
+        "acme-internal",
+        Some(org_id),
+        Some("private"),
+        Some("internal_org"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "unexpected repository response: {body}");
+
+    let (status, anonymous_internal_body) = get_repository_detail(&app, None, "acme-internal").await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "unexpected anonymous internal response: {anonymous_internal_body}");
+
+    let (status, member_internal_body) = get_repository_detail(&app, Some(&member_jwt), "acme-internal").await;
+    assert_eq!(status, StatusCode::OK, "unexpected member internal response: {member_internal_body}");
+    assert_eq!(member_internal_body["owner_org_slug"], "acme-corp");
+    assert_eq!(member_internal_body["owner_org_name"], "Acme Corp");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
 async fn test_org_admin_can_read_org_audit_logs(pool: PgPool) {
     let app = app(pool);
     register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;

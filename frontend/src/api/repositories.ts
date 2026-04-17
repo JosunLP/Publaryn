@@ -11,6 +11,9 @@ export interface RepositoryDetail {
   visibility?: NullableString;
   upstream_url?: NullableString;
   owner_org_id?: NullableString;
+  owner_username?: NullableString;
+  owner_org_slug?: NullableString;
+  owner_org_name?: NullableString;
   created_at?: NullableString;
   updated_at?: NullableString;
 }
@@ -65,6 +68,14 @@ export async function createRepository(
       owner_org_id: input.ownerOrgId,
     },
   });
+
+  return data;
+}
+
+export async function getRepository(slug: string): Promise<RepositoryDetail> {
+  const { data } = await api.get<RepositoryDetail>(
+    `/v1/repositories/${encodeURIComponent(slug)}`
+  );
 
   return data;
 }
