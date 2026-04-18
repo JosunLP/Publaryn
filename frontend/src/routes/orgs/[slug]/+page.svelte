@@ -51,6 +51,7 @@
     listOrgPackages,
     listOrgRepositories,
     listOrgSecurityFindings,
+    searchOrgMembers,
     listTeamMembers,
     listTeamPackageAccess,
     listTeamRepositoryAccess,
@@ -235,7 +236,8 @@
     username: string;
     label: string;
   }> = [];
-  let auditActorQuery = '';
+  let auditActorInput = '';
+  let auditActorInputSyncKey = '';
   let auditActorSearchInFlight = false;
   let auditActorSearchRequest = 0;
   let selectedAuditActor: {
@@ -315,12 +317,18 @@
     auditActorOptions.find(
       (candidate) => candidate.userId === auditView.actorUserId
     ) || null;
-  $: auditActorQuery =
-    selectedAuditActor?.username || auditView.actorUsername || '';
+  $: {
+    const nextAuditActorInputSyncKey = `${auditView.actorUserId}|${auditView.actorUsername}`;
+    if (nextAuditActorInputSyncKey !== auditActorInputSyncKey) {
+      auditActorInputSyncKey = nextAuditActorInputSyncKey;
+      auditActorInput =
+        auditView.actorUsername || auditView.actorUserId || '';
+    }
+  }
 
-  $: if (auditActorQuery.trim().length >= 2 && canViewAudit) {
-    void searchAuditActors(auditActorQuery.trim());
-  } else if (!auditActorQuery.trim() && auditActorRemoteOptions.length > 0) {
+  $: if (auditActorInput.trim().length >= 2 && canViewAudit) {
+    void searchAuditActors(auditActorInput.trim());
+  } else if (!auditActorInput.trim() && auditActorRemoteOptions.length > 0) {
     auditActorRemoteOptions = [];
   }
 
@@ -1756,6 +1764,51 @@
       ? '1 open finding'
       : `${formatNumber(count)} open findings`;
   }
+
+  async function searchAuditActors(query: string): Promise<void> {
+    const requestId = ++auditActorSearchRequest;
+    auditActorSearchInFlight = true;
+
+    try {
+      const response = await searchOrgMembers(slug, query);
+      if (requestId !== auditActorSearchRequest) {
+        return;
+      }
+
+      const remoteOptions =
+        response.members
+          ?.filter(
+            (member) =>
+              typeof member.user_id === 'string' &&
+              member.user_id.trim() &&
+              typeof member.username === 'string' &&
+              member.username.trim()
+          )
+          .map((member) => {
+            const username = member.username?.trim() || '';
+            const displayName = member.display_name?.trim();
+            return {
+              userId: (member.user_id || '').trim(),
+              username,
+              label: displayName
+                ? `${displayName} (@${username})`
+                : `@${username}`,
+            };
+          })
+          .sort((left, right) => left.username.localeCompare(right.username)) ||
+        [];
+
+      auditActorRemoteOptions = remoteOptions;
+    } catch (caughtError: unknown) {
+      if (requestId === auditActorSearchRequest) {
+        auditActorRemoteOptions = [];
+      }
+    } finally {
+      if (requestId === auditActorSearchRequest) {
+        auditActorSearchInFlight = false;
+      }
+    }
+  }
 </script>
 
 <svelte:head>
@@ -1884,7 +1937,7 @@
                 name="actor_query"
                 class="form-input"
                 list="org-audit-actor-options"
-                value={auditActorQuery}
+                bind:value={auditActorInput}
                 placeholder="Search username or paste user id"
                 autocomplete="off"
               />
@@ -3451,47 +3504,3 @@
     </section>
   </div>
 {/if}
-  async function searchAuditActors(query: string): Promise<void> {
-    const requestId = ++auditActorSearchRequest;
-    auditActorSearchInFlight = true;
-
-    try {
-      const response = await searchOrgMembers(slug, query);
-      if (requestId !== auditActorSearchRequest) {
-        return;
-      }
-
-      const remoteOptions =
-        response.members
-          ?.filter(
-            (member) =>
-              typeof member.user_id === 'string' &&
-              member.user_id.trim() &&
-              typeof member.username === 'string' &&
-              member.username.trim()
-          )
-          .map((member) => {
-            const username = member.username?.trim() || '';
-            const displayName = member.display_name?.trim();
-            return {
-              userId: (member.user_id || '').trim(),
-              username,
-              label: displayName
-                ? `${displayName} (@${username})`
-                : `@${username}`,
-            };
-          })
-          .sort((left, right) => left.username.localeCompare(right.username)) ||
-        [];
-
-      auditActorRemoteOptions = remoteOptions;
-    } catch (caughtError: unknown) {
-      if (requestId === auditActorSearchRequest) {
-        auditActorRemoteOptions = [];
-      }
-    } finally {
-      if (requestId === auditActorSearchRequest) {
-        auditActorSearchInFlight = false;
-      }
-    }
-  }
