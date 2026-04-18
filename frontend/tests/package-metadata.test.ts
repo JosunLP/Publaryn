@@ -4,11 +4,11 @@ import { describe, expect, test } from 'bun:test';
 
 import type { PackageDetail } from '../src/api/packages';
 import {
-    buildPackageMetadataUpdateInput,
-    createPackageMetadataFormValues,
-    normalizePackageMetadataInput,
-    normalizePackageMetadataKeywords,
-    packageMetadataHasChanges,
+  buildPackageMetadataUpdateInput,
+  createPackageMetadataFormValues,
+  normalizePackageMetadataInput,
+  normalizePackageMetadataKeywords,
+  packageMetadataHasChanges,
 } from '../src/utils/package-metadata';
 
 const BASE_PACKAGE: PackageDetail = {

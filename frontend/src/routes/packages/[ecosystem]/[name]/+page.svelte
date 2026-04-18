@@ -849,10 +849,7 @@
                 </div>
               {/if}
 
-              <form
-                id="package-settings-form"
-                on:submit={handleUpdatePackage}
-              >
+              <form id="package-settings-form" on:submit={handleUpdatePackage}>
                 <div class="form-group" style="margin-bottom:12px;">
                   <label for="package-settings-description">Description</label>
                   <textarea
