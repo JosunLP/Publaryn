@@ -242,7 +242,7 @@ pub fn parse_nuspec_xml(xml_bytes: &[u8]) -> Result<NuspecMetadata> {
             }
             Ok(Event::Text(ref e)) => {
                 if !current_element.is_empty() && in_metadata {
-                    let text = e.unescape().unwrap_or_default().to_string();
+                    let text = e.xml_content().unwrap_or_default().to_string();
                     match current_element.as_str() {
                         "id" => id = text,
                         "version" => version = text,

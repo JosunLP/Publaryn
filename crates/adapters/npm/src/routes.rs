@@ -106,23 +106,23 @@ pub fn router<S: NpmAppState>() -> Router<S> {
         // Search
         .route("/-/v1/search", get(search_handler::<S>))
         // Dist-tags
-        .route("/-/package/:package/dist-tags", get(list_dist_tags::<S>))
+        .route("/-/package/{package}/dist-tags", get(list_dist_tags::<S>))
         .route(
-            "/-/package/:package/dist-tags/:tag",
+            "/-/package/{package}/dist-tags/{tag}",
             put(set_dist_tag::<S>).delete(delete_dist_tag::<S>),
         )
         // Scoped package: packument, publish, tarball
         .route(
-            "/:scope/:name",
+            "/{scope}/{name}",
             get(get_packument::<S>).put(publish_handler::<S>),
         )
-        .route("/:scope/:name/-/:filename", get(download_tarball::<S>))
+        .route("/{scope}/{name}/-/{filename}", get(download_tarball::<S>))
         // Unscoped package: packument, publish, tarball
         .route(
-            "/:package",
+            "/{package}",
             get(get_packument_unscoped::<S>).put(publish_handler_unscoped::<S>),
         )
-        .route("/:package/-/:filename", get(download_tarball_unscoped::<S>))
+        .route("/{package}/-/{filename}", get(download_tarball_unscoped::<S>))
 }
 
 // ─── Auth helpers ────────────────────────────────────────────────────────────

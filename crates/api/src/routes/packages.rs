@@ -31,7 +31,8 @@ use publaryn_search::{PackageDocument, SearchIndex};
 use crate::{
     error::{ApiError, ApiResult},
     request_auth::{
-        actor_can_publish_package_by_id, actor_can_transfer_package_by_id,
+        actor_can_admin_package_by_id, actor_can_publish_package_by_id,
+        actor_can_transfer_package_by_id,
         actor_can_write_package_by_id,
         ensure_package_admin_access, ensure_package_metadata_write_access,
         ensure_package_publish_access, ensure_package_read_access, ensure_package_transfer_access,
@@ -55,47 +56,47 @@ const RELEASE_MANAGEMENT_VISIBLE_STATUSES: &[&str] = &[
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/packages", post(create_package))
-        .route("/v1/packages/:ecosystem/:name", get(get_package))
-        .route("/v1/packages/:ecosystem/:name", patch(update_package))
-        .route("/v1/packages/:ecosystem/:name", delete(delete_package))
+        .route("/v1/packages/{ecosystem}/{name}", get(get_package))
+        .route("/v1/packages/{ecosystem}/{name}", patch(update_package))
+        .route("/v1/packages/{ecosystem}/{name}", delete(delete_package))
         .route(
-            "/v1/packages/:ecosystem/:name/ownership-transfer",
+            "/v1/packages/{ecosystem}/{name}/ownership-transfer",
             post(transfer_package_ownership),
         )
         .route(
-            "/v1/packages/:ecosystem/:name/releases",
+            "/v1/packages/{ecosystem}/{name}/releases",
             get(list_releases).post(create_release),
         )
         .route(
-            "/v1/packages/:ecosystem/:name/releases/:version",
+            "/v1/packages/{ecosystem}/{name}/releases/{version}",
             get(get_release),
         )
         .route(
-            "/v1/packages/:ecosystem/:name/releases/:version/publish",
+            "/v1/packages/{ecosystem}/{name}/releases/{version}/publish",
             post(publish_release),
         )
         .route(
-            "/v1/packages/:ecosystem/:name/releases/:version/artifacts",
+            "/v1/packages/{ecosystem}/{name}/releases/{version}/artifacts",
             get(list_artifacts),
         )
         .route(
-            "/v1/packages/:ecosystem/:name/releases/:version/artifacts/:filename",
+            "/v1/packages/{ecosystem}/{name}/releases/{version}/artifacts/{filename}",
             get(download_artifact).put(upload_artifact),
         )
         .route(
-            "/v1/packages/:ecosystem/:name/releases/:version/yank",
+            "/v1/packages/{ecosystem}/{name}/releases/{version}/yank",
             put(yank_release),
         )
         .route(
-            "/v1/packages/:ecosystem/:name/releases/:version/unyank",
+            "/v1/packages/{ecosystem}/{name}/releases/{version}/unyank",
             put(unyank_release),
         )
         .route(
-            "/v1/packages/:ecosystem/:name/releases/:version/deprecate",
+            "/v1/packages/{ecosystem}/{name}/releases/{version}/deprecate",
             put(deprecate_release),
         )
-        .route("/v1/packages/:ecosystem/:name/tags", get(list_tags))
-        .route("/v1/packages/:ecosystem/:name/tags/:tag", put(upsert_tag))
+        .route("/v1/packages/{ecosystem}/{name}/tags", get(list_tags))
+        .route("/v1/packages/{ecosystem}/{name}/tags/{tag}", put(upsert_tag))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,6 +137,24 @@ async fn can_manage_releases_for_package(
     }
 }
 
+async fn can_manage_trusted_publishers_for_package(
+    db: &sqlx::PgPool,
+    package_id: Uuid,
+    identity: &OptionalAuthenticatedIdentity,
+) -> ApiResult<bool> {
+    match identity.0.as_ref() {
+        Some(identity)
+            if identity
+                .scopes()
+                .iter()
+                .any(|scope| scope == SCOPE_PACKAGES_WRITE) =>
+        {
+            actor_can_admin_package_by_id(db, package_id, Some(identity.user_id)).await
+        }
+        _ => Ok(false),
+    }
+}
+
 async fn get_package(
     State(state): State<AppState>,
     identity: OptionalAuthenticatedIdentity,
@@ -148,6 +167,8 @@ async fn get_package(
             .await?;
     let can_manage_releases =
         can_manage_releases_for_package(&state.db, package_id, &identity).await?;
+    let can_manage_trusted_publishers =
+        can_manage_trusted_publishers_for_package(&state.db, package_id, &identity).await?;
     let can_transfer = match identity.0.as_ref() {
         Some(identity)
             if identity
@@ -199,6 +220,7 @@ async fn get_package(
         "owner_username": row.try_get::<Option<String>, _>("owner_username").ok().flatten(),
         "owner_org_slug": row.try_get::<Option<String>, _>("owner_org_slug").ok().flatten(),
         "can_manage_releases": can_manage_releases,
+        "can_manage_trusted_publishers": can_manage_trusted_publishers,
         "can_transfer": can_transfer,
         "created_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at").ok(),
         "updated_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("updated_at").ok(),

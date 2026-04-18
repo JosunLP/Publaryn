@@ -54,7 +54,7 @@ struct MavenIdentity {
 }
 
 pub fn router<S: MavenAppState>() -> Router<S> {
-    Router::new().route("/*path", get(repository_get::<S>))
+    Router::new().route("/{*path}", get(repository_get::<S>))
 }
 
 async fn repository_get<S: MavenAppState>(

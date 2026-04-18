@@ -18,7 +18,7 @@ use crate::{
 
 pub fn router() -> Router<AppState> {
     Router::new().route(
-        "/v1/packages/:ecosystem/:name/security-findings",
+        "/v1/packages/{ecosystem}/{name}/security-findings",
         get(list_security_findings),
     )
 }

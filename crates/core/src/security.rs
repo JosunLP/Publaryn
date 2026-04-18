@@ -15,9 +15,8 @@ pub fn verify_sha256(data: &[u8], expected_hex: &str) -> bool {
 /// Generate a cryptographically-random token string of `n` bytes,
 /// encoded as hex. The result length will be `n * 2` characters.
 pub fn generate_random_token(n: usize) -> String {
-    use rand::RngCore;
     let mut buf = vec![0u8; n];
-    rand::thread_rng().fill_bytes(&mut buf);
+    rand::fill(&mut buf[..]);
     hex::encode(buf)
 }
 

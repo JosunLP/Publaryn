@@ -24,9 +24,9 @@ pub fn router() -> Router<AppState> {
             "/v1/users/me/organizations",
             get(list_current_user_organizations),
         )
-        .route("/v1/users/:username", get(get_user))
-        .route("/v1/users/:username", patch(update_user))
-        .route("/v1/users/:username/packages", get(list_user_packages))
+        .route("/v1/users/{username}", get(get_user))
+        .route("/v1/users/{username}", patch(update_user))
+        .route("/v1/users/{username}/packages", get(list_user_packages))
 }
 
 async fn get_current_user(

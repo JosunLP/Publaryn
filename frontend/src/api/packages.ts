@@ -44,6 +44,7 @@ export interface PackageDetail {
   owner_username?: NullableString;
   owner_org_slug?: NullableString;
   can_manage_releases?: boolean;
+  can_manage_trusted_publishers?: boolean;
   can_transfer?: boolean;
   homepage?: NullableString;
   repository_url?: NullableString;
@@ -65,6 +66,10 @@ interface TagListResponse {
       version?: NullableString;
     } | null
   > | null;
+}
+
+interface TrustedPublisherListResponse {
+  trusted_publishers?: TrustedPublisher[] | null;
 }
 
 export interface PackageTransferOwnershipResult {
@@ -140,6 +145,29 @@ export interface Tag {
   tag?: NullableString;
   name?: NullableString;
   version: string;
+}
+
+export interface TrustedPublisher {
+  id?: NullableString;
+  issuer?: NullableString;
+  subject?: NullableString;
+  repository?: NullableString;
+  workflow_ref?: NullableString;
+  environment?: NullableString;
+  created_by?: NullableString;
+  created_at?: NullableString;
+}
+
+export interface CreateTrustedPublisherInput {
+  issuer: string;
+  subject: string;
+  repository?: NullableString;
+  workflowRef?: NullableString;
+  environment?: NullableString;
+}
+
+export interface TrustedPublisherMutationResult {
+  message?: NullableString;
 }
 
 export interface StatsResponse {
@@ -344,6 +372,50 @@ export async function transferPackageOwnership(
         target_org_slug: targetOrgSlug,
       },
     }
+  );
+
+  return data;
+}
+
+export async function listTrustedPublishers(
+  ecosystem: string,
+  name: string
+): Promise<TrustedPublisher[]> {
+  const { data } = await api.get<TrustedPublisherListResponse>(
+    `/v1/packages/${enc(ecosystem)}/${enc(name)}/trusted-publishers`
+  );
+
+  return data.trusted_publishers || [];
+}
+
+export async function createTrustedPublisher(
+  ecosystem: string,
+  name: string,
+  input: CreateTrustedPublisherInput
+): Promise<TrustedPublisher> {
+  const { data } = await api.post<TrustedPublisher>(
+    `/v1/packages/${enc(ecosystem)}/${enc(name)}/trusted-publishers`,
+    {
+      body: {
+        issuer: input.issuer,
+        subject: input.subject,
+        repository: emptyToUndefined(input.repository),
+        workflow_ref: emptyToUndefined(input.workflowRef),
+        environment: emptyToUndefined(input.environment),
+      },
+    }
+  );
+
+  return data;
+}
+
+export async function deleteTrustedPublisher(
+  ecosystem: string,
+  name: string,
+  publisherId: string
+): Promise<TrustedPublisherMutationResult> {
+  const { data } = await api.delete<TrustedPublisherMutationResult>(
+    `/v1/packages/${enc(ecosystem)}/${enc(name)}/trusted-publishers/${enc(publisherId)}`
   );
 
   return data;

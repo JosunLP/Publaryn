@@ -3,7 +3,7 @@ use axum::{
     http::{header, Method, Request, StatusCode},
 };
 use serde_json::{json, Value};
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 use tower::ServiceExt;
 
 use publaryn_api::{config::Config, router::build_router, state::AppState};
@@ -518,6 +518,77 @@ async fn get_package_detail(
     }
 
     let req = request.body(Body::empty()).unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// List trusted publishers for a package and return the response.
+async fn list_trusted_publishers_for_package(
+    app: &axum::Router,
+    jwt: Option<&str>,
+    ecosystem: &str,
+    name: &str,
+) -> (StatusCode, Value) {
+    let mut request = Request::builder()
+        .method(Method::GET)
+        .uri(format!(
+            "/v1/packages/{ecosystem}/{name}/trusted-publishers"
+        ));
+
+    if let Some(jwt) = jwt {
+        request = request.header(header::AUTHORIZATION, format!("Bearer {jwt}"));
+    }
+
+    let req = request.body(Body::empty()).unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// Create a trusted publisher for a package and return the response.
+async fn create_trusted_publisher_for_package(
+    app: &axum::Router,
+    jwt: &str,
+    ecosystem: &str,
+    name: &str,
+    payload: Value,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri(format!(
+            "/v1/packages/{ecosystem}/{name}/trusted-publishers"
+        ))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::from(payload.to_string()))
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// Delete a trusted publisher for a package and return the response.
+async fn delete_trusted_publisher_for_package(
+    app: &axum::Router,
+    jwt: &str,
+    ecosystem: &str,
+    name: &str,
+    publisher_id: &str,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::DELETE)
+        .uri(format!(
+            "/v1/packages/{ecosystem}/{name}/trusted-publishers/{publisher_id}"
+        ))
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::empty())
+        .unwrap();
+
     let resp = app.clone().oneshot(req).await.unwrap();
     let status = resp.status();
     let body = body_json(resp).await;
@@ -3774,6 +3845,277 @@ async fn test_release_detail_surfaces_management_capability_and_visibility(pool:
     assert_eq!(anonymous_published_release["status"], "published");
     assert_eq!(anonymous_published_release["can_manage_releases"], false);
     assert_eq!(anonymous_published_release["description"], "First managed release");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_trusted_publisher_management_roundtrip_with_audit(pool: PgPool) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, repository_body) = create_repository(
+        &app,
+        &alice_jwt,
+        "Alice PyPI Packages",
+        "alice-pypi-packages",
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "pypi",
+        "demo-widget",
+        "alice-pypi-packages",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+    let package_id = uuid::Uuid::parse_str(
+        package_body["id"]
+            .as_str()
+            .expect("package id should be returned"),
+    )
+    .expect("package id should parse");
+
+    let (status, owner_detail) =
+        get_package_detail(&app, Some(&alice_jwt), "pypi", "demo-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(owner_detail["can_manage_trusted_publishers"], true);
+
+    let (status, anonymous_detail) = get_package_detail(&app, None, "pypi", "demo-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(anonymous_detail["can_manage_trusted_publishers"], false);
+
+    let (status, create_body) = create_trusted_publisher_for_package(
+        &app,
+        &alice_jwt,
+        "pypi",
+        "demo-widget",
+        json!({
+            "issuer": "https://token.actions.githubusercontent.com",
+            "subject": "repo:acme/demo-widget:ref:refs/heads/main",
+            "repository": "acme/demo-widget",
+            "workflow_ref": ".github/workflows/publish.yml@refs/heads/main",
+            "environment": "production",
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected trusted publisher response: {create_body}"
+    );
+    let publisher_id = create_body["id"]
+        .as_str()
+        .expect("publisher id should be returned")
+        .to_owned();
+
+    let (status, anonymous_list_body) =
+        list_trusted_publishers_for_package(&app, None, "pypi", "demo-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    let anonymous_publishers = anonymous_list_body["trusted_publishers"]
+        .as_array()
+        .expect("trusted publishers response should be an array");
+    assert_eq!(anonymous_publishers.len(), 1, "response: {anonymous_list_body}");
+    assert_eq!(
+        anonymous_publishers[0]["issuer"],
+        "https://token.actions.githubusercontent.com"
+    );
+    assert_eq!(
+        anonymous_publishers[0]["subject"],
+        "repo:acme/demo-widget:ref:refs/heads/main"
+    );
+    assert_eq!(anonymous_publishers[0]["repository"], "acme/demo-widget");
+    assert_eq!(
+        anonymous_publishers[0]["workflow_ref"],
+        ".github/workflows/publish.yml@refs/heads/main"
+    );
+    assert_eq!(anonymous_publishers[0]["environment"], "production");
+
+    let create_audit_row = sqlx::query(
+        "SELECT metadata \
+         FROM audit_logs \
+         WHERE action = 'trusted_publisher_create'::audit_action AND target_package_id = $1 \
+         ORDER BY occurred_at DESC \
+         LIMIT 1",
+    )
+    .bind(package_id)
+    .fetch_one(&pool)
+    .await
+    .expect("trusted publisher create audit row should exist");
+    let create_metadata: Value = create_audit_row
+        .try_get("metadata")
+        .expect("create audit metadata should be readable");
+    assert_eq!(create_metadata["trusted_publisher_id"], publisher_id);
+    assert_eq!(
+        create_metadata["issuer"],
+        "https://token.actions.githubusercontent.com"
+    );
+    assert_eq!(
+        create_metadata["subject"],
+        "repo:acme/demo-widget:ref:refs/heads/main"
+    );
+    assert_eq!(create_metadata["repository"], "acme/demo-widget");
+    assert_eq!(
+        create_metadata["workflow_ref"],
+        ".github/workflows/publish.yml@refs/heads/main"
+    );
+    assert_eq!(create_metadata["environment"], "production");
+
+    let (status, delete_body) = delete_trusted_publisher_for_package(
+        &app,
+        &alice_jwt,
+        "pypi",
+        "demo-widget",
+        &publisher_id,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected delete response: {delete_body}"
+    );
+    assert_eq!(delete_body["message"], "Trusted publisher removed");
+
+    let (status, empty_list_body) =
+        list_trusted_publishers_for_package(&app, None, "pypi", "demo-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(empty_list_body["trusted_publishers"], json!([]));
+
+    let delete_audit_row = sqlx::query(
+        "SELECT metadata \
+         FROM audit_logs \
+         WHERE action = 'trusted_publisher_delete'::audit_action AND target_package_id = $1 \
+         ORDER BY occurred_at DESC \
+         LIMIT 1",
+    )
+    .bind(package_id)
+    .fetch_one(&pool)
+    .await
+    .expect("trusted publisher delete audit row should exist");
+    let delete_metadata: Value = delete_audit_row
+        .try_get("metadata")
+        .expect("delete audit metadata should be readable");
+    assert_eq!(delete_metadata["trusted_publisher_id"], publisher_id);
+    assert_eq!(
+        delete_metadata["issuer"],
+        "https://token.actions.githubusercontent.com"
+    );
+    assert_eq!(
+        delete_metadata["subject"],
+        "repo:acme/demo-widget:ref:refs/heads/main"
+    );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_trusted_publisher_mutations_require_package_admin_access(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+
+    let (status, repository_body) = create_repository(
+        &app,
+        &alice_jwt,
+        "Alice PyPI Packages",
+        "alice-pypi-packages",
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "pypi",
+        "restricted-widget",
+        "alice-pypi-packages",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let (status, denied_create_body) = create_trusted_publisher_for_package(
+        &app,
+        &bob_jwt,
+        "pypi",
+        "restricted-widget",
+        json!({
+            "issuer": "https://token.actions.githubusercontent.com",
+            "subject": "repo:acme/restricted-widget:ref:refs/heads/main",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(denied_create_body["error"]
+        .as_str()
+        .expect("error should be present")
+        .contains("administration permission"));
+
+    let (status, create_body) = create_trusted_publisher_for_package(
+        &app,
+        &alice_jwt,
+        "pypi",
+        "restricted-widget",
+        json!({
+            "issuer": "https://token.actions.githubusercontent.com",
+            "subject": "repo:acme/restricted-widget:ref:refs/heads/main",
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected trusted publisher response: {create_body}"
+    );
+    let publisher_id = create_body["id"]
+        .as_str()
+        .expect("publisher id should be returned")
+        .to_owned();
+
+    let (status, denied_delete_body) = delete_trusted_publisher_for_package(
+        &app,
+        &bob_jwt,
+        "pypi",
+        "restricted-widget",
+        &publisher_id,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(denied_delete_body["error"]
+        .as_str()
+        .expect("error should be present")
+        .contains("administration permission"));
+
+    let (status, list_body) =
+        list_trusted_publishers_for_package(&app, Some(&bob_jwt), "pypi", "restricted-widget")
+            .await;
+    assert_eq!(status, StatusCode::OK);
+    let publishers = list_body["trusted_publishers"]
+        .as_array()
+        .expect("trusted publishers response should be an array");
+    assert_eq!(publishers.len(), 1, "response: {list_body}");
+    assert_eq!(publishers[0]["id"], publisher_id);
 }
 
 #[sqlx::test(migrations = "../../migrations")]

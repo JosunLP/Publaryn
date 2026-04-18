@@ -117,18 +117,18 @@ pub fn router<S: NuGetAppState>() -> Router<S> {
         .route("/v2/package", put(push_package::<S>))
         // Unlist (delete) / Relist
         .route(
-            "/v2/package/:id/:version",
+            "/v2/package/{id}/{version}",
             delete(unlist_package::<S>).post(relist_package::<S>),
         )
         // Flat container
-        .route("/v3-flatcontainer/:id/index.json", get(get_versions::<S>))
+        .route("/v3-flatcontainer/{id}/index.json", get(get_versions::<S>))
         .route(
-            "/v3-flatcontainer/:id/:version/:filename",
+            "/v3-flatcontainer/{id}/{version}/{filename}",
             get(download_content::<S>),
         )
         // Registration
         .route(
-            "/v3/registration/:id/index.json",
+            "/v3/registration/{id}/index.json",
             get(get_registration_index::<S>),
         )
         // Search

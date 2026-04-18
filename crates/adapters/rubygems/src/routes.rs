@@ -63,9 +63,9 @@ struct ErrorDocument<'a> {
 
 pub fn router<S: RubyGemsAppState>() -> Router<S> {
     Router::new()
-        .route("/api/v1/gems/:name", get(gem_metadata::<S>))
-        .route("/api/v1/versions/:name", get(gem_versions::<S>))
-        .route("/gems/:filename", get(download_gem::<S>))
+        .route("/api/v1/gems/{name}", get(gem_metadata::<S>))
+        .route("/api/v1/versions/{name}", get(gem_versions::<S>))
+        .route("/gems/{filename}", get(download_gem::<S>))
 }
 
 async fn gem_metadata<S: RubyGemsAppState>(

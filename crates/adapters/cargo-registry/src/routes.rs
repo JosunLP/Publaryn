@@ -93,28 +93,28 @@ pub fn index_router<S: CargoAppState>() -> Router<S> {
     Router::new()
         .route("/config.json", get(config_json::<S>))
         // 1-char crate names
-        .route("/1/:name", get(index_entry_1::<S>))
+        .route("/1/{name}", get(index_entry_1::<S>))
         // 2-char crate names
-        .route("/2/:name", get(index_entry_2::<S>))
+        .route("/2/{name}", get(index_entry_2::<S>))
         // 3-char crate names
-        .route("/3/:prefix/:name", get(index_entry_3::<S>))
+        .route("/3/{prefix}/{name}", get(index_entry_3::<S>))
         // 4+ char crate names
-        .route("/:ab/:cd/:name", get(index_entry_4::<S>))
+        .route("/{ab}/{cd}/{name}", get(index_entry_4::<S>))
 }
 
 /// Web API router — mount under `/cargo/api/v1`.
 pub fn api_router<S: CargoAppState>() -> Router<S> {
     Router::new()
         .route("/crates/new", put(publish_crate::<S>))
-        .route("/crates/:name/:version/yank", delete(yank_version::<S>))
-        .route("/crates/:name/:version/unyank", put(unyank_version::<S>))
-        .route("/crates/:name/owners", get(list_owners::<S>))
+        .route("/crates/{name}/{version}/yank", delete(yank_version::<S>))
+        .route("/crates/{name}/{version}/unyank", put(unyank_version::<S>))
+        .route("/crates/{name}/owners", get(list_owners::<S>))
         .route(
-            "/crates/:name/owners",
+            "/crates/{name}/owners",
             put(add_owners::<S>).delete(remove_owners::<S>),
         )
         .route("/crates", get(search_crates::<S>))
-        .route("/crates/:name/:version/download", get(download_crate::<S>))
+        .route("/crates/{name}/{version}/download", get(download_crate::<S>))
 }
 
 // ─── Auth ────────────────────────────────────────────────────────────────────

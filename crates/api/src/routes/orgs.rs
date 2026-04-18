@@ -35,46 +35,46 @@ use crate::{
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/orgs", post(create_org))
-        .route("/v1/orgs/:slug", get(get_org))
-        .route("/v1/orgs/:slug", patch(update_org))
-        .route("/v1/orgs/:slug/audit", get(list_org_audit_logs))
+        .route("/v1/orgs/{slug}", get(get_org))
+        .route("/v1/orgs/{slug}", patch(update_org))
+        .route("/v1/orgs/{slug}/audit", get(list_org_audit_logs))
         .route(
-            "/v1/orgs/:slug/audit/export",
+            "/v1/orgs/{slug}/audit/export",
             get(export_org_audit_logs_csv),
         )
-        .route("/v1/orgs/:slug/members", get(list_members))
-        .route("/v1/orgs/:slug/members", post(add_member))
-        .route("/v1/orgs/:slug/members/:username", delete(remove_member))
+        .route("/v1/orgs/{slug}/members", get(list_members))
+        .route("/v1/orgs/{slug}/members", post(add_member))
+        .route("/v1/orgs/{slug}/members/{username}", delete(remove_member))
         .route(
-            "/v1/orgs/:slug/ownership-transfer",
+            "/v1/orgs/{slug}/ownership-transfer",
             post(transfer_ownership),
         )
-        .route("/v1/orgs/:slug/teams", get(list_teams))
-        .route("/v1/orgs/:slug/teams", post(create_team))
-        .route("/v1/orgs/:slug/teams/:team_slug", patch(update_team))
-        .route("/v1/orgs/:slug/teams/:team_slug", delete(delete_team))
+        .route("/v1/orgs/{slug}/teams", get(list_teams))
+        .route("/v1/orgs/{slug}/teams", post(create_team))
+        .route("/v1/orgs/{slug}/teams/{team_slug}", patch(update_team))
+        .route("/v1/orgs/{slug}/teams/{team_slug}", delete(delete_team))
         .route(
-            "/v1/orgs/:slug/teams/:team_slug/members",
+            "/v1/orgs/{slug}/teams/{team_slug}/members",
             get(list_team_members).post(add_team_member),
         )
         .route(
-            "/v1/orgs/:slug/teams/:team_slug/members/:username",
+            "/v1/orgs/{slug}/teams/{team_slug}/members/{username}",
             delete(remove_team_member),
         )
         .route(
-            "/v1/orgs/:slug/teams/:team_slug/package-access",
+            "/v1/orgs/{slug}/teams/{team_slug}/package-access",
             get(list_team_package_access),
         )
         .route(
-            "/v1/orgs/:slug/teams/:team_slug/package-access/:ecosystem/:name",
+            "/v1/orgs/{slug}/teams/{team_slug}/package-access/{ecosystem}/{name}",
             put(replace_team_package_access).delete(remove_team_package_access),
         )
-        .route("/v1/orgs/:slug/repositories", get(list_org_repositories))
+        .route("/v1/orgs/{slug}/repositories", get(list_org_repositories))
         .route(
-            "/v1/orgs/:slug/security-findings",
+            "/v1/orgs/{slug}/security-findings",
             get(list_org_security_findings),
         )
-        .route("/v1/orgs/:slug/packages", get(list_org_packages))
+        .route("/v1/orgs/{slug}/packages", get(list_org_packages))
 }
 
 #[derive(Debug, Deserialize)]

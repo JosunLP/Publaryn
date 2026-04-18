@@ -27,19 +27,19 @@ const MAX_INVITATION_TTL_DAYS: u32 = 30;
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/v1/orgs/:slug/invitations", get(list_org_invitations))
-        .route("/v1/orgs/:slug/invitations", post(create_org_invitation))
+        .route("/v1/orgs/{slug}/invitations", get(list_org_invitations))
+        .route("/v1/orgs/{slug}/invitations", post(create_org_invitation))
         .route(
-            "/v1/orgs/:slug/invitations/:id",
+            "/v1/orgs/{slug}/invitations/{id}",
             delete(revoke_org_invitation),
         )
         .route("/v1/org-invitations", get(list_my_org_invitations))
         .route(
-            "/v1/org-invitations/:id/accept",
+            "/v1/org-invitations/{id}/accept",
             post(accept_org_invitation),
         )
         .route(
-            "/v1/org-invitations/:id/decline",
+            "/v1/org-invitations/{id}/decline",
             post(decline_org_invitation),
         )
 }

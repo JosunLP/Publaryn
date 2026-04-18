@@ -1,5 +1,9 @@
 use anyhow::Result;
-use fred::prelude::*;
+use fred::{
+    clients::Client as RedisClient,
+    interfaces::ClientLike,
+    types::{config::Config as RedisConfig, Builder as RedisBuilder},
+};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -75,7 +79,7 @@ impl AppState {
 
 async fn connect_redis(url: &str) -> Result<RedisClient> {
     let config = RedisConfig::from_url(url)?;
-    let client = RedisClient::new(config, None, None, None);
+    let client = RedisBuilder::from_config(config).build()?;
     client.init().await?;
     Ok(client)
 }

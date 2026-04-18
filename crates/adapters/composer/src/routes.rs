@@ -69,9 +69,9 @@ struct ComposerErrorDocument<'a> {
 pub fn router<S: ComposerAppState>() -> Router<S> {
     Router::new()
         .route("/packages.json", get(packages_index::<S>))
-        .route("/p/:vendor/:package", get(package_metadata::<S>))
+        .route("/p/{vendor}/{package}", get(package_metadata::<S>))
         .route(
-            "/files/:artifact_id/:filename",
+            "/files/{artifact_id}/{filename}",
             get(download_distribution::<S>),
         )
 }

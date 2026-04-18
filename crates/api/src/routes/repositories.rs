@@ -27,10 +27,10 @@ use crate::{
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/repositories", post(create_repository))
-        .route("/v1/repositories/:slug", get(get_repository))
-        .route("/v1/repositories/:slug", patch(update_repository))
+        .route("/v1/repositories/{slug}", get(get_repository))
+        .route("/v1/repositories/{slug}", patch(update_repository))
         .route(
-            "/v1/repositories/:slug/packages",
+            "/v1/repositories/{slug}/packages",
             get(list_repository_packages),
         )
 }

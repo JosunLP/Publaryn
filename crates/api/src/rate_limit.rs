@@ -15,9 +15,12 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use fred::prelude::*;
+use fred::{
+    clients::Client as RedisClient,
+    interfaces::KeysInterface,
+    types::ExpireOptions,
+};
 use std::net::SocketAddr;
-use std::sync::Arc;
 
 use crate::config::RateLimitConfig;
 
@@ -180,19 +183,21 @@ enum RateLimitResult {
 async fn check_rate_limit(redis: &RedisClient, key: &str, max_requests: u64) -> RateLimitResult {
     // INCR atomically increments and returns the new count.
     // If the key is new, Redis creates it with value 1.
-    let count: u64 = match redis.incr(key).await {
+    let count: u64 = match redis.incr::<u64, _>(key).await {
         Ok(count) => count,
         Err(_) => return RateLimitResult::RedisError,
     };
 
     // Set expiry on first request in the window (count == 1).
     if count == 1 {
-        let _: Result<(), _> = redis.expire(key, 60).await;
+        let _: Result<(), _> = redis
+            .expire::<(), _>(key, 60, None::<ExpireOptions>)
+            .await;
     }
 
     if count > max_requests {
         // Compute seconds remaining in the current window.
-        let ttl: i64 = redis.ttl(key).await.unwrap_or(60);
+        let ttl: i64 = redis.ttl::<i64, _>(key).await.unwrap_or(60);
         let retry_after = if ttl > 0 { ttl as u64 } else { 60 };
         RateLimitResult::Exceeded {
             limit: max_requests,

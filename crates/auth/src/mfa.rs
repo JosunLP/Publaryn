@@ -3,7 +3,7 @@
 //! Provides setup (secret generation + provisioning URI), verification,
 //! and backup recovery code generation.
 
-use rand::Rng;
+use rand::RngExt;
 use sha2::{Digest, Sha256};
 use totp_rs::{Algorithm, Secret, TOTP};
 
@@ -108,7 +108,7 @@ pub fn hash_recovery_code(code: &str) -> String {
 }
 
 fn generate_recovery_codes() -> (Vec<String>, Vec<String>) {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let alphabet: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
 
     let mut codes = Vec::with_capacity(RECOVERY_CODE_COUNT);
@@ -116,10 +116,10 @@ fn generate_recovery_codes() -> (Vec<String>, Vec<String>) {
 
     for _ in 0..RECOVERY_CODE_COUNT {
         let seg1: String = (0..RECOVERY_CODE_SEGMENT_LEN)
-            .map(|_| alphabet[rng.gen_range(0..alphabet.len())] as char)
+            .map(|_| alphabet[rng.random_range(0..alphabet.len())] as char)
             .collect();
         let seg2: String = (0..RECOVERY_CODE_SEGMENT_LEN)
-            .map(|_| alphabet[rng.gen_range(0..alphabet.len())] as char)
+            .map(|_| alphabet[rng.random_range(0..alphabet.len())] as char)
             .collect();
         let code = format!("{seg1}-{seg2}");
         let hash = hash_recovery_code(&code);

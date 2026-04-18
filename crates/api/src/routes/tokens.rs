@@ -25,7 +25,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/tokens", post(create_token))
         .route("/v1/tokens", get(list_tokens))
-        .route("/v1/tokens/:id", delete(revoke_token))
+        .route("/v1/tokens/{id}", delete(revoke_token))
 }
 
 #[derive(Debug, Deserialize)]

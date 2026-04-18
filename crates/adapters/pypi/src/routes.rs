@@ -167,22 +167,22 @@ pub fn router<S: PyPiAppState>() -> Router<S> {
             post(upload_distribution::<S>).layer(DefaultBodyLimit::disable()),
         )
         .route(
-            "/legacy/:repository_slug",
+            "/legacy/{repository_slug}",
             post(upload_distribution_to_repository::<S>).layer(DefaultBodyLimit::disable()),
         )
         .route(
-            "/legacy/:repository_slug/",
+            "/legacy/{repository_slug}/",
             post(upload_distribution_to_repository::<S>).layer(DefaultBodyLimit::disable()),
         )
         .route("/simple", get(redirect_simple_root::<S>))
         .route("/simple/", get(simple_index::<S>))
         .route(
-            "/simple/:project",
+            "/simple/{project}",
             get(project_detail_without_trailing_slash::<S>),
         )
-        .route("/simple/:project/", get(project_detail::<S>))
+        .route("/simple/{project}/", get(project_detail::<S>))
         .route(
-            "/files/:artifact_id/:filename",
+            "/files/{artifact_id}/{filename}",
             get(download_distribution::<S>),
         )
 }

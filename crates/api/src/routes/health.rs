@@ -1,5 +1,5 @@
 use axum::{http::StatusCode, routing::get, Json, Router};
-use fred::prelude::*;
+use fred::interfaces::ClientLike;
 use serde_json::{json, Value};
 use utoipa;
 
@@ -39,7 +39,7 @@ async fn readiness_handler(
 
     let redis_ok = match state.redis.as_ref() {
         Some(redis) => {
-            let result: Result<String, _> = redis.ping().await;
+            let result: Result<String, _> = redis.ping(None).await;
             result.is_ok()
         }
         None => true, // Redis is optional; if not configured, don't block readiness

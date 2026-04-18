@@ -1,4 +1,3 @@
-use async_trait::async_trait;
 use axum::{
     extract::{FromRef, FromRequestParts},
     http::{header::AUTHORIZATION, request::Parts},
@@ -109,7 +108,6 @@ impl OptionalAuthenticatedIdentity {
     }
 }
 
-#[async_trait]
 impl<S> FromRequestParts<S> for AuthenticatedIdentity
 where
     AppState: FromRef<S>,
@@ -133,7 +131,6 @@ where
     }
 }
 
-#[async_trait]
 impl<S> FromRequestParts<S> for OptionalAuthenticatedIdentity
 where
     AppState: FromRef<S>,
@@ -842,6 +839,36 @@ pub async fn actor_can_publish_package_by_id(
         package_id,
         actor_user_id,
         TEAM_PACKAGE_PUBLISH_PERMISSIONS,
+    )
+    .await
+}
+
+pub async fn actor_can_admin_package_by_id(
+    db: &PgPool,
+    package_id: Uuid,
+    actor_user_id: Option<Uuid>,
+) -> ApiResult<bool> {
+    let Some(actor_user_id) = actor_user_id else {
+        return Ok(false);
+    };
+
+    let (owner_user_id, owner_org_id) = fetch_package_owner_fields_by_id(db, package_id).await?;
+
+    if owner_user_id == Some(actor_user_id) {
+        return Ok(true);
+    }
+
+    if let Some(owner_org_id) = owner_org_id {
+        if actor_has_org_roles(db, owner_org_id, actor_user_id, PACKAGE_ADMIN_ROLES).await? {
+            return Ok(true);
+        }
+    }
+
+    actor_has_team_package_permissions(
+        db,
+        package_id,
+        actor_user_id,
+        TEAM_PACKAGE_ADMIN_PERMISSIONS,
     )
     .await
 }
