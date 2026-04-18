@@ -9,11 +9,14 @@ export interface RepositoryDetail {
   description?: NullableString;
   kind?: NullableString;
   visibility?: NullableString;
+  owner_user_id?: NullableString;
   upstream_url?: NullableString;
   owner_org_id?: NullableString;
   owner_username?: NullableString;
   owner_org_slug?: NullableString;
   owner_org_name?: NullableString;
+  can_manage?: boolean | null;
+  can_create_packages?: boolean | null;
   created_at?: NullableString;
   updated_at?: NullableString;
 }

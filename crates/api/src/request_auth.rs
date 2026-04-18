@@ -355,6 +355,24 @@ async fn actor_can_read_owned_resource(
     Ok(false)
 }
 
+async fn actor_can_write_owned_repository(
+    db: &PgPool,
+    owner_user_id: Option<Uuid>,
+    owner_org_id: Option<Uuid>,
+    actor_user_id: Uuid,
+) -> ApiResult<bool> {
+    if owner_user_id == Some(actor_user_id) {
+        return Ok(true);
+    }
+
+    match owner_org_id {
+        Some(owner_org_id) => {
+            actor_has_org_roles(db, owner_org_id, actor_user_id, ORG_ADMIN_ROLES).await
+        }
+        None => Ok(false),
+    }
+}
+
 async fn actor_has_any_team_package_access(
     db: &PgPool,
     package_id: Uuid,
@@ -681,14 +699,8 @@ pub async fn ensure_repository_write_access(
         .try_get::<Option<Uuid>, _>("owner_org_id")
         .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
 
-    if owner_user_id == Some(actor_user_id) {
+    if actor_can_write_owned_repository(db, owner_user_id, owner_org_id, actor_user_id).await? {
         return Ok(repository_id);
-    }
-
-    if let Some(owner_org_id) = owner_org_id {
-        if actor_has_org_roles(db, owner_org_id, actor_user_id, ORG_ADMIN_ROLES).await? {
-            return Ok(repository_id);
-        }
     }
 
     Err(ApiError(Error::Forbidden(
@@ -781,6 +793,48 @@ async fn fetch_package_owner_fields_by_id(
         row.try_get::<Option<Uuid>, _>("owner_org_id")
             .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
     ))
+}
+
+async fn fetch_repository_owner_fields_by_id(
+    db: &PgPool,
+    repository_id: Uuid,
+) -> ApiResult<(Option<Uuid>, Option<Uuid>)> {
+    let row = sqlx::query(
+        "SELECT owner_user_id, owner_org_id \
+         FROM repositories \
+         WHERE id = $1",
+    )
+    .bind(repository_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?
+    .ok_or_else(|| {
+        ApiError(Error::NotFound(format!(
+            "Repository '{repository_id}' not found"
+        )))
+    })?;
+
+    Ok((
+        row.try_get::<Option<Uuid>, _>("owner_user_id")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        row.try_get::<Option<Uuid>, _>("owner_org_id")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+    ))
+}
+
+pub async fn actor_can_write_repository_by_id(
+    db: &PgPool,
+    repository_id: Uuid,
+    actor_user_id: Option<Uuid>,
+) -> ApiResult<bool> {
+    let Some(actor_user_id) = actor_user_id else {
+        return Ok(false);
+    };
+
+    let (owner_user_id, owner_org_id) =
+        fetch_repository_owner_fields_by_id(db, repository_id).await?;
+
+    actor_can_write_owned_repository(db, owner_user_id, owner_org_id, actor_user_id).await
 }
 
 pub async fn actor_can_transfer_package_by_id(

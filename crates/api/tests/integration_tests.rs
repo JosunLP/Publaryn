@@ -85,6 +85,33 @@ async fn login_user(app: &axum::Router, username: &str, password: &str) -> Strin
     body["token"].as_str().expect("token field").to_owned()
 }
 
+/// Create a personal access token and return the response.
+async fn create_personal_access_token(
+    app: &axum::Router,
+    jwt: &str,
+    name: &str,
+    scopes: &[&str],
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/v1/tokens")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::from(
+            json!({
+                "name": name,
+                "scopes": scopes,
+            })
+            .to_string(),
+        ))
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
 /// Create an organization via POST /v1/orgs and return the response.
 async fn create_org(app: &axum::Router, jwt: &str, name: &str, slug: &str) -> (StatusCode, Value) {
     let req = Request::builder()
@@ -1802,6 +1829,133 @@ async fn test_repository_detail_respects_direct_read_visibility(pool: PgPool) {
     assert_eq!(status, StatusCode::OK, "unexpected member internal response: {member_internal_body}");
     assert_eq!(member_internal_body["owner_org_slug"], "acme-corp");
     assert_eq!(member_internal_body["owner_org_name"], "Acme Corp");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_repository_detail_exposes_capabilities_for_org_admins_and_viewers(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let owner_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let viewer_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &owner_jwt, "Acme Corp", "acme-corp").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id = org_body["id"].as_str().expect("org id should be returned");
+
+    let (status, body) = add_org_member(&app, &owner_jwt, "acme-corp", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED, "unexpected member response: {body}");
+
+    let (status, body) = create_repository_with_options(
+        &app,
+        &owner_jwt,
+        "Acme Public",
+        "acme-public",
+        Some(org_id),
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "unexpected repository response: {body}");
+
+    let (status, anonymous_body) = get_repository_detail(&app, None, "acme-public").await;
+    assert_eq!(status, StatusCode::OK, "unexpected anonymous response: {anonymous_body}");
+    assert_eq!(anonymous_body["can_manage"], false);
+    assert_eq!(anonymous_body["can_create_packages"], false);
+
+    let (status, viewer_body) = get_repository_detail(&app, Some(&viewer_jwt), "acme-public").await;
+    assert_eq!(status, StatusCode::OK, "unexpected viewer response: {viewer_body}");
+    assert_eq!(viewer_body["can_manage"], false);
+    assert_eq!(viewer_body["can_create_packages"], false);
+
+    let (status, owner_body) = get_repository_detail(&app, Some(&owner_jwt), "acme-public").await;
+    assert_eq!(status, StatusCode::OK, "unexpected owner response: {owner_body}");
+    assert_eq!(owner_body["can_manage"], true);
+    assert_eq!(owner_body["can_create_packages"], true);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_repository_detail_exposes_capabilities_for_user_owned_repository_owner(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, body) = create_repository(&app, &jwt, "Alice Releases", "alice-releases", None).await;
+    assert_eq!(status, StatusCode::CREATED, "unexpected repository response: {body}");
+
+    let (status, anonymous_body) = get_repository_detail(&app, None, "alice-releases").await;
+    assert_eq!(status, StatusCode::OK, "unexpected anonymous response: {anonymous_body}");
+    assert_eq!(anonymous_body["can_manage"], false);
+    assert_eq!(anonymous_body["can_create_packages"], false);
+
+    let (status, owner_body) = get_repository_detail(&app, Some(&jwt), "alice-releases").await;
+    assert_eq!(status, StatusCode::OK, "unexpected owner response: {owner_body}");
+    assert_eq!(owner_body["can_manage"], true);
+    assert_eq!(owner_body["can_create_packages"], true);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_repository_detail_capabilities_follow_token_scopes(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, body) = create_repository(&app, &jwt, "Alice Releases", "alice-releases", None).await;
+    assert_eq!(status, StatusCode::CREATED, "unexpected repository response: {body}");
+
+    let (status, repository_token_body) = create_personal_access_token(
+        &app,
+        &jwt,
+        "repository-manage",
+        &["repositories:write"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository token response: {repository_token_body}"
+    );
+    let repository_token = repository_token_body["token"]
+        .as_str()
+        .expect("repository token should be returned")
+        .to_owned();
+
+    let (status, package_token_body) = create_personal_access_token(
+        &app,
+        &jwt,
+        "package-manage",
+        &["packages:write"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package token response: {package_token_body}"
+    );
+    let package_token = package_token_body["token"]
+        .as_str()
+        .expect("package token should be returned")
+        .to_owned();
+
+    let (status, repository_token_detail) =
+        get_repository_detail(&app, Some(&repository_token), "alice-releases").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected repository-scope token response: {repository_token_detail}"
+    );
+    assert_eq!(repository_token_detail["can_manage"], true);
+    assert_eq!(repository_token_detail["can_create_packages"], false);
+
+    let (status, package_token_detail) =
+        get_repository_detail(&app, Some(&package_token), "alice-releases").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected package-scope token response: {package_token_detail}"
+    );
+    assert_eq!(package_token_detail["can_manage"], false);
+    assert_eq!(package_token_detail["can_create_packages"], true);
 }
 
 #[sqlx::test(migrations = "../../migrations")]

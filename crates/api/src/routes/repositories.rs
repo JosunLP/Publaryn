@@ -17,10 +17,10 @@ use publaryn_core::{
 use crate::{
     error::{ApiError, ApiResult},
     request_auth::{
-        ensure_org_admin_by_id, ensure_repository_read_access, ensure_repository_write_access,
-        AuthenticatedIdentity, OptionalAuthenticatedIdentity,
+        actor_can_write_repository_by_id, ensure_org_admin_by_id, ensure_repository_read_access,
+        ensure_repository_write_access, AuthenticatedIdentity, OptionalAuthenticatedIdentity,
     },
-    scopes::{ensure_scope, SCOPE_REPOSITORIES_WRITE},
+    scopes::{ensure_scope, SCOPE_PACKAGES_WRITE, SCOPE_REPOSITORIES_WRITE},
     state::AppState,
 };
 
@@ -58,6 +58,42 @@ struct UpdateRepositoryRequest {
 struct PackageListQuery {
     page: Option<u32>,
     per_page: Option<u32>,
+}
+
+async fn can_manage_repository(
+    db: &sqlx::PgPool,
+    repository_id: Uuid,
+    identity: &OptionalAuthenticatedIdentity,
+) -> ApiResult<bool> {
+    match identity.0.as_ref() {
+        Some(identity)
+            if identity
+                .scopes()
+                .iter()
+                .any(|scope| scope == SCOPE_REPOSITORIES_WRITE) =>
+        {
+            actor_can_write_repository_by_id(db, repository_id, Some(identity.user_id)).await
+        }
+        _ => Ok(false),
+    }
+}
+
+async fn can_create_packages_in_repository(
+    db: &sqlx::PgPool,
+    repository_id: Uuid,
+    identity: &OptionalAuthenticatedIdentity,
+) -> ApiResult<bool> {
+    match identity.0.as_ref() {
+        Some(identity)
+            if identity
+                .scopes()
+                .iter()
+                .any(|scope| scope == SCOPE_PACKAGES_WRITE) =>
+        {
+            actor_can_write_repository_by_id(db, repository_id, Some(identity.user_id)).await
+        }
+        _ => Ok(false),
+    }
 }
 
 async fn create_repository(
@@ -140,6 +176,9 @@ async fn get_repository(
     Path(slug): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let access = ensure_repository_read_access(&state.db, &slug, identity.user_id()).await?;
+    let can_manage = can_manage_repository(&state.db, access.repository_id, &identity).await?;
+    let can_create_packages =
+        can_create_packages_in_repository(&state.db, access.repository_id, &identity).await?;
 
     let row = sqlx::query(
         "SELECT r.id, r.name, r.slug, r.description, r.kind::text AS kind, r.visibility::text AS visibility, r.owner_user_id, r.owner_org_id, \
@@ -167,6 +206,8 @@ async fn get_repository(
         "owner_username": row.try_get::<Option<String>, _>("owner_username").ok().flatten(),
         "owner_org_slug": row.try_get::<Option<String>, _>("owner_org_slug").ok().flatten(),
         "owner_org_name": row.try_get::<Option<String>, _>("owner_org_name").ok().flatten(),
+        "can_manage": can_manage,
+        "can_create_packages": can_create_packages,
         "upstream_url": row.try_get::<Option<String>, _>("upstream_url").ok().flatten(),
         "created_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at").ok(),
         "updated_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("updated_at").ok(),
