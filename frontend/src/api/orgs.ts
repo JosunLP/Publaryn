@@ -26,6 +26,7 @@ export interface OrganizationListResponse {
 }
 
 export interface OrgMember {
+  user_id?: NullableString;
   display_name?: NullableString;
   username?: NullableString;
   role?: NullableString;
@@ -380,6 +381,22 @@ export async function updateOrg(
 export async function listMembers(slug: string): Promise<MemberListResponse> {
   const { data } = await api.get<MemberListResponse>(
     `/v1/orgs/${enc(slug)}/members`
+  );
+
+  return data;
+}
+
+export async function searchOrgMembers(
+  slug: string,
+  query: string,
+  limit = 20
+): Promise<MemberListResponse> {
+  const params = new URLSearchParams();
+  params.set('query', query);
+  params.set('limit', String(limit));
+
+  const { data } = await api.get<MemberListResponse>(
+    `/v1/orgs/${enc(slug)}/members/search?${params.toString()}`
   );
 
   return data;

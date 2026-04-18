@@ -118,6 +118,7 @@
   } from '../../../utils/security';
 
   const ADMIN_ROLES = new Set(['owner', 'admin']);
+  const AUDIT_ROLES = new Set(['owner', 'admin', 'auditor']);
   const ORG_AUDIT_PAGE_SIZE = 20;
   const DEFAULT_NAMESPACE_ECOSYSTEM = 'npm';
   const DEFAULT_PACKAGE_ECOSYSTEM = 'npm';
@@ -196,6 +197,7 @@
   let membership: OrganizationMembership | undefined;
   let isAuthenticated = false;
   let canAdminister = false;
+  let canViewAudit = false;
   let isOwner = false;
 
   let members: OrgMember[] = [];
@@ -223,6 +225,24 @@
   let auditError: string | null = null;
   let auditHasNext = false;
   let exportingAudit = false;
+  let auditActorOptions: Array<{
+    userId: string;
+    username: string;
+    label: string;
+  }> = [];
+  let auditActorRemoteOptions: Array<{
+    userId: string;
+    username: string;
+    label: string;
+  }> = [];
+  let auditActorQuery = '';
+  let auditActorSearchInFlight = false;
+  let auditActorSearchRequest = 0;
+  let selectedAuditActor: {
+    userId: string;
+    username: string;
+    label: string;
+  } | null = null;
   let creatableRepositories: CreatableRepository[] = [];
   let selectedPackageCreationRepository: CreatableRepository | null = null;
   let packageVisibilityOptions: Array<{ value: string; label: string }> = [];
@@ -246,6 +266,62 @@
   $: if (slug && loadKey !== lastLoadKey) {
     lastLoadKey = loadKey;
     void loadOrganizationPage();
+  }
+
+  function dedupeActorOptions(
+    options: Array<{ userId: string; username: string; label: string }>
+  ): Array<{ userId: string; username: string; label: string }> {
+    const seen = new Set<string>();
+    const merged: typeof options = [];
+
+    for (const option of options) {
+      if (seen.has(option.userId)) {
+        continue;
+      }
+      seen.add(option.userId);
+      merged.push(option);
+    }
+
+    return merged;
+  }
+
+  $: {
+    const baseOptions = members
+    .filter(
+      (member) =>
+        typeof member.user_id === 'string' &&
+        member.user_id.trim() &&
+        typeof member.username === 'string' &&
+        member.username.trim()
+    )
+    .map((member) => {
+      const username = member.username?.trim() || '';
+      const displayName = member.display_name?.trim();
+      return {
+        userId: (member.user_id || '').trim(),
+        username,
+        label: displayName ? `${displayName} (@${username})` : `@${username}`,
+      };
+    })
+    .sort((left, right) => left.username.localeCompare(right.username));
+
+    auditActorOptions = dedupeActorOptions([
+      ...baseOptions,
+      ...auditActorRemoteOptions,
+    ]);
+  }
+
+  $: selectedAuditActor =
+    auditActorOptions.find(
+      (candidate) => candidate.userId === auditView.actorUserId
+    ) || null;
+  $: auditActorQuery =
+    selectedAuditActor?.username || auditView.actorUsername || '';
+
+  $: if (auditActorQuery.trim().length >= 2 && canViewAudit) {
+    void searchAuditActors(auditActorQuery.trim());
+  } else if (!auditActorQuery.trim() && auditActorRemoteOptions.length > 0) {
+    auditActorRemoteOptions = [];
   }
 
   $: transferablePackages = selectTransferablePackages(packages);
@@ -409,6 +485,7 @@
         (item) => item.slug === slug
       );
       canAdminister = ADMIN_ROLES.has(membership?.role || '');
+      canViewAudit = AUDIT_ROLES.has(membership?.role || '');
       isOwner = membership?.role === 'owner';
 
       members = memberData.members || [];
@@ -474,7 +551,7 @@
               load_error:
                 'Failed to load namespace claims because the organization id is unavailable.',
             }),
-        canAdminister
+        canViewAudit
           ? listOrgAuditLogs(slug, {
               action: resolvedAuditAction || undefined,
               actorUserId: resolvedAuditActorUserId || undefined,
@@ -657,6 +734,20 @@
     const occurredFrom = formData.get('occurred_from')?.toString().trim() || '';
     const occurredUntil =
       formData.get('occurred_until')?.toString().trim() || '';
+    const actorQuery = formData.get('actor_query')?.toString().trim() || '';
+    const normalizedActorUserId = normalizeAuditActorUserId(actorQuery) || '';
+    const actorFromSelect =
+      auditActorOptions.find(
+        (option) =>
+          option.userId === normalizedActorUserId ||
+          option.username.toLowerCase() === actorQuery.toLowerCase()
+      ) || null;
+    const resolvedActorUserId = actorFromSelect
+      ? actorFromSelect.userId
+      : normalizedActorUserId;
+    const resolvedActorUsername = actorFromSelect
+      ? actorFromSelect.username
+      : actorQuery;
 
     if (occurredFrom && occurredUntil && occurredFrom > occurredUntil) {
       await loadOrganizationPage({
@@ -670,8 +761,8 @@
         slug,
         {
           action: formData.get('action')?.toString() || '',
-          actorUserId: auditView.actorUserId,
-          actorUsername: auditView.actorUsername,
+          actorUserId: resolvedActorUserId,
+          actorUsername: resolvedActorUsername,
           occurredFrom,
           occurredUntil,
           page: 1,
@@ -1757,7 +1848,7 @@
       </div>
     </section>
 
-    {#if canAdminister}
+    {#if canViewAudit}
       <section class="card settings-section">
         <div class="org-section-header">
           <div>
@@ -1785,6 +1876,24 @@
                   >
                 {/each}
               </select>
+            </div>
+            <div class="form-group" style="margin-bottom:0; min-width:260px;">
+              <label for="org-audit-actor">Actor</label>
+              <input
+                id="org-audit-actor"
+                name="actor_query"
+                class="form-input"
+                list="org-audit-actor-options"
+                value={auditActorQuery}
+                placeholder="Search username or paste user id"
+                autocomplete="off"
+              />
+              <datalist id="org-audit-actor-options">
+                {#each auditActorOptions as actor}
+                  <option value={actor.username}>{actor.label}</option>
+                  <option value={actor.userId}>{actor.label}</option>
+                {/each}
+              </datalist>
             </div>
             <div class="form-group" style="margin-bottom:0; min-width:180px;">
               <label for="org-audit-from">From (UTC)</label>
@@ -3342,3 +3451,47 @@
     </section>
   </div>
 {/if}
+  async function searchAuditActors(query: string): Promise<void> {
+    const requestId = ++auditActorSearchRequest;
+    auditActorSearchInFlight = true;
+
+    try {
+      const response = await searchOrgMembers(slug, query);
+      if (requestId !== auditActorSearchRequest) {
+        return;
+      }
+
+      const remoteOptions =
+        response.members
+          ?.filter(
+            (member) =>
+              typeof member.user_id === 'string' &&
+              member.user_id.trim() &&
+              typeof member.username === 'string' &&
+              member.username.trim()
+          )
+          .map((member) => {
+            const username = member.username?.trim() || '';
+            const displayName = member.display_name?.trim();
+            return {
+              userId: (member.user_id || '').trim(),
+              username,
+              label: displayName
+                ? `${displayName} (@${username})`
+                : `@${username}`,
+            };
+          })
+          .sort((left, right) => left.username.localeCompare(right.username)) ||
+        [];
+
+      auditActorRemoteOptions = remoteOptions;
+    } catch (caughtError: unknown) {
+      if (requestId === auditActorSearchRequest) {
+        auditActorRemoteOptions = [];
+      }
+    } finally {
+      if (requestId === auditActorSearchRequest) {
+        auditActorSearchInFlight = false;
+      }
+    }
+  }

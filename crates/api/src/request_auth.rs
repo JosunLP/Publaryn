@@ -14,6 +14,7 @@ use crate::{
 };
 
 const ORG_ADMIN_ROLES: &[&str] = &["owner", "admin"];
+const ORG_AUDIT_ROLES: &[&str] = &["owner", "admin", "auditor"];
 const PACKAGE_METADATA_ROLES: &[&str] = &["owner", "admin", "maintainer"];
 const PACKAGE_PUBLISH_ROLES: &[&str] = &["owner", "admin", "maintainer", "publisher"];
 const PACKAGE_ADMIN_ROLES: &[&str] = &["owner", "admin"];
@@ -751,6 +752,22 @@ pub async fn ensure_org_admin_by_slug(
     let org_id = fetch_org_id_by_slug(db, slug).await?;
     ensure_org_admin_by_id(db, org_id, actor_user_id).await?;
     Ok(org_id)
+}
+
+pub async fn ensure_org_audit_access_by_slug(
+    db: &PgPool,
+    slug: &str,
+    actor_user_id: Uuid,
+) -> ApiResult<Uuid> {
+    let org_id = fetch_org_id_by_slug(db, slug).await?;
+
+    if actor_has_org_roles(db, org_id, actor_user_id, ORG_AUDIT_ROLES).await? {
+        return Ok(org_id);
+    }
+
+    Err(ApiError(Error::Forbidden(
+        "Organization activity log requires owner, admin, or auditor membership".into(),
+    )))
 }
 
 pub async fn is_platform_admin(db: &PgPool, actor_user_id: Uuid) -> ApiResult<bool> {
