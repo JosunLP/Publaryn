@@ -5780,8 +5780,15 @@ async fn test_cargo_publish_populates_sparse_index_and_supports_conditional_fetc
 #[sqlx::test(migrations = "../../migrations")]
 async fn test_cargo_private_sparse_index_and_download_require_authentication(pool: PgPool) {
     let app = app(pool);
-    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
-    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let test_password = format!(
+        "test_pw_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time before unix epoch")
+            .as_nanos()
+    );
+    register_user(&app, "alice", "alice@test.dev", &test_password).await;
+    let alice_jwt = login_user(&app, "alice", &test_password).await;
 
     let (status, repository_body) = create_repository_with_options(
         &app,
