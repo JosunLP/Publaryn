@@ -26,6 +26,7 @@ export interface OrganizationListResponse {
 }
 
 export interface OrgMember {
+  user_id?: NullableString;
   display_name?: NullableString;
   username?: NullableString;
   role?: NullableString;

@@ -683,7 +683,7 @@ async fn list_members(
     Path(slug): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let rows = sqlx::query(
-        "SELECT u.username, u.display_name, om.role::text AS role, om.joined_at \
+        "SELECT u.id AS user_id, u.username, u.display_name, om.role::text AS role, om.joined_at \
          FROM org_memberships om \
          JOIN users u ON u.id = om.user_id \
          JOIN organizations o ON o.id = om.org_id \
@@ -699,6 +699,7 @@ async fn list_members(
         .iter()
         .map(|r| {
             serde_json::json!({
+                "user_id": r.try_get::<Uuid, _>("user_id").ok(),
                 "username": r.try_get::<String, _>("username").ok(),
                 "display_name": r.try_get::<Option<String>, _>("display_name").ok().flatten(),
                 "role": r.try_get::<String, _>("role").ok(),

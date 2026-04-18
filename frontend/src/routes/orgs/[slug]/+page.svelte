@@ -225,6 +225,16 @@
   let auditError: string | null = null;
   let auditHasNext = false;
   let exportingAudit = false;
+  let auditActorOptions: Array<{
+    userId: string;
+    username: string;
+    label: string;
+  }> = [];
+  let selectedAuditActor: {
+    userId: string;
+    username: string;
+    label: string;
+  } | null = null;
   let creatableRepositories: CreatableRepository[] = [];
   let selectedPackageCreationRepository: CreatableRepository | null = null;
   let packageVisibilityOptions: Array<{ value: string; label: string }> = [];
@@ -249,6 +259,30 @@
     lastLoadKey = loadKey;
     void loadOrganizationPage();
   }
+
+  $: auditActorOptions = members
+    .filter(
+      (member) =>
+        typeof member.user_id === 'string' &&
+        member.user_id.trim() &&
+        typeof member.username === 'string' &&
+        member.username.trim()
+    )
+    .map((member) => {
+      const username = member.username?.trim() || '';
+      const displayName = member.display_name?.trim();
+      return {
+        userId: (member.user_id || '').trim(),
+        username,
+        label: displayName ? `${displayName} (@${username})` : `@${username}`,
+      };
+    })
+    .sort((left, right) => left.username.localeCompare(right.username));
+
+  $: selectedAuditActor =
+    auditActorOptions.find(
+      (candidate) => candidate.userId === auditView.actorUserId
+    ) || null;
 
   $: transferablePackages = selectTransferablePackages(packages);
   $: creatableRepositories = selectCreatableRepositories(repositories);
@@ -660,6 +694,14 @@
     const occurredFrom = formData.get('occurred_from')?.toString().trim() || '';
     const occurredUntil =
       formData.get('occurred_until')?.toString().trim() || '';
+    const actorUserIdInput =
+      formData.get('actor_user_id')?.toString().trim() || '';
+    const normalizedActorUserId =
+      normalizeAuditActorUserId(actorUserIdInput) || '';
+    const actorFromSelect =
+      auditActorOptions.find(
+        (option) => option.userId === normalizedActorUserId
+      ) || null;
 
     if (occurredFrom && occurredUntil && occurredFrom > occurredUntil) {
       await loadOrganizationPage({
@@ -673,8 +715,8 @@
         slug,
         {
           action: formData.get('action')?.toString() || '',
-          actorUserId: auditView.actorUserId,
-          actorUsername: auditView.actorUsername,
+          actorUserId: normalizedActorUserId,
+          actorUsername: actorFromSelect?.username || '',
           occurredFrom,
           occurredUntil,
           page: 1,
@@ -1786,6 +1828,30 @@
                   <option value={action} selected={action === auditView.action}
                     >{formatAuditActionLabel(action)}</option
                   >
+                {/each}
+              </select>
+            </div>
+            <div class="form-group" style="margin-bottom:0; min-width:240px;">
+              <label for="org-audit-actor">Actor</label>
+              <select
+                id="org-audit-actor"
+                name="actor_user_id"
+                class="form-input"
+                value={auditView.actorUserId}
+              >
+                <option value="">All actors</option>
+                {#if auditView.actorUserId && !selectedAuditActor}
+                  <option value={auditView.actorUserId} selected>
+                    {formatAuditActorQueryLabel(auditView.actorUsername)}
+                  </option>
+                {/if}
+                {#each auditActorOptions as actor}
+                  <option
+                    value={actor.userId}
+                    selected={actor.userId === auditView.actorUserId}
+                  >
+                    {actor.label}
+                  </option>
                 {/each}
               </select>
             </div>
