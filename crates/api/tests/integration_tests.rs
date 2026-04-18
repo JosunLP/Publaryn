@@ -2,6 +2,7 @@ use axum::{
     body::Body,
     http::{header, Method, Request, StatusCode},
 };
+use base64::engine::{general_purpose::STANDARD as BASE64, Engine};
 use serde_json::{json, Value};
 use sqlx::{PgPool, Row};
 use std::net::ToSocketAddrs;
@@ -1134,6 +1135,52 @@ async fn set_npm_dist_tag(
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
         .body(Body::from(json!(version).to_string()))
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// Publish a native npm package version and return the response.
+async fn publish_npm_package(
+    app: &axum::Router,
+    jwt: &str,
+    package_name: &str,
+    version: &str,
+    tarball_bytes: &[u8],
+) -> (StatusCode, Value) {
+    let filename = format!("{package_name}-{version}.tgz");
+    let req = Request::builder()
+        .method(Method::PUT)
+        .uri(format!("/npm/{package_name}"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::from(
+            json!({
+                "name": package_name,
+                "versions": {
+                    version: {
+                        "name": package_name,
+                        "version": version,
+                        "description": format!("Published {package_name} {version}"),
+                    }
+                },
+                "dist-tags": {
+                    "latest": version,
+                },
+                "_attachments": {
+                    filename: {
+                        "content_type": "application/gzip",
+                        "data": BASE64.encode(tarball_bytes),
+                        "length": tarball_bytes.len(),
+                    }
+                },
+                "readme": format!("# {package_name}\n\nPublished in integration tests."),
+            })
+            .to_string(),
+        ))
         .unwrap();
 
     let resp = app.clone().oneshot(req).await.unwrap();
@@ -6039,6 +6086,236 @@ async fn test_npm_dist_tag_mutation_requires_a_readable_release(pool: PgPool) {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(packument["dist-tags"]["beta"], "1.0.0");
     assert_eq!(packument["versions"]["1.0.0"]["version"], "1.0.0");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_native_npm_publish_auto_creates_org_owned_package_from_repository_publish_grant(
+    pool: PgPool,
+) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &alice_jwt, "Source Org", "source-org").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let source_org_id = org_body["id"].as_str().expect("source org id");
+    let source_org_uuid = uuid::Uuid::parse_str(source_org_id).expect("source org id should parse");
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Source Packages",
+        "source-packages",
+        Some(source_org_id),
+        Some("private"),
+        Some("private"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, _) = add_org_member(&app, &alice_jwt, "source-org", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "Release Engineering",
+        "release-engineering",
+        Some("Publishes npm packages through repository delegation."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) =
+        add_team_member_to_team(&app, &alice_jwt, "source-org", "release-engineering", "bob").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, grant_body) = grant_team_repository_access(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "release-engineering",
+        "source-packages",
+        &["publish"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team repository access response: {grant_body}"
+    );
+
+    let (status, publish_body) = publish_npm_package(
+        &app,
+        &bob_jwt,
+        "native-org-widget",
+        "1.0.0",
+        b"native-org-widget-tarball",
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected npm publish response: {publish_body}"
+    );
+    assert_eq!(publish_body["ok"], true);
+
+    let package_owner = sqlx::query(
+        "SELECT owner_user_id, owner_org_id, visibility::text AS visibility \
+         FROM packages \
+         WHERE ecosystem = 'npm' AND name = $1",
+    )
+    .bind("native-org-widget")
+    .fetch_one(&pool)
+    .await
+    .expect("native npm package should exist");
+    let package_owner_user_id = package_owner
+        .try_get::<Option<uuid::Uuid>, _>("owner_user_id")
+        .expect("package owner user id should be readable");
+    let package_owner_org_id = package_owner
+        .try_get::<Option<uuid::Uuid>, _>("owner_org_id")
+        .expect("package owner org id should be readable");
+    let package_visibility = package_owner
+        .try_get::<String, _>("visibility")
+        .expect("package visibility should be readable");
+    assert_eq!(package_owner_user_id, None);
+    assert_eq!(package_owner_org_id, Some(source_org_uuid));
+    assert_eq!(package_visibility, "private");
+
+    let (status, package_detail) =
+        get_package_detail(&app, Some(&bob_jwt), "npm", "native-org-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(package_detail["owner_org_slug"], "source-org");
+    assert_eq!(package_detail["can_manage_releases"], true);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_native_npm_repository_publish_permission_allows_existing_package_publish_and_dist_tag_updates(
+    pool: PgPool,
+) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &alice_jwt, "Source Org", "source-org").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let source_org_id = org_body["id"].as_str().expect("source org id");
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Source Packages",
+        "source-packages",
+        Some(source_org_id),
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "npm",
+        "native-release-widget",
+        "source-packages",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let (status, _) = add_org_member(&app, &alice_jwt, "source-org", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "Release Engineering",
+        "release-engineering",
+        Some("Publishes existing npm packages and manages dist-tags."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) =
+        add_team_member_to_team(&app, &alice_jwt, "source-org", "release-engineering", "bob").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, grant_body) = grant_team_repository_access(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "release-engineering",
+        "source-packages",
+        &["publish"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team repository access response: {grant_body}"
+    );
+
+    let (status, publish_body) = publish_npm_package(
+        &app,
+        &bob_jwt,
+        "native-release-widget",
+        "1.0.0",
+        b"native-release-widget-tarball",
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected npm publish response: {publish_body}"
+    );
+    assert_eq!(publish_body["ok"], true);
+
+    let release_id = get_release_id(&pool, "npm", "native-release-widget", "1.0.0").await;
+    let release_status: String =
+        sqlx::query_scalar("SELECT status::text FROM releases WHERE id = $1")
+            .bind(release_id)
+            .fetch_one(&pool)
+            .await
+            .expect("native npm release status should be queryable");
+    assert_eq!(release_status, "published");
+
+    let (status, detail_after_publish) =
+        get_package_detail(&app, Some(&bob_jwt), "npm", "native-release-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail_after_publish["can_manage_releases"], true);
+
+    let (status, set_tag_body) =
+        set_npm_dist_tag(&app, &bob_jwt, "native-release-widget", "beta", "1.0.0").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected dist-tag response: {set_tag_body}"
+    );
+    assert_eq!(set_tag_body["ok"], true);
+
+    let (status, dist_tags) =
+        list_npm_dist_tags(&app, Some(&bob_jwt), "native-release-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(dist_tags["beta"], "1.0.0");
 }
 
 #[sqlx::test(migrations = "../../migrations")]
