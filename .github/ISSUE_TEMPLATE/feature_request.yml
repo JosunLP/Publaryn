@@ -1,0 +1,73 @@
+name: Feature request
+description: Propose a new capability, workflow improvement, or protocol-completeness slice for Publaryn.
+title: '[Feature]: '
+body:
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Before you start
+      options:
+        - label: I searched existing issues and the roadmap documents before opening this request.
+          required: true
+        - label: I understand that major changes should be discussed in an issue before implementation begins.
+          required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Primary area
+      description: Which part of the platform would this request affect most?
+      options:
+        - Control-plane API
+        - Frontend
+        - Authentication or identity
+        - Organization governance
+        - Release publication or artifact lifecycle
+        - Search or discovery
+        - Native protocol adapter
+        - Developer experience or repository tooling
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: ecosystem
+    attributes:
+      label: Related ecosystem(s)
+      description: 'Examples: npm, PyPI, Cargo, NuGet, Maven, RubyGems, Composer, OCI, or N/A.'
+      placeholder: PyPI
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What user, maintainer, or operator problem does this solve?
+      placeholder: Describe the gap or friction this feature would address.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the behavior, workflow, or API you would like to see.
+      placeholder: Explain the proposed change.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Mention workarounds, rejected ideas, or prior art if you have them.
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope and constraints
+      description: Note security, compatibility, migration, or UX constraints that matter here.
+      placeholder: |
+        - Native client compatibility concerns
+        - Auth / ownership concerns
+        - Release visibility concerns
+  - type: textarea
+    id: success
+    attributes:
+      label: What would success look like?
+      description: Describe the expected outcome or acceptance criteria.
+      placeholder: Users can ..., maintainers can ..., CI should ...

@@ -3,6 +3,7 @@ name = "publaryn-adapter-rubygems"
 version = "0.1.0"
 edition = "2021"
 description = "Publaryn ecosystem adapter: rubygems"
+license.workspace = true
 
 [dependencies]
 publaryn-core = { workspace = true }

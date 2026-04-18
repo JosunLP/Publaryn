@@ -3,6 +3,7 @@ name = "publaryn-adapter-maven"
 version = "0.1.0"
 edition = "2021"
 description = "Publaryn ecosystem adapter: maven"
+license.workspace = true
 
 [dependencies]
 publaryn-core = { workspace = true }

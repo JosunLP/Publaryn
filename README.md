@@ -8,8 +8,8 @@ A self-hostable, security-first package registry platform that speaks the native
 
 ## Supported Ecosystems
 
-| Ecosystem    | Protocol                     | Status        |
-| ------------ | ---------------------------- | ------------- |
+| Ecosystem    | Protocol                     | Status         |
+| ------------ | ---------------------------- | -------------- |
 | npm / Bun    | npm Registry Protocol        | 🚧 In progress |
 | pip / PyPI   | Simple Index + Legacy Upload | 🚧 In progress |
 | Rust Crates  | Cargo Sparse Index           | 🚧 In progress |
@@ -437,10 +437,16 @@ Wildcard origins are intentionally rejected so browser-based token usage cannot 
 
 ## Contributing
 
-Contributions are welcome. Please open an issue first to discuss major changes.
+Contributions are welcome.
+
+- Read [CONTRIBUTING.md](CONTRIBUTING.md) for local setup, validation steps, and contribution expectations.
+- Review [SUPPORT.md](SUPPORT.md) before opening a usage question or bug report.
+- Use [SECURITY.md](SECURITY.md) for responsible vulnerability disclosure instead of public issues.
+- Please open an issue first to discuss major changes before starting implementation work.
 
 ---
 
 ## License
 
-Apache License 2.0. See [LICENSE](LICENSE) for details.
+This repository is licensed under both the Apache License 2.0 and the MIT License.
+See [LICENSE-APACHE](LICENSE-APACHE) and [LICENSE-MIT](LICENSE-MIT) for details.

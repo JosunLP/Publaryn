@@ -3,6 +3,7 @@ name = "publaryn-auth"
 version = "0.1.0"
 edition = "2021"
 description = "Authentication and authorization for Publaryn"
+license.workspace = true
 
 [dependencies]
 publaryn-core = { workspace = true }

@@ -4,7 +4,10 @@ use axum::{
 };
 use serde_json::{json, Value};
 use sqlx::{PgPool, Row};
+use std::net::ToSocketAddrs;
+use tokio::time::Duration;
 use tower::ServiceExt;
+use url::Url;
 
 use publaryn_api::{config::Config, router::build_router, state::AppState};
 
@@ -715,6 +718,75 @@ async fn update_package_metadata(
     let status = resp.status();
     let body = body_json(resp).await;
     (status, body)
+}
+
+/// Search publicly discoverable packages and return the response.
+async fn search_public_packages(
+    app: &axum::Router,
+    query: &str,
+    ecosystem: Option<&str>,
+) -> (StatusCode, Value) {
+    let uri = match ecosystem {
+        Some(ecosystem) => format!("/v1/search?q={query}&ecosystem={ecosystem}"),
+        None => format!("/v1/search?q={query}"),
+    };
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri(uri)
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+fn is_search_backend_available() -> bool {
+    let search_url = std::env::var("SEARCH__URL")
+        .ok()
+        .or_else(|| load_dotenv_value("SEARCH__URL"))
+        .unwrap_or_else(|| "http://localhost:7700".to_owned());
+
+    let Ok(parsed_url) = Url::parse(&search_url) else {
+        return false;
+    };
+
+    let Some(host) = parsed_url.host_str() else {
+        return false;
+    };
+
+    let Some(port) = parsed_url.port_or_known_default() else {
+        return false;
+    };
+
+    let Ok(addresses) = format!("{host}:{port}").to_socket_addrs() else {
+        return false;
+    };
+
+    addresses.into_iter().any(|address| {
+        std::net::TcpStream::connect_timeout(&address, std::time::Duration::from_millis(250))
+            .is_ok()
+    })
+}
+
+fn load_dotenv_value(key: &str) -> Option<String> {
+    let contents = std::fs::read_to_string(".env").ok()?;
+
+    contents.lines().find_map(|line| {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            return None;
+        }
+
+        let (name, value) = trimmed.split_once('=')?;
+        if name == key {
+            Some(value.trim().to_owned())
+        } else {
+            None
+        }
+    })
 }
 
 /// Create a release for a package and return the response.
@@ -3542,6 +3614,7 @@ async fn test_team_publish_permission_allows_release_creation_but_not_metadata_u
     let (status, detail_before_release) =
         get_package_detail(&app, Some(&bob_jwt), "npm", "release-widget").await;
     assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail_before_release["can_manage_metadata"], false);
     assert_eq!(detail_before_release["can_manage_releases"], true);
 
     let (status, release_body) =
@@ -3676,6 +3749,7 @@ async fn test_team_write_metadata_permission_allows_package_updates_but_not_rele
     let (status, detail_after) =
         get_package_detail(&app, Some(&bob_jwt), "npm", "docs-widget").await;
     assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail_after["can_manage_metadata"], true);
     assert_eq!(
         detail_after["description"],
         "Maintained by the metadata-editors team."
@@ -3693,6 +3767,365 @@ async fn test_team_write_metadata_permission_allows_package_updates_but_not_rele
         .as_str()
         .expect("error should be present")
         .contains("publish or mutate releases"));
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_package_metadata_update_allows_clearing_fields_and_keyword_normalization(
+    pool: PgPool,
+) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, repository_body) = create_repository(
+        &app,
+        &alice_jwt,
+        "Alice Packages",
+        "alice-metadata-packages",
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "npm",
+        "metadata-widget",
+        "alice-metadata-packages",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let (status, update_body) = update_package_metadata(
+        &app,
+        &alice_jwt,
+        "npm",
+        "metadata-widget",
+        json!({
+            "description": "  A metadata editing surface for package settings.  ",
+            "homepage": " https://packages.example.test/metadata-widget ",
+            "repository_url": " https://github.com/acme/metadata-widget ",
+            "license": " MIT ",
+            "keywords": [" docs ", "API", "docs", "", "api"],
+            "readme": "# Metadata Widget\n\nUpdated package readme.\n",
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected package update response: {update_body}"
+    );
+
+    let (status, detail_after_update) =
+        get_package_detail(&app, Some(&alice_jwt), "npm", "metadata-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail_after_update["can_manage_metadata"], true);
+    assert_eq!(
+        detail_after_update["description"],
+        "A metadata editing surface for package settings."
+    );
+    assert_eq!(
+        detail_after_update["homepage"],
+        "https://packages.example.test/metadata-widget"
+    );
+    assert_eq!(
+        detail_after_update["repository_url"],
+        "https://github.com/acme/metadata-widget"
+    );
+    assert_eq!(detail_after_update["license"], "MIT");
+    assert_eq!(detail_after_update["keywords"], json!(["docs", "API"]));
+    assert_eq!(
+        detail_after_update["readme"],
+        "# Metadata Widget\n\nUpdated package readme.\n"
+    );
+
+    let (status, clear_body) = update_package_metadata(
+        &app,
+        &alice_jwt,
+        "npm",
+        "metadata-widget",
+        json!({
+            "description": null,
+            "homepage": "   ",
+            "repository_url": null,
+            "license": "\t",
+            "keywords": null,
+            "readme": "   ",
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected package clear response: {clear_body}"
+    );
+
+    let (status, detail_after_clear) =
+        get_package_detail(&app, Some(&alice_jwt), "npm", "metadata-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail_after_clear["description"], Value::Null);
+    assert_eq!(detail_after_clear["homepage"], Value::Null);
+    assert_eq!(detail_after_clear["repository_url"], Value::Null);
+    assert_eq!(detail_after_clear["license"], Value::Null);
+    assert_eq!(detail_after_clear["keywords"], json!([]));
+    assert_eq!(detail_after_clear["readme"], Value::Null);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_package_detail_surfaces_metadata_management_capability(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Alice Packages",
+        "alice-capability-packages",
+        None,
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "npm",
+        "capability-widget",
+        "alice-capability-packages",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let (status, anonymous_package_detail) =
+        get_package_detail(&app, None, "npm", "capability-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(anonymous_package_detail["can_manage_metadata"], false);
+
+    let (status, owner_package_detail) =
+        get_package_detail(&app, Some(&alice_jwt), "npm", "capability-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(owner_package_detail["can_manage_metadata"], true);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_org_audit_includes_package_metadata_updates(pool: PgPool) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &alice_jwt, "Docs Org", "docs-org").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id = org_body["id"].as_str().expect("org id should be returned");
+
+    let (status, repository_body) = create_repository(
+        &app,
+        &alice_jwt,
+        "Docs Packages",
+        "docs-audit-packages",
+        Some(org_id),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "npm",
+        "audit-widget",
+        "docs-audit-packages",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+    let package_id = package_body["id"]
+        .as_str()
+        .expect("package id should be returned")
+        .to_owned();
+
+    let (status, update_body) = update_package_metadata(
+        &app,
+        &alice_jwt,
+        "npm",
+        "audit-widget",
+        json!({
+            "description": "Organization-managed package metadata.",
+            "homepage": "https://packages.example.test/audit-widget",
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected package update response: {update_body}"
+    );
+
+    let (status, audit_body) = list_org_audit(
+        &app,
+        &alice_jwt,
+        "docs-org",
+        Some("action=package_update&per_page=10"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let logs = audit_body["logs"]
+        .as_array()
+        .expect("logs response should be an array");
+    assert_eq!(logs.len(), 1, "response: {audit_body}");
+    assert_eq!(logs[0]["action"], "package_update");
+    assert_eq!(logs[0]["actor_username"], "alice");
+    assert_eq!(logs[0]["target_org_id"], org_id);
+    assert_eq!(logs[0]["target_package_id"], package_id);
+    assert_eq!(logs[0]["metadata"]["ecosystem"], "npm");
+    assert_eq!(logs[0]["metadata"]["package_name"], "audit-widget");
+    assert_eq!(
+        logs[0]["metadata"]["changed_fields"],
+        json!(["description", "homepage"])
+    );
+    assert_eq!(
+        logs[0]["metadata"]["changes"]["description"]["before"],
+        Value::Null
+    );
+    assert_eq!(
+        logs[0]["metadata"]["changes"]["description"]["after"],
+        "Organization-managed package metadata."
+    );
+    assert_eq!(
+        logs[0]["metadata"]["changes"]["homepage"]["before"],
+        Value::Null
+    );
+    assert_eq!(
+        logs[0]["metadata"]["changes"]["homepage"]["after"],
+        "https://packages.example.test/audit-widget"
+    );
+
+    let audit_row = sqlx::query(
+        "SELECT metadata \
+         FROM audit_logs \
+         WHERE action = 'package_update'::audit_action AND target_package_id = $1 \
+         ORDER BY occurred_at DESC \
+         LIMIT 1",
+    )
+    .bind(uuid::Uuid::parse_str(&package_id).expect("package id should parse"))
+    .fetch_one(&pool)
+    .await
+    .expect("package update audit row should exist");
+    let audit_metadata: Value = audit_row
+        .try_get("metadata")
+        .expect("audit metadata should be readable");
+    assert_eq!(audit_metadata["package_name"], "audit-widget");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_package_metadata_update_reindexes_search_results(pool: PgPool) {
+    if !is_search_backend_available() {
+        eprintln!("Skipping search reindex verification because the search backend is unavailable.");
+        return;
+    }
+
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Search Packages",
+        "search-packages",
+        None,
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "npm",
+        "search-metadata-widget",
+        "search-packages",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let search_token = "metadatareindexalpha";
+    let (status, update_body) = update_package_metadata(
+        &app,
+        &alice_jwt,
+        "npm",
+        "search-metadata-widget",
+        json!({
+            "description": format!("{search_token} package metadata reindex verification"),
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected package update response: {update_body}"
+    );
+
+    let mut latest_body = Value::Null;
+    let mut found = false;
+    for _ in 0..30 {
+        let (status, search_body) = search_public_packages(&app, search_token, Some("npm")).await;
+        assert_eq!(status, StatusCode::OK, "unexpected search response: {search_body}");
+
+        let packages = search_body["packages"]
+            .as_array()
+            .expect("search packages response should be an array");
+        if packages.iter().any(|package| package["name"] == "search-metadata-widget") {
+            latest_body = search_body;
+            found = true;
+            break;
+        }
+
+        latest_body = search_body;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    assert!(found, "search did not surface updated package metadata: {latest_body}");
 }
 
 #[sqlx::test(migrations = "../../migrations")]
@@ -3733,11 +4166,13 @@ async fn test_release_detail_surfaces_management_capability_and_visibility(pool:
     let (status, anonymous_package_detail) =
         get_package_detail(&app, None, "npm", "release-ui-widget").await;
     assert_eq!(status, StatusCode::OK);
+    assert_eq!(anonymous_package_detail["can_manage_metadata"], false);
     assert_eq!(anonymous_package_detail["can_manage_releases"], false);
 
     let (status, owner_package_detail) =
         get_package_detail(&app, Some(&alice_jwt), "npm", "release-ui-widget").await;
     assert_eq!(status, StatusCode::OK);
+    assert_eq!(owner_package_detail["can_manage_metadata"], true);
     assert_eq!(owner_package_detail["can_manage_releases"], true);
 
     let (status, release_body) = create_release_for_package_with_payload(

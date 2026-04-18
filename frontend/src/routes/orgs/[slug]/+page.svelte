@@ -1320,6 +1320,7 @@
     const labels: Record<string, string> = {
       org_create: 'Organization created',
       org_update: 'Organization updated',
+      package_update: 'Package updated',
       namespace_claim_create: 'Namespace claim created',
       org_member_add: 'Member added',
       org_role_change: 'Member role updated',
@@ -1395,6 +1396,19 @@
     switch (log.action) {
       case 'org_update':
         return 'Updated organization profile settings.';
+      case 'package_update': {
+        const changedFields = Array.isArray(metadata.changed_fields)
+          ? metadata.changed_fields.filter(
+              (item): item is string => typeof item === 'string'
+            )
+          : [];
+        const packageName =
+          stringField(metadata.package_name) || 'selected package';
+
+        return changedFields.length > 0
+          ? `Updated package settings for ${packageName}: ${changedFields.map((field) => formatIdentifierLabel(field)).join(', ')}.`
+          : `Updated package settings for ${packageName}.`;
+      }
       case 'org_member_add':
         return stringField(metadata.username)
           ? `Granted ${formatRole(stringField(metadata.role) || 'viewer')} to @${stringField(metadata.username) || ''}.`

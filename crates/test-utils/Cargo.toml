@@ -3,6 +3,7 @@ name = "publaryn-test-utils"
 version = "0.1.0"
 edition = "2021"
 description = "Test helpers, fixture factories, and integration test infrastructure for Publaryn"
+license.workspace = true
 
 [dependencies]
 publaryn-core = { workspace = true }

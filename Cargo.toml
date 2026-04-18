@@ -17,6 +17,9 @@ members = [
 ]
 resolver = "2"
 
+[workspace.package]
+license = "Apache-2.0 AND MIT"
+
 [workspace.dependencies]
 # Async runtime
 tokio = { version = "1.52.1", features = ["full"] }

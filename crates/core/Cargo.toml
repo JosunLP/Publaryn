@@ -3,6 +3,7 @@ name = "publaryn-core"
 version = "0.1.0"
 edition = "2021"
 description = "Core domain models and shared types for Publaryn"
+license.workspace = true
 
 [dependencies]
 serde = { workspace = true }

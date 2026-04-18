@@ -23,6 +23,7 @@
     listTrustedPublishers as listTrustedPublishersForPackage,
     severityLevel,
     transferPackageOwnership,
+    updatePackage,
   } from '../../../../api/packages';
   import {
     ecosystemIcon,
@@ -35,6 +36,11 @@
     formatNumber,
   } from '../../../../utils/format';
   import { renderMarkdown } from '../../../../utils/markdown';
+  import {
+    buildPackageMetadataUpdateInput,
+    createPackageMetadataFormValues,
+    packageMetadataHasChanges,
+  } from '../../../../utils/package-metadata';
   import { selectPackageTransferTargets } from '../../../../utils/package-transfer';
   import {
     normalizeTrustedPublisherInput,
@@ -74,6 +80,8 @@
   let releaseError: string | null = null;
   let transferNotice: string | null = null;
   let transferError: string | null = null;
+  let packageSettingsNotice: string | null = null;
+  let packageSettingsError: string | null = null;
   let trustedPublisherNotice: string | null = null;
   let trustedPublisherError: string | null = null;
   let includeResolvedFindings = false;
@@ -89,6 +97,14 @@
   let targetOrgSlug = '';
   let transferConfirmed = false;
   let transferringPackage = false;
+
+  let packageSettingsDescription = '';
+  let packageSettingsReadme = '';
+  let packageSettingsHomepage = '';
+  let packageSettingsRepositoryUrl = '';
+  let packageSettingsLicense = '';
+  let packageSettingsKeywords = '';
+  let updatingPackageSettings = false;
 
   let trustedPublisherIssuer = '';
   let trustedPublisherSubject = '';
@@ -127,16 +143,20 @@
     releaseError = null;
     transferNotice = null;
     transferError = null;
+    packageSettingsNotice = null;
+    packageSettingsError = null;
     trustedPublisherNotice = null;
     trustedPublisherError = null;
     activeTab = 'readme';
     includeResolvedFindings = false;
     resetReleaseForm();
     resetTransferForm();
+    resetPackageSettingsForm();
     resetTrustedPublisherForm();
 
     try {
       pkg = await getPackage(eecosystem(), ename());
+      resetPackageSettingsForm(pkg);
     } catch (caughtError: unknown) {
       if (caughtError instanceof ApiError && caughtError.status === 404) {
         notFound = true;
@@ -210,6 +230,46 @@
             ? caughtError.message
             : 'Failed to load your organizations for package transfer.',
       };
+    }
+  }
+
+  async function handleUpdatePackage(event: SubmitEvent): Promise<void> {
+    event.preventDefault();
+
+    if (!pkg || pkg.can_manage_metadata !== true) {
+      return;
+    }
+
+    const input = buildPackageMetadataUpdateInput(pkg, {
+      description: packageSettingsDescription,
+      readme: packageSettingsReadme,
+      homepage: packageSettingsHomepage,
+      repositoryUrl: packageSettingsRepositoryUrl,
+      license: packageSettingsLicense,
+      keywords: packageSettingsKeywords,
+    });
+
+    if (Object.keys(input).length === 0) {
+      packageSettingsError = 'No metadata changes to save.';
+      packageSettingsNotice = null;
+      return;
+    }
+
+    updatingPackageSettings = true;
+    packageSettingsError = null;
+    packageSettingsNotice = null;
+
+    try {
+      const result = await updatePackage(eecosystem(), ename(), input);
+      await loadPackagePage();
+      packageSettingsNotice = result.message || 'Package updated';
+    } catch (caughtError: unknown) {
+      packageSettingsError =
+        caughtError instanceof Error && caughtError.message
+          ? caughtError.message
+          : 'Failed to update package settings.';
+    } finally {
+      updatingPackageSettings = false;
     }
   }
 
@@ -433,6 +493,19 @@
     transferringPackage = false;
   }
 
+  function resetPackageSettingsForm(
+    currentPackage: PackageDetail | null = null
+  ): void {
+    const values = createPackageMetadataFormValues(currentPackage);
+    packageSettingsDescription = values.description;
+    packageSettingsReadme = values.readme;
+    packageSettingsHomepage = values.homepage;
+    packageSettingsRepositoryUrl = values.repositoryUrl;
+    packageSettingsLicense = values.license;
+    packageSettingsKeywords = values.keywords;
+    updatingPackageSettings = false;
+  }
+
   function resetTrustedPublisherForm(): void {
     trustedPublisherIssuer = '';
     trustedPublisherSubject = '';
@@ -490,6 +563,16 @@
   }
 
   $: openFindings = findings.filter((finding) => !finding.is_resolved);
+  $: packageSettingsHasChanges = pkg
+    ? packageMetadataHasChanges(pkg, {
+        description: packageSettingsDescription,
+        readme: packageSettingsReadme,
+        homepage: packageSettingsHomepage,
+        repositoryUrl: packageSettingsRepositoryUrl,
+        license: packageSettingsLicense,
+        keywords: packageSettingsKeywords,
+      })
+    : false;
   $: readmeHtml = renderMarkdown(pkg?.readme);
 </script>
 
@@ -742,6 +825,125 @@
                   data-sveltekit-preload-data="hover">{pkg.owner_username}</a
                 >
               {/if}
+            </div>
+          </div>
+        {/if}
+
+        {#if pkg.can_manage_metadata}
+          <div class="card">
+            <div class="sidebar-section">
+              <h3>Package settings</h3>
+              <p class="settings-copy" style="margin-bottom:12px;">
+                Update package metadata that appears on the detail page and in
+                search. Leave a field blank to clear its stored value.
+              </p>
+
+              {#if packageSettingsNotice}
+                <div class="alert alert-success" style="margin-bottom:12px;">
+                  {packageSettingsNotice}
+                </div>
+              {/if}
+              {#if packageSettingsError}
+                <div class="alert alert-error" style="margin-bottom:12px;">
+                  {packageSettingsError}
+                </div>
+              {/if}
+
+              <form
+                id="package-settings-form"
+                on:submit={handleUpdatePackage}
+              >
+                <div class="form-group" style="margin-bottom:12px;">
+                  <label for="package-settings-description">Description</label>
+                  <textarea
+                    bind:value={packageSettingsDescription}
+                    id="package-settings-description"
+                    name="description"
+                    class="form-input"
+                    rows="3"
+                    placeholder="Short package summary"
+                  ></textarea>
+                </div>
+
+                <div class="form-group" style="margin-bottom:12px;">
+                  <label for="package-settings-homepage">Homepage</label>
+                  <input
+                    bind:value={packageSettingsHomepage}
+                    id="package-settings-homepage"
+                    name="homepage"
+                    class="form-input"
+                    placeholder="https://example.test/project"
+                  />
+                </div>
+
+                <div class="form-group" style="margin-bottom:12px;">
+                  <label for="package-settings-repository-url"
+                    >Repository URL</label
+                  >
+                  <input
+                    bind:value={packageSettingsRepositoryUrl}
+                    id="package-settings-repository-url"
+                    name="repository_url"
+                    class="form-input"
+                    placeholder="https://github.com/acme/demo-widget"
+                  />
+                </div>
+
+                <div class="form-group" style="margin-bottom:12px;">
+                  <label for="package-settings-license">License</label>
+                  <input
+                    bind:value={packageSettingsLicense}
+                    id="package-settings-license"
+                    name="license"
+                    class="form-input"
+                    placeholder="MIT"
+                  />
+                </div>
+
+                <div class="form-group" style="margin-bottom:12px;">
+                  <label for="package-settings-keywords">Keywords</label>
+                  <input
+                    bind:value={packageSettingsKeywords}
+                    id="package-settings-keywords"
+                    name="keywords"
+                    class="form-input"
+                    placeholder="docs, cli, api"
+                  />
+                </div>
+
+                <div class="form-group" style="margin-bottom:12px;">
+                  <label for="package-settings-readme">README</label>
+                  <textarea
+                    bind:value={packageSettingsReadme}
+                    id="package-settings-readme"
+                    name="readme"
+                    class="form-input"
+                    rows="8"
+                    placeholder="# Demo Widget"
+                  ></textarea>
+                </div>
+
+                <div style="display:flex; gap:8px;">
+                  <button
+                    type="submit"
+                    class="btn btn-primary"
+                    style="flex:1; justify-content:center;"
+                    disabled={!packageSettingsHasChanges ||
+                      updatingPackageSettings}
+                  >
+                    {updatingPackageSettings ? 'Saving…' : 'Save settings'}
+                  </button>
+                  <button
+                    type="button"
+                    class="btn btn-secondary"
+                    on:click={() => resetPackageSettingsForm(pkg)}
+                    disabled={!packageSettingsHasChanges ||
+                      updatingPackageSettings}
+                  >
+                    Reset
+                  </button>
+                </div>
+              </form>
             </div>
           </div>
         {/if}

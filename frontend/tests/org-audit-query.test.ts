@@ -120,6 +120,25 @@ describe('org audit query helpers', () => {
     expect(view.action).toBe('namespace_claim_create');
   });
 
+  test('keeps package update audit actions when building and parsing filters', () => {
+    const path = buildOrgAuditPath(
+      'acme-corp',
+      {
+        action: 'package_update',
+        actorUserId: '',
+        actorUsername: '',
+        page: 1,
+      },
+      '?tab=activity'
+    );
+
+    const url = new URL(path, 'https://example.test');
+    const view = getAuditViewFromQuery(url.searchParams);
+
+    expect(url.searchParams.get('action')).toBe('package_update');
+    expect(view.action).toBe('package_update');
+  });
+
   test('drops invalid audit dates back to empty filters', () => {
     const view = getAuditViewFromQuery(
       new URLSearchParams(

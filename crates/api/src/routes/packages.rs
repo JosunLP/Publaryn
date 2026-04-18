@@ -9,7 +9,7 @@ use axum::{
     routing::{delete, get, patch, post, put},
     Json, Router,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use sha2::{Digest, Sha256, Sha512};
 use sqlx::Row;
 use uuid::Uuid;
@@ -32,8 +32,8 @@ use crate::{
     error::{ApiError, ApiResult},
     request_auth::{
         actor_can_admin_package_by_id, actor_can_publish_package_by_id,
-        actor_can_transfer_package_by_id,
-        actor_can_write_package_by_id,
+        actor_can_transfer_package_by_id, actor_can_write_package_by_id,
+        actor_can_write_package_metadata_by_id,
         ensure_package_admin_access, ensure_package_metadata_write_access,
         ensure_package_publish_access, ensure_package_read_access, ensure_package_transfer_access,
         ensure_repository_write_access, AuthenticatedIdentity, OptionalAuthenticatedIdentity,
@@ -137,6 +137,24 @@ async fn can_manage_releases_for_package(
     }
 }
 
+async fn can_manage_metadata_for_package(
+    db: &sqlx::PgPool,
+    package_id: Uuid,
+    identity: &OptionalAuthenticatedIdentity,
+) -> ApiResult<bool> {
+    match identity.0.as_ref() {
+        Some(identity)
+            if identity
+                .scopes()
+                .iter()
+                .any(|scope| scope == SCOPE_PACKAGES_WRITE) =>
+        {
+            actor_can_write_package_metadata_by_id(db, package_id, Some(identity.user_id)).await
+        }
+        _ => Ok(false),
+    }
+}
+
 async fn can_manage_trusted_publishers_for_package(
     db: &sqlx::PgPool,
     package_id: Uuid,
@@ -165,6 +183,8 @@ async fn get_package(
     let package_id =
         ensure_package_read_access(&state.db, eco.as_str(), &normalized, identity.user_id())
             .await?;
+    let can_manage_metadata =
+        can_manage_metadata_for_package(&state.db, package_id, &identity).await?;
     let can_manage_releases =
         can_manage_releases_for_package(&state.db, package_id, &identity).await?;
     let can_manage_trusted_publishers =
@@ -219,6 +239,7 @@ async fn get_package(
         "download_count": row.try_get::<i64, _>("download_count").ok(),
         "owner_username": row.try_get::<Option<String>, _>("owner_username").ok().flatten(),
         "owner_org_slug": row.try_get::<Option<String>, _>("owner_org_slug").ok().flatten(),
+        "can_manage_metadata": can_manage_metadata,
         "can_manage_releases": can_manage_releases,
         "can_manage_trusted_publishers": can_manage_trusted_publishers,
         "can_transfer": can_transfer,
@@ -229,12 +250,18 @@ async fn get_package(
 
 #[derive(Debug, Deserialize)]
 struct UpdatePackageRequest {
-    description: Option<String>,
-    homepage: Option<String>,
-    repository_url: Option<String>,
-    license: Option<String>,
-    keywords: Option<Vec<String>>,
-    readme: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_explicit_nullable_field")]
+    description: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_explicit_nullable_field")]
+    homepage: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_explicit_nullable_field")]
+    repository_url: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_explicit_nullable_field")]
+    license: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_explicit_nullable_field")]
+    keywords: Option<Option<Vec<String>>>,
+    #[serde(default, deserialize_with = "deserialize_explicit_nullable_field")]
+    readme: Option<Option<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -465,31 +492,209 @@ async fn update_package(
     let eco = parse_ecosystem(&ecosystem_str)?;
     let normalized = normalize_package_name(&name, &eco);
 
-    ensure_package_metadata_write_access(&state.db, eco.as_str(), &normalized, identity.user_id)
-        .await?;
+    let package_id =
+        ensure_package_metadata_write_access(&state.db, eco.as_str(), &normalized, identity.user_id)
+            .await?;
+
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let current_package = sqlx::query(
+        "SELECT id, name, owner_org_id, description, homepage, repository_url, license, keywords, readme \
+         FROM packages \
+         WHERE id = $1 \
+         FOR UPDATE",
+    )
+    .bind(package_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?
+    .ok_or_else(|| {
+        ApiError(Error::NotFound(format!(
+            "Package '{name}' not found in ecosystem '{ecosystem_str}'"
+        )))
+    })?;
+
+    let package_name: String = current_package
+        .try_get("name")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let owner_org_id = current_package
+        .try_get::<Option<Uuid>, _>("owner_org_id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let current_description = current_package
+        .try_get::<Option<String>, _>("description")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let current_homepage = current_package
+        .try_get::<Option<String>, _>("homepage")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let current_repository_url = current_package
+        .try_get::<Option<String>, _>("repository_url")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let current_license = current_package
+        .try_get::<Option<String>, _>("license")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let current_keywords = current_package
+        .try_get::<Vec<String>, _>("keywords")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let current_readme = current_package
+        .try_get::<Option<String>, _>("readme")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+
+    let updated_description = body
+        .description
+        .map(normalize_optional_package_field)
+        .unwrap_or_else(|| current_description.clone());
+    let updated_homepage = body
+        .homepage
+        .map(normalize_optional_package_field)
+        .unwrap_or_else(|| current_homepage.clone());
+    let updated_repository_url = body
+        .repository_url
+        .map(normalize_optional_package_field)
+        .unwrap_or_else(|| current_repository_url.clone());
+    let updated_license = body
+        .license
+        .map(normalize_optional_package_field)
+        .unwrap_or_else(|| current_license.clone());
+    let updated_keywords = body
+        .keywords
+        .map(normalize_optional_package_keywords)
+        .unwrap_or_else(|| current_keywords.clone());
+    let updated_readme = body
+        .readme
+        .map(normalize_optional_package_readme)
+        .unwrap_or_else(|| current_readme.clone());
+
+    let mut changed_fields = Vec::new();
+    let mut changes = serde_json::Map::new();
+
+    if current_description != updated_description {
+        changed_fields.push("description".to_owned());
+        changes.insert(
+            "description".into(),
+            serde_json::json!({
+                "before": current_description.clone(),
+                "after": updated_description.clone(),
+            }),
+        );
+    }
+
+    if current_homepage != updated_homepage {
+        changed_fields.push("homepage".to_owned());
+        changes.insert(
+            "homepage".into(),
+            serde_json::json!({
+                "before": current_homepage.clone(),
+                "after": updated_homepage.clone(),
+            }),
+        );
+    }
+
+    if current_repository_url != updated_repository_url {
+        changed_fields.push("repository_url".to_owned());
+        changes.insert(
+            "repository_url".into(),
+            serde_json::json!({
+                "before": current_repository_url.clone(),
+                "after": updated_repository_url.clone(),
+            }),
+        );
+    }
+
+    if current_license != updated_license {
+        changed_fields.push("license".to_owned());
+        changes.insert(
+            "license".into(),
+            serde_json::json!({
+                "before": current_license.clone(),
+                "after": updated_license.clone(),
+            }),
+        );
+    }
+
+    if current_keywords != updated_keywords {
+        changed_fields.push("keywords".to_owned());
+        changes.insert(
+            "keywords".into(),
+            serde_json::json!({
+                "before": current_keywords.clone(),
+                "after": updated_keywords.clone(),
+            }),
+        );
+    }
+
+    if current_readme != updated_readme {
+        changed_fields.push("readme".to_owned());
+        changes.insert(
+            "readme".into(),
+            serde_json::json!({
+                "before": current_readme.clone(),
+                "after": updated_readme.clone(),
+            }),
+        );
+    }
+
+    if changes.is_empty() {
+        return Ok(Json(serde_json::json!({ "message": "Package updated" })));
+    }
 
     sqlx::query(
         "UPDATE packages \
-         SET description    = COALESCE($1, description), \
-             homepage       = COALESCE($2, homepage), \
-             repository_url = COALESCE($3, repository_url), \
-             license        = COALESCE($4, license), \
-             keywords       = COALESCE($5, keywords), \
-             readme         = COALESCE($6, readme), \
+         SET description    = $1, \
+             homepage       = $2, \
+             repository_url = $3, \
+             license        = $4, \
+             keywords       = $5, \
+             readme         = $6, \
              updated_at     = NOW() \
-         WHERE ecosystem = $7 AND normalized_name = $8",
+         WHERE id = $7",
     )
-    .bind(&body.description)
-    .bind(&body.homepage)
-    .bind(&body.repository_url)
-    .bind(&body.license)
-    .bind(&body.keywords)
-    .bind(&body.readme)
-    .bind(eco.as_str())
-    .bind(&normalized)
-    .execute(&state.db)
+    .bind(&updated_description)
+    .bind(&updated_homepage)
+    .bind(&updated_repository_url)
+    .bind(&updated_license)
+    .bind(&updated_keywords)
+    .bind(&updated_readme)
+    .bind(package_id)
+    .execute(&mut *tx)
     .await
     .map_err(|e| ApiError(Error::Database(e)))?;
+
+    sqlx::query(
+        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_org_id, target_package_id, metadata, occurred_at) \
+         VALUES ($1, 'package_update', $2, $3, $4, $5, $6, NOW())",
+    )
+    .bind(Uuid::new_v4())
+    .bind(identity.user_id)
+    .bind(identity.audit_actor_token_id())
+    .bind(owner_org_id)
+    .bind(package_id)
+    .bind(serde_json::json!({
+        "ecosystem": eco.as_str(),
+        "package_name": package_name,
+        "name": package_name,
+        "normalized_name": normalized,
+        "changed_fields": changed_fields,
+        "changes": changes,
+    }))
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    if let Err(error) = reindex_package_document(&state, package_id).await {
+        tracing::warn!(
+            package_id = %package_id,
+            error = %error,
+            "Failed to reindex package after metadata update"
+        );
+    }
 
     Ok(Json(serde_json::json!({ "message": "Package updated" })))
 }
@@ -2040,6 +2245,59 @@ fn join_policy_violations(violations: &[PolicyViolation]) -> String {
         .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join("; ")
+}
+
+fn deserialize_explicit_nullable_field<'de, D, T>(
+    deserializer: D,
+) -> Result<Option<Option<T>>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
+fn normalize_optional_package_field(value: Option<String>) -> Option<String> {
+    value.and_then(|raw_value| {
+        let trimmed = raw_value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_owned())
+        }
+    })
+}
+
+fn normalize_optional_package_readme(value: Option<String>) -> Option<String> {
+    value.and_then(|raw_value| {
+        if raw_value.trim().is_empty() {
+            None
+        } else {
+            Some(raw_value)
+        }
+    })
+}
+
+fn normalize_optional_package_keywords(value: Option<Vec<String>>) -> Vec<String> {
+    let mut normalized = Vec::new();
+
+    for keyword in value.unwrap_or_default() {
+        let trimmed = keyword.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        if normalized
+            .iter()
+            .any(|existing: &String| existing.eq_ignore_ascii_case(trimmed))
+        {
+            continue;
+        }
+
+        normalized.push(trimmed.to_owned());
+    }
+
+    normalized
 }
 
 async fn index_package_after_creation(

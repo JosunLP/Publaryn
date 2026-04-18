@@ -43,6 +43,7 @@ export interface PackageDetail {
   updated_at?: NullableString;
   owner_username?: NullableString;
   owner_org_slug?: NullableString;
+  can_manage_metadata?: boolean;
   can_manage_releases?: boolean;
   can_manage_trusted_publishers?: boolean;
   can_transfer?: boolean;
@@ -69,6 +70,15 @@ export interface CreatePackageResult {
   visibility?: NullableString;
   owner_user_id?: NullableString;
   owner_org_id?: NullableString;
+}
+
+export interface UpdatePackageInput {
+  description?: NullableString;
+  homepage?: NullableString;
+  repositoryUrl?: NullableString;
+  license?: NullableString;
+  keywords?: string[] | null;
+  readme?: NullableString;
 }
 
 interface ReleaseListResponse {
@@ -190,6 +200,10 @@ export interface TrustedPublisherMutationResult {
   message?: NullableString;
 }
 
+export interface PackageMutationResult {
+  message?: NullableString;
+}
+
 export interface StatsResponse {
   packages?: number;
   releases?: number;
@@ -233,6 +247,42 @@ export async function createPackage(
       description: emptyToUndefined(input.description),
     },
   });
+
+  return data;
+}
+
+export async function updatePackage(
+  ecosystem: string,
+  name: string,
+  input: UpdatePackageInput
+): Promise<PackageMutationResult> {
+  const body: Record<string, NullableString | string[] | null> = {};
+
+  if (hasOwn(input, 'description')) {
+    body.description = input.description ?? null;
+  }
+  if (hasOwn(input, 'homepage')) {
+    body.homepage = input.homepage ?? null;
+  }
+  if (hasOwn(input, 'repositoryUrl')) {
+    body.repository_url = input.repositoryUrl ?? null;
+  }
+  if (hasOwn(input, 'license')) {
+    body.license = input.license ?? null;
+  }
+  if (hasOwn(input, 'keywords')) {
+    body.keywords = input.keywords ?? null;
+  }
+  if (hasOwn(input, 'readme')) {
+    body.readme = input.readme ?? null;
+  }
+
+  const { data } = await api.patch<PackageMutationResult>(
+    `/v1/packages/${enc(ecosystem)}/${enc(name)}`,
+    {
+      body,
+    }
+  );
 
   return data;
 }
@@ -513,6 +563,13 @@ export async function getStats(): Promise<StatsResponse> {
 
 function enc(value: string): string {
   return encodeURIComponent(value);
+}
+
+function hasOwn<ObjectType extends object, Key extends PropertyKey>(
+  value: ObjectType,
+  key: Key
+): value is ObjectType & Record<Key, unknown> {
+  return Object.prototype.hasOwnProperty.call(value, key);
 }
 
 function emptyToUndefined(

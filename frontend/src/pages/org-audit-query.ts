@@ -1,6 +1,7 @@
 export const ORG_AUDIT_ACTION_VALUES = [
   'org_create',
   'org_update',
+  'package_update',
   'namespace_claim_create',
   'org_member_add',
   'org_role_change',

@@ -1,0 +1,96 @@
+name: Bug report
+description: Report incorrect behavior, regressions, or protocol incompatibilities in Publaryn.
+title: '[Bug]: '
+body:
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Before you start
+      options:
+        - label: I searched the existing issues and checked the relevant docs before filing this report.
+          required: true
+        - label: This is not a security vulnerability or confidential report. If it is, I will use SECURITY.md instead.
+          required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      description: Which part of Publaryn is primarily affected?
+      options:
+        - Control-plane API
+        - Frontend
+        - Authentication, sessions, tokens, or MFA
+        - Organization governance, teams, or permissions
+        - Release publication, artifacts, or visibility
+        - Search or discovery
+        - Native protocol adapter
+        - Documentation or developer experience
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: ecosystem
+    attributes:
+      label: Affected ecosystem(s)
+      description: 'Examples: npm, PyPI, Cargo, NuGet, Maven, RubyGems, Composer, OCI, or N/A.'
+      placeholder: npm
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Describe the bug and why it is a problem.
+      placeholder: A concise summary of the incorrect behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Include commands, requests, or UI steps.
+      placeholder: |
+        1. Start the stack with ...
+        2. Publish or request ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      placeholder: Describe what you expected to happen.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      placeholder: Describe what actually happened.
+    validations:
+      required: true
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation performed
+      description: Tell us what you already checked locally.
+      placeholder: |
+        - cargo test ...
+        - bun test ...
+        - verified against README / ADR ...
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs, screenshots, or request details
+      description: Paste relevant output, traces, screenshots, or request/response details.
+      render: shell
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Share OS, runtime versions, and whether this happened locally, in Docker, or elsewhere.
+      placeholder: |
+        OS:
+        Rust/Bun versions:
+        Deployment mode:
+        Branch or commit:
