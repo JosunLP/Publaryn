@@ -15,11 +15,7 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use fred::{
-    clients::Client as RedisClient,
-    interfaces::KeysInterface,
-    types::ExpireOptions,
-};
+use fred::{clients::Client as RedisClient, interfaces::KeysInterface, types::ExpireOptions};
 use std::net::SocketAddr;
 
 use crate::config::RateLimitConfig;
@@ -190,9 +186,7 @@ async fn check_rate_limit(redis: &RedisClient, key: &str, max_requests: u64) -> 
 
     // Set expiry on first request in the window (count == 1).
     if count == 1 {
-        let _: Result<(), _> = redis
-            .expire::<(), _>(key, 60, None::<ExpireOptions>)
-            .await;
+        let _: Result<(), _> = redis.expire::<(), _>(key, 60, None::<ExpireOptions>).await;
     }
 
     if count > max_requests {

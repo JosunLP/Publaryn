@@ -38,6 +38,8 @@ use crate::{
     publish::{self, extract_version_fields, NpmPublishPayload},
 };
 
+const NPM_READABLE_RELEASE_STATUSES: &[&str] = &["published", "deprecated", "yanked"];
+
 // ─── Shared state trait ──────────────────────────────────────────────────────
 // The npm adapter needs access to the DB pool, artifact storage, search index,
 // and configuration. Rather than depending on the API crate directly (which
@@ -122,7 +124,10 @@ pub fn router<S: NpmAppState>() -> Router<S> {
             "/{package}",
             get(get_packument_unscoped::<S>).put(publish_handler_unscoped::<S>),
         )
-        .route("/{package}/-/{filename}", get(download_tarball_unscoped::<S>))
+        .route(
+            "/{package}/-/{filename}",
+            get(download_tarball_unscoped::<S>),
+        )
 }
 
 // ─── Auth helpers ────────────────────────────────────────────────────────────
@@ -284,9 +289,9 @@ async fn get_packument_inner<S: NpmAppState>(
     let package_row = match sqlx::query(
         "SELECT p.id, p.name, p.description, p.license, p.homepage, p.repository_url, \
                 p.keywords, p.readme, p.is_deprecated, p.deprecation_message, \
-                p.visibility, p.owner_user_id, p.owner_org_id, \
+                p.visibility::text AS visibility, p.owner_user_id, p.owner_org_id, \
                 p.created_at, p.updated_at, \
-                r.visibility AS repo_visibility, \
+                r.visibility::text AS repo_visibility, \
                 r.owner_user_id AS repo_owner_user_id, \
                 r.owner_org_id AS repo_owner_org_id \
          FROM packages p \
@@ -398,7 +403,8 @@ async fn get_packument_inner<S: NpmAppState>(
         "SELECT cr.name, r.version \
          FROM channel_refs cr \
          JOIN releases r ON r.id = cr.release_id \
-         WHERE cr.package_id = $1",
+         WHERE cr.package_id = $1 \
+           AND r.status IN ('published', 'deprecated', 'yanked')",
     )
     .bind(package_id)
     .fetch_all(state.db())
@@ -913,8 +919,8 @@ async fn download_tarball_inner<S: NpmAppState>(
 
     // Find the package
     let package_row = match sqlx::query(
-        "SELECT p.id, p.visibility, p.owner_user_id, p.owner_org_id, \
-                r.visibility AS repo_visibility, \
+        "SELECT p.id, p.visibility::text AS visibility, p.owner_user_id, p.owner_org_id, \
+                r.visibility::text AS repo_visibility, \
                 r.owner_user_id AS repo_owner_user_id, \
                 r.owner_org_id AS repo_owner_org_id \
          FROM packages p \
@@ -1083,6 +1089,7 @@ async fn list_dist_tags<S: NpmAppState>(
          FROM channel_refs cr \
          JOIN releases r ON r.id = cr.release_id \
          WHERE cr.package_id = $1 \
+           AND r.status IN ('published', 'deprecated', 'yanked') \
          ORDER BY cr.name",
     )
     .bind(package_id)
@@ -1210,22 +1217,36 @@ async fn set_dist_tag_inner(
     version: &str,
     actor_user_id: Uuid,
 ) -> Result<(), Response> {
-    let release_row = sqlx::query("SELECT id FROM releases WHERE package_id = $1 AND version = $2")
-        .bind(package_id)
-        .bind(version)
-        .fetch_optional(db)
-        .await
-        .map_err(|_| npm_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error"))?
-        .ok_or_else(|| {
-            npm_error_response(
-                StatusCode::NOT_FOUND,
-                &format!("Version '{version}' not found"),
-            )
-        })?;
+    let release_row = sqlx::query(
+        "SELECT id, status::text AS status \
+         FROM releases \
+         WHERE package_id = $1 AND version = $2",
+    )
+    .bind(package_id)
+    .bind(version)
+    .fetch_optional(db)
+    .await
+    .map_err(|_| npm_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error"))?
+    .ok_or_else(|| {
+        npm_error_response(
+            StatusCode::NOT_FOUND,
+            &format!("Version '{version}' not found"),
+        )
+    })?;
 
     let release_id: Uuid = release_row
         .try_get("id")
         .map_err(|_| npm_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error"))?;
+    let release_status: String = release_row
+        .try_get("status")
+        .map_err(|_| npm_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error"))?;
+
+    if !release_status_is_readable(&release_status) {
+        return Err(npm_error_response(
+            StatusCode::CONFLICT,
+            &format!("Version '{version}' is not currently readable and cannot receive dist-tags"),
+        ));
+    }
 
     sqlx::query(
         "INSERT INTO channel_refs (id, package_id, ecosystem, name, release_id, created_by, created_at, updated_at) \
@@ -1251,8 +1272,8 @@ async fn resolve_npm_package_id(
     actor_user_id: Option<Uuid>,
 ) -> Result<Uuid, Response> {
     let row = sqlx::query(
-        "SELECT p.id, p.visibility, p.owner_user_id, p.owner_org_id, \
-                r.visibility AS repo_visibility, \
+        "SELECT p.id, p.visibility::text AS visibility, p.owner_user_id, p.owner_org_id, \
+                r.visibility::text AS repo_visibility, \
                 r.owner_user_id AS repo_owner_user_id, \
                 r.owner_org_id AS repo_owner_org_id \
          FROM packages p \
@@ -1447,6 +1468,10 @@ async fn reindex_package(db: &PgPool, package_id: Uuid) -> Result<(), Error> {
         .await
         .map_err(Error::Database)?;
     Ok(())
+}
+
+fn release_status_is_readable(status: &str) -> bool {
+    NPM_READABLE_RELEASE_STATUSES.contains(&status)
 }
 
 fn percent_decode(input: &str) -> String {

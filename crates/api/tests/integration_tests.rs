@@ -561,11 +561,9 @@ async fn list_trusted_publishers_for_package(
     ecosystem: &str,
     name: &str,
 ) -> (StatusCode, Value) {
-    let mut request = Request::builder()
-        .method(Method::GET)
-        .uri(format!(
-            "/v1/packages/{ecosystem}/{name}/trusted-publishers"
-        ));
+    let mut request = Request::builder().method(Method::GET).uri(format!(
+        "/v1/packages/{ecosystem}/{name}/trusted-publishers"
+    ));
 
     if let Some(jwt) = jwt {
         request = request.header(header::AUTHORIZATION, format!("Bearer {jwt}"));
@@ -866,11 +864,9 @@ async fn get_release_detail(
     name: &str,
     version: &str,
 ) -> (StatusCode, Value) {
-    let mut request = Request::builder()
-        .method(Method::GET)
-        .uri(format!(
-            "/v1/packages/{ecosystem}/{name}/releases/{version}"
-        ));
+    let mut request = Request::builder().method(Method::GET).uri(format!(
+        "/v1/packages/{ecosystem}/{name}/releases/{version}"
+    ));
 
     if let Some(jwt) = jwt {
         request = request.header(header::AUTHORIZATION, format!("Bearer {jwt}"));
@@ -891,11 +887,9 @@ async fn list_release_artifacts(
     name: &str,
     version: &str,
 ) -> (StatusCode, Value) {
-    let mut request = Request::builder()
-        .method(Method::GET)
-        .uri(format!(
-            "/v1/packages/{ecosystem}/{name}/releases/{version}/artifacts"
-        ));
+    let mut request = Request::builder().method(Method::GET).uri(format!(
+        "/v1/packages/{ecosystem}/{name}/releases/{version}/artifacts"
+    ));
 
     if let Some(jwt) = jwt {
         request = request.header(header::AUTHORIZATION, format!("Bearer {jwt}"));
@@ -959,8 +953,77 @@ async fn publish_release_for_package(
     (status, body)
 }
 
+/// Get a native npm packument and return the response.
+async fn get_npm_packument(
+    app: &axum::Router,
+    jwt: Option<&str>,
+    package_name: &str,
+) -> (StatusCode, Value) {
+    let mut request = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/npm/{package_name}"));
+
+    if let Some(jwt) = jwt {
+        request = request.header(header::AUTHORIZATION, format!("Bearer {jwt}"));
+    }
+
+    let req = request.body(Body::empty()).unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// List native npm dist-tags and return the response.
+async fn list_npm_dist_tags(
+    app: &axum::Router,
+    jwt: Option<&str>,
+    package_name: &str,
+) -> (StatusCode, Value) {
+    let mut request = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/npm/-/package/{package_name}/dist-tags"));
+
+    if let Some(jwt) = jwt {
+        request = request.header(header::AUTHORIZATION, format!("Bearer {jwt}"));
+    }
+
+    let req = request.body(Body::empty()).unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// Set a native npm dist-tag and return the response.
+async fn set_npm_dist_tag(
+    app: &axum::Router,
+    jwt: &str,
+    package_name: &str,
+    tag: &str,
+    version: &str,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::PUT)
+        .uri(format!("/npm/-/package/{package_name}/dist-tags/{tag}"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::from(json!(version).to_string()))
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
 /// Resolve a release id for a package version directly from the database.
-async fn get_release_id(pool: &PgPool, ecosystem: &str, package_name: &str, version: &str) -> uuid::Uuid {
+async fn get_release_id(
+    pool: &PgPool,
+    ecosystem: &str,
+    package_name: &str,
+    version: &str,
+) -> uuid::Uuid {
     sqlx::query_scalar(
         "SELECT r.id \
          FROM releases r \
@@ -1002,6 +1065,33 @@ async fn insert_security_finding(
     .expect("security finding should insert successfully");
 
     finding_id
+}
+
+/// Insert a dist-tag channel ref directly into the database.
+async fn insert_channel_ref(
+    pool: &PgPool,
+    package_id: uuid::Uuid,
+    tag: &str,
+    release_id: uuid::Uuid,
+    created_by: uuid::Uuid,
+) -> uuid::Uuid {
+    let channel_ref_id = uuid::Uuid::new_v4();
+
+    sqlx::query(
+        "INSERT INTO channel_refs \
+         (id, package_id, ecosystem, name, release_id, created_by, created_at, updated_at) \
+         VALUES ($1, $2, 'npm', $3, $4, $5, NOW(), NOW())",
+    )
+    .bind(channel_ref_id)
+    .bind(package_id)
+    .bind(tag)
+    .bind(release_id)
+    .bind(created_by)
+    .execute(pool)
+    .await
+    .expect("channel ref should insert successfully");
+
+    channel_ref_id
 }
 
 /// Insert an organization-scoped audit log at a fixed timestamp directly into the database.
@@ -1544,7 +1634,11 @@ async fn test_org_repository_list_respects_visibility_and_package_counts(pool: P
         Some("public"),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "unexpected package response: {body}");
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {body}"
+    );
 
     let (status, body) = create_package_with_options(
         &app,
@@ -1555,7 +1649,11 @@ async fn test_org_repository_list_respects_visibility_and_package_counts(pool: P
         Some("private"),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "unexpected package response: {body}");
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {body}"
+    );
 
     let (status, body) = create_package_with_options(
         &app,
@@ -1566,14 +1664,22 @@ async fn test_org_repository_list_respects_visibility_and_package_counts(pool: P
         Some("internal_org"),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "unexpected package response: {body}");
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {body}"
+    );
 
     let (status, owner_body) = list_org_repositories(&app, Some(&jwt), "acme-corp").await;
     assert_eq!(status, StatusCode::OK);
     let owner_repositories = owner_body["repositories"]
         .as_array()
         .expect("owner repositories response should be an array");
-    assert_eq!(owner_repositories.len(), 2, "owner repositories response: {owner_body}");
+    assert_eq!(
+        owner_repositories.len(),
+        2,
+        "owner repositories response: {owner_body}"
+    );
 
     let public_repository = owner_repositories
         .iter()
@@ -1652,9 +1758,15 @@ async fn test_org_admin_can_update_repository_details(pool: PgPool) {
 
     let (status, repository_body) = get_repository_detail(&app, Some(&jwt), "acme-public").await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(repository_body["description"], "Canonical public repository for Acme releases.");
+    assert_eq!(
+        repository_body["description"],
+        "Canonical public repository for Acme releases."
+    );
     assert_eq!(repository_body["visibility"], "unlisted");
-    assert_eq!(repository_body["upstream_url"], "https://git.example.test/acme/public");
+    assert_eq!(
+        repository_body["upstream_url"],
+        "https://git.example.test/acme/public"
+    );
 }
 
 #[sqlx::test(migrations = "../../migrations")]
@@ -1670,7 +1782,11 @@ async fn test_repository_package_list_respects_visibility(pool: PgPool) {
     let org_id = org_body["id"].as_str().expect("org id should be returned");
 
     let (status, body) = add_org_member(&app, &owner_jwt, "acme-corp", "bob", "viewer").await;
-    assert_eq!(status, StatusCode::CREATED, "unexpected member response: {body}");
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected member response: {body}"
+    );
 
     let (status, public_repo_body) = create_repository_with_options(
         &app,
@@ -1712,7 +1828,11 @@ async fn test_repository_package_list_respects_visibility(pool: PgPool) {
         let (status, body) =
             create_package_with_options(&app, &owner_jwt, "npm", name, "acme-public", visibility)
                 .await;
-        assert_eq!(status, StatusCode::CREATED, "unexpected package response: {body}");
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected package response: {body}"
+        );
     }
 
     let (status, body) = create_package_with_options(
@@ -1724,14 +1844,22 @@ async fn test_repository_package_list_respects_visibility(pool: PgPool) {
         Some("internal_org"),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "unexpected package response: {body}");
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {body}"
+    );
 
     let (status, anonymous_public_body) = list_repository_packages(&app, None, "acme-public").await;
     assert_eq!(status, StatusCode::OK);
     let anonymous_public_packages = anonymous_public_body["packages"]
         .as_array()
         .expect("anonymous public package list should be an array");
-    assert_eq!(anonymous_public_packages.len(), 1, "response: {anonymous_public_body}");
+    assert_eq!(
+        anonymous_public_packages.len(),
+        1,
+        "response: {anonymous_public_body}"
+    );
     assert_eq!(anonymous_public_packages[0]["name"], "acme-public-widget");
 
     let (status, member_public_body) =
@@ -1740,9 +1868,17 @@ async fn test_repository_package_list_respects_visibility(pool: PgPool) {
     let member_public_packages = member_public_body["packages"]
         .as_array()
         .expect("member public package list should be an array");
-    assert_eq!(member_public_packages.len(), 3, "response: {member_public_body}");
+    assert_eq!(
+        member_public_packages.len(),
+        3,
+        "response: {member_public_body}"
+    );
 
-    for package_name in ["acme-public-widget", "acme-unlisted-widget", "acme-private-widget"] {
+    for package_name in [
+        "acme-public-widget",
+        "acme-unlisted-widget",
+        "acme-private-widget",
+    ] {
         assert!(
             member_public_packages
                 .iter()
@@ -1751,8 +1887,13 @@ async fn test_repository_package_list_respects_visibility(pool: PgPool) {
         );
     }
 
-    let (status, anonymous_internal_body) = list_repository_packages(&app, None, "acme-internal").await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "response: {anonymous_internal_body}");
+    let (status, anonymous_internal_body) =
+        list_repository_packages(&app, None, "acme-internal").await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "response: {anonymous_internal_body}"
+    );
 
     let (status, member_internal_body) =
         list_repository_packages(&app, Some(&member_jwt), "acme-internal").await;
@@ -1760,7 +1901,11 @@ async fn test_repository_package_list_respects_visibility(pool: PgPool) {
     let member_internal_packages = member_internal_body["packages"]
         .as_array()
         .expect("member internal package list should be an array");
-    assert_eq!(member_internal_packages.len(), 1, "response: {member_internal_body}");
+    assert_eq!(
+        member_internal_packages.len(),
+        1,
+        "response: {member_internal_body}"
+    );
     assert_eq!(member_internal_packages[0]["name"], "acme-internal-widget");
 }
 
@@ -1777,7 +1922,11 @@ async fn test_repository_detail_respects_direct_read_visibility(pool: PgPool) {
     let org_id = org_body["id"].as_str().expect("org id should be returned");
 
     let (status, body) = add_org_member(&app, &owner_jwt, "acme-corp", "bob", "viewer").await;
-    assert_eq!(status, StatusCode::CREATED, "unexpected member response: {body}");
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected member response: {body}"
+    );
 
     let (status, body) = create_repository_with_options(
         &app,
@@ -1789,10 +1938,18 @@ async fn test_repository_detail_respects_direct_read_visibility(pool: PgPool) {
         Some("public"),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "unexpected repository response: {body}");
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {body}"
+    );
 
     let (status, public_body) = get_repository_detail(&app, None, "acme-public").await;
-    assert_eq!(status, StatusCode::OK, "unexpected public repository response: {public_body}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected public repository response: {public_body}"
+    );
     assert_eq!(public_body["slug"], "acme-public");
     assert_eq!(public_body["owner_org_slug"], "acme-corp");
     assert_eq!(public_body["owner_org_name"], "Acme Corp");
@@ -1804,10 +1961,18 @@ async fn test_repository_detail_respects_direct_read_visibility(pool: PgPool) {
         json!({ "visibility": "unlisted" }),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "unexpected repository update response: {body}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected repository update response: {body}"
+    );
 
     let (status, unlisted_body) = get_repository_detail(&app, None, "acme-public").await;
-    assert_eq!(status, StatusCode::OK, "unexpected unlisted repository response: {unlisted_body}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected unlisted repository response: {unlisted_body}"
+    );
     assert_eq!(unlisted_body["visibility"], "unlisted");
 
     let (status, body) = create_repository_with_options(
@@ -1820,13 +1985,27 @@ async fn test_repository_detail_respects_direct_read_visibility(pool: PgPool) {
         Some("internal_org"),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "unexpected repository response: {body}");
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {body}"
+    );
 
-    let (status, anonymous_internal_body) = get_repository_detail(&app, None, "acme-internal").await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "unexpected anonymous internal response: {anonymous_internal_body}");
+    let (status, anonymous_internal_body) =
+        get_repository_detail(&app, None, "acme-internal").await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "unexpected anonymous internal response: {anonymous_internal_body}"
+    );
 
-    let (status, member_internal_body) = get_repository_detail(&app, Some(&member_jwt), "acme-internal").await;
-    assert_eq!(status, StatusCode::OK, "unexpected member internal response: {member_internal_body}");
+    let (status, member_internal_body) =
+        get_repository_detail(&app, Some(&member_jwt), "acme-internal").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected member internal response: {member_internal_body}"
+    );
     assert_eq!(member_internal_body["owner_org_slug"], "acme-corp");
     assert_eq!(member_internal_body["owner_org_name"], "Acme Corp");
 }
@@ -1844,7 +2023,11 @@ async fn test_repository_detail_exposes_capabilities_for_org_admins_and_viewers(
     let org_id = org_body["id"].as_str().expect("org id should be returned");
 
     let (status, body) = add_org_member(&app, &owner_jwt, "acme-corp", "bob", "viewer").await;
-    assert_eq!(status, StatusCode::CREATED, "unexpected member response: {body}");
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected member response: {body}"
+    );
 
     let (status, body) = create_repository_with_options(
         &app,
@@ -1856,20 +2039,36 @@ async fn test_repository_detail_exposes_capabilities_for_org_admins_and_viewers(
         Some("public"),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "unexpected repository response: {body}");
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {body}"
+    );
 
     let (status, anonymous_body) = get_repository_detail(&app, None, "acme-public").await;
-    assert_eq!(status, StatusCode::OK, "unexpected anonymous response: {anonymous_body}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected anonymous response: {anonymous_body}"
+    );
     assert_eq!(anonymous_body["can_manage"], false);
     assert_eq!(anonymous_body["can_create_packages"], false);
 
     let (status, viewer_body) = get_repository_detail(&app, Some(&viewer_jwt), "acme-public").await;
-    assert_eq!(status, StatusCode::OK, "unexpected viewer response: {viewer_body}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected viewer response: {viewer_body}"
+    );
     assert_eq!(viewer_body["can_manage"], false);
     assert_eq!(viewer_body["can_create_packages"], false);
 
     let (status, owner_body) = get_repository_detail(&app, Some(&owner_jwt), "acme-public").await;
-    assert_eq!(status, StatusCode::OK, "unexpected owner response: {owner_body}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected owner response: {owner_body}"
+    );
     assert_eq!(owner_body["can_manage"], true);
     assert_eq!(owner_body["can_create_packages"], true);
 }
@@ -1880,16 +2079,29 @@ async fn test_repository_detail_exposes_capabilities_for_user_owned_repository_o
     register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
     let jwt = login_user(&app, "alice", "super_secret_pw!").await;
 
-    let (status, body) = create_repository(&app, &jwt, "Alice Releases", "alice-releases", None).await;
-    assert_eq!(status, StatusCode::CREATED, "unexpected repository response: {body}");
+    let (status, body) =
+        create_repository(&app, &jwt, "Alice Releases", "alice-releases", None).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {body}"
+    );
 
     let (status, anonymous_body) = get_repository_detail(&app, None, "alice-releases").await;
-    assert_eq!(status, StatusCode::OK, "unexpected anonymous response: {anonymous_body}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected anonymous response: {anonymous_body}"
+    );
     assert_eq!(anonymous_body["can_manage"], false);
     assert_eq!(anonymous_body["can_create_packages"], false);
 
     let (status, owner_body) = get_repository_detail(&app, Some(&jwt), "alice-releases").await;
-    assert_eq!(status, StatusCode::OK, "unexpected owner response: {owner_body}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected owner response: {owner_body}"
+    );
     assert_eq!(owner_body["can_manage"], true);
     assert_eq!(owner_body["can_create_packages"], true);
 }
@@ -1900,16 +2112,17 @@ async fn test_repository_detail_capabilities_follow_token_scopes(pool: PgPool) {
     register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
     let jwt = login_user(&app, "alice", "super_secret_pw!").await;
 
-    let (status, body) = create_repository(&app, &jwt, "Alice Releases", "alice-releases", None).await;
-    assert_eq!(status, StatusCode::CREATED, "unexpected repository response: {body}");
+    let (status, body) =
+        create_repository(&app, &jwt, "Alice Releases", "alice-releases", None).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {body}"
+    );
 
-    let (status, repository_token_body) = create_personal_access_token(
-        &app,
-        &jwt,
-        "repository-manage",
-        &["repositories:write"],
-    )
-    .await;
+    let (status, repository_token_body) =
+        create_personal_access_token(&app, &jwt, "repository-manage", &["repositories:write"])
+            .await;
     assert_eq!(
         status,
         StatusCode::CREATED,
@@ -1920,13 +2133,8 @@ async fn test_repository_detail_capabilities_follow_token_scopes(pool: PgPool) {
         .expect("repository token should be returned")
         .to_owned();
 
-    let (status, package_token_body) = create_personal_access_token(
-        &app,
-        &jwt,
-        "package-manage",
-        &["packages:write"],
-    )
-    .await;
+    let (status, package_token_body) =
+        create_personal_access_token(&app, &jwt, "package-manage", &["packages:write"]).await;
     assert_eq!(
         status,
         StatusCode::CREATED,
@@ -1971,7 +2179,11 @@ async fn test_org_security_findings_respect_visibility_and_aggregate_severities(
     let org_id = org_body["id"].as_str().expect("org id should be returned");
 
     let (status, body) = add_org_member(&app, &owner_jwt, "acme-corp", "bob", "viewer").await;
-    assert_eq!(status, StatusCode::CREATED, "unexpected member response: {body}");
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected member response: {body}"
+    );
 
     let (status, body) = create_repository_with_options(
         &app,
@@ -1983,7 +2195,11 @@ async fn test_org_security_findings_respect_visibility_and_aggregate_severities(
         Some("public"),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "unexpected public repository response: {body}");
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected public repository response: {body}"
+    );
 
     let (status, body) = create_repository_with_options(
         &app,
@@ -1995,7 +2211,11 @@ async fn test_org_security_findings_respect_visibility_and_aggregate_severities(
         Some("internal_org"),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "unexpected internal repository response: {body}");
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected internal repository response: {body}"
+    );
 
     let (status, body) = create_package_with_options(
         &app,
@@ -2006,7 +2226,11 @@ async fn test_org_security_findings_respect_visibility_and_aggregate_severities(
         Some("public"),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "unexpected public package response: {body}");
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected public package response: {body}"
+    );
 
     let (status, body) = create_package_with_options(
         &app,
@@ -2017,7 +2241,11 @@ async fn test_org_security_findings_respect_visibility_and_aggregate_severities(
         Some("private"),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "unexpected private package response: {body}");
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected private package response: {body}"
+    );
 
     let (status, body) = create_package_with_options(
         &app,
@@ -2028,15 +2256,24 @@ async fn test_org_security_findings_respect_visibility_and_aggregate_severities(
         Some("internal_org"),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "unexpected internal package response: {body}");
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected internal package response: {body}"
+    );
 
     for package_name in [
         "acme-public-widget",
         "acme-private-widget",
         "acme-internal-widget",
     ] {
-        let (status, body) = create_release_for_package(&app, &owner_jwt, "npm", package_name, "1.0.0").await;
-        assert_eq!(status, StatusCode::CREATED, "unexpected release response for {package_name}: {body}");
+        let (status, body) =
+            create_release_for_package(&app, &owner_jwt, "npm", package_name, "1.0.0").await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected release response for {package_name}: {body}"
+        );
     }
 
     let public_release_id = get_release_id(&pool, "npm", "acme-public-widget", "1.0.0").await;
@@ -2090,7 +2327,11 @@ async fn test_org_security_findings_respect_visibility_and_aggregate_severities(
     .await;
 
     let (status, anonymous_body) = list_org_security_findings(&app, None, "acme-corp").await;
-    assert_eq!(status, StatusCode::OK, "unexpected anonymous org security response: {anonymous_body}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected anonymous org security response: {anonymous_body}"
+    );
     assert_eq!(anonymous_body["summary"]["open_findings"], 2);
     assert_eq!(anonymous_body["summary"]["affected_packages"], 1);
     assert_eq!(anonymous_body["summary"]["severities"]["critical"], 1);
@@ -2104,8 +2345,13 @@ async fn test_org_security_findings_respect_visibility_and_aggregate_severities(
     assert_eq!(anonymous_packages[0]["worst_severity"], "critical");
     assert_eq!(anonymous_packages[0]["open_findings"], 2);
 
-    let (status, member_body) = list_org_security_findings(&app, Some(&member_jwt), "acme-corp").await;
-    assert_eq!(status, StatusCode::OK, "unexpected member org security response: {member_body}");
+    let (status, member_body) =
+        list_org_security_findings(&app, Some(&member_jwt), "acme-corp").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected member org security response: {member_body}"
+    );
     assert_eq!(member_body["summary"]["open_findings"], 4);
     assert_eq!(member_body["summary"]["affected_packages"], 3);
     assert_eq!(member_body["summary"]["severities"]["critical"], 1);
@@ -2144,7 +2390,11 @@ async fn test_org_security_findings_return_empty_summary_without_open_findings(p
         Some("public"),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "unexpected repository response: {body}");
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {body}"
+    );
 
     let (status, body) = create_package_with_options(
         &app,
@@ -2155,10 +2405,19 @@ async fn test_org_security_findings_return_empty_summary_without_open_findings(p
         Some("public"),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "unexpected package response: {body}");
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {body}"
+    );
 
-    let (status, body) = create_release_for_package(&app, &owner_jwt, "npm", "acme-public-widget", "1.0.0").await;
-    assert_eq!(status, StatusCode::CREATED, "unexpected release response: {body}");
+    let (status, body) =
+        create_release_for_package(&app, &owner_jwt, "npm", "acme-public-widget", "1.0.0").await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected release response: {body}"
+    );
 
     let release_id = get_release_id(&pool, "npm", "acme-public-widget", "1.0.0").await;
     insert_security_finding(
@@ -2394,12 +2653,8 @@ async fn test_org_audit_supports_date_range_filtering(pool: PgPool) {
     let (status, org_body) = create_org(&app, &alice_jwt, "Acme Corp", "acme-corp").await;
     assert_eq!(status, StatusCode::CREATED);
 
-    let org_id = uuid::Uuid::parse_str(
-        org_body["id"]
-            .as_str()
-            .expect("org id should be returned"),
-    )
-    .expect("org id should parse");
+    let org_id = uuid::Uuid::parse_str(org_body["id"].as_str().expect("org id should be returned"))
+        .expect("org id should parse");
     let alice_user_id: uuid::Uuid = sqlx::query_scalar("SELECT id FROM users WHERE username = $1")
         .bind("alice")
         .fetch_one(&pool)
@@ -2441,12 +2696,20 @@ async fn test_org_audit_supports_date_range_filtering(pool: PgPool) {
         Some("occurred_from=2024-01-12&occurred_until=2024-01-18&per_page=20"),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "unexpected date-filtered audit response: {body}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected date-filtered audit response: {body}"
+    );
 
     let logs = body["logs"]
         .as_array()
         .expect("logs response should be an array");
-    assert_eq!(logs.len(), 1, "unexpected date-filtered audit response: {body}");
+    assert_eq!(
+        logs.len(),
+        1,
+        "unexpected date-filtered audit response: {body}"
+    );
     assert_eq!(logs[0]["action"], "org_update");
     assert_eq!(logs[0]["occurred_at"], "2024-01-15T12:30:00Z");
 }
@@ -2468,7 +2731,11 @@ async fn test_org_audit_rejects_inverted_date_ranges(pool: PgPool) {
     )
     .await;
 
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "unexpected inverted-date audit response: {body}");
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "unexpected inverted-date audit response: {body}"
+    );
     assert!(body["error"]
         .as_str()
         .expect("error should be present")
@@ -2484,12 +2751,8 @@ async fn test_org_audit_csv_export_respects_filters_and_returns_attachment_heade
     let (status, org_body) = create_org(&app, &alice_jwt, "Acme Corp", "acme-corp").await;
     assert_eq!(status, StatusCode::CREATED);
 
-    let org_id = uuid::Uuid::parse_str(
-        org_body["id"]
-            .as_str()
-            .expect("org id should be returned"),
-    )
-    .expect("org id should parse");
+    let org_id = uuid::Uuid::parse_str(org_body["id"].as_str().expect("org id should be returned"))
+        .expect("org id should parse");
     let alice_user_id: uuid::Uuid = sqlx::query_scalar("SELECT id FROM users WHERE username = $1")
         .bind("alice")
         .fetch_one(&pool)
@@ -4204,7 +4467,9 @@ async fn test_org_audit_includes_package_metadata_updates(pool: PgPool) {
 #[sqlx::test(migrations = "../../migrations")]
 async fn test_package_metadata_update_reindexes_search_results(pool: PgPool) {
     if !is_search_backend_available() {
-        eprintln!("Skipping search reindex verification because the search backend is unavailable.");
+        eprintln!(
+            "Skipping search reindex verification because the search backend is unavailable."
+        );
         return;
     }
 
@@ -4264,12 +4529,19 @@ async fn test_package_metadata_update_reindexes_search_results(pool: PgPool) {
     let mut found = false;
     for _ in 0..30 {
         let (status, search_body) = search_public_packages(&app, search_token, Some("npm")).await;
-        assert_eq!(status, StatusCode::OK, "unexpected search response: {search_body}");
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "unexpected search response: {search_body}"
+        );
 
         let packages = search_body["packages"]
             .as_array()
             .expect("search packages response should be an array");
-        if packages.iter().any(|package| package["name"] == "search-metadata-widget") {
+        if packages
+            .iter()
+            .any(|package| package["name"] == "search-metadata-widget")
+        {
             latest_body = search_body;
             found = true;
             break;
@@ -4279,7 +4551,10 @@ async fn test_package_metadata_update_reindexes_search_results(pool: PgPool) {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
-    assert!(found, "search did not surface updated package metadata: {latest_body}");
+    assert!(
+        found,
+        "search did not surface updated package metadata: {latest_body}"
+    );
 }
 
 #[sqlx::test(migrations = "../../migrations")]
@@ -4288,14 +4563,8 @@ async fn test_release_detail_surfaces_management_capability_and_visibility(pool:
     register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
     let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
 
-    let (status, repository_body) = create_repository(
-        &app,
-        &alice_jwt,
-        "Alice Packages",
-        "alice-packages",
-        None,
-    )
-    .await;
+    let (status, repository_body) =
+        create_repository(&app, &alice_jwt, "Alice Packages", "alice-packages", None).await;
     assert_eq!(
         status,
         StatusCode::CREATED,
@@ -4352,8 +4621,7 @@ async fn test_release_detail_surfaces_management_capability_and_visibility(pool:
     assert_eq!(release_body["is_prerelease"], true);
 
     let (status, owner_release_detail) =
-        get_release_detail(&app, Some(&alice_jwt), "npm", "release-ui-widget", "1.2.3")
-            .await;
+        get_release_detail(&app, Some(&alice_jwt), "npm", "release-ui-widget", "1.2.3").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(owner_release_detail["status"], "quarantine");
     assert_eq!(owner_release_detail["can_manage_releases"], true);
@@ -4381,7 +4649,11 @@ async fn test_release_detail_surfaces_management_capability_and_visibility(pool:
         b"release artifact bytes",
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "unexpected upload response: {upload_body}");
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected upload response: {upload_body}"
+    );
     assert_eq!(upload_body["kind"], "tarball");
     assert_eq!(upload_body["filename"], "release-ui-widget-1.2.3.tgz");
     assert_eq!(
@@ -4392,14 +4664,8 @@ async fn test_release_detail_surfaces_management_capability_and_visibility(pool:
         64
     );
 
-    let (status, artifacts_body) = list_release_artifacts(
-        &app,
-        Some(&alice_jwt),
-        "npm",
-        "release-ui-widget",
-        "1.2.3",
-    )
-    .await;
+    let (status, artifacts_body) =
+        list_release_artifacts(&app, Some(&alice_jwt), "npm", "release-ui-widget", "1.2.3").await;
     assert_eq!(status, StatusCode::OK);
     let artifacts = artifacts_body["artifacts"]
         .as_array()
@@ -4416,15 +4682,13 @@ async fn test_release_detail_surfaces_management_capability_and_visibility(pool:
         64
     );
 
-    let (status, publish_body) = publish_release_for_package(
-        &app,
-        &alice_jwt,
-        "npm",
-        "release-ui-widget",
-        "1.2.3",
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "unexpected publish response: {publish_body}");
+    let (status, publish_body) =
+        publish_release_for_package(&app, &alice_jwt, "npm", "release-ui-widget", "1.2.3").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected publish response: {publish_body}"
+    );
     assert_eq!(publish_body["status"], "published");
     assert_eq!(publish_body["artifact_count"], 1);
 
@@ -4433,7 +4697,161 @@ async fn test_release_detail_surfaces_management_capability_and_visibility(pool:
     assert_eq!(status, StatusCode::OK);
     assert_eq!(anonymous_published_release["status"], "published");
     assert_eq!(anonymous_published_release["can_manage_releases"], false);
-    assert_eq!(anonymous_published_release["description"], "First managed release");
+    assert_eq!(
+        anonymous_published_release["description"],
+        "First managed release"
+    );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_npm_packument_and_dist_tag_listing_ignore_quarantine_channel_refs(pool: PgPool) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, repository_body) = create_repository(
+        &app,
+        &alice_jwt,
+        "Alice npm Packages",
+        "alice-npm-packages",
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "npm",
+        "quarantine-tag-widget",
+        "alice-npm-packages",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+    let package_id = uuid::Uuid::parse_str(
+        package_body["id"]
+            .as_str()
+            .expect("package id should be returned"),
+    )
+    .expect("package id should parse");
+
+    let alice_user_id: uuid::Uuid = sqlx::query_scalar("SELECT id FROM users WHERE username = $1")
+        .bind("alice")
+        .fetch_one(&pool)
+        .await
+        .expect("alice user id should be queryable");
+
+    let (status, release_body) =
+        create_release_for_package(&app, &alice_jwt, "npm", "quarantine-tag-widget", "1.0.0").await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected release response: {release_body}"
+    );
+    assert_eq!(release_body["status"], "quarantine");
+
+    let release_id = get_release_id(&pool, "npm", "quarantine-tag-widget", "1.0.0").await;
+    insert_channel_ref(&pool, package_id, "latest", release_id, alice_user_id).await;
+
+    let (status, packument) = get_npm_packument(&app, None, "quarantine-tag-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(packument["versions"], json!({}));
+    assert_eq!(packument["dist-tags"], json!({}));
+
+    let (status, dist_tags) = list_npm_dist_tags(&app, None, "quarantine-tag-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(dist_tags, json!({}));
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_npm_dist_tag_mutation_requires_a_readable_release(pool: PgPool) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, repository_body) = create_repository(
+        &app,
+        &alice_jwt,
+        "Alice npm Packages",
+        "alice-npm-packages",
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "npm",
+        "taggable-widget",
+        "alice-npm-packages",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let (status, release_body) =
+        create_release_for_package(&app, &alice_jwt, "npm", "taggable-widget", "1.0.0").await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected release response: {release_body}"
+    );
+    assert_eq!(release_body["status"], "quarantine");
+    let release_id = get_release_id(&pool, "npm", "taggable-widget", "1.0.0").await;
+
+    let (status, denied_tag_body) =
+        set_npm_dist_tag(&app, &alice_jwt, "taggable-widget", "beta", "1.0.0").await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(denied_tag_body["error"]
+        .as_str()
+        .expect("error should be present")
+        .contains("cannot receive dist-tags"));
+
+    let (status, empty_dist_tags) = list_npm_dist_tags(&app, None, "taggable-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(empty_dist_tags, json!({}));
+
+    sqlx::query("UPDATE releases SET status = 'published', updated_at = NOW() WHERE id = $1")
+        .bind(release_id)
+        .execute(&pool)
+        .await
+        .expect("release status should update");
+
+    let (status, set_tag_body) =
+        set_npm_dist_tag(&app, &alice_jwt, "taggable-widget", "beta", "1.0.0").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected dist-tag response: {set_tag_body}"
+    );
+    assert_eq!(set_tag_body["ok"], true);
+
+    let (status, dist_tags) = list_npm_dist_tags(&app, None, "taggable-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(dist_tags["beta"], "1.0.0");
+
+    let (status, packument) = get_npm_packument(&app, None, "taggable-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(packument["dist-tags"]["beta"], "1.0.0");
+    assert_eq!(packument["versions"]["1.0.0"]["version"], "1.0.0");
 }
 
 #[sqlx::test(migrations = "../../migrations")]
@@ -4516,7 +4934,11 @@ async fn test_trusted_publisher_management_roundtrip_with_audit(pool: PgPool) {
     let anonymous_publishers = anonymous_list_body["trusted_publishers"]
         .as_array()
         .expect("trusted publishers response should be an array");
-    assert_eq!(anonymous_publishers.len(), 1, "response: {anonymous_list_body}");
+    assert_eq!(
+        anonymous_publishers.len(),
+        1,
+        "response: {anonymous_list_body}"
+    );
     assert_eq!(
         anonymous_publishers[0]["issuer"],
         "https://token.actions.githubusercontent.com"

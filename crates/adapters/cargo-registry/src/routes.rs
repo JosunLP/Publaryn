@@ -114,7 +114,10 @@ pub fn api_router<S: CargoAppState>() -> Router<S> {
             put(add_owners::<S>).delete(remove_owners::<S>),
         )
         .route("/crates", get(search_crates::<S>))
-        .route("/crates/{name}/{version}/download", get(download_crate::<S>))
+        .route(
+            "/crates/{name}/{version}/download",
+            get(download_crate::<S>),
+        )
 }
 
 // ─── Auth ────────────────────────────────────────────────────────────────────

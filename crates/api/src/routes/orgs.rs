@@ -446,10 +446,8 @@ async fn export_org_audit_logs_csv(
     );
     headers.insert(
         header::CONTENT_DISPOSITION,
-        HeaderValue::from_str(&format!(
-            "attachment; filename=\"org-audit-{slug}.csv\""
-        ))
-        .map_err(|error| ApiError(Error::Internal(error.to_string())))?,
+        HeaderValue::from_str(&format!("attachment; filename=\"org-audit-{slug}.csv\""))
+            .map_err(|error| ApiError(Error::Internal(error.to_string())))?,
     );
 
     Ok((headers, csv_body))
@@ -502,14 +500,10 @@ fn apply_org_audit_filters(
 }
 
 fn resolve_org_audit_filters(query: &OrgAuditQuery) -> ApiResult<ResolvedOrgAuditFilters> {
-    let occurred_from = parse_org_audit_date_filter(
-        "occurred_from",
-        query.occurred_from.as_deref(),
-    )?;
-    let occurred_until = parse_org_audit_date_filter(
-        "occurred_until",
-        query.occurred_until.as_deref(),
-    )?;
+    let occurred_from =
+        parse_org_audit_date_filter("occurred_from", query.occurred_from.as_deref())?;
+    let occurred_until =
+        parse_org_audit_date_filter("occurred_until", query.occurred_until.as_deref())?;
 
     if let (Some(occurred_from), Some(occurred_until)) = (occurred_from, occurred_until) {
         if occurred_from > occurred_until {
@@ -648,9 +642,7 @@ fn parse_org_audit_date_filter(
         })
 }
 
-fn org_audit_filter_start(
-    date: chrono::NaiveDate,
-) -> ApiResult<chrono::DateTime<chrono::Utc>> {
+fn org_audit_filter_start(date: chrono::NaiveDate) -> ApiResult<chrono::DateTime<chrono::Utc>> {
     let Some(naive_datetime) = date.and_hms_opt(0, 0, 0) else {
         return Err(ApiError(Error::Internal(
             "Failed to construct the audit start timestamp".into(),

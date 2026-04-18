@@ -87,6 +87,7 @@ This allows all ecosystem adapters to coexist on the same API server under disti
 10. Re-index the package in Meilisearch.
 
 If any step after quarantine creation fails, the release remains in quarantine for manual cleanup.
+Dist-tags only resolve releases in readable npm states (`published`, `deprecated`, `yanked`), so stale tags pointing at `quarantine`, `scanning`, or deleted releases are ignored on read and cannot be created through the native dist-tag mutation endpoints.
 
 ### Authentication
 

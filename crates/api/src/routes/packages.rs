@@ -33,10 +33,10 @@ use crate::{
     request_auth::{
         actor_can_admin_package_by_id, actor_can_publish_package_by_id,
         actor_can_transfer_package_by_id, actor_can_write_package_by_id,
-        actor_can_write_package_metadata_by_id,
-        ensure_package_admin_access, ensure_package_metadata_write_access,
-        ensure_package_publish_access, ensure_package_read_access, ensure_package_transfer_access,
-        ensure_repository_write_access, AuthenticatedIdentity, OptionalAuthenticatedIdentity,
+        actor_can_write_package_metadata_by_id, ensure_package_admin_access,
+        ensure_package_metadata_write_access, ensure_package_publish_access,
+        ensure_package_read_access, ensure_package_transfer_access, ensure_repository_write_access,
+        AuthenticatedIdentity, OptionalAuthenticatedIdentity,
     },
     routes::parse_ecosystem,
     scopes::{ensure_scope, SCOPE_PACKAGES_TRANSFER, SCOPE_PACKAGES_WRITE},
@@ -96,7 +96,10 @@ pub fn router() -> Router<AppState> {
             put(deprecate_release),
         )
         .route("/v1/packages/{ecosystem}/{name}/tags", get(list_tags))
-        .route("/v1/packages/{ecosystem}/{name}/tags/{tag}", put(upsert_tag))
+        .route(
+            "/v1/packages/{ecosystem}/{name}/tags/{tag}",
+            put(upsert_tag),
+        )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -492,9 +495,13 @@ async fn update_package(
     let eco = parse_ecosystem(&ecosystem_str)?;
     let normalized = normalize_package_name(&name, &eco);
 
-    let package_id =
-        ensure_package_metadata_write_access(&state.db, eco.as_str(), &normalized, identity.user_id)
-            .await?;
+    let package_id = ensure_package_metadata_write_access(
+        &state.db,
+        eco.as_str(),
+        &normalized,
+        identity.user_id,
+    )
+    .await?;
 
     let mut tx = state
         .db
