@@ -287,10 +287,20 @@
     }
   }
 
-  $: if (auditActorInput.trim().length >= 2 && canViewAudit) {
-    void searchAuditActors(auditActorInput.trim());
-  } else if (!auditActorInput.trim() && auditActorRemoteOptions.length > 0) {
-    auditActorRemoteOptions = [];
+  $: {
+    const trimmedAuditActorInput = auditActorInput.trim();
+
+    if (trimmedAuditActorInput.length >= 2 && canViewAudit) {
+      void searchAuditActors(trimmedAuditActorInput);
+    }
+  }
+
+  $: {
+    const trimmedAuditActorInput = auditActorInput.trim();
+
+    if (!trimmedAuditActorInput && auditActorRemoteOptions.length > 0) {
+      auditActorRemoteOptions = [];
+    }
   }
 
   $: transferablePackages = selectTransferablePackages(packages);
