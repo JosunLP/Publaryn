@@ -1,0 +1,8 @@
+[advisories]
+ignore = [
+  # rsa pulled in by sqlx-mysql; upstream has no patched release yet
+  "RUSTSEC-2023-0071",
+  # rustls-webpki 0.101.x required via aws-smithy-http-client's hyper-rustls 0.24.x stack
+  "RUSTSEC-2026-0098",
+  "RUSTSEC-2026-0099",
+]
