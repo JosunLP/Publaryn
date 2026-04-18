@@ -118,6 +118,7 @@
   } from '../../../utils/security';
 
   const ADMIN_ROLES = new Set(['owner', 'admin']);
+  const AUDIT_ROLES = new Set(['owner', 'admin', 'auditor']);
   const ORG_AUDIT_PAGE_SIZE = 20;
   const DEFAULT_NAMESPACE_ECOSYSTEM = 'npm';
   const DEFAULT_PACKAGE_ECOSYSTEM = 'npm';
@@ -196,6 +197,7 @@
   let membership: OrganizationMembership | undefined;
   let isAuthenticated = false;
   let canAdminister = false;
+  let canViewAudit = false;
   let isOwner = false;
 
   let members: OrgMember[] = [];
@@ -409,6 +411,7 @@
         (item) => item.slug === slug
       );
       canAdminister = ADMIN_ROLES.has(membership?.role || '');
+      canViewAudit = AUDIT_ROLES.has(membership?.role || '');
       isOwner = membership?.role === 'owner';
 
       members = memberData.members || [];
@@ -474,7 +477,7 @@
               load_error:
                 'Failed to load namespace claims because the organization id is unavailable.',
             }),
-        canAdminister
+        canViewAudit
           ? listOrgAuditLogs(slug, {
               action: resolvedAuditAction || undefined,
               actorUserId: resolvedAuditActorUserId || undefined,
@@ -1757,7 +1760,7 @@
       </div>
     </section>
 
-    {#if canAdminister}
+    {#if canViewAudit}
       <section class="card settings-section">
         <div class="org-section-header">
           <div>

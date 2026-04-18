@@ -2547,7 +2547,7 @@ async fn test_org_admin_can_read_org_audit_logs(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = "../../migrations")]
-async fn test_org_audit_requires_org_admin_membership(pool: PgPool) {
+async fn test_org_audit_requires_audit_capable_membership(pool: PgPool) {
     let app = app(pool);
     register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
     register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
@@ -2565,7 +2565,14 @@ async fn test_org_audit_requires_org_admin_membership(pool: PgPool) {
     assert!(body["error"]
         .as_str()
         .expect("error should be present")
-        .contains("owner or admin"));
+        .contains("owner, admin, or auditor"));
+
+    let (status, _) = add_org_member(&app, &owner_jwt, "acme-corp", "bob", "auditor").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = list_org_audit(&app, &bob_jwt, "acme-corp", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["page"], 1);
 }
 
 #[sqlx::test(migrations = "../../migrations")]
@@ -2927,7 +2934,7 @@ async fn test_org_audit_csv_export_rejects_inverted_date_ranges(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = "../../migrations")]
-async fn test_org_audit_csv_export_requires_org_admin_membership(pool: PgPool) {
+async fn test_org_audit_csv_export_requires_audit_capable_membership(pool: PgPool) {
     let app = app(pool);
     register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
     register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
@@ -2947,7 +2954,13 @@ async fn test_org_audit_csv_export_requires_org_admin_membership(pool: PgPool) {
     assert!(body["error"]
         .as_str()
         .expect("error should be present")
-        .contains("admin"));
+        .contains("owner, admin, or auditor"));
+
+    let (status, _) = add_org_member(&app, &alice_jwt, "acme-corp", "bob", "auditor").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let resp = export_org_audit_csv(&app, &bob_jwt, "acme-corp", None).await;
+    assert_eq!(resp.status(), StatusCode::OK);
 }
 
 #[sqlx::test(migrations = "../../migrations")]
