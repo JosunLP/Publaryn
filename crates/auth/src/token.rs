@@ -1,8 +1,18 @@
 use chrono::{Duration, Utc};
+use jsonwebtoken::crypto::rust_crypto::DEFAULT_PROVIDER;
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use publaryn_core::error::{Error, Result};
 use serde::{Deserialize, Serialize};
+use std::sync::Once;
 use uuid::Uuid;
+
+fn ensure_jwt_crypto_provider() {
+    static INSTALL_PROVIDER: Once = Once::new();
+
+    INSTALL_PROVIDER.call_once(|| {
+        let _ = DEFAULT_PROVIDER.install_default();
+    });
+}
 
 /// JWT claims embedded in access tokens.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,6 +40,7 @@ pub fn create_token(
     ttl_seconds: i64,
     issuer: &str,
 ) -> Result<String> {
+    ensure_jwt_crypto_provider();
     let now = Utc::now();
     let claims = TokenClaims {
         sub: user_id.to_string(),
@@ -49,6 +60,7 @@ pub fn create_token(
 
 /// Validate and decode a JWT, returning its claims.
 pub fn validate_token(token: &str, secret: &str, issuer: &str) -> Result<TokenClaims> {
+    ensure_jwt_crypto_provider();
     let mut validation = Validation::new(Algorithm::HS256);
     validation.set_issuer(&[issuer]);
     decode::<TokenClaims>(

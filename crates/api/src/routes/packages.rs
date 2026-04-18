@@ -1016,7 +1016,7 @@ async fn list_releases(
         };
 
     let rows = sqlx::query(
-        "SELECT version, status, is_yanked, is_deprecated, is_prerelease, published_at \
+        "SELECT version, status::text AS status, is_yanked, is_deprecated, is_prerelease, published_at \
          FROM releases \
          WHERE package_id = $1 AND status::text = ANY($2) \
          ORDER BY published_at DESC",
@@ -1056,7 +1056,7 @@ async fn get_release(
         can_manage_releases_for_package(&state.db, release_access.package_id, &identity).await?;
 
     let row = sqlx::query(
-        "SELECT r.id, r.version, r.status, r.is_yanked, r.yank_reason, r.is_deprecated, \
+        "SELECT r.id, r.version, r.status::text AS status, r.is_yanked, r.yank_reason, r.is_deprecated, \
                 r.deprecation_message, r.is_prerelease, r.description, r.changelog, \
                 r.source_ref, r.published_at \
          FROM releases r \
@@ -1413,7 +1413,7 @@ async fn publish_release(
         .map_err(|e| ApiError(Error::Database(e)))?;
 
     let release_row = sqlx::query(
-        "SELECT id, status, is_yanked, is_deprecated \
+        "SELECT id, status::text AS status, is_yanked, is_deprecated \
          FROM releases \
          WHERE package_id = $1 AND version = $2 \
          FOR UPDATE",
@@ -1477,7 +1477,7 @@ async fn publish_release(
 
     sqlx::query(
         "UPDATE releases \
-         SET status = $1, updated_at = NOW() \
+         SET status = $1::release_status, updated_at = NOW() \
          WHERE id = $2",
     )
     .bind(next_status)
@@ -2014,7 +2014,7 @@ async fn load_release_for_write(
     version: &str,
 ) -> ApiResult<ReleaseAccess> {
     let row = sqlx::query(
-        "SELECT id, status, is_yanked, is_deprecated \
+        "SELECT id, status::text AS status, is_yanked, is_deprecated \
          FROM releases \
          WHERE package_id = $1 AND version = $2",
     )
