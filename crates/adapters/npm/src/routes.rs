@@ -529,7 +529,7 @@ async fn publish_inner<S: NpmAppState>(
 
     // Check if package exists
     let existing_package = sqlx::query(
-        "SELECT id, owner_user_id, owner_org_id \
+        "SELECT id, repository_id, owner_user_id, owner_org_id \
          FROM packages \
          WHERE ecosystem = 'npm' AND normalized_name = $1",
     )
@@ -545,11 +545,18 @@ async fn publish_inner<S: NpmAppState>(
                     return npm_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error")
                 }
             };
+            let repository_id: Uuid = match row.try_get("repository_id") {
+                Ok(id) => id,
+                Err(_) => {
+                    return npm_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error")
+                }
+            };
 
             // Verify write access
             if !has_package_write_access(
                 state.db(),
                 pkg_id,
+                repository_id,
                 row.try_get("owner_user_id").unwrap_or(None),
                 row.try_get("owner_org_id").unwrap_or(None),
                 identity.user_id,
@@ -591,17 +598,42 @@ async fn publish_inner<S: NpmAppState>(
             pkg_id
         }
         Ok(None) => {
-            // Auto-create the package. Find the user's default repository or the
-            // first writable repository they own.
+            // Auto-create the package in the first repository the actor can
+            // create packages in.
             let repo_row = match sqlx::query(
-                "SELECT id, visibility, owner_user_id, owner_org_id \
+                "SELECT id, visibility::text AS visibility, owner_user_id, owner_org_id \
                  FROM repositories \
-                 WHERE owner_user_id = $1 \
-                   AND kind IN ('public', 'private', 'staging', 'release') \
+                 WHERE kind IN ('public', 'private', 'staging', 'release') \
+                   AND (\
+                       owner_user_id = $1 \
+                       OR EXISTS (\
+                           SELECT 1 \
+                           FROM org_memberships om \
+                           WHERE om.org_id = repositories.owner_org_id \
+                             AND om.user_id = $1 \
+                             AND om.role::text = ANY($2)\
+                       ) \
+                       OR EXISTS (\
+                           SELECT 1 \
+                           FROM team_repository_access tra \
+                           JOIN team_memberships tm ON tm.team_id = tra.team_id \
+                           JOIN teams t ON t.id = tra.team_id \
+                           WHERE tra.repository_id = repositories.id \
+                             AND tm.user_id = $1 \
+                             AND t.org_id = repositories.owner_org_id \
+                             AND tra.permission::text = ANY($3)\
+                       )\
+                   ) \
                  ORDER BY created_at ASC \
                  LIMIT 1",
             )
             .bind(identity.user_id)
+            .bind(vec!["owner".to_owned(), "admin".to_owned()])
+            .bind(vec![
+                "admin".to_owned(),
+                "publish".to_owned(),
+                "write_metadata".to_owned(),
+            ])
             .fetch_optional(state.db())
             .await
             {
@@ -622,11 +654,17 @@ async fn publish_inner<S: NpmAppState>(
 
             let repo_id: Uuid = repo_row.try_get("id").unwrap();
             let repo_visibility: String = repo_row.try_get("visibility").unwrap_or("public".into());
+            let repo_owner_user_id: Option<Uuid> =
+                repo_row.try_get("owner_user_id").unwrap_or(None);
+            let repo_owner_org_id: Option<Uuid> =
+                repo_row.try_get("owner_org_id").unwrap_or(None);
 
             let visibility = match repo_visibility.as_str() {
                 "public" => "public",
                 "private" => "private",
+                "internal_org" => "internal_org",
                 "unlisted" => "unlisted",
+                "quarantined" => "quarantined",
                 _ => "public",
             };
 
@@ -636,7 +674,9 @@ async fn publish_inner<S: NpmAppState>(
                 parsed.package_name.clone(),
                 match visibility {
                     "private" => publaryn_core::domain::repository::Visibility::Private,
+                    "internal_org" => publaryn_core::domain::repository::Visibility::InternalOrg,
                     "unlisted" => publaryn_core::domain::repository::Visibility::Unlisted,
+                    "quarantined" => publaryn_core::domain::repository::Visibility::Quarantined,
                     _ => publaryn_core::domain::repository::Visibility::Public,
                 },
             );
@@ -646,8 +686,8 @@ async fn publish_inner<S: NpmAppState>(
                  display_name, description, readme, homepage, repository_url, license, keywords, \
                  visibility, owner_user_id, owner_org_id, is_deprecated, deprecation_message, \
                  is_archived, download_count, created_at, updated_at) \
-                 VALUES ($1, $2, 'npm', $3, $4, NULL, $5, $6, $7, $8, $9, $10, $11, $12, NULL, \
-                 false, NULL, false, 0, $13, $14)",
+                 VALUES ($1, $2, 'npm', $3, $4, NULL, $5, $6, $7, $8, $9, $10, $11, $12, $13, \
+                 false, NULL, false, 0, $14, $15)",
             )
             .bind(pkg.id)
             .bind(repo_id)
@@ -663,7 +703,8 @@ async fn publish_inner<S: NpmAppState>(
             .bind(&version_fields.license)
             .bind(&version_fields.keywords)
             .bind(visibility)
-            .bind(identity.user_id)
+            .bind(repo_owner_user_id)
+            .bind(repo_owner_org_id)
             .bind(pkg.created_at)
             .bind(pkg.updated_at)
             .execute(state.db())
@@ -1315,7 +1356,7 @@ async fn resolve_npm_package_id_for_write(
     actor_user_id: Uuid,
 ) -> Result<Uuid, Response> {
     let row = sqlx::query(
-        "SELECT id, owner_user_id, owner_org_id \
+        "SELECT id, repository_id, owner_user_id, owner_org_id \
          FROM packages \
          WHERE ecosystem = 'npm' AND normalized_name = $1",
     )
@@ -1328,10 +1369,14 @@ async fn resolve_npm_package_id_for_write(
     let package_id: Uuid = row
         .try_get("id")
         .map_err(|_| npm_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error"))?;
+    let repository_id: Uuid = row.try_get("repository_id").map_err(|_| {
+        npm_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error")
+    })?;
 
     if !has_package_write_access(
         db,
         package_id,
+        repository_id,
         row.try_get("owner_user_id").unwrap_or(None),
         row.try_get("owner_org_id").unwrap_or(None),
         actor_user_id,
@@ -1350,6 +1395,7 @@ async fn resolve_npm_package_id_for_write(
 async fn has_package_write_access(
     db: &PgPool,
     package_id: Uuid,
+    repository_id: Uuid,
     owner_user_id: Option<Uuid>,
     owner_org_id: Option<Uuid>,
     actor_user_id: Uuid,
@@ -1401,7 +1447,31 @@ async fn has_package_write_access(
         .fetch_one(db)
         .await;
 
-        return delegated_result.unwrap_or(false);
+        if delegated_result.unwrap_or(false) {
+            return true;
+        }
+
+        let repository_permissions: Vec<String> = vec!["admin".into(), "publish".into()];
+        let repository_delegated_result = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS (\
+                 SELECT 1 \
+                 FROM team_repository_access tra \
+                 JOIN team_memberships tm ON tm.team_id = tra.team_id \
+                 JOIN teams t ON t.id = tra.team_id \
+                 JOIN repositories r ON r.id = tra.repository_id \
+                 WHERE tra.repository_id = $1 \
+                   AND tm.user_id = $2 \
+                   AND t.org_id = r.owner_org_id \
+                   AND tra.permission::text = ANY($3)\
+             )",
+        )
+        .bind(repository_id)
+        .bind(actor_user_id)
+        .bind(&repository_permissions)
+        .fetch_one(db)
+        .await;
+
+        return repository_delegated_result.unwrap_or(false);
     }
 
     false
