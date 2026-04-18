@@ -139,6 +139,27 @@ describe('org audit query helpers', () => {
     expect(view.action).toBe('package_update');
   });
 
+  test('keeps team repository access audit actions when building and parsing filters', () => {
+    const path = buildOrgAuditPath(
+      'acme-corp',
+      {
+        action: 'team_repository_access_update',
+        actorUserId: '',
+        actorUsername: '',
+        page: 1,
+      },
+      '?tab=activity'
+    );
+
+    const url = new URL(path, 'https://example.test');
+    const view = getAuditViewFromQuery(url.searchParams);
+
+    expect(url.searchParams.get('action')).toBe(
+      'team_repository_access_update'
+    );
+    expect(view.action).toBe('team_repository_access_update');
+  });
+
   test('drops invalid audit dates back to empty filters', () => {
     const view = getAuditViewFromQuery(
       new URLSearchParams(

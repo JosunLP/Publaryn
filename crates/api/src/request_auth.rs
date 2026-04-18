@@ -30,6 +30,20 @@ const TEAM_PACKAGE_MANAGEMENT_VISIBILITY_PERMISSIONS: &[&str] = &[
     "security_review",
     "transfer_ownership",
 ];
+const TEAM_REPOSITORY_PACKAGE_CREATION_PERMISSIONS: &[&str] =
+    &["admin", "publish", "write_metadata"];
+const TEAM_REPOSITORY_PACKAGE_METADATA_PERMISSIONS: &[&str] = &["admin", "write_metadata"];
+const TEAM_REPOSITORY_PACKAGE_PUBLISH_PERMISSIONS: &[&str] = &["admin", "publish"];
+const TEAM_REPOSITORY_ADMIN_PERMISSIONS: &[&str] = &["admin"];
+const TEAM_REPOSITORY_PACKAGE_TRANSFER_PERMISSIONS: &[&str] =
+    &["admin", "transfer_ownership"];
+const TEAM_REPOSITORY_PACKAGE_MANAGEMENT_VISIBILITY_PERMISSIONS: &[&str] = &[
+    "admin",
+    "publish",
+    "write_metadata",
+    "security_review",
+    "transfer_ownership",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PackageAccessRequirement {
@@ -55,6 +69,15 @@ impl PackageAccessRequirement {
             Self::Publish => TEAM_PACKAGE_PUBLISH_PERMISSIONS,
             Self::Admin => TEAM_PACKAGE_ADMIN_PERMISSIONS,
             Self::TransferOwnership => TEAM_PACKAGE_TRANSFER_PERMISSIONS,
+        }
+    }
+
+    fn repository_permissions(self) -> &'static [&'static str] {
+        match self {
+            Self::MetadataWrite => TEAM_REPOSITORY_PACKAGE_METADATA_PERMISSIONS,
+            Self::Publish => TEAM_REPOSITORY_PACKAGE_PUBLISH_PERMISSIONS,
+            Self::Admin => TEAM_REPOSITORY_ADMIN_PERMISSIONS,
+            Self::TransferOwnership => TEAM_REPOSITORY_PACKAGE_TRANSFER_PERMISSIONS,
         }
     }
 
@@ -355,8 +378,9 @@ async fn actor_can_read_owned_resource(
     Ok(false)
 }
 
-async fn actor_can_write_owned_repository(
+async fn actor_can_manage_owned_repository(
     db: &PgPool,
+    repository_id: Uuid,
     owner_user_id: Option<Uuid>,
     owner_org_id: Option<Uuid>,
     actor_user_id: Uuid,
@@ -367,7 +391,46 @@ async fn actor_can_write_owned_repository(
 
     match owner_org_id {
         Some(owner_org_id) => {
-            actor_has_org_roles(db, owner_org_id, actor_user_id, ORG_ADMIN_ROLES).await
+            if actor_has_org_roles(db, owner_org_id, actor_user_id, ORG_ADMIN_ROLES).await? {
+                return Ok(true);
+            }
+
+            actor_has_team_repository_permissions(
+                db,
+                repository_id,
+                actor_user_id,
+                TEAM_REPOSITORY_ADMIN_PERMISSIONS,
+            )
+            .await
+        }
+        None => Ok(false),
+    }
+}
+
+async fn actor_can_create_packages_in_owned_repository(
+    db: &PgPool,
+    repository_id: Uuid,
+    owner_user_id: Option<Uuid>,
+    owner_org_id: Option<Uuid>,
+    actor_user_id: Uuid,
+) -> ApiResult<bool> {
+    if owner_user_id == Some(actor_user_id) {
+        return Ok(true);
+    }
+
+    match owner_org_id {
+        Some(owner_org_id) => {
+            if actor_has_org_roles(db, owner_org_id, actor_user_id, ORG_ADMIN_ROLES).await? {
+                return Ok(true);
+            }
+
+            actor_has_team_repository_permissions(
+                db,
+                repository_id,
+                actor_user_id,
+                TEAM_REPOSITORY_PACKAGE_CREATION_PERMISSIONS,
+            )
+            .await
         }
         None => Ok(false),
     }
@@ -429,13 +492,45 @@ async fn actor_has_team_package_permissions(
     .map_err(|e| ApiError(Error::Database(e)))
 }
 
+async fn actor_has_team_repository_permissions(
+    db: &PgPool,
+    repository_id: Uuid,
+    actor_user_id: Uuid,
+    allowed_permissions: &[&str],
+) -> ApiResult<bool> {
+    let allowed_permissions = allowed_permissions
+        .iter()
+        .map(|permission| (*permission).to_owned())
+        .collect::<Vec<_>>();
+
+    sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (\
+             SELECT 1 \
+             FROM team_repository_access tra \
+             JOIN team_memberships tm ON tm.team_id = tra.team_id \
+             JOIN teams t ON t.id = tra.team_id \
+             JOIN repositories r ON r.id = tra.repository_id \
+             WHERE tra.repository_id = $1 \
+               AND tm.user_id = $2 \
+               AND t.org_id = r.owner_org_id \
+               AND tra.permission::text = ANY($3)\
+         )",
+    )
+    .bind(repository_id)
+    .bind(actor_user_id)
+    .bind(&allowed_permissions)
+    .fetch_one(db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))
+}
+
 async fn fetch_package_ownership(
     db: &PgPool,
     ecosystem: &str,
     normalized_name: &str,
-) -> ApiResult<(Uuid, Option<Uuid>, Option<Uuid>)> {
+) -> ApiResult<(Uuid, Uuid, Option<Uuid>, Option<Uuid>)> {
     let row = sqlx::query(
-        "SELECT id, owner_user_id, owner_org_id \
+        "SELECT id, repository_id, owner_user_id, owner_org_id \
          FROM packages \
          WHERE ecosystem = $1 AND normalized_name = $2",
     )
@@ -453,6 +548,8 @@ async fn fetch_package_ownership(
     Ok((
         row.try_get("id")
             .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        row.try_get("repository_id")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
         row.try_get::<Option<Uuid>, _>("owner_user_id")
             .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
         row.try_get::<Option<Uuid>, _>("owner_org_id")
@@ -467,7 +564,7 @@ async fn ensure_package_access_by_requirement(
     actor_user_id: Uuid,
     requirement: PackageAccessRequirement,
 ) -> ApiResult<Uuid> {
-    let (package_id, owner_user_id, owner_org_id) =
+    let (package_id, repository_id, owner_user_id, owner_org_id) =
         fetch_package_ownership(db, ecosystem, normalized_name).await?;
 
     if owner_user_id == Some(actor_user_id) {
@@ -481,6 +578,13 @@ async fn ensure_package_access_by_requirement(
                 package_id,
                 actor_user_id,
                 requirement.team_permissions(),
+            )
+            .await?
+            || actor_has_team_repository_permissions(
+                db,
+                repository_id,
+                actor_user_id,
+                requirement.repository_permissions(),
             )
             .await?
         {
@@ -673,11 +777,10 @@ pub async fn ensure_platform_admin(db: &PgPool, actor_user_id: Uuid) -> ApiResul
     )))
 }
 
-pub async fn ensure_repository_write_access(
+async fn fetch_repository_access_fields_by_slug(
     db: &PgPool,
     slug: &str,
-    actor_user_id: Uuid,
-) -> ApiResult<Uuid> {
+) -> ApiResult<(Uuid, Option<Uuid>, Option<Uuid>)> {
     let row = sqlx::query(
         "SELECT id, owner_user_id, owner_org_id \
          FROM repositories \
@@ -689,23 +792,72 @@ pub async fn ensure_repository_write_access(
     .map_err(|e| ApiError(Error::Database(e)))?
     .ok_or_else(|| ApiError(Error::NotFound(format!("Repository '{slug}' not found"))))?;
 
-    let repository_id: Uuid = row
-        .try_get("id")
-        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
-    let owner_user_id = row
-        .try_get::<Option<Uuid>, _>("owner_user_id")
-        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
-    let owner_org_id = row
-        .try_get::<Option<Uuid>, _>("owner_org_id")
-        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    Ok((
+        row.try_get("id")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        row.try_get::<Option<Uuid>, _>("owner_user_id")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        row.try_get::<Option<Uuid>, _>("owner_org_id")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+    ))
+}
 
-    if actor_can_write_owned_repository(db, owner_user_id, owner_org_id, actor_user_id).await? {
+pub async fn ensure_repository_admin_access(
+    db: &PgPool,
+    slug: &str,
+    actor_user_id: Uuid,
+) -> ApiResult<Uuid> {
+    let (repository_id, owner_user_id, owner_org_id) =
+        fetch_repository_access_fields_by_slug(db, slug).await?;
+
+    if actor_can_manage_owned_repository(
+        db,
+        repository_id,
+        owner_user_id,
+        owner_org_id,
+        actor_user_id,
+    )
+    .await?
+    {
         return Ok(repository_id);
     }
 
     Err(ApiError(Error::Forbidden(
         "You do not have permission to modify this repository".into(),
     )))
+}
+
+pub async fn ensure_repository_package_creation_access(
+    db: &PgPool,
+    slug: &str,
+    actor_user_id: Uuid,
+) -> ApiResult<Uuid> {
+    let (repository_id, owner_user_id, owner_org_id) =
+        fetch_repository_access_fields_by_slug(db, slug).await?;
+
+    if actor_can_create_packages_in_owned_repository(
+        db,
+        repository_id,
+        owner_user_id,
+        owner_org_id,
+        actor_user_id,
+    )
+    .await?
+    {
+        return Ok(repository_id);
+    }
+
+    Err(ApiError(Error::Forbidden(
+        "You do not have permission to create packages in this repository".into(),
+    )))
+}
+
+pub async fn ensure_repository_write_access(
+    db: &PgPool,
+    slug: &str,
+    actor_user_id: Uuid,
+) -> ApiResult<Uuid> {
+    ensure_repository_admin_access(db, slug, actor_user_id).await
 }
 
 pub async fn ensure_package_metadata_write_access(
@@ -775,9 +927,9 @@ pub async fn ensure_package_transfer_access(
 async fn fetch_package_owner_fields_by_id(
     db: &PgPool,
     package_id: Uuid,
-) -> ApiResult<(Option<Uuid>, Option<Uuid>)> {
+) -> ApiResult<(Option<Uuid>, Option<Uuid>, Uuid)> {
     let row = sqlx::query(
-        "SELECT owner_user_id, owner_org_id \
+        "SELECT owner_user_id, owner_org_id, repository_id \
          FROM packages \
          WHERE id = $1",
     )
@@ -791,6 +943,8 @@ async fn fetch_package_owner_fields_by_id(
         row.try_get::<Option<Uuid>, _>("owner_user_id")
             .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
         row.try_get::<Option<Uuid>, _>("owner_org_id")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        row.try_get::<Uuid, _>("repository_id")
             .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
     ))
 }
@@ -827,6 +981,14 @@ pub async fn actor_can_write_repository_by_id(
     repository_id: Uuid,
     actor_user_id: Option<Uuid>,
 ) -> ApiResult<bool> {
+    actor_can_manage_repository_by_id(db, repository_id, actor_user_id).await
+}
+
+pub async fn actor_can_manage_repository_by_id(
+    db: &PgPool,
+    repository_id: Uuid,
+    actor_user_id: Option<Uuid>,
+) -> ApiResult<bool> {
     let Some(actor_user_id) = actor_user_id else {
         return Ok(false);
     };
@@ -834,7 +996,36 @@ pub async fn actor_can_write_repository_by_id(
     let (owner_user_id, owner_org_id) =
         fetch_repository_owner_fields_by_id(db, repository_id).await?;
 
-    actor_can_write_owned_repository(db, owner_user_id, owner_org_id, actor_user_id).await
+    actor_can_manage_owned_repository(
+        db,
+        repository_id,
+        owner_user_id,
+        owner_org_id,
+        actor_user_id,
+    )
+    .await
+}
+
+pub async fn actor_can_create_packages_in_repository_by_id(
+    db: &PgPool,
+    repository_id: Uuid,
+    actor_user_id: Option<Uuid>,
+) -> ApiResult<bool> {
+    let Some(actor_user_id) = actor_user_id else {
+        return Ok(false);
+    };
+
+    let (owner_user_id, owner_org_id) =
+        fetch_repository_owner_fields_by_id(db, repository_id).await?;
+
+    actor_can_create_packages_in_owned_repository(
+        db,
+        repository_id,
+        owner_user_id,
+        owner_org_id,
+        actor_user_id,
+    )
+    .await
 }
 
 pub async fn actor_can_transfer_package_by_id(
@@ -846,7 +1037,8 @@ pub async fn actor_can_transfer_package_by_id(
         return Ok(false);
     };
 
-    let (owner_user_id, owner_org_id) = fetch_package_owner_fields_by_id(db, package_id).await?;
+    let (owner_user_id, owner_org_id, repository_id) =
+        fetch_package_owner_fields_by_id(db, package_id).await?;
 
     if owner_user_id == Some(actor_user_id) {
         return Ok(true);
@@ -858,11 +1050,22 @@ pub async fn actor_can_transfer_package_by_id(
         }
     }
 
-    actor_has_team_package_permissions(
+    if actor_has_team_package_permissions(
         db,
         package_id,
         actor_user_id,
         TEAM_PACKAGE_TRANSFER_PERMISSIONS,
+    )
+    .await?
+    {
+        return Ok(true);
+    }
+
+    actor_has_team_repository_permissions(
+        db,
+        repository_id,
+        actor_user_id,
+        TEAM_REPOSITORY_PACKAGE_TRANSFER_PERMISSIONS,
     )
     .await
 }
@@ -876,7 +1079,8 @@ pub async fn actor_can_publish_package_by_id(
         return Ok(false);
     };
 
-    let (owner_user_id, owner_org_id) = fetch_package_owner_fields_by_id(db, package_id).await?;
+    let (owner_user_id, owner_org_id, repository_id) =
+        fetch_package_owner_fields_by_id(db, package_id).await?;
 
     if owner_user_id == Some(actor_user_id) {
         return Ok(true);
@@ -888,11 +1092,22 @@ pub async fn actor_can_publish_package_by_id(
         }
     }
 
-    actor_has_team_package_permissions(
+    if actor_has_team_package_permissions(
         db,
         package_id,
         actor_user_id,
         TEAM_PACKAGE_PUBLISH_PERMISSIONS,
+    )
+    .await?
+    {
+        return Ok(true);
+    }
+
+    actor_has_team_repository_permissions(
+        db,
+        repository_id,
+        actor_user_id,
+        TEAM_REPOSITORY_PACKAGE_PUBLISH_PERMISSIONS,
     )
     .await
 }
@@ -906,7 +1121,8 @@ pub async fn actor_can_write_package_metadata_by_id(
         return Ok(false);
     };
 
-    let (owner_user_id, owner_org_id) = fetch_package_owner_fields_by_id(db, package_id).await?;
+    let (owner_user_id, owner_org_id, repository_id) =
+        fetch_package_owner_fields_by_id(db, package_id).await?;
 
     if owner_user_id == Some(actor_user_id) {
         return Ok(true);
@@ -918,11 +1134,22 @@ pub async fn actor_can_write_package_metadata_by_id(
         }
     }
 
-    actor_has_team_package_permissions(
+    if actor_has_team_package_permissions(
         db,
         package_id,
         actor_user_id,
         TEAM_PACKAGE_METADATA_PERMISSIONS,
+    )
+    .await?
+    {
+        return Ok(true);
+    }
+
+    actor_has_team_repository_permissions(
+        db,
+        repository_id,
+        actor_user_id,
+        TEAM_REPOSITORY_PACKAGE_METADATA_PERMISSIONS,
     )
     .await
 }
@@ -936,7 +1163,8 @@ pub async fn actor_can_admin_package_by_id(
         return Ok(false);
     };
 
-    let (owner_user_id, owner_org_id) = fetch_package_owner_fields_by_id(db, package_id).await?;
+    let (owner_user_id, owner_org_id, repository_id) =
+        fetch_package_owner_fields_by_id(db, package_id).await?;
 
     if owner_user_id == Some(actor_user_id) {
         return Ok(true);
@@ -948,11 +1176,22 @@ pub async fn actor_can_admin_package_by_id(
         }
     }
 
-    actor_has_team_package_permissions(
+    if actor_has_team_package_permissions(
         db,
         package_id,
         actor_user_id,
         TEAM_PACKAGE_ADMIN_PERMISSIONS,
+    )
+    .await?
+    {
+        return Ok(true);
+    }
+
+    actor_has_team_repository_permissions(
+        db,
+        repository_id,
+        actor_user_id,
+        TEAM_REPOSITORY_ADMIN_PERMISSIONS,
     )
     .await
 }
@@ -966,7 +1205,8 @@ pub async fn actor_can_write_package_by_id(
         return Ok(false);
     };
 
-    let (owner_user_id, owner_org_id) = fetch_package_owner_fields_by_id(db, package_id).await?;
+    let (owner_user_id, owner_org_id, repository_id) =
+        fetch_package_owner_fields_by_id(db, package_id).await?;
 
     if owner_user_id == Some(actor_user_id) {
         return Ok(true);
@@ -985,11 +1225,22 @@ pub async fn actor_can_write_package_by_id(
         }
     }
 
-    actor_has_team_package_permissions(
+    if actor_has_team_package_permissions(
         db,
         package_id,
         actor_user_id,
         TEAM_PACKAGE_MANAGEMENT_VISIBILITY_PERMISSIONS,
+    )
+    .await?
+    {
+        return Ok(true);
+    }
+
+    actor_has_team_repository_permissions(
+        db,
+        repository_id,
+        actor_user_id,
+        TEAM_REPOSITORY_PACKAGE_MANAGEMENT_VISIBILITY_PERMISSIONS,
     )
     .await
 }

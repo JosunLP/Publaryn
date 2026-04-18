@@ -35,8 +35,9 @@ use crate::{
         actor_can_transfer_package_by_id, actor_can_write_package_by_id,
         actor_can_write_package_metadata_by_id, ensure_package_admin_access,
         ensure_package_metadata_write_access, ensure_package_publish_access,
-        ensure_package_read_access, ensure_package_transfer_access, ensure_repository_write_access,
-        AuthenticatedIdentity, OptionalAuthenticatedIdentity,
+        ensure_package_read_access, ensure_package_transfer_access,
+        ensure_repository_package_creation_access, AuthenticatedIdentity,
+        OptionalAuthenticatedIdentity,
     },
     routes::parse_ecosystem,
     scopes::{ensure_scope, SCOPE_PACKAGES_TRANSFER, SCOPE_PACKAGES_WRITE},
@@ -326,8 +327,12 @@ async fn create_package(
     let ecosystem = parse_ecosystem(&body.ecosystem)?;
     validation::validate_package_name(&body.name, &ecosystem).map_err(ApiError::from)?;
 
-    let repository_id =
-        ensure_repository_write_access(&state.db, &body.repository_slug, identity.user_id).await?;
+    let repository_id = ensure_repository_package_creation_access(
+        &state.db,
+        &body.repository_slug,
+        identity.user_id,
+    )
+    .await?;
     let repository = load_repository_package_creation_target(&state.db, repository_id).await?;
     validate_package_creation_repository_kind(&repository.kind)?;
 

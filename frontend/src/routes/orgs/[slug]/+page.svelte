@@ -33,6 +33,8 @@
     TeamMember,
     TeamPackageAccessGrant,
     TeamPackageAccessListResponse,
+    TeamRepositoryAccessGrant,
+    TeamRepositoryAccessListResponse,
     TransferOwnershipResult,
   } from '../../../api/orgs';
   import {
@@ -51,11 +53,14 @@
     listOrgSecurityFindings,
     listTeamMembers,
     listTeamPackageAccess,
+    listTeamRepositoryAccess,
     listTeams,
     removeMember,
     removeTeamMember,
     removeTeamPackageAccess,
+    removeTeamRepositoryAccess,
     replaceTeamPackageAccess,
+    replaceTeamRepositoryAccess,
     revokeInvitation,
     sendInvitation,
     transferOwnership,
@@ -168,6 +173,11 @@
     load_error: string | null;
   }
 
+  interface TeamRepositoryAccessState {
+    grants: TeamRepositoryAccessGrant[];
+    load_error: string | null;
+  }
+
   interface RepositoryPackageState {
     packages: RepositoryPackageSummary[];
     load_error: string | null;
@@ -196,6 +206,8 @@
   let teamsError: string | null = null;
   let teamMembersBySlug: Record<string, TeamMemberState> = {};
   let teamPackageAccessBySlug: Record<string, TeamPackageAccessState> = {};
+  let teamRepositoryAccessBySlug: Record<string, TeamRepositoryAccessState> =
+    {};
   let repositories: OrgRepositorySummary[] = [];
   let repositoriesError: string | null = null;
   let repositoryPackagesBySlug: Record<string, RepositoryPackageState> = {};
@@ -419,6 +431,7 @@
         invitationData,
         teamMembersData,
         teamPackageAccessData,
+        teamRepositoryAccessData,
         namespaceData,
         auditData,
         repositoryPackageData,
@@ -443,6 +456,9 @@
         canAdminister
           ? loadTeamPackageAccess(slug, teams)
           : Promise.resolve<Record<string, TeamPackageAccessState>>({}),
+        canAdminister
+          ? loadTeamRepositoryAccess(slug, teams)
+          : Promise.resolve<Record<string, TeamRepositoryAccessState>>({}),
         org?.id
           ? listOrgNamespaces(org.id).catch(
               (caughtError: unknown): NamespaceListResponse => ({
@@ -492,6 +508,7 @@
       invitationsError = invitationData.load_error || null;
       teamMembersBySlug = teamMembersData;
       teamPackageAccessBySlug = teamPackageAccessData;
+      teamRepositoryAccessBySlug = teamRepositoryAccessData;
       namespaceClaims = namespaceData.namespaces || [];
       namespaceError = namespaceData.load_error || null;
       auditLogs = auditData.logs || [];
@@ -560,6 +577,37 @@
               load_error: toErrorMessage(
                 caughtError,
                 `Failed to load package access for ${team.name || team.slug}.`
+              ),
+            },
+          ] as const;
+        }
+      })
+    );
+
+    return Object.fromEntries(entries);
+  }
+
+  async function loadTeamRepositoryAccess(
+    currentSlug: string,
+    teamList: Team[]
+  ): Promise<Record<string, TeamRepositoryAccessState>> {
+    const entries = await Promise.all(
+      teamList.filter(hasTeamSlug).map(async (team) => {
+        try {
+          const data: TeamRepositoryAccessListResponse =
+            await listTeamRepositoryAccess(currentSlug, team.slug);
+          return [
+            team.slug,
+            { grants: data.repository_access || [], load_error: null },
+          ] as const;
+        } catch (caughtError: unknown) {
+          return [
+            team.slug,
+            {
+              grants: [],
+              load_error: toErrorMessage(
+                caughtError,
+                `Failed to load repository access for ${team.name || team.slug}.`
               ),
             },
           ] as const;
@@ -1063,6 +1111,71 @@
     }
   }
 
+  async function handleReplaceTeamRepositoryAccess(
+    event: SubmitEvent,
+    teamSlug: string
+  ): Promise<void> {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget as HTMLFormElement);
+    const repositorySlug =
+      formData.get('repository_slug')?.toString().trim() || '';
+
+    if (!repositorySlug) {
+      await loadOrganizationPage({
+        error: 'Select a repository to manage access.',
+      });
+      return;
+    }
+
+    const permissions = formData
+      .getAll('permissions')
+      .map((value) => value.toString().trim())
+      .filter(Boolean);
+
+    if (permissions.length === 0) {
+      await loadOrganizationPage({
+        error: 'Select at least one delegated repository permission.',
+      });
+      return;
+    }
+
+    try {
+      await replaceTeamRepositoryAccess(slug, teamSlug, repositorySlug, {
+        permissions,
+      });
+
+      await loadOrganizationPage({
+        notice: `Saved repository access for ${repositorySlug}.`,
+      });
+    } catch (caughtError: unknown) {
+      await loadOrganizationPage({
+        error: toErrorMessage(
+          caughtError,
+          'Failed to update repository access.'
+        ),
+      });
+    }
+  }
+
+  async function handleRemoveTeamRepositoryAccess(
+    teamSlug: string,
+    repositorySlug: string
+  ): Promise<void> {
+    try {
+      await removeTeamRepositoryAccess(slug, teamSlug, repositorySlug);
+      await loadOrganizationPage({
+        notice: `Revoked repository access for ${repositorySlug}.`,
+      });
+    } catch (caughtError: unknown) {
+      await loadOrganizationPage({
+        error: toErrorMessage(
+          caughtError,
+          'Failed to revoke repository access.'
+        ),
+      });
+    }
+  }
+
   async function handleCreateNamespace(event: SubmitEvent): Promise<void> {
     event.preventDefault();
 
@@ -1336,6 +1449,7 @@
       team_member_add: 'Team member added',
       team_member_remove: 'Team member removed',
       team_package_access_update: 'Package access updated',
+      team_repository_access_update: 'Repository access updated',
     };
 
     return labels[action] || formatIdentifierLabel(action || 'activity');
@@ -1374,6 +1488,13 @@
       stringField(metadata.team_name) || stringField(metadata.team_slug);
     if (teamName) {
       return `team ${teamName}`;
+    }
+
+    const repositoryName =
+      stringField(metadata.repository_name) ||
+      stringField(metadata.repository_slug);
+    if (repositoryName) {
+      return `repository ${repositoryName}`;
     }
 
     const packageName = stringField(metadata.package_name);
@@ -1446,6 +1567,20 @@
         return permissions.length > 0
           ? `Updated delegated access for ${packageName}: ${permissions.map((permission) => formatPermission(permission)).join(', ')}.`
           : `Removed delegated access for ${packageName}.`;
+      }
+      case 'team_repository_access_update': {
+        const permissions = Array.isArray(metadata.permissions)
+          ? metadata.permissions.filter(
+              (item): item is string => typeof item === 'string'
+            )
+          : [];
+        const repositoryName =
+          stringField(metadata.repository_name) ||
+          stringField(metadata.repository_slug) ||
+          'selected repository';
+        return permissions.length > 0
+          ? `Updated repository-wide access for ${repositoryName}: ${permissions.map((permission) => formatPermission(permission)).join(', ')}.`
+          : `Removed repository-wide access for ${repositoryName}.`;
       }
       default:
         return null;
@@ -2100,6 +2235,10 @@
               {@const teamMembers = teamMembersBySlug[teamSlug]?.members || []}
               {@const teamMembersError =
                 teamMembersBySlug[teamSlug]?.load_error || null}
+              {@const teamRepositoryGrants =
+                teamRepositoryAccessBySlug[teamSlug]?.grants || []}
+              {@const teamRepositoryGrantsError =
+                teamRepositoryAccessBySlug[teamSlug]?.load_error || null}
               {@const teamGrants =
                 teamPackageAccessBySlug[teamSlug]?.grants || []}
               {@const teamGrantsError =
@@ -2224,6 +2363,149 @@
                         >
                       </form>
                     </div>
+                  </div>
+
+                  <div class="mt-6">
+                    <h4>Repository access</h4>
+                    <p class="settings-copy">
+                      Repository grants apply across current and future packages
+                      in the selected repository. The <strong>Admin</strong>
+                      permission also unlocks repository setting updates.
+                    </p>
+                    {#if teamRepositoryGrantsError}
+                      <div class="alert alert-error">
+                        {teamRepositoryGrantsError}
+                      </div>
+                    {:else if teamRepositoryGrants.length === 0}
+                      <p class="settings-copy">
+                        No repository grants assigned yet.
+                      </p>
+                    {:else}
+                      <div class="token-list">
+                        {#each teamRepositoryGrants as grant}
+                          <div class="token-row">
+                            <div class="token-row__main">
+                              <div class="token-row__title">
+                                {#if grant.slug}
+                                  <a
+                                    href={`/repositories/${encodeURIComponent(grant.slug || '')}`}
+                                    data-sveltekit-preload-data="hover"
+                                    >{grant.name || grant.slug}</a
+                                  >
+                                {:else}
+                                  {grant.name || 'Unnamed repository'}
+                                {/if}
+                              </div>
+                              <div class="token-row__meta">
+                                <span>@{grant.slug || 'no-slug'}</span>
+                                <span
+                                  >{formatRepositoryKindLabel(grant.kind)}</span
+                                >
+                                <span
+                                  >{formatRepositoryVisibilityLabel(
+                                    grant.visibility
+                                  )}</span
+                                >
+                                <span
+                                  >granted {formatDate(grant.granted_at)}</span
+                                >
+                              </div>
+                              <div class="token-row__scopes">
+                                {#each grant.permissions || [] as permission}
+                                  <span class="badge badge-ecosystem"
+                                    >{formatPermission(permission)}</span
+                                  >
+                                {/each}
+                              </div>
+                            </div>
+                            {#if grant.slug}
+                              <div class="token-row__actions">
+                                <button
+                                  class="btn btn-secondary btn-sm"
+                                  type="button"
+                                  on:click={() =>
+                                    handleRemoveTeamRepositoryAccess(
+                                      teamSlug,
+                                      grant.slug || ''
+                                    )}>Revoke</button
+                                >
+                              </div>
+                            {/if}
+                          </div>
+                        {/each}
+                      </div>
+                    {/if}
+
+                    <form
+                      class="settings-subsection"
+                      on:submit={(event) =>
+                        handleReplaceTeamRepositoryAccess(event, teamSlug)}
+                    >
+                      <div class="form-group">
+                        <label for={`team-repository-${teamSlug}`}
+                          >Organization repository</label
+                        >
+                        {#if repositoriesError}
+                          <div class="alert alert-error">
+                            {repositoriesError}
+                          </div>
+                        {:else if repositories.length === 0}
+                          <p class="settings-copy">
+                            Create a repository before delegating
+                            repository-wide access.
+                          </p>
+                        {:else}
+                          <select
+                            id={`team-repository-${teamSlug}`}
+                            name="repository_slug"
+                            class="form-input"
+                            required
+                          >
+                            <option value="">Select a repository</option>
+                            {#each [...repositories].sort( (left, right) => `${left.name || left.slug || ''}`.localeCompare(`${right.name || right.slug || ''}`) ) as repository}
+                              <option value={repository.slug || ''}
+                                >{`${repository.name || repository.slug || ''} · ${formatRepositoryKindLabel(repository.kind)} · ${formatRepositoryVisibilityLabel(repository.visibility)}`}</option
+                              >
+                            {/each}
+                          </select>
+                        {/if}
+                      </div>
+                      <fieldset class="form-group">
+                        <legend>Permissions</legend>
+                        <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                          {#each TEAM_PERMISSION_OPTIONS as permission}
+                            <label
+                              class="rounded-lg border border-neutral-200 p-3 text-sm"
+                            >
+                              <span class="flex items-start gap-3">
+                                <input
+                                  type="checkbox"
+                                  name="permissions"
+                                  value={permission.value}
+                                  disabled={Boolean(repositoriesError) ||
+                                    repositories.length === 0}
+                                />
+                                <span>
+                                  <span class="block font-medium"
+                                    >{permission.label}</span
+                                  >
+                                  <span class="mt-1 block text-muted"
+                                    >{permission.description}</span
+                                  >
+                                </span>
+                              </span>
+                            </label>
+                          {/each}
+                        </div>
+                      </fieldset>
+                      <button
+                        type="submit"
+                        class="btn btn-primary"
+                        disabled={Boolean(repositoriesError) ||
+                          repositories.length === 0}
+                        >Save repository access</button
+                      >
+                    </form>
                   </div>
 
                   <div class="mt-6">

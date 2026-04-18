@@ -69,6 +69,14 @@ pub fn router() -> Router<AppState> {
             "/v1/orgs/{slug}/teams/{team_slug}/package-access/{ecosystem}/{name}",
             put(replace_team_package_access).delete(remove_team_package_access),
         )
+        .route(
+            "/v1/orgs/{slug}/teams/{team_slug}/repository-access",
+            get(list_team_repository_access),
+        )
+        .route(
+            "/v1/orgs/{slug}/teams/{team_slug}/repository-access/{repository_slug}",
+            put(replace_team_repository_access).delete(remove_team_repository_access),
+        )
         .route("/v1/orgs/{slug}/repositories", get(list_org_repositories))
         .route(
             "/v1/orgs/{slug}/security-findings",
@@ -1162,6 +1170,15 @@ struct TeamPackageAccessTarget {
     normalized_name: String,
 }
 
+#[derive(Debug, Clone)]
+struct TeamRepositoryAccessTarget {
+    id: Uuid,
+    name: String,
+    slug: String,
+    kind: String,
+    visibility: String,
+}
+
 async fn create_team(
     State(state): State<AppState>,
     identity: AuthenticatedIdentity,
@@ -1331,6 +1348,14 @@ async fn delete_team(
             .await
             .map_err(|e| ApiError(Error::Database(e)))?;
 
+    let repository_access_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::BIGINT FROM team_repository_access WHERE team_id = $1",
+    )
+    .bind(team.id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
     sqlx::query("DELETE FROM teams WHERE id = $1")
         .bind(team.id)
         .execute(&mut *tx)
@@ -1351,6 +1376,7 @@ async fn delete_team(
         "team_name": team.name,
         "removed_member_count": member_count,
         "removed_package_access_count": package_access_count,
+        "removed_repository_access_count": repository_access_count,
     }))
     .execute(&mut *tx)
     .await
@@ -1793,6 +1819,248 @@ async fn remove_team_package_access(
     ))
 }
 
+async fn list_team_repository_access(
+    State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
+    Path((slug, team_slug)): Path<(String, String)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    ensure_scope(&identity, SCOPE_ORGS_WRITE)?;
+
+    let org_id = ensure_org_admin_by_slug(&state.db, &slug, identity.user_id).await?;
+    let team = load_team_record(&state.db, org_id, &team_slug).await?;
+
+    let rows = sqlx::query(
+        "SELECT r.id, r.name, r.slug, r.kind::text AS kind, r.visibility::text AS visibility, \
+                ARRAY_AGG(tra.permission::text ORDER BY tra.permission::text) AS permissions, \
+                MAX(tra.granted_at) AS granted_at \
+         FROM team_repository_access tra \
+         JOIN repositories r ON r.id = tra.repository_id \
+         WHERE tra.team_id = $1 AND r.owner_org_id = $2 \
+         GROUP BY r.id, r.name, r.slug, r.kind, r.visibility \
+         ORDER BY r.name ASC, r.slug ASC",
+    )
+    .bind(team.id)
+    .bind(org_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let repository_access = rows
+        .iter()
+        .map(|row| {
+            serde_json::json!({
+                "repository_id": row.try_get::<Uuid, _>("id").ok(),
+                "name": row.try_get::<String, _>("name").ok(),
+                "slug": row.try_get::<String, _>("slug").ok(),
+                "kind": row.try_get::<String, _>("kind").ok(),
+                "visibility": row.try_get::<String, _>("visibility").ok(),
+                "permissions": row.try_get::<Vec<String>, _>("permissions").ok(),
+                "granted_at": row.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("granted_at").ok().flatten(),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    Ok(Json(serde_json::json!({
+        "team": {
+            "id": team.id,
+            "slug": team.slug,
+            "name": team.name,
+        },
+        "repository_access": repository_access,
+    })))
+}
+
+async fn replace_team_repository_access(
+    State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
+    Path((slug, team_slug, repository_slug)): Path<(String, String, String)>,
+    Json(body): Json<ReplaceTeamPackageAccessRequest>,
+) -> ApiResult<Json<serde_json::Value>> {
+    ensure_scope(&identity, SCOPE_ORGS_WRITE)?;
+
+    let org_id = ensure_org_admin_by_slug(&state.db, &slug, identity.user_id).await?;
+    let team = load_team_record(&state.db, org_id, &team_slug).await?;
+    let repository =
+        load_org_owned_repository_for_team_access(&state.db, org_id, &repository_slug).await?;
+    let permissions = normalize_team_permissions(&body.permissions)?;
+    let permission_strings = team_permission_strings(&permissions);
+
+    let previous_permissions = sqlx::query(
+        "SELECT permission::text AS permission \
+         FROM team_repository_access \
+         WHERE team_id = $1 AND repository_id = $2 \
+         ORDER BY permission::text ASC",
+    )
+    .bind(team.id)
+    .bind(repository.id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?
+    .into_iter()
+    .filter_map(|row| row.try_get::<String, _>("permission").ok())
+    .collect::<Vec<_>>();
+
+    if previous_permissions == permission_strings {
+        return Ok(Json(serde_json::json!({
+            "message": "Team repository access unchanged",
+            "repository": {
+                "id": repository.id,
+                "name": repository.name,
+                "slug": repository.slug,
+                "kind": repository.kind,
+                "visibility": repository.visibility,
+            },
+            "permissions": permission_strings,
+        })));
+    }
+
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    sqlx::query("DELETE FROM team_repository_access WHERE team_id = $1 AND repository_id = $2")
+        .bind(team.id)
+        .bind(repository.id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    for permission in &permissions {
+        sqlx::query(
+            "INSERT INTO team_repository_access (id, team_id, repository_id, permission, granted_at) \
+             VALUES ($1, $2, $3, $4, NOW())",
+        )
+        .bind(Uuid::new_v4())
+        .bind(team.id)
+        .bind(repository.id)
+        .bind(permission)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+    }
+
+    sqlx::query(
+        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_org_id, metadata, occurred_at) \
+         VALUES ($1, 'team_repository_access_update', $2, $3, $4, $5, NOW())",
+    )
+    .bind(Uuid::new_v4())
+    .bind(identity.user_id)
+    .bind(identity.audit_actor_token_id())
+    .bind(team.org_id)
+    .bind(serde_json::json!({
+        "team_id": team.id,
+        "team_slug": team.slug,
+        "team_name": team.name,
+        "repository_id": repository.id,
+        "repository_slug": repository.slug,
+        "repository_name": repository.name,
+        "repository_kind": repository.kind,
+        "repository_visibility": repository.visibility,
+        "previous_permissions": previous_permissions,
+        "permissions": permission_strings,
+    }))
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    Ok(Json(serde_json::json!({
+        "message": "Team repository access updated",
+        "repository": {
+            "id": repository.id,
+            "name": repository.name,
+            "slug": repository.slug,
+            "kind": repository.kind,
+            "visibility": repository.visibility,
+        },
+        "permissions": permission_strings,
+    })))
+}
+
+async fn remove_team_repository_access(
+    State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
+    Path((slug, team_slug, repository_slug)): Path<(String, String, String)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    ensure_scope(&identity, SCOPE_ORGS_WRITE)?;
+
+    let org_id = ensure_org_admin_by_slug(&state.db, &slug, identity.user_id).await?;
+    let team = load_team_record(&state.db, org_id, &team_slug).await?;
+    let repository =
+        load_org_owned_repository_for_team_access(&state.db, org_id, &repository_slug).await?;
+
+    let previous_permissions = sqlx::query(
+        "SELECT permission::text AS permission \
+         FROM team_repository_access \
+         WHERE team_id = $1 AND repository_id = $2 \
+         ORDER BY permission::text ASC",
+    )
+    .bind(team.id)
+    .bind(repository.id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?
+    .into_iter()
+    .filter_map(|row| row.try_get::<String, _>("permission").ok())
+    .collect::<Vec<_>>();
+
+    if previous_permissions.is_empty() {
+        return Err(ApiError(Error::NotFound(
+            "Team repository access not found".into(),
+        )));
+    }
+
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    sqlx::query("DELETE FROM team_repository_access WHERE team_id = $1 AND repository_id = $2")
+        .bind(team.id)
+        .bind(repository.id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    sqlx::query(
+        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_org_id, metadata, occurred_at) \
+         VALUES ($1, 'team_repository_access_update', $2, $3, $4, $5, NOW())",
+    )
+    .bind(Uuid::new_v4())
+    .bind(identity.user_id)
+    .bind(identity.audit_actor_token_id())
+    .bind(team.org_id)
+    .bind(serde_json::json!({
+        "team_id": team.id,
+        "team_slug": team.slug,
+        "team_name": team.name,
+        "repository_id": repository.id,
+        "repository_slug": repository.slug,
+        "repository_name": repository.name,
+        "repository_kind": repository.kind,
+        "repository_visibility": repository.visibility,
+        "previous_permissions": previous_permissions,
+        "permissions": Vec::<String>::new(),
+    }))
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    Ok(Json(
+        serde_json::json!({ "message": "Team repository access removed" }),
+    ))
+}
+
 async fn list_org_packages(
     State(state): State<AppState>,
     identity: OptionalAuthenticatedIdentity,
@@ -2231,6 +2499,57 @@ async fn load_org_owned_package_for_team_access(
             .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
         normalized_name: row
             .try_get("normalized_name")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+    })
+}
+
+async fn load_org_owned_repository_for_team_access(
+    db: &sqlx::PgPool,
+    org_id: Uuid,
+    repository_slug: &str,
+) -> ApiResult<TeamRepositoryAccessTarget> {
+    let row = sqlx::query(
+        "SELECT id, name, slug, kind::text AS kind, visibility::text AS visibility, owner_org_id \
+         FROM repositories \
+         WHERE slug = $1",
+    )
+    .bind(repository_slug)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?
+    .ok_or_else(|| {
+        ApiError(Error::NotFound(format!(
+            "Repository '{}' not found",
+            repository_slug
+        )))
+    })?;
+
+    let owner_org_id = row
+        .try_get::<Option<Uuid>, _>("owner_org_id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+
+    if owner_org_id != Some(org_id) {
+        return Err(ApiError(Error::Forbidden(
+            "Teams can only be granted access to repositories owned by the same organization"
+                .into(),
+        )));
+    }
+
+    Ok(TeamRepositoryAccessTarget {
+        id: row
+            .try_get("id")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        name: row
+            .try_get("name")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        slug: row
+            .try_get("slug")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        kind: row
+            .try_get("kind")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        visibility: row
+            .try_get("visibility")
             .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
     })
 }

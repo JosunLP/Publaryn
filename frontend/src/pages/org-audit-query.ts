@@ -17,6 +17,7 @@ export const ORG_AUDIT_ACTION_VALUES = [
   'team_member_add',
   'team_member_remove',
   'team_package_access_update',
+  'team_repository_access_update',
 ] as const;
 
 const ORG_AUDIT_ACTION_SET = new Set<string>(ORG_AUDIT_ACTION_VALUES);

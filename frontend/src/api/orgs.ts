@@ -81,6 +81,22 @@ export interface TeamPackageAccessListResponse {
   load_error?: NullableString;
 }
 
+export interface TeamRepositoryAccessGrant {
+  repository_id?: NullableString;
+  name?: NullableString;
+  slug?: NullableString;
+  kind?: NullableString;
+  visibility?: NullableString;
+  permissions?: string[] | null;
+  granted_at?: NullableString;
+}
+
+export interface TeamRepositoryAccessListResponse {
+  team?: TeamPackageAccessTeam | null;
+  repository_access: TeamRepositoryAccessGrant[];
+  load_error?: NullableString;
+}
+
 export interface TeamPackageAccessMutationResult {
   message?: NullableString;
   package?: {
@@ -88,6 +104,18 @@ export interface TeamPackageAccessMutationResult {
     ecosystem?: NullableString;
     name?: NullableString;
     normalized_name?: NullableString;
+  } | null;
+  permissions?: string[] | null;
+}
+
+export interface TeamRepositoryAccessMutationResult {
+  message?: NullableString;
+  repository?: {
+    id?: NullableString;
+    name?: NullableString;
+    slug?: NullableString;
+    kind?: NullableString;
+    visibility?: NullableString;
   } | null;
   permissions?: string[] | null;
 }
@@ -530,6 +558,51 @@ export async function removeTeamPackageAccess(
     `/v1/orgs/${enc(slug)}/teams/${enc(teamSlug)}/package-access/${enc(
       ecosystem
     )}/${enc(packageName)}`
+  );
+
+  return data;
+}
+
+export async function listTeamRepositoryAccess(
+  slug: string,
+  teamSlug: string
+): Promise<TeamRepositoryAccessListResponse> {
+  const { data } = await api.get<TeamRepositoryAccessListResponse>(
+    `/v1/orgs/${enc(slug)}/teams/${enc(teamSlug)}/repository-access`
+  );
+
+  return data;
+}
+
+export async function replaceTeamRepositoryAccess(
+  slug: string,
+  teamSlug: string,
+  repositorySlug: string,
+  input: ReplaceTeamPackageAccessInput
+): Promise<TeamRepositoryAccessMutationResult> {
+  const { data } = await api.put<TeamRepositoryAccessMutationResult>(
+    `/v1/orgs/${enc(slug)}/teams/${enc(teamSlug)}/repository-access/${enc(
+      repositorySlug
+    )}`,
+    {
+      body: {
+        permissions: input.permissions,
+      },
+    }
+  );
+
+  return data;
+}
+
+export async function removeTeamRepositoryAccess(
+  slug: string,
+  teamSlug: string,
+  repositorySlug: string
+): Promise<TeamRepositoryAccessMutationResult> {
+  const { data } = await api.delete<TeamRepositoryAccessMutationResult>(
+    `/v1/orgs/${enc(slug)}/teams/${enc(teamSlug)}/repository-access/${enc(
+      repositorySlug
+    )}`
   );
 
   return data;

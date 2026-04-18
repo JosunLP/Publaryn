@@ -1,6 +1,6 @@
-# Publaryn
+# WIP - Publaryn
 
-**Publaryn** — secure, independent package registry across ecosystems.
+**Publaryn** — secure, independent package registry across ecosystems. Developed by AI Agents, built on Rust, and designed for security-conscious teams who want to host their own package registry without sacrificing the native experience of their ecosystem's tools.
 
 A self-hostable, security-first package registry platform that speaks the native protocols of all major package managers and provides a unified management API.
 
@@ -8,8 +8,8 @@ A self-hostable, security-first package registry platform that speaks the native
 
 ## Supported Ecosystems
 
-| Ecosystem    | Protocol                     | Status         |
-| ------------ | ---------------------------- | -------------- |
+| Ecosystem    | Protocol                     | Status        |
+| ------------ | ---------------------------- | ------------- |
 | npm / Bun    | npm Registry Protocol        | 🚧 In progress |
 | pip / PyPI   | Simple Index + Legacy Upload | 🚧 In progress |
 | Rust Crates  | Cargo Sparse Index           | 🚧 In progress |
@@ -216,6 +216,9 @@ DELETE /v1/orgs/:slug/teams/:team_slug/members/:username
 GET    /v1/orgs/:slug/teams/:team_slug/package-access
 PUT    /v1/orgs/:slug/teams/:team_slug/package-access/:ecosystem/:name
 DELETE /v1/orgs/:slug/teams/:team_slug/package-access/:ecosystem/:name
+GET    /v1/orgs/:slug/teams/:team_slug/repository-access
+PUT    /v1/orgs/:slug/teams/:team_slug/repository-access/:repository_slug
+DELETE /v1/orgs/:slug/teams/:team_slug/repository-access/:repository_slug
 GET    /v1/orgs/:slug/repositories
 GET    /v1/orgs/:slug/security-findings
 GET    /v1/orgs/:slug/packages
@@ -227,6 +230,9 @@ POST   /v1/org-invitations/:id/decline
 Organization administrators can delegate package responsibilities to teams for organization-owned packages.
 Current package-scoped team permissions are `admin`, `publish`, `write_metadata`, `read_private`, `security_review`, and `transfer_ownership`.
 These grants are stored in PostgreSQL, enforced by the management API, and automatically cleared when package ownership moves to a different organization.
+Organization administrators can also delegate repository-scoped responsibilities to teams for organization-owned repositories.
+Repository-wide grants use the same permission vocabulary, apply across current and future packages in the selected repository, and the `admin` permission additionally allows repository configuration changes.
+These repository grants are stored in PostgreSQL, enforced by the management API, and automatically cleared when the team or repository is removed.
 The organization workspace also includes an aggregated security overview backed by `GET /v1/orgs/:slug/security-findings`, scoped to the packages currently visible to the requesting actor.
 Organization audit reads now support action, actor, pagination, and UTC date-range filtering through the `occurred_from` and `occurred_until` query parameters.
 Organization administrators can also export the full filtered audit view as CSV through `GET /v1/orgs/:slug/audit/export`; the export applies the same action, actor, and UTC date filters but ignores pagination.

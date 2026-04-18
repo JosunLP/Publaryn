@@ -17,8 +17,9 @@ use publaryn_core::{
 use crate::{
     error::{ApiError, ApiResult},
     request_auth::{
-        actor_can_write_repository_by_id, ensure_org_admin_by_id, ensure_repository_read_access,
-        ensure_repository_write_access, AuthenticatedIdentity, OptionalAuthenticatedIdentity,
+        actor_can_create_packages_in_repository_by_id, actor_can_manage_repository_by_id,
+        ensure_org_admin_by_id, ensure_repository_admin_access, ensure_repository_read_access,
+        AuthenticatedIdentity, OptionalAuthenticatedIdentity,
     },
     scopes::{ensure_scope, SCOPE_PACKAGES_WRITE, SCOPE_REPOSITORIES_WRITE},
     state::AppState,
@@ -72,7 +73,7 @@ async fn can_manage_repository(
                 .iter()
                 .any(|scope| scope == SCOPE_REPOSITORIES_WRITE) =>
         {
-            actor_can_write_repository_by_id(db, repository_id, Some(identity.user_id)).await
+            actor_can_manage_repository_by_id(db, repository_id, Some(identity.user_id)).await
         }
         _ => Ok(false),
     }
@@ -90,7 +91,8 @@ async fn can_create_packages_in_repository(
                 .iter()
                 .any(|scope| scope == SCOPE_PACKAGES_WRITE) =>
         {
-            actor_can_write_repository_by_id(db, repository_id, Some(identity.user_id)).await
+            actor_can_create_packages_in_repository_by_id(db, repository_id, Some(identity.user_id))
+                .await
         }
         _ => Ok(false),
     }
@@ -227,7 +229,7 @@ async fn update_repository(
         .map(parse_visibility)
         .transpose()?;
 
-    let repository_id = ensure_repository_write_access(&state.db, &slug, identity.user_id).await?;
+    let repository_id = ensure_repository_admin_access(&state.db, &slug, identity.user_id).await?;
 
     sqlx::query(
         "UPDATE repositories \
