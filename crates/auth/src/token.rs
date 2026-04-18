@@ -4,13 +4,20 @@ use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, 
 use publaryn_core::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::sync::Once;
+use tracing::warn;
 use uuid::Uuid;
 
+/// Install jsonwebtoken's process-wide crypto provider once before any JWT
+/// encode/decode operations. Mixed dependency graphs can enable multiple
+/// backends, so relying on automatic provider selection can panic in tests and
+/// runtime binaries unless a default is chosen explicitly.
 fn ensure_jwt_crypto_provider() {
     static INSTALL_PROVIDER: Once = Once::new();
 
     INSTALL_PROVIDER.call_once(|| {
-        let _ = DEFAULT_PROVIDER.install_default();
+        if DEFAULT_PROVIDER.install_default().is_err() {
+            warn!("jsonwebtoken crypto provider was already installed");
+        }
     });
 }
 
