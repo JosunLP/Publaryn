@@ -230,6 +230,7 @@
     username: string;
     label: string;
   }> = [];
+  let auditActorQuery = '';
   let selectedAuditActor: {
     userId: string;
     username: string;
@@ -283,6 +284,8 @@
     auditActorOptions.find(
       (candidate) => candidate.userId === auditView.actorUserId
     ) || null;
+  $: auditActorQuery =
+    selectedAuditActor?.username || auditView.actorUsername || '';
 
   $: transferablePackages = selectTransferablePackages(packages);
   $: creatableRepositories = selectCreatableRepositories(repositories);
@@ -694,14 +697,20 @@
     const occurredFrom = formData.get('occurred_from')?.toString().trim() || '';
     const occurredUntil =
       formData.get('occurred_until')?.toString().trim() || '';
-    const actorUserIdInput =
-      formData.get('actor_user_id')?.toString().trim() || '';
-    const normalizedActorUserId =
-      normalizeAuditActorUserId(actorUserIdInput) || '';
+    const actorQuery = formData.get('actor_query')?.toString().trim() || '';
+    const normalizedActorUserId = normalizeAuditActorUserId(actorQuery) || '';
     const actorFromSelect =
       auditActorOptions.find(
-        (option) => option.userId === normalizedActorUserId
+        (option) =>
+          option.userId === normalizedActorUserId ||
+          option.username.toLowerCase() === actorQuery.toLowerCase()
       ) || null;
+    const resolvedActorUserId = actorFromSelect
+      ? actorFromSelect.userId
+      : normalizedActorUserId;
+    const resolvedActorUsername = actorFromSelect
+      ? actorFromSelect.username
+      : actorQuery;
 
     if (occurredFrom && occurredUntil && occurredFrom > occurredUntil) {
       await loadOrganizationPage({
@@ -715,8 +724,8 @@
         slug,
         {
           action: formData.get('action')?.toString() || '',
-          actorUserId: normalizedActorUserId,
-          actorUsername: actorFromSelect?.username || '',
+          actorUserId: resolvedActorUserId,
+          actorUsername: resolvedActorUsername,
           occurredFrom,
           occurredUntil,
           page: 1,
@@ -1831,29 +1840,23 @@
                 {/each}
               </select>
             </div>
-            <div class="form-group" style="margin-bottom:0; min-width:240px;">
+            <div class="form-group" style="margin-bottom:0; min-width:260px;">
               <label for="org-audit-actor">Actor</label>
-              <select
+              <input
                 id="org-audit-actor"
-                name="actor_user_id"
+                name="actor_query"
                 class="form-input"
-                value={auditView.actorUserId}
-              >
-                <option value="">All actors</option>
-                {#if auditView.actorUserId && !selectedAuditActor}
-                  <option value={auditView.actorUserId} selected>
-                    {formatAuditActorQueryLabel(auditView.actorUsername)}
-                  </option>
-                {/if}
+                list="org-audit-actor-options"
+                value={auditActorQuery}
+                placeholder="Search username or paste user id"
+                autocomplete="off"
+              />
+              <datalist id="org-audit-actor-options">
                 {#each auditActorOptions as actor}
-                  <option
-                    value={actor.userId}
-                    selected={actor.userId === auditView.actorUserId}
-                  >
-                    {actor.label}
-                  </option>
+                  <option value={actor.username}>{actor.label}</option>
+                  <option value={actor.userId}>{actor.label}</option>
                 {/each}
-              </select>
+              </datalist>
             </div>
             <div class="form-group" style="margin-bottom:0; min-width:180px;">
               <label for="org-audit-from">From (UTC)</label>
