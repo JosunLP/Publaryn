@@ -764,9 +764,9 @@ async fn publish_crate<S: CargoAppState>(
     // contain dep: prefixed entries; otherwise None.
     let features2_json: Option<serde_json::Value> = {
         let has_v2 = parsed.metadata.features.values().any(|v| {
-            v.as_array().map_or(false, |arr| {
+            v.as_array().is_some_and(|arr| {
                 arr.iter()
-                    .any(|item| item.as_str().map_or(false, |s| s.starts_with("dep:")))
+                    .any(|item| item.as_str().is_some_and(|s| s.starts_with("dep:")))
             })
         });
         if has_v2 {
@@ -1134,10 +1134,10 @@ async fn search_crates<S: CargoAppState>(
     let q = params.q.unwrap_or_default();
     let per_page = params.per_page.unwrap_or(10).min(100);
 
-    let hits = match state.search_crates(&q, per_page, 0).await {
-        Ok(h) => h,
-        Err(_) => vec![],
-    };
+    let hits: Vec<CargoSearchHit> = state
+        .search_crates(&q, per_page, 0)
+        .await
+        .unwrap_or_default();
 
     let total = hits.len();
     let crates: Vec<serde_json::Value> = hits
@@ -1419,6 +1419,7 @@ async fn has_package_write_access(
     false
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn can_read_package(
     db: &PgPool,
     pkg_visibility: &str,

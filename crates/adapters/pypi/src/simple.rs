@@ -36,6 +36,7 @@ pub struct ProjectFile {
     pub yanked_reason: Option<String>,
 }
 
+#[allow(clippy::result_unit_err)]
 pub fn select_response_format(accept_header: Option<&str>) -> Result<SelectedFormat, ()> {
     let Some(accept_header) = accept_header
         .map(str::trim)

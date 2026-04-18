@@ -328,6 +328,7 @@ async fn has_package_write_access(
     false
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn can_read_package(
     db: &PgPool,
     pkg_visibility: &str,

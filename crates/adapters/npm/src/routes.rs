@@ -399,20 +399,17 @@ async fn get_packument_inner<S: NpmAppState>(
     }
 
     // Load dist-tags (channel_refs)
-    let tag_rows = match sqlx::query(
+    let tag_rows: Vec<sqlx::postgres::PgRow> = sqlx::query(
         "SELECT cr.name, r.version \
          FROM channel_refs cr \
          JOIN releases r ON r.id = cr.release_id \
          WHERE cr.package_id = $1 \
-           AND r.status IN ('published', 'deprecated', 'yanked')",
+            AND r.status IN ('published', 'deprecated', 'yanked')",
     )
     .bind(package_id)
     .fetch_all(state.db())
     .await
-    {
-        Ok(rows) => rows,
-        Err(_) => vec![],
-    };
+    .unwrap_or_default();
 
     let dist_tags: Vec<(String, String)> = tag_rows
         .iter()
@@ -655,7 +652,7 @@ async fn publish_inner<S: NpmAppState>(
             .bind(pkg.id)
             .bind(repo_id)
             .bind(&parsed.package_name)
-            .bind(&normalize_package_name(
+            .bind(normalize_package_name(
                 &parsed.package_name,
                 &Ecosystem::Npm,
             ))
@@ -754,7 +751,7 @@ async fn publish_inner<S: NpmAppState>(
     let is_prerelease = parsed.version.contains('-');
     let release = Release::new(package_id, parsed.version.clone(), identity.user_id);
 
-    if let Err(_) = sqlx::query(
+    if sqlx::query(
         "INSERT INTO releases (id, package_id, version, status, published_by, description, \
          changelog, is_prerelease, is_yanked, yank_reason, is_deprecated, deprecation_message, \
          source_ref, provenance, published_at, updated_at) \
@@ -771,6 +768,7 @@ async fn publish_inner<S: NpmAppState>(
     .bind(release.updated_at)
     .execute(state.db())
     .await
+    .is_err()
     {
         return npm_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to create release");
     }
@@ -784,13 +782,14 @@ async fn publish_inner<S: NpmAppState>(
         release.id, sha256, parsed.tarball_filename
     );
 
-    if let Err(_) = state
+    if state
         .artifact_put(
             storage_key.clone(),
             parsed.tarball_content_type.clone(),
             parsed.tarball_bytes,
         )
         .await
+        .is_err()
     {
         // Cleanup: delete the release record
         let _ = sqlx::query("DELETE FROM releases WHERE id = $1")
@@ -811,7 +810,7 @@ async fn publish_inner<S: NpmAppState>(
         sha256.clone(),
     );
 
-    if let Err(_) = sqlx::query(
+    if sqlx::query(
         "INSERT INTO artifacts (id, release_id, kind, filename, storage_key, content_type, \
          size_bytes, sha256, sha512, md5, is_signed, signature_key_id, uploaded_at) \
          VALUES ($1, $2, 'tarball', $3, $4, $5, $6, $7, $8, NULL, false, NULL, $9) \
@@ -828,6 +827,7 @@ async fn publish_inner<S: NpmAppState>(
     .bind(artifact.uploaded_at)
     .execute(state.db())
     .await
+    .is_err()
     {
         return npm_error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -836,11 +836,11 @@ async fn publish_inner<S: NpmAppState>(
     }
 
     // Finalize: move release to published
-    if let Err(_) =
-        sqlx::query("UPDATE releases SET status = 'published', updated_at = NOW() WHERE id = $1")
-            .bind(release.id)
-            .execute(state.db())
-            .await
+    if sqlx::query("UPDATE releases SET status = 'published', updated_at = NOW() WHERE id = $1")
+        .bind(release.id)
+        .execute(state.db())
+        .await
+        .is_err()
     {
         return npm_error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1031,10 +1031,10 @@ async fn search_handler<S: NpmAppState>(
     let size = params.size.unwrap_or(20).min(250);
     let from = params.from.unwrap_or(0);
 
-    let hits = match state.search_packages(&text, size, from).await {
-        Ok(h) => h,
-        Err(_) => vec![],
-    };
+    let hits: Vec<NpmSearchHit> = state
+        .search_packages(&text, size, from)
+        .await
+        .unwrap_or_default();
 
     let objects: Vec<serde_json::Value> = hits
         .into_iter()
@@ -1407,6 +1407,7 @@ async fn has_package_write_access(
     false
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn can_read_package(
     db: &PgPool,
     pkg_visibility: &str,

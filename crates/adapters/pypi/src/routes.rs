@@ -320,7 +320,7 @@ async fn download_distribution<S: PyPiAppState>(
     )
     .bind(artifact_id)
     .bind(&filename)
-    .bind(&readable_release_statuses())
+    .bind(readable_release_statuses())
     .fetch_optional(state.db())
     .await
     {
@@ -632,7 +632,7 @@ async fn load_project_files<S: PyPiAppState>(
          ORDER BY rel.published_at DESC, a.filename ASC",
     )
     .bind(package.package_id)
-    .bind(&readable_release_statuses())
+    .bind(readable_release_statuses())
     .fetch_all(state.db())
     .await
     .map_err(|_| internal_error_response("Database error"))?;
@@ -830,6 +830,7 @@ async fn authenticate_api_token<S: PyPiAppState>(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn can_read_package(
     db: &PgPool,
     package_id: Uuid,
@@ -1142,6 +1143,7 @@ async fn load_existing_upload_package(
     }))
 }
 
+#[allow(clippy::result_large_err)]
 fn ensure_requested_repository_matches_existing_package(
     requested_repository_slug: Option<&str>,
     existing_repository_slug: &str,
@@ -1212,11 +1214,11 @@ async fn load_default_upload_repository(
          LIMIT 1",
     )
     .bind(actor_user_id)
-    .bind(&PYPI_UPLOAD_ALLOWED_REPOSITORY_KINDS
+    .bind(PYPI_UPLOAD_ALLOWED_REPOSITORY_KINDS
         .iter()
         .map(|kind| (*kind).to_owned())
         .collect::<Vec<_>>())
-    .bind(&PYPI_UPLOAD_ALLOWED_USER_REPOSITORY_VISIBILITIES
+    .bind(PYPI_UPLOAD_ALLOWED_USER_REPOSITORY_VISIBILITIES
         .iter()
         .map(|visibility| (*visibility).to_owned())
         .collect::<Vec<_>>())
@@ -1615,6 +1617,7 @@ fn desired_upload_release_status(release: &UploadReleaseContext) -> &'static str
     }
 }
 
+#[allow(clippy::too_many_arguments, clippy::result_large_err)]
 async fn record_upload_audit(
     db: &PgPool,
     identity: &PyPiIdentity,
@@ -1678,6 +1681,7 @@ async fn touch_package_after_upload(db: &PgPool, package_id: Uuid) -> Result<(),
     Ok(())
 }
 
+#[allow(clippy::result_large_err)]
 fn derive_upload_package_visibility(
     repository_visibility: &str,
     repository_is_org_owned: bool,
@@ -1707,10 +1711,7 @@ fn visibility_as_str(visibility: &Visibility) -> &'static str {
     }
 }
 
-fn header_value<'a>(
-    headers: &'a HeaderMap,
-    name: axum::http::header::HeaderName,
-) -> Option<&'a str> {
+fn header_value(headers: &HeaderMap, name: axum::http::header::HeaderName) -> Option<&str> {
     headers.get(name).and_then(|value| value.to_str().ok())
 }
 

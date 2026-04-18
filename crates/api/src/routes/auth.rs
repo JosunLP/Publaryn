@@ -236,7 +236,7 @@ async fn mfa_setup(
         .try_get("username")
         .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
 
-    let setup = publaryn_auth::setup_totp(&username, "Publaryn").map_err(|e| ApiError(e))?;
+    let setup = publaryn_auth::setup_totp(&username, "Publaryn").map_err(ApiError)?;
 
     // Store the pending secret so verify-setup can confirm it.
     sqlx::query(
@@ -288,7 +288,7 @@ async fn mfa_verify_setup(
         ))
     })?;
 
-    let valid = verify_totp(&pending_secret, &body.code).map_err(|e| ApiError(e))?;
+    let valid = verify_totp(&pending_secret, &body.code).map_err(ApiError)?;
 
     if !valid {
         return Err(ApiError(Error::Unauthorized("Invalid TOTP code".into())));
@@ -352,7 +352,7 @@ async fn mfa_disable(
         .flatten()
         .ok_or_else(|| ApiError(Error::Internal("MFA secret missing".into())))?;
 
-    let valid = verify_totp(&secret, &body.code).map_err(|e| ApiError(e))?;
+    let valid = verify_totp(&secret, &body.code).map_err(ApiError)?;
     if !valid {
         return Err(ApiError(Error::Unauthorized("Invalid TOTP code".into())));
     }
@@ -432,7 +432,7 @@ async fn mfa_challenge(
     let recovery_hashes: Vec<String> = row.try_get("mfa_recovery_code_hashes").unwrap_or_default();
 
     // Try TOTP first, then recovery code.
-    let totp_valid = verify_totp(&secret, &body.code).map_err(|e| ApiError(e))?;
+    let totp_valid = verify_totp(&secret, &body.code).map_err(ApiError)?;
 
     if !totp_valid {
         // Attempt recovery code verification.

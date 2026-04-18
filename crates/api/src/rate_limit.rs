@@ -63,17 +63,16 @@ pub fn classify_request(method: &axum::http::Method, path: &str) -> RateLimitTie
     }
 
     // Protocol adapter reads
-    if matches!(method, &Method::GET | &Method::HEAD) {
-        if path.starts_with("/npm/")
+    if matches!(method, &Method::GET | &Method::HEAD)
+        && (path.starts_with("/npm/")
             || path.starts_with("/pypi/")
             || path.starts_with("/composer/")
             || path.starts_with("/rubygems/")
             || path.starts_with("/maven/")
             || path.starts_with("/cargo/")
-            || path.starts_with("/nuget/")
-        {
-            return RateLimitTier::Protocol;
-        }
+            || path.starts_with("/nuget/"))
+    {
+        return RateLimitTier::Protocol;
     }
 
     // Write operations

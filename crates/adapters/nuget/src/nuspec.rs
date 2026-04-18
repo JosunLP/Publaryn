@@ -240,27 +240,25 @@ pub fn parse_nuspec_xml(xml_bytes: &[u8]) -> Result<NuspecMetadata> {
                 }
                 current_element.clear();
             }
-            Ok(Event::Text(ref e)) => {
-                if !current_element.is_empty() && in_metadata {
-                    let text = e.xml_content().unwrap_or_default().to_string();
-                    match current_element.as_str() {
-                        "id" => id = text,
-                        "version" => version = text,
-                        "authors" => authors = Some(text),
-                        "title" => title = Some(text),
-                        "description" => description = Some(text),
-                        "summary" => summary = Some(text),
-                        "licenseUrl" => license_url = Some(text),
-                        "license_expression" => license_expression = Some(text),
-                        "projectUrl" => project_url = Some(text),
-                        "iconUrl" => icon_url = Some(text),
-                        "readme" => readme = Some(text),
-                        "tags" => tags_str = Some(text),
-                        "requireLicenseAcceptance" => {
-                            require_license_acceptance = text.eq_ignore_ascii_case("true");
-                        }
-                        _ => {}
+            Ok(Event::Text(ref e)) if !current_element.is_empty() && in_metadata => {
+                let text = e.xml_content().unwrap_or_default().to_string();
+                match current_element.as_str() {
+                    "id" => id = text,
+                    "version" => version = text,
+                    "authors" => authors = Some(text),
+                    "title" => title = Some(text),
+                    "description" => description = Some(text),
+                    "summary" => summary = Some(text),
+                    "licenseUrl" => license_url = Some(text),
+                    "license_expression" => license_expression = Some(text),
+                    "projectUrl" => project_url = Some(text),
+                    "iconUrl" => icon_url = Some(text),
+                    "readme" => readme = Some(text),
+                    "tags" => tags_str = Some(text),
+                    "requireLicenseAcceptance" => {
+                        require_license_acceptance = text.eq_ignore_ascii_case("true");
                     }
+                    _ => {}
                 }
             }
             Ok(Event::End(ref e)) => {
