@@ -13,10 +13,16 @@ use publaryn_api::{config::Config, router::build_router, state::AppState};
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+const TEST_RESPONSE_BODY_LIMIT: usize = 8 * 1024 * 1024;
+
 /// Build an Axum app backed by the given DB pool.
 fn app(pool: PgPool) -> axum::Router {
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://publaryn:publaryn_dev@localhost/publaryn_test".into());
+    // When constructing state with `new_with_pool`, the provided pool is used for
+    // database access and `config.database.url` is not used to establish a
+    // connection in this test helper. Keep the fallback as an explicit
+    // placeholder to avoid accidental coupling to a real database.
+    let database_url =
+        std::env::var("DATABASE_URL").unwrap_or_else(|_| "unused://database-url".into());
     let config = Config::test_config(&database_url);
     let state = AppState::new_with_pool(pool, config);
     build_router(state).expect("router should build")
@@ -24,7 +30,7 @@ fn app(pool: PgPool) -> axum::Router {
 
 /// Parse a response body as JSON.
 async fn body_json(resp: axum::response::Response) -> Value {
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+    let bytes = axum::body::to_bytes(resp.into_body(), TEST_RESPONSE_BODY_LIMIT)
         .await
         .expect("read body");
     serde_json::from_slice(&bytes).expect("parse JSON")
@@ -32,7 +38,7 @@ async fn body_json(resp: axum::response::Response) -> Value {
 
 /// Parse a response body as text.
 async fn body_text(resp: axum::response::Response) -> String {
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+    let bytes = axum::body::to_bytes(resp.into_body(), TEST_RESPONSE_BODY_LIMIT)
         .await
         .expect("read body");
     String::from_utf8(bytes.to_vec()).expect("parse text body")
@@ -40,7 +46,7 @@ async fn body_text(resp: axum::response::Response) -> String {
 
 /// Parse a response body as raw bytes.
 async fn body_bytes(resp: axum::response::Response) -> Vec<u8> {
-    axum::body::to_bytes(resp.into_body(), usize::MAX)
+    axum::body::to_bytes(resp.into_body(), TEST_RESPONSE_BODY_LIMIT)
         .await
         .expect("read body")
         .to_vec()
@@ -139,10 +145,13 @@ async fn publish_cargo_crate(
     token: &str,
     payload: Vec<u8>,
 ) -> (StatusCode, Value) {
+    let content_length = payload.len();
     let req = Request::builder()
         .method(Method::PUT)
         .uri("/cargo/api/v1/crates/new")
         .header(header::AUTHORIZATION, token)
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .header(header::CONTENT_LENGTH, content_length.to_string())
         .body(Body::from(payload))
         .unwrap();
 
