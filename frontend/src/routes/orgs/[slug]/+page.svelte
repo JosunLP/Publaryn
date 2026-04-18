@@ -238,7 +238,6 @@
   let auditActorInputSyncKey = '';
   let auditActorSearchInFlight = false;
   let auditActorSearchRequest = 0;
-  let selectedAuditActor: OrgAuditActorOption | null = null;
   let creatableRepositories: CreatableRepository[] = [];
   let selectedPackageCreationRepository: CreatableRepository | null = null;
   let packageVisibilityOptions: Array<{ value: string; label: string }> = [];
@@ -265,11 +264,6 @@
   }
 
   $: auditActorOptions = buildAuditActorOptions(members, auditActorRemoteOptions);
-
-  $: selectedAuditActor =
-    auditActorOptions.find(
-      (candidate) => candidate.userId === auditView.actorUserId
-    ) || null;
   $: {
     const nextInputState = nextAuditActorInputState(
       auditActorInputSyncKey,

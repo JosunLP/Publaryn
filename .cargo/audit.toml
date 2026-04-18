@@ -1,8 +1,10 @@
 [advisories]
 ignore = [
-  # rsa pulled in by sqlx-mysql; upstream has no patched release yet
+  # TEMPORARY: rsa pulled in by sqlx-mysql; upstream has no patched release yet.
+  # Remove once sqlx-mysql no longer depends on the vulnerable rsa release, or when a patched upstream release is available. Re-evaluate by 2026-12-31.
   "RUSTSEC-2023-0071",
-  # rustls-webpki 0.101.x required via aws-smithy-http-client's hyper-rustls 0.24.x stack
+  # TEMPORARY: rustls-webpki 0.101.x required via aws-smithy-http-client's hyper-rustls 0.24.x stack.
+  # Remove once the dependency chain is upgraded off rustls-webpki 0.101.x / hyper-rustls 0.24.x. Re-evaluate by 2026-12-31.
   "RUSTSEC-2026-0098",
   "RUSTSEC-2026-0099",
 ]
