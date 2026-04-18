@@ -62,7 +62,10 @@
     updateOrg,
     updateTeam,
   } from '../../../api/orgs';
-  import { transferPackageOwnership } from '../../../api/packages';
+  import {
+    createPackage,
+    transferPackageOwnership,
+  } from '../../../api/packages';
   import type {
     RepositoryPackageListResponse,
     RepositoryPackageSummary,
@@ -84,6 +87,11 @@
   } from '../../../pages/org-audit-query';
   import { ECOSYSTEMS, ecosystemLabel } from '../../../utils/ecosystem';
   import { formatDate, formatNumber } from '../../../utils/format';
+  import {
+    formatPackageCreationRepositoryLabel,
+    getAllowedPackageVisibilityOptions,
+    selectCreatableRepositories,
+  } from '../../../utils/package-creation';
   import {
     selectPackageTransferTargets,
     selectTransferablePackages,
@@ -107,6 +115,7 @@
   const ADMIN_ROLES = new Set(['owner', 'admin']);
   const ORG_AUDIT_PAGE_SIZE = 20;
   const DEFAULT_NAMESPACE_ECOSYSTEM = 'npm';
+  const DEFAULT_PACKAGE_ECOSYSTEM = 'npm';
   const ORG_ROLE_OPTIONS = [
     { value: 'admin', label: 'Admin' },
     { value: 'maintainer', label: 'Maintainer' },
@@ -164,6 +173,8 @@
     load_error: string | null;
   }
 
+  type CreatableRepository = OrgRepositorySummary & { slug: string };
+
   let lastLoadKey = '';
   let loading = true;
   let notFound = false;
@@ -200,6 +211,22 @@
   let auditError: string | null = null;
   let auditHasNext = false;
   let exportingAudit = false;
+  let creatableRepositories: CreatableRepository[] = [];
+  let selectedPackageCreationRepository: CreatableRepository | null = null;
+  let packageVisibilityOptions: Array<{ value: string; label: string }> = [];
+  let explicitPackageVisibilityOptions: Array<{
+    value: string;
+    label: string;
+  }> = [];
+  let repositoryDefaultPackageVisibility = '';
+
+  let newPackageRepositorySlug = '';
+  let newPackageEcosystem = DEFAULT_PACKAGE_ECOSYSTEM;
+  let newPackageName = '';
+  let newPackageVisibility = '';
+  let newPackageDisplayName = '';
+  let newPackageDescription = '';
+  let creatingPackage = false;
 
   $: slug = $page.params.slug ?? '';
   $: auditView = getAuditViewFromQuery($page.url.searchParams);
@@ -210,6 +237,44 @@
   }
 
   $: transferablePackages = selectTransferablePackages(packages);
+  $: creatableRepositories = selectCreatableRepositories(repositories);
+  $: if (creatableRepositories.length === 0) {
+    if (newPackageRepositorySlug !== '') {
+      newPackageRepositorySlug = '';
+    }
+  } else if (
+    !creatableRepositories.some(
+      (repository) => repository.slug === newPackageRepositorySlug
+    )
+  ) {
+    newPackageRepositorySlug = creatableRepositories[0]?.slug || '';
+  }
+  $: selectedPackageCreationRepository =
+    creatableRepositories.find(
+      (repository) => repository.slug === newPackageRepositorySlug
+    ) || null;
+  $: packageVisibilityOptions = getAllowedPackageVisibilityOptions(
+    selectedPackageCreationRepository?.visibility,
+    { repositoryIsOrgOwned: true }
+  );
+  $: repositoryDefaultPackageVisibility =
+    selectedPackageCreationRepository?.visibility
+      ?.trim()
+      .toLowerCase()
+      .replace(/-/g, '_') || '';
+  $: explicitPackageVisibilityOptions = repositoryDefaultPackageVisibility
+    ? packageVisibilityOptions.filter(
+        (option) => option.value !== repositoryDefaultPackageVisibility
+      )
+    : packageVisibilityOptions;
+  $: if (
+    newPackageVisibility &&
+    !packageVisibilityOptions.some(
+      (option) => option.value === newPackageVisibility
+    )
+  ) {
+    newPackageVisibility = '';
+  }
   $: severityCounts = normalizeSecuritySeverityCounts(
     securitySummary?.severities
   );
@@ -1066,6 +1131,63 @@
       await loadOrganizationPage({
         error: toErrorMessage(caughtError, 'Failed to create repository.'),
       });
+    }
+  }
+
+  async function handleCreatePackage(event: SubmitEvent): Promise<void> {
+    event.preventDefault();
+
+    if (!selectedPackageCreationRepository) {
+      notice = null;
+      error =
+        creatableRepositories.length === 0
+          ? 'Create an eligible repository before creating a package.'
+          : 'Select a repository for the new package.';
+      return;
+    }
+
+    const packageName = newPackageName.trim();
+    if (!packageName) {
+      notice = null;
+      error = 'Enter a package name.';
+      return;
+    }
+
+    const ecosystem = newPackageEcosystem.trim().toLowerCase();
+    const repositorySlug = selectedPackageCreationRepository.slug;
+    const repositoryName =
+      selectedPackageCreationRepository.name ||
+      selectedPackageCreationRepository.slug;
+
+    creatingPackage = true;
+    notice = null;
+    error = null;
+
+    try {
+      const result = await createPackage({
+        ecosystem,
+        name: packageName,
+        repositorySlug,
+        visibility: newPackageVisibility || undefined,
+        displayName: newPackageDisplayName,
+        description: newPackageDescription,
+      });
+
+      newPackageEcosystem = DEFAULT_PACKAGE_ECOSYSTEM;
+      newPackageName = '';
+      newPackageVisibility = '';
+      newPackageDisplayName = '';
+      newPackageDescription = '';
+
+      await loadOrganizationPage({
+        notice: `Created ${ecosystemLabel(result.ecosystem || ecosystem)} package ${result.name || packageName} in ${repositoryName}.`,
+      });
+    } catch (caughtError: unknown) {
+      await loadOrganizationPage({
+        error: toErrorMessage(caughtError, 'Failed to create package.'),
+      });
+    } finally {
+      creatingPackage = false;
     }
   }
 
@@ -2491,6 +2613,159 @@
                 {/if}
               </div>
             {/each}
+          </div>
+        {/if}
+
+        {#if canAdminister}
+          <div class="settings-subsection">
+            <h3>Create a package</h3>
+            <p class="settings-copy">
+              Package ownership is derived from the selected repository.
+              Visibility cannot be broader than the repository visibility, and
+              matching namespace claims currently constrain npm/Bun scopes,
+              Composer vendors, and Maven group IDs.
+            </p>
+
+            {#if repositoriesError}
+              <p class="settings-copy">
+                Repositories must load successfully before you can create a
+                package.
+              </p>
+            {:else if repositories.length === 0}
+              <p class="settings-copy">
+                Create an organization-owned repository before creating the
+                first package.
+              </p>
+            {:else if creatableRepositories.length === 0}
+              <p class="settings-copy">
+                Only public, private, staging, and release repositories can host
+                directly created packages. The current repository set is limited
+                to proxy or virtual repositories.
+              </p>
+            {:else}
+              <form class="mt-4" on:submit={handleCreatePackage}>
+                <div class="grid gap-4 xl:grid-cols-2">
+                  <div class="form-group">
+                    <label for="package-create-repository">Repository</label>
+                    <select
+                      id="package-create-repository"
+                      name="repository_slug"
+                      class="form-input"
+                      bind:value={newPackageRepositorySlug}
+                      required
+                    >
+                      {#each creatableRepositories as repository}
+                        <option value={repository.slug}>
+                          {formatPackageCreationRepositoryLabel(repository)}
+                        </option>
+                      {/each}
+                    </select>
+                  </div>
+
+                  <div class="form-group">
+                    <label for="package-create-ecosystem">Ecosystem</label>
+                    <select
+                      id="package-create-ecosystem"
+                      name="ecosystem"
+                      class="form-input"
+                      bind:value={newPackageEcosystem}
+                    >
+                      {#each ECOSYSTEMS as ecosystem}
+                        <option value={ecosystem.id}>{ecosystem.label}</option>
+                      {/each}
+                    </select>
+                  </div>
+                </div>
+
+                <div class="form-group">
+                  <label for="package-create-name">Package name</label>
+                  <input
+                    id="package-create-name"
+                    name="name"
+                    class="form-input"
+                    bind:value={newPackageName}
+                    placeholder="acme-widget, @acme/widget, acme/widget, com.acme:artifact"
+                    required
+                  />
+                </div>
+
+                <div class="grid gap-4 xl:grid-cols-2">
+                  <div class="form-group">
+                    <label for="package-create-display-name">Display name</label
+                    >
+                    <input
+                      id="package-create-display-name"
+                      name="display_name"
+                      class="form-input"
+                      bind:value={newPackageDisplayName}
+                      placeholder="Optional friendly title"
+                    />
+                  </div>
+
+                  <div class="form-group">
+                    <label for="package-create-visibility">Visibility</label>
+                    <select
+                      id="package-create-visibility"
+                      name="visibility"
+                      class="form-input"
+                      bind:value={newPackageVisibility}
+                    >
+                      <option value="">
+                        {selectedPackageCreationRepository
+                          ? `Use repository default (${formatRepositoryVisibilityLabel(selectedPackageCreationRepository.visibility)})`
+                          : 'Use repository default'}
+                      </option>
+                      {#each explicitPackageVisibilityOptions as option}
+                        <option value={option.value}>{option.label}</option>
+                      {/each}
+                    </select>
+                  </div>
+                </div>
+
+                <div class="form-group">
+                  <label for="package-create-description">Description</label>
+                  <textarea
+                    id="package-create-description"
+                    name="description"
+                    class="form-input"
+                    rows="3"
+                    bind:value={newPackageDescription}
+                    placeholder="Optional package summary"
+                  ></textarea>
+                </div>
+
+                {#if selectedPackageCreationRepository}
+                  <p class="settings-copy" style="margin-bottom:12px;">
+                    The new package will inherit ownership from
+                    <strong
+                      >{selectedPackageCreationRepository.name ||
+                        selectedPackageCreationRepository.slug}</strong
+                    >
+                    and stay within
+                    <strong
+                      >{formatRepositoryVisibilityLabel(
+                        selectedPackageCreationRepository.visibility
+                      )}</strong
+                    > visibility rules.
+                  </p>
+                {/if}
+
+                {#if repositoryDefaultPackageVisibility === 'quarantined'}
+                  <div class="alert alert-warning" style="margin-bottom:12px;">
+                    Quarantined repositories can only create quarantined
+                    packages.
+                  </div>
+                {/if}
+
+                <button
+                  type="submit"
+                  class="btn btn-primary"
+                  disabled={creatingPackage}
+                >
+                  {creatingPackage ? 'Creating…' : 'Create package'}
+                </button>
+              </form>
+            {/if}
           </div>
         {/if}
 

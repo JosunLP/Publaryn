@@ -9,6 +9,7 @@
         "marked": "^18.0.1",
       },
       "devDependencies": {
+        "@bquery/bquery": "1.10.0",
         "@sveltejs/adapter-static": "^3.0.10",
         "@sveltejs/kit": "^2.57.1",
         "@sveltejs/vite-plugin-svelte": "^7.0.0",
@@ -26,6 +27,8 @@
   },
   "packages": {
     "@alloc/quick-lru": ["@alloc/quick-lru@5.2.0", "", {}, "sha512-UrcABB+4bUrFABwbluTIBErXwvbsU/V7TZWfmbgJfbkwiBuziS9gxdODUyuiecfdGQ85jglMW6juS3+z5TsKLw=="],
+
+    "@bquery/bquery": ["@bquery/bquery@1.10.0", "", {}, "sha512-YsjyKl1pBtJ6TLX3hKNdtx973HY+mNK/i+fwglZZrDtdrUopRLunIei7C3j0Lx+qXbHL3bFnzt4/s/qAhlV5rg=="],
 
     "@emnapi/core": ["@emnapi/core@1.9.2", "", { "dependencies": { "@emnapi/wasi-threads": "1.2.1", "tslib": "^2.4.0" } }, "sha512-UC+ZhH3XtczQYfOlu3lNEkdW/p4dsJ1r/bP7H8+rhao3TTTMO1ATq/4DdIi23XuGoFY+Cz0JmCbdVl0hz9jZcA=="],
 

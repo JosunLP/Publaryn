@@ -51,6 +51,26 @@ export interface PackageDetail {
   keywords?: string[] | null;
 }
 
+export interface CreatePackageInput {
+  ecosystem: string;
+  name: string;
+  repositorySlug: string;
+  visibility?: NullableString;
+  displayName?: NullableString;
+  description?: NullableString;
+}
+
+export interface CreatePackageResult {
+  id?: NullableString;
+  ecosystem?: NullableString;
+  name?: NullableString;
+  normalized_name?: NullableString;
+  repository_slug?: NullableString;
+  visibility?: NullableString;
+  owner_user_id?: NullableString;
+  owner_org_id?: NullableString;
+}
+
 interface ReleaseListResponse {
   releases?: Release[] | null;
 }
@@ -196,6 +216,23 @@ export async function getPackage(
   const { data } = await api.get<PackageDetail>(
     `/v1/packages/${enc(ecosystem)}/${enc(name)}`
   );
+
+  return data;
+}
+
+export async function createPackage(
+  input: CreatePackageInput
+): Promise<CreatePackageResult> {
+  const { data } = await api.post<CreatePackageResult>('/v1/packages', {
+    body: {
+      ecosystem: input.ecosystem,
+      name: input.name,
+      repository_slug: input.repositorySlug,
+      visibility: emptyToUndefined(input.visibility),
+      display_name: emptyToUndefined(input.displayName),
+      description: emptyToUndefined(input.description),
+    },
+  });
 
   return data;
 }

@@ -3,7 +3,7 @@ services:
   # PostgreSQL — primary datastore
   # ──────────────────────────────────────────────────────────
   postgres:
-    image: postgres:18.3.0
+    image: postgres:18.3-bookworm
     restart: unless-stopped
     environment:
       POSTGRES_USER: publaryn
