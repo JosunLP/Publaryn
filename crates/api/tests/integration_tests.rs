@@ -13,9 +13,16 @@ use publaryn_api::{config::Config, router::build_router, state::AppState};
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+const TEST_RESPONSE_BODY_LIMIT: usize = 8 * 1024 * 1024;
+
 /// Build an Axum app backed by the given DB pool.
 fn app(pool: PgPool) -> axum::Router {
-    let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+    // When constructing state with `new_with_pool`, the provided pool is used for
+    // database access and `config.database.url` is not used to establish a
+    // connection in this test helper. Keep the fallback as an explicit
+    // placeholder to avoid accidental coupling to a real database.
+    let database_url =
+        std::env::var("DATABASE_URL").unwrap_or_else(|_| "unused://database-url".into());
     let config = Config::test_config(&database_url);
     let state = AppState::new_with_pool(pool, config);
     build_router(state).expect("router should build")
@@ -23,7 +30,7 @@ fn app(pool: PgPool) -> axum::Router {
 
 /// Parse a response body as JSON.
 async fn body_json(resp: axum::response::Response) -> Value {
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+    let bytes = axum::body::to_bytes(resp.into_body(), TEST_RESPONSE_BODY_LIMIT)
         .await
         .expect("read body");
     serde_json::from_slice(&bytes).expect("parse JSON")
@@ -31,10 +38,18 @@ async fn body_json(resp: axum::response::Response) -> Value {
 
 /// Parse a response body as text.
 async fn body_text(resp: axum::response::Response) -> String {
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+    let bytes = axum::body::to_bytes(resp.into_body(), TEST_RESPONSE_BODY_LIMIT)
         .await
         .expect("read body");
     String::from_utf8(bytes.to_vec()).expect("parse text body")
+}
+
+/// Parse a response body as raw bytes.
+async fn body_bytes(resp: axum::response::Response) -> Vec<u8> {
+    axum::body::to_bytes(resp.into_body(), TEST_RESPONSE_BODY_LIMIT)
+        .await
+        .expect("read body")
+        .to_vec()
 }
 
 /// Register a user via POST /v1/auth/register and return the JSON response.
@@ -104,6 +119,40 @@ async fn create_personal_access_token(
             })
             .to_string(),
         ))
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// Build a Cargo publish wire-format payload from JSON metadata and crate bytes.
+fn build_cargo_publish_payload(metadata: Value, crate_bytes: &[u8]) -> Vec<u8> {
+    let metadata_bytes =
+        serde_json::to_vec(&metadata).expect("cargo publish metadata should serialize");
+    let mut payload = Vec::with_capacity(metadata_bytes.len() + crate_bytes.len() + 8);
+    payload.extend_from_slice(&(metadata_bytes.len() as u32).to_le_bytes());
+    payload.extend_from_slice(&metadata_bytes);
+    payload.extend_from_slice(&(crate_bytes.len() as u32).to_le_bytes());
+    payload.extend_from_slice(crate_bytes);
+    payload
+}
+
+/// Publish a Cargo crate via the native adapter and return the JSON response.
+async fn publish_cargo_crate(
+    app: &axum::Router,
+    token: &str,
+    payload: Vec<u8>,
+) -> (StatusCode, Value) {
+    let content_length = payload.len();
+    let req = Request::builder()
+        .method(Method::PUT)
+        .uri("/cargo/api/v1/crates/new")
+        .header(header::AUTHORIZATION, token)
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .header(header::CONTENT_LENGTH, content_length.to_string())
+        .body(Body::from(payload))
         .unwrap();
 
     let resp = app.clone().oneshot(req).await.unwrap();
@@ -5546,6 +5595,298 @@ async fn test_release_detail_surfaces_management_capability_and_visibility(pool:
     assert_eq!(
         anonymous_published_release["description"],
         "First managed release"
+    );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_cargo_publish_populates_sparse_index_and_supports_conditional_fetches(pool: PgPool) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, repository_body) = create_repository(
+        &app,
+        &alice_jwt,
+        "Alice Cargo Packages",
+        "alice-cargo-packages",
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, token_body) =
+        create_personal_access_token(&app, &alice_jwt, "cargo-publish", &["packages:write"]).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
+    let cargo_token = token_body["token"]
+        .as_str()
+        .expect("cargo token should be returned")
+        .to_owned();
+
+    let crate_bytes = b"fake-cargo-crate-tarball";
+    let payload = build_cargo_publish_payload(
+        json!({
+            "name": "demo_widget",
+            "vers": "0.1.0",
+            "deps": [{
+                "name": "serde",
+                "version_req": "^1.0",
+                "features": ["derive"],
+                "optional": false,
+                "default_features": true,
+                "target": null,
+                "kind": "normal",
+                "registry": null,
+                "explicit_name_in_toml": null
+            }],
+            "features": {
+                "serde": ["dep:serde"]
+            },
+            "authors": ["Alice <alice@test.dev>"],
+            "description": "Cargo adapter integration coverage",
+            "homepage": "https://example.test/demo-widget",
+            "readme": "# demo_widget",
+            "keywords": ["cargo", "demo"],
+            "license": "MIT",
+            "repository": "https://example.test/repo",
+            "links": "demo_widget_native",
+            "rust_version": "1.78"
+        }),
+        crate_bytes,
+    );
+
+    let (status, publish_body) = publish_cargo_crate(&app, &cargo_token, payload).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected cargo publish response: {publish_body}"
+    );
+    assert_eq!(publish_body["warnings"]["invalid_categories"], json!([]));
+    assert_eq!(publish_body["warnings"]["invalid_badges"], json!([]));
+    assert_eq!(publish_body["warnings"]["other"], json!([]));
+
+    let config_req = Request::builder()
+        .method(Method::GET)
+        .uri("/cargo/index/config.json")
+        .body(Body::empty())
+        .unwrap();
+    let config_resp = app.clone().oneshot(config_req).await.unwrap();
+    assert_eq!(config_resp.status(), StatusCode::OK);
+    let config_body = body_json(config_resp).await;
+    assert_eq!(
+        config_body,
+        json!({
+            "dl": "http://localhost:3000/cargo/api/v1/crates/{crate}/{version}/download",
+            "api": "http://localhost:3000/cargo",
+            "auth-required": false
+        })
+    );
+
+    let index_req = Request::builder()
+        .method(Method::GET)
+        .uri("/cargo/index/de/mo/demo_widget")
+        .body(Body::empty())
+        .unwrap();
+    let index_resp = app.clone().oneshot(index_req).await.unwrap();
+    assert_eq!(index_resp.status(), StatusCode::OK);
+    assert_eq!(
+        index_resp
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("text/plain")
+    );
+    let etag = index_resp
+        .headers()
+        .get("etag")
+        .and_then(|value| value.to_str().ok())
+        .expect("etag should be present")
+        .to_owned();
+    let index_body = body_text(index_resp).await;
+    let index_lines: Vec<&str> = index_body.lines().collect();
+    assert_eq!(
+        index_lines.len(),
+        1,
+        "unexpected sparse index body: {index_body}"
+    );
+
+    let index_entry: Value =
+        serde_json::from_str(index_lines[0]).expect("index entry should be valid JSON");
+    assert_eq!(index_entry["name"], "demo_widget");
+    assert_eq!(index_entry["vers"], "0.1.0");
+    assert!(!index_entry["yanked"].as_bool().unwrap_or(true));
+    assert_eq!(index_entry["cksum"].as_str().map(str::len), Some(64));
+    assert_eq!(index_entry["links"], "demo_widget_native");
+    assert_eq!(index_entry["rust_version"], "1.78");
+    assert_eq!(index_entry["v"], 2);
+    assert_eq!(index_entry["deps"][0]["name"], "serde");
+    assert_eq!(index_entry["deps"][0]["req"], "^1.0");
+    assert_eq!(index_entry["features"]["serde"], json!(["dep:serde"]));
+    assert_eq!(index_entry["features2"]["serde"], json!(["dep:serde"]));
+
+    let conditional_req = Request::builder()
+        .method(Method::GET)
+        .uri("/cargo/index/de/mo/demo_widget")
+        .header("if-none-match", &etag)
+        .body(Body::empty())
+        .unwrap();
+    let conditional_resp = app.clone().oneshot(conditional_req).await.unwrap();
+    assert_eq!(conditional_resp.status(), StatusCode::NOT_MODIFIED);
+    assert_eq!(
+        conditional_resp
+            .headers()
+            .get("etag")
+            .and_then(|value| value.to_str().ok()),
+        Some(etag.as_str())
+    );
+    assert!(body_bytes(conditional_resp).await.is_empty());
+
+    let download_req = Request::builder()
+        .method(Method::GET)
+        .uri("/cargo/api/v1/crates/demo_widget/0.1.0/download")
+        .body(Body::empty())
+        .unwrap();
+    let download_resp = app.clone().oneshot(download_req).await.unwrap();
+    assert_eq!(download_resp.status(), StatusCode::OK);
+    assert_eq!(
+        download_resp
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("application/gzip")
+    );
+    assert_eq!(
+        download_resp
+            .headers()
+            .get("etag")
+            .and_then(|value| value.to_str().ok())
+            .map(str::len),
+        Some(66)
+    );
+    assert_eq!(body_bytes(download_resp).await, crate_bytes);
+
+    let release_status: String = sqlx::query_scalar(
+        "SELECT r.status::text \
+         FROM releases r \
+         JOIN packages p ON p.id = r.package_id \
+         WHERE p.ecosystem = 'cargo' AND p.normalized_name = $1 AND r.version = $2",
+    )
+    .bind("demo_widget")
+    .bind("0.1.0")
+    .fetch_one(&pool)
+    .await
+    .expect("cargo release status should be queryable");
+    assert_eq!(release_status, "published");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_cargo_private_sparse_index_and_download_require_authentication(pool: PgPool) {
+    let app = app(pool);
+    let test_password = "test_password";
+    register_user(&app, "alice", "alice@test.dev", test_password).await;
+    let alice_jwt = login_user(&app, "alice", test_password).await;
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Alice Private Cargo Packages",
+        "alice-private-cargo-packages",
+        None,
+        Some("private"),
+        Some("private"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, token_body) =
+        create_personal_access_token(&app, &alice_jwt, "cargo-private", &["packages:write"]).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
+    let cargo_token = token_body["token"]
+        .as_str()
+        .expect("cargo token should be returned")
+        .to_owned();
+
+    let payload = build_cargo_publish_payload(
+        json!({
+            "name": "secret_widget",
+            "vers": "0.1.0",
+            "deps": [],
+            "features": {},
+            "authors": ["Alice <alice@test.dev>"],
+            "description": "Private Cargo adapter coverage",
+            "license": "MIT"
+        }),
+        b"private-cargo-crate",
+    );
+
+    let (status, publish_body) = publish_cargo_crate(&app, &cargo_token, payload).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected cargo publish response: {publish_body}"
+    );
+
+    let anonymous_index_req = Request::builder()
+        .method(Method::GET)
+        .uri("/cargo/index/se/cr/secret_widget")
+        .body(Body::empty())
+        .unwrap();
+    let anonymous_index_resp = app.clone().oneshot(anonymous_index_req).await.unwrap();
+    assert_eq!(anonymous_index_resp.status(), StatusCode::NOT_FOUND);
+
+    let authenticated_index_req = Request::builder()
+        .method(Method::GET)
+        .uri("/cargo/index/se/cr/secret_widget")
+        .header(header::AUTHORIZATION, &cargo_token)
+        .body(Body::empty())
+        .unwrap();
+    let authenticated_index_resp = app.clone().oneshot(authenticated_index_req).await.unwrap();
+    assert_eq!(authenticated_index_resp.status(), StatusCode::OK);
+    let authenticated_index_body = body_text(authenticated_index_resp).await;
+    let authenticated_index_lines: Vec<&str> = authenticated_index_body.lines().collect();
+    assert_eq!(authenticated_index_lines.len(), 1);
+    let authenticated_index_entry: Value = serde_json::from_str(authenticated_index_lines[0])
+        .expect("private sparse index entry should be valid JSON");
+    assert_eq!(authenticated_index_entry["vers"], "0.1.0");
+
+    let anonymous_download_req = Request::builder()
+        .method(Method::GET)
+        .uri("/cargo/api/v1/crates/secret_widget/0.1.0/download")
+        .body(Body::empty())
+        .unwrap();
+    let anonymous_download_resp = app.clone().oneshot(anonymous_download_req).await.unwrap();
+    assert_eq!(anonymous_download_resp.status(), StatusCode::NOT_FOUND);
+
+    let authenticated_download_req = Request::builder()
+        .method(Method::GET)
+        .uri("/cargo/api/v1/crates/secret_widget/0.1.0/download")
+        .header(header::AUTHORIZATION, &cargo_token)
+        .body(Body::empty())
+        .unwrap();
+    let authenticated_download_resp = app
+        .clone()
+        .oneshot(authenticated_download_req)
+        .await
+        .unwrap();
+    assert_eq!(authenticated_download_resp.status(), StatusCode::OK);
+    assert_eq!(
+        body_bytes(authenticated_download_resp).await,
+        b"private-cargo-crate"
     );
 }
 
