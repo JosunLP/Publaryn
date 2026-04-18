@@ -44,6 +44,7 @@ pub fn router() -> Router<AppState> {
             get(export_org_audit_logs_csv),
         )
         .route("/v1/orgs/{slug}/members", get(list_members))
+        .route("/v1/orgs/{slug}/members/search", get(search_org_members))
         .route("/v1/orgs/{slug}/members", post(add_member))
         .route("/v1/orgs/{slug}/members/{username}", delete(remove_member))
         .route(
@@ -711,10 +712,66 @@ async fn list_members(
     Ok(Json(serde_json::json!({ "members": members })))
 }
 
+async fn search_org_members(
+    State(state): State<AppState>,
+    Path(slug): Path<String>,
+    Query(query): Query<MemberSearchQuery>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let Some(search) = query
+        .query
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && value.len() >= 2)
+    else {
+        return Ok(Json(serde_json::json!({ "members": Vec::<serde_json::Value>::new() })));
+    };
+
+    let limit = query.limit.unwrap_or(20).clamp(1, 50) as i64;
+    let pattern = format!("{}%", search);
+
+    let rows = sqlx::query(
+        "SELECT u.id AS user_id, u.username, u.display_name, om.role::text AS role, om.joined_at \
+         FROM org_memberships om \
+         JOIN users u ON u.id = om.user_id \
+         JOIN organizations o ON o.id = om.org_id \
+         WHERE o.slug = $1 \
+           AND (u.username ILIKE $2 OR u.display_name ILIKE $2) \
+         ORDER BY u.username ASC \
+         LIMIT $3",
+    )
+    .bind(&slug)
+    .bind(&pattern)
+    .bind(limit)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let members: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "user_id": r.try_get::<Uuid, _>("user_id").ok(),
+                "username": r.try_get::<String, _>("username").ok(),
+                "display_name": r.try_get::<Option<String>, _>("display_name").ok().flatten(),
+                "role": r.try_get::<String, _>("role").ok(),
+                "joined_at": r.try_get::<chrono::DateTime<chrono::Utc>, _>("joined_at").ok(),
+            })
+        })
+        .collect();
+
+    Ok(Json(serde_json::json!({ "members": members })))
+}
+
 #[derive(Debug, Deserialize)]
 struct AddMemberRequest {
     username: String,
     role: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct MemberSearchQuery {
+    query: Option<String>,
+    limit: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]

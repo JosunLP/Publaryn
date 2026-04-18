@@ -386,6 +386,22 @@ export async function listMembers(slug: string): Promise<MemberListResponse> {
   return data;
 }
 
+export async function searchOrgMembers(
+  slug: string,
+  query: string,
+  limit = 20
+): Promise<MemberListResponse> {
+  const params = new URLSearchParams();
+  params.set('query', query);
+  params.set('limit', String(limit));
+
+  const { data } = await api.get<MemberListResponse>(
+    `/v1/orgs/${enc(slug)}/members/search?${params.toString()}`
+  );
+
+  return data;
+}
+
 export async function addMember(
   slug: string,
   input: AddMemberInput
