@@ -5712,7 +5712,7 @@ async fn test_cargo_publish_populates_sparse_index_and_supports_conditional_fetc
         serde_json::from_str(index_lines[0]).expect("index entry should be valid JSON");
     assert_eq!(index_entry["name"], "demo_widget");
     assert_eq!(index_entry["vers"], "0.1.0");
-    assert_eq!(index_entry["yanked"], false);
+    assert!(!index_entry["yanked"].as_bool().unwrap_or(true));
     assert_eq!(index_entry["cksum"].as_str().map(str::len), Some(64));
     assert_eq!(index_entry["links"], "demo_widget_native");
     assert_eq!(index_entry["rust_version"], "1.78");
@@ -5848,7 +5848,11 @@ async fn test_cargo_private_sparse_index_and_download_require_authentication(poo
     let authenticated_index_resp = app.clone().oneshot(authenticated_index_req).await.unwrap();
     assert_eq!(authenticated_index_resp.status(), StatusCode::OK);
     let authenticated_index_body = body_text(authenticated_index_resp).await;
-    assert!(authenticated_index_body.contains("\"vers\":\"0.1.0\""));
+    let authenticated_index_lines: Vec<&str> = authenticated_index_body.lines().collect();
+    assert_eq!(authenticated_index_lines.len(), 1);
+    let authenticated_index_entry: Value = serde_json::from_str(authenticated_index_lines[0])
+        .expect("private sparse index entry should be valid JSON");
+    assert_eq!(authenticated_index_entry["vers"], "0.1.0");
 
     let anonymous_download_req = Request::builder()
         .method(Method::GET)
