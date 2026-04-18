@@ -1177,7 +1177,7 @@ async fn publish_npm_package(
                         "length": tarball_bytes.len(),
                     }
                 },
-                "readme": format!("# {package_name}\\n\\nPublished in integration tests."),
+                "readme": format!("# {package_name}\n\nPublished in integration tests."),
             })
             .to_string(),
         ))
