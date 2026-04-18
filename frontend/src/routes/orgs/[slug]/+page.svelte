@@ -91,6 +91,12 @@
     normalizeAuditActorUserId,
     normalizeAuditActorUsername,
   } from '../../../pages/org-audit-query';
+  import {
+    buildAuditActorOptions,
+    buildRemoteAuditActorOptions,
+    nextAuditActorInputState,
+  } from '../../../pages/org-audit-actors';
+  import type { OrgAuditActorOption } from '../../../pages/org-audit-actors';
   import { ECOSYSTEMS, ecosystemLabel } from '../../../utils/ecosystem';
   import { formatDate, formatNumber } from '../../../utils/format';
   import {
@@ -226,25 +232,13 @@
   let auditError: string | null = null;
   let auditHasNext = false;
   let exportingAudit = false;
-  let auditActorOptions: Array<{
-    userId: string;
-    username: string;
-    label: string;
-  }> = [];
-  let auditActorRemoteOptions: Array<{
-    userId: string;
-    username: string;
-    label: string;
-  }> = [];
+  let auditActorOptions: OrgAuditActorOption[] = [];
+  let auditActorRemoteOptions: OrgAuditActorOption[] = [];
   let auditActorInput = '';
   let auditActorInputSyncKey = '';
   let auditActorSearchInFlight = false;
   let auditActorSearchRequest = 0;
-  let selectedAuditActor: {
-    userId: string;
-    username: string;
-    label: string;
-  } | null = null;
+  let selectedAuditActor: OrgAuditActorOption | null = null;
   let creatableRepositories: CreatableRepository[] = [];
   let selectedPackageCreationRepository: CreatableRepository | null = null;
   let packageVisibilityOptions: Array<{ value: string; label: string }> = [];
@@ -270,59 +264,26 @@
     void loadOrganizationPage();
   }
 
-  function dedupeActorOptions(
-    options: Array<{ userId: string; username: string; label: string }>
-  ): Array<{ userId: string; username: string; label: string }> {
-    const seen = new Set<string>();
-    const merged: typeof options = [];
-
-    for (const option of options) {
-      if (seen.has(option.userId)) {
-        continue;
-      }
-      seen.add(option.userId);
-      merged.push(option);
-    }
-
-    return merged;
-  }
-
-  $: {
-    const baseOptions = members
-    .filter(
-      (member) =>
-        typeof member.user_id === 'string' &&
-        member.user_id.trim() &&
-        typeof member.username === 'string' &&
-        member.username.trim()
-    )
-    .map((member) => {
-      const username = member.username?.trim() || '';
-      const displayName = member.display_name?.trim();
-      return {
-        userId: (member.user_id || '').trim(),
-        username,
-        label: displayName ? `${displayName} (@${username})` : `@${username}`,
-      };
-    })
-    .sort((left, right) => left.username.localeCompare(right.username));
-
-    auditActorOptions = dedupeActorOptions([
-      ...baseOptions,
-      ...auditActorRemoteOptions,
-    ]);
-  }
+  $: auditActorOptions = buildAuditActorOptions(members, auditActorRemoteOptions);
 
   $: selectedAuditActor =
     auditActorOptions.find(
       (candidate) => candidate.userId === auditView.actorUserId
     ) || null;
   $: {
-    const nextAuditActorInputSyncKey = `${auditView.actorUserId}|${auditView.actorUsername}`;
-    if (nextAuditActorInputSyncKey !== auditActorInputSyncKey) {
-      auditActorInputSyncKey = nextAuditActorInputSyncKey;
-      auditActorInput =
-        auditView.actorUsername || auditView.actorUserId || '';
+    const nextInputState = nextAuditActorInputState(
+      auditActorInputSyncKey,
+      auditActorInput,
+      auditView.actorUserId,
+      auditView.actorUsername
+    );
+
+    if (
+      nextInputState.syncKey !== auditActorInputSyncKey ||
+      nextInputState.input !== auditActorInput
+    ) {
+      auditActorInputSyncKey = nextInputState.syncKey;
+      auditActorInput = nextInputState.input;
     }
   }
 
@@ -1775,30 +1736,7 @@
         return;
       }
 
-      const remoteOptions =
-        response.members
-          ?.filter(
-            (member) =>
-              typeof member.user_id === 'string' &&
-              member.user_id.trim() &&
-              typeof member.username === 'string' &&
-              member.username.trim()
-          )
-          .map((member) => {
-            const username = member.username?.trim() || '';
-            const displayName = member.display_name?.trim();
-            return {
-              userId: (member.user_id || '').trim(),
-              username,
-              label: displayName
-                ? `${displayName} (@${username})`
-                : `@${username}`,
-            };
-          })
-          .sort((left, right) => left.username.localeCompare(right.username)) ||
-        [];
-
-      auditActorRemoteOptions = remoteOptions;
+      auditActorRemoteOptions = buildRemoteAuditActorOptions(response.members);
     } catch (caughtError: unknown) {
       if (requestId === auditActorSearchRequest) {
         auditActorRemoteOptions = [];
