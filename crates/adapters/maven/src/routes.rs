@@ -420,6 +420,7 @@ async fn artifact_readable(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn can_read_package(
     db: &PgPool,
     pkg_visibility: &str,

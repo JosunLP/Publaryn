@@ -36,8 +36,7 @@ const TEAM_REPOSITORY_PACKAGE_CREATION_PERMISSIONS: &[&str] =
 const TEAM_REPOSITORY_PACKAGE_METADATA_PERMISSIONS: &[&str] = &["admin", "write_metadata"];
 const TEAM_REPOSITORY_PACKAGE_PUBLISH_PERMISSIONS: &[&str] = &["admin", "publish"];
 const TEAM_REPOSITORY_ADMIN_PERMISSIONS: &[&str] = &["admin"];
-const TEAM_REPOSITORY_PACKAGE_TRANSFER_PERMISSIONS: &[&str] =
-    &["admin", "transfer_ownership"];
+const TEAM_REPOSITORY_PACKAGE_TRANSFER_PERMISSIONS: &[&str] = &["admin", "transfer_ownership"];
 const TEAM_REPOSITORY_PACKAGE_MANAGEMENT_VISIBILITY_PERMISSIONS: &[&str] = &[
     "admin",
     "publish",

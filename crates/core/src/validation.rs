@@ -4,9 +4,6 @@ use regex::Regex;
 use crate::domain::namespace::Ecosystem;
 use crate::error::{Error, Result};
 
-static SEMVER_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"^\d+\.\d+\.\d+([.-][0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)*$").unwrap());
-
 static SLUG_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[a-z0-9][a-z0-9_-]{0,63}$").unwrap());
 
 static USERNAME_RE: Lazy<Regex> =

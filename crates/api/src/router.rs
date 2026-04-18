@@ -3,7 +3,7 @@ use axum::{
     extract::MatchedPath,
     http::{
         header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE},
-        HeaderName, Method, Request,
+        HeaderName, Method, Request, StatusCode,
     },
     middleware, Router,
 };
@@ -96,7 +96,10 @@ pub fn build_router(state: AppState) -> Result<Router> {
             )
             .layer(cors_layer)
             .layer(CompressionLayer::new())
-            .layer(TimeoutLayer::new(Duration::from_secs(30)))
+            .layer(TimeoutLayer::with_status_code(
+                StatusCode::REQUEST_TIMEOUT,
+                Duration::from_secs(30),
+            ))
             .layer(middleware::from_fn_with_state(
                 state.clone(),
                 rate_limit::rate_limit_middleware,

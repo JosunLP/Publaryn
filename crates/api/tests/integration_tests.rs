@@ -978,6 +978,7 @@ async fn list_release_artifacts(
 }
 
 /// Upload an artifact for a release and return the response.
+#[allow(clippy::too_many_arguments)]
 async fn upload_release_artifact(
     app: &axum::Router,
     jwt: &str,
@@ -4082,8 +4083,14 @@ async fn test_team_repository_write_metadata_permission_allows_package_creation_
     assert_eq!(repository_detail_before["can_manage"], false);
     assert_eq!(repository_detail_before["can_create_packages"], true);
 
-    let (status, create_body) =
-        create_package(&app, &bob_jwt, "npm", "repo-metadata-widget", "source-packages").await;
+    let (status, create_body) = create_package(
+        &app,
+        &bob_jwt,
+        "npm",
+        "repo-metadata-widget",
+        "source-packages",
+    )
+    .await;
     assert_eq!(
         status,
         StatusCode::CREATED,

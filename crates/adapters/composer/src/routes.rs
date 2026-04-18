@@ -528,6 +528,7 @@ async fn authenticate_token<S: ComposerAppState>(
     Ok(ComposerIdentity { user_id })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn can_read_package(
     db: &PgPool,
     pkg_visibility: &str,

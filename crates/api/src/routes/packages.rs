@@ -841,7 +841,7 @@ async fn transfer_package_ownership(
     )
     .bind(target_org.id)
     .bind(identity.user_id)
-    .bind(&vec!["owner".to_owned(), "admin".to_owned()])
+    .bind(vec!["owner".to_owned(), "admin".to_owned()])
     .fetch_one(&mut *tx)
     .await
     .map_err(|e| ApiError(Error::Database(e)))?;
@@ -2338,7 +2338,7 @@ async fn reindex_package_document(state: &AppState, package_id: Uuid) -> publary
          WHERE p.id = $1",
     )
     .bind(package_id)
-    .bind(&release_history_visible_statuses())
+    .bind(release_history_visible_statuses())
     .fetch_optional(&state.db)
     .await
     .map_err(Error::Database)?

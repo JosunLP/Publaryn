@@ -26,8 +26,8 @@ use crate::{
     error::{ApiError, ApiResult},
     request_auth::{
         actor_can_transfer_package_by_id, ensure_org_admin_by_slug,
-        ensure_org_audit_access_by_slug, is_org_member,
-        AuthenticatedIdentity, OptionalAuthenticatedIdentity,
+        ensure_org_audit_access_by_slug, is_org_member, AuthenticatedIdentity,
+        OptionalAuthenticatedIdentity,
     },
     scopes::{ensure_scope, SCOPE_ORGS_TRANSFER, SCOPE_ORGS_WRITE},
     state::AppState,
@@ -371,11 +371,10 @@ async fn list_org_audit_logs(
 ) -> ApiResult<Json<serde_json::Value>> {
     ensure_scope(&identity, SCOPE_ORGS_WRITE)?;
 
-    let org_id =
-        ensure_org_audit_access_by_slug(&state.db, &slug, identity.user_id).await?;
+    let org_id = ensure_org_audit_access_by_slug(&state.db, &slug, identity.user_id).await?;
     let filters = resolve_org_audit_filters(&query)?;
     let page = query.page.unwrap_or(1).max(1);
-    let limit = query.per_page.unwrap_or(20).max(1).min(100) as i64;
+    let limit = query.per_page.unwrap_or(20).clamp(1, 100) as i64;
     let offset = ((page.saturating_sub(1)) as i64) * limit;
     let fetch_limit = limit + 1;
 
@@ -436,8 +435,7 @@ async fn export_org_audit_logs_csv(
 ) -> ApiResult<impl IntoResponse> {
     ensure_scope(&identity, SCOPE_ORGS_WRITE)?;
 
-    let org_id =
-        ensure_org_audit_access_by_slug(&state.db, &slug, identity.user_id).await?;
+    let org_id = ensure_org_audit_access_by_slug(&state.db, &slug, identity.user_id).await?;
     let filters = resolve_org_audit_filters(&query)?;
 
     let mut builder = build_org_audit_query(org_id);
@@ -723,7 +721,9 @@ async fn search_org_members(
         .map(str::trim)
         .filter(|value| !value.is_empty() && value.len() >= 2)
     else {
-        return Ok(Json(serde_json::json!({ "members": Vec::<serde_json::Value>::new() })));
+        return Ok(Json(
+            serde_json::json!({ "members": Vec::<serde_json::Value>::new() }),
+        ));
     };
 
     let limit = query.limit.unwrap_or(20).clamp(1, 50) as i64;

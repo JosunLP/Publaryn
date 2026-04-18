@@ -31,7 +31,7 @@ use publaryn_core::{
 
 use crate::{
     metadata::{build_gem_metadata, build_versions_list, GemMetadataInput, GemVersionListItem},
-    name::{normalize_rubygems_name, validate_rubygems_package_name},
+    name::validate_rubygems_package_name,
 };
 
 pub trait RubyGemsAppState: Clone + Send + Sync + 'static {
@@ -501,6 +501,7 @@ async fn authenticate_token<S: RubyGemsAppState>(
     Ok(RubyGemsIdentity { user_id })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn can_read_package(
     db: &PgPool,
     pkg_visibility: &str,
@@ -613,6 +614,7 @@ fn internal_error_response(message: &str) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::name::normalize_rubygems_name;
 
     #[test]
     fn metadata_string_reads_value() {
