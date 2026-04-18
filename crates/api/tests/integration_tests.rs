@@ -6290,13 +6290,12 @@ async fn test_native_npm_repository_publish_permission_allows_existing_package_p
     assert_eq!(publish_body["ok"], true);
 
     let release_id = get_release_id(&pool, "npm", "native-release-widget", "1.0.0").await;
-    let release_status: String = sqlx::query_scalar(
-        "SELECT status::text FROM releases WHERE id = $1",
-    )
-    .bind(release_id)
-    .fetch_one(&pool)
-    .await
-    .expect("native npm release status should be queryable");
+    let release_status: String =
+        sqlx::query_scalar("SELECT status::text FROM releases WHERE id = $1")
+            .bind(release_id)
+            .fetch_one(&pool)
+            .await
+            .expect("native npm release status should be queryable");
     assert_eq!(release_status, "published");
 
     let (status, detail_after_publish) =
@@ -6313,7 +6312,8 @@ async fn test_native_npm_repository_publish_permission_allows_existing_package_p
     );
     assert_eq!(set_tag_body["ok"], true);
 
-    let (status, dist_tags) = list_npm_dist_tags(&app, Some(&bob_jwt), "native-release-widget").await;
+    let (status, dist_tags) =
+        list_npm_dist_tags(&app, Some(&bob_jwt), "native-release-widget").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(dist_tags["beta"], "1.0.0");
 }

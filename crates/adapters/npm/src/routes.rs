@@ -656,8 +656,7 @@ async fn publish_inner<S: NpmAppState>(
             let repo_visibility: String = repo_row.try_get("visibility").unwrap_or("public".into());
             let repo_owner_user_id: Option<Uuid> =
                 repo_row.try_get("owner_user_id").unwrap_or(None);
-            let repo_owner_org_id: Option<Uuid> =
-                repo_row.try_get("owner_org_id").unwrap_or(None);
+            let repo_owner_org_id: Option<Uuid> = repo_row.try_get("owner_org_id").unwrap_or(None);
 
             let visibility = match repo_visibility.as_str() {
                 "public" => "public",
@@ -1369,9 +1368,9 @@ async fn resolve_npm_package_id_for_write(
     let package_id: Uuid = row
         .try_get("id")
         .map_err(|_| npm_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error"))?;
-    let repository_id: Uuid = row.try_get("repository_id").map_err(|_| {
-        npm_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error")
-    })?;
+    let repository_id: Uuid = row
+        .try_get("repository_id")
+        .map_err(|_| npm_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error"))?;
 
     if !has_package_write_access(
         db,
