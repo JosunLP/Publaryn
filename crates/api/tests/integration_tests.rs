@@ -5702,7 +5702,11 @@ async fn test_cargo_publish_populates_sparse_index_and_supports_conditional_fetc
         .to_owned();
     let index_body = body_text(index_resp).await;
     let index_lines: Vec<&str> = index_body.lines().collect();
-    assert_eq!(index_lines.len(), 1, "unexpected sparse index body: {index_body}");
+    assert_eq!(
+        index_lines.len(),
+        1,
+        "unexpected sparse index body: {index_body}"
+    );
 
     let index_entry: Value =
         serde_json::from_str(index_lines[0]).expect("index entry should be valid JSON");
@@ -5860,7 +5864,11 @@ async fn test_cargo_private_sparse_index_and_download_require_authentication(poo
         .header(header::AUTHORIZATION, &cargo_token)
         .body(Body::empty())
         .unwrap();
-    let authenticated_download_resp = app.clone().oneshot(authenticated_download_req).await.unwrap();
+    let authenticated_download_resp = app
+        .clone()
+        .oneshot(authenticated_download_req)
+        .await
+        .unwrap();
     assert_eq!(authenticated_download_resp.status(), StatusCode::OK);
     assert_eq!(
         body_bytes(authenticated_download_resp).await,
