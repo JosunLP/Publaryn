@@ -1210,6 +1210,98 @@ async fn get_release_id(
     .expect("release id should be queryable")
 }
 
+/// Build a minimal valid PyPI legacy upload multipart body (with metadata_version 2.4
+/// and sha256 digest validation) and return `(content_type, body)`.
+fn build_pypi_legacy_upload_multipart(
+    package_name: &str,
+    version: &str,
+    artifact_bytes: &[u8],
+) -> (String, Vec<u8>) {
+    use sha2::{Digest, Sha256};
+
+    let boundary = "----publaryn-test-boundary-2f4e";
+    let filename = format!("{package_name}-{version}.tar.gz");
+    let mut digest = Sha256::new();
+    digest.update(artifact_bytes);
+    let sha256_hex = hex::encode(digest.finalize());
+
+    let mut body: Vec<u8> = Vec::new();
+    let text_fields: &[(&str, &str)] = &[
+        (":action", "file_upload"),
+        ("protocol_version", "1"),
+        ("metadata_version", "2.4"),
+        ("name", package_name),
+        ("version", version),
+        ("filetype", "sdist"),
+        ("pyversion", "source"),
+        ("sha256_digest", sha256_hex.as_str()),
+    ];
+
+    for (name, value) in text_fields {
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        body.extend_from_slice(
+            format!("Content-Disposition: form-data; name=\"{name}\"\r\n\r\n").as_bytes(),
+        );
+        body.extend_from_slice(value.as_bytes());
+        body.extend_from_slice(b"\r\n");
+    }
+
+    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    body.extend_from_slice(
+        format!("Content-Disposition: form-data; name=\"content\"; filename=\"{filename}\"\r\n",)
+            .as_bytes(),
+    );
+    body.extend_from_slice(b"Content-Type: application/gzip\r\n\r\n");
+    body.extend_from_slice(artifact_bytes);
+    body.extend_from_slice(b"\r\n");
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+
+    let content_type = format!("multipart/form-data; boundary={boundary}");
+    (content_type, body)
+}
+
+/// Upload a PyPI distribution via the legacy upload endpoint (optionally targeting a
+/// specific repository slug) and return the response.
+async fn upload_pypi_distribution(
+    app: &axum::Router,
+    token: &str,
+    repository_slug: Option<&str>,
+    package_name: &str,
+    version: &str,
+    artifact_bytes: &[u8],
+) -> (StatusCode, Value) {
+    let (content_type, body) =
+        build_pypi_legacy_upload_multipart(package_name, version, artifact_bytes);
+    let uri = match repository_slug {
+        Some(slug) => format!("/pypi/legacy/{slug}/"),
+        None => "/pypi/legacy/".to_owned(),
+    };
+    let auth_header = ["Bearer ", token].concat();
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri(uri)
+        .header(header::AUTHORIZATION, auth_header)
+        .header(header::CONTENT_TYPE, content_type)
+        .body(Body::from(body))
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json_or_empty(resp).await;
+    (status, body)
+}
+
+async fn body_json_or_empty(resp: axum::response::Response) -> Value {
+    let bytes = axum::body::to_bytes(resp.into_body(), TEST_RESPONSE_BODY_LIMIT)
+        .await
+        .expect("read body");
+    if bytes.is_empty() {
+        return Value::Null;
+    }
+    serde_json::from_slice(&bytes)
+        .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned()))
+}
+
 /// Insert a security finding for a release directly into the database.
 async fn insert_security_finding(
     pool: &PgPool,
@@ -6583,6 +6675,263 @@ async fn test_native_cargo_repository_publish_permission_allows_existing_package
 
     let (status, detail_after_publish) =
         get_package_detail(&app, Some(&bob_jwt), "cargo", "native_release_crate").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail_after_publish["can_manage_releases"], true);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_native_pypi_upload_auto_creates_org_owned_package_from_repository_publish_grant(
+    pool: PgPool,
+) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &alice_jwt, "Source Org", "source-org").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let source_org_id = org_body["id"].as_str().expect("source org id");
+    let source_org_uuid = uuid::Uuid::parse_str(source_org_id).expect("source org id should parse");
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Source Python Packages",
+        "source-py-packages",
+        Some(source_org_id),
+        Some("private"),
+        Some("private"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, _) = add_org_member(&app, &alice_jwt, "source-org", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "PyPI Release Engineering",
+        "pypi-release-engineering",
+        Some("Publishes PyPI distributions through repository delegation."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = add_team_member_to_team(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "pypi-release-engineering",
+        "bob",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, grant_body) = grant_team_repository_access(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "pypi-release-engineering",
+        "source-py-packages",
+        &["publish"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team repository access response: {grant_body}"
+    );
+
+    let (status, token_body) =
+        create_personal_access_token(&app, &bob_jwt, "bob-pypi-publish", &["packages:write"]).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
+    let pypi_token = token_body["token"]
+        .as_str()
+        .expect("pypi token should be returned")
+        .to_owned();
+
+    let artifact_bytes = b"fake-sdist-bytes-for-delegated-org-package";
+    let (status, upload_body) = upload_pypi_distribution(
+        &app,
+        &pypi_token,
+        None,
+        "native-org-widget",
+        "1.0.0",
+        artifact_bytes,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected pypi upload response: {upload_body}"
+    );
+
+    let package_owner = sqlx::query(
+        "SELECT owner_user_id, owner_org_id, visibility::text AS visibility \
+         FROM packages \
+         WHERE ecosystem = 'pypi' AND normalized_name = $1",
+    )
+    .bind("native-org-widget")
+    .fetch_one(&pool)
+    .await
+    .expect("native pypi package should exist");
+    let package_owner_user_id = package_owner
+        .try_get::<Option<uuid::Uuid>, _>("owner_user_id")
+        .expect("package owner user id should be readable");
+    let package_owner_org_id = package_owner
+        .try_get::<Option<uuid::Uuid>, _>("owner_org_id")
+        .expect("package owner org id should be readable");
+    let package_visibility = package_owner
+        .try_get::<String, _>("visibility")
+        .expect("package visibility should be readable");
+    assert_eq!(package_owner_user_id, None);
+    assert_eq!(package_owner_org_id, Some(source_org_uuid));
+    assert_eq!(package_visibility, "private");
+
+    let (status, package_detail) =
+        get_package_detail(&app, Some(&bob_jwt), "pypi", "native-org-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(package_detail["owner_org_slug"], "source-org");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_native_pypi_repository_publish_permission_allows_existing_package_upload(
+    pool: PgPool,
+) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &alice_jwt, "Source Org", "source-org").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let source_org_id = org_body["id"].as_str().expect("source org id");
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Source Python Packages",
+        "source-py-packages",
+        Some(source_org_id),
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "pypi",
+        "native-release-widget",
+        "source-py-packages",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let (status, _) = add_org_member(&app, &alice_jwt, "source-org", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "PyPI Release Engineering",
+        "pypi-release-engineering",
+        Some("Publishes existing PyPI distributions through repository delegation."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = add_team_member_to_team(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "pypi-release-engineering",
+        "bob",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, grant_body) = grant_team_repository_access(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "pypi-release-engineering",
+        "source-py-packages",
+        &["publish"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team repository access response: {grant_body}"
+    );
+
+    let (status, token_body) =
+        create_personal_access_token(&app, &bob_jwt, "bob-pypi-publish", &["packages:write"]).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
+    let pypi_token = token_body["token"]
+        .as_str()
+        .expect("pypi token should be returned")
+        .to_owned();
+
+    let artifact_bytes = b"fake-sdist-bytes-for-delegated-existing-package";
+    let (status, upload_body) = upload_pypi_distribution(
+        &app,
+        &pypi_token,
+        None,
+        "native-release-widget",
+        "1.0.0",
+        artifact_bytes,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected pypi upload response: {upload_body}"
+    );
+
+    let release_status: String = sqlx::query_scalar(
+        "SELECT r.status::text \
+         FROM releases r \
+         JOIN packages p ON p.id = r.package_id \
+         WHERE p.ecosystem = 'pypi' AND p.normalized_name = $1 AND r.version = $2",
+    )
+    .bind("native-release-widget")
+    .bind("1.0.0")
+    .fetch_one(&pool)
+    .await
+    .expect("pypi release status should be queryable");
+    assert_eq!(release_status, "published");
+
+    let (status, detail_after_publish) =
+        get_package_detail(&app, Some(&bob_jwt), "pypi", "native-release-widget").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(detail_after_publish["can_manage_releases"], true);
 }
