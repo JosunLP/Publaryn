@@ -134,9 +134,11 @@ async fn update_security_finding(
     }
 
     let existing = sqlx::query(
-        "SELECT sf.id, sf.is_resolved, sf.release_id, r.package_id, r.version \
+        "SELECT sf.id, sf.is_resolved, sf.release_id, r.package_id, r.version, \
+                p.owner_org_id \
          FROM security_findings sf \
          JOIN releases r ON r.id = sf.release_id \
+         JOIN packages p ON p.id = r.package_id \
          WHERE sf.id = $1",
     )
     .bind(finding_id)
@@ -162,6 +164,9 @@ async fn update_security_finding(
         .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
     let release_version: String = existing
         .try_get("version")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let owner_org_id: Option<Uuid> = existing
+        .try_get("owner_org_id")
         .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
 
     let mut tx = state
@@ -217,13 +222,14 @@ async fn update_security_finding(
         });
         sqlx::query(
             "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, \
-                                      target_package_id, target_release_id, metadata, occurred_at) \
-             VALUES ($1, $2::audit_action, $3, $4, $5, $6, $7, NOW())",
+                                      target_org_id, target_package_id, target_release_id, metadata, occurred_at) \
+             VALUES ($1, $2::audit_action, $3, $4, $5, $6, $7, $8, NOW())",
         )
         .bind(Uuid::new_v4())
         .bind(action)
         .bind(identity.user_id)
         .bind(identity.audit_actor_token_id())
+        .bind(owner_org_id)
         .bind(package_id)
         .bind(release_id)
         .bind(&metadata)

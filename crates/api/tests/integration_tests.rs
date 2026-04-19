@@ -720,6 +720,26 @@ async fn transfer_package_ownership(
     (status, body)
 }
 
+/// Archive a package via `DELETE /v1/packages/{ecosystem}/{name}` and return the response.
+async fn delete_package_for_ecosystem(
+    app: &axum::Router,
+    jwt: &str,
+    ecosystem: &str,
+    name: &str,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::DELETE)
+        .uri(format!("/v1/packages/{ecosystem}/{name}"))
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
 /// Add an existing organization member to a team and return the response.
 async fn add_team_member_to_team(
     app: &axum::Router,
@@ -1071,6 +1091,87 @@ async fn publish_release_for_package(
         ))
         .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
         .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// Yank a release and return the response.
+async fn yank_release_for_package(
+    app: &axum::Router,
+    jwt: &str,
+    ecosystem: &str,
+    name: &str,
+    version: &str,
+    reason: Option<&str>,
+) -> (StatusCode, Value) {
+    let payload = match reason {
+        Some(reason) => json!({ "reason": reason }),
+        None => json!({}),
+    };
+    let req = Request::builder()
+        .method(Method::PUT)
+        .uri(format!(
+            "/v1/packages/{ecosystem}/{name}/releases/{version}/yank"
+        ))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::from(payload.to_string()))
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// Unyank (restore) a release and return the response.
+async fn unyank_release_for_package(
+    app: &axum::Router,
+    jwt: &str,
+    ecosystem: &str,
+    name: &str,
+    version: &str,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::PUT)
+        .uri(format!(
+            "/v1/packages/{ecosystem}/{name}/releases/{version}/unyank"
+        ))
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// Deprecate a release and return the response.
+async fn deprecate_release_for_package(
+    app: &axum::Router,
+    jwt: &str,
+    ecosystem: &str,
+    name: &str,
+    version: &str,
+    message: Option<&str>,
+) -> (StatusCode, Value) {
+    let payload = match message {
+        Some(msg) => json!({ "message": msg }),
+        None => json!({}),
+    };
+    let req = Request::builder()
+        .method(Method::PUT)
+        .uri(format!(
+            "/v1/packages/{ecosystem}/{name}/releases/{version}/deprecate"
+        ))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::from(payload.to_string()))
         .unwrap();
 
     let resp = app.clone().oneshot(req).await.unwrap();
@@ -7971,6 +8072,17 @@ async fn test_security_finding_resolve_and_reopen_happy_path(pool: PgPool) {
     .expect("audit count should be queryable");
     assert_eq!(resolved_audit_count, 1);
 
+    let resolved_target_org_id: Option<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT target_org_id FROM audit_logs \
+         WHERE action = 'security_finding_resolve' \
+           AND target_release_id = $1",
+    )
+    .bind(release_id)
+    .fetch_one(&pool)
+    .await
+    .expect("resolved audit target org should be queryable");
+    assert_eq!(resolved_target_org_id, None);
+
     let (status, reopened_body) = update_security_finding_request(
         &app,
         &owner_jwt,
@@ -8000,6 +8112,17 @@ async fn test_security_finding_resolve_and_reopen_happy_path(pool: PgPool) {
     .expect("audit count should be queryable");
     assert_eq!(reopened_audit_count, 1);
 
+    let reopened_target_org_id: Option<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT target_org_id FROM audit_logs \
+         WHERE action = 'security_finding_reopen' \
+           AND target_release_id = $1",
+    )
+    .bind(release_id)
+    .fetch_one(&pool)
+    .await
+    .expect("reopened audit target org should be queryable");
+    assert_eq!(reopened_target_org_id, None);
+
     // No-op update (already reopened) must not emit another audit event.
     let (status, _) = update_security_finding_request(
         &app,
@@ -8022,6 +8145,666 @@ async fn test_security_finding_resolve_and_reopen_happy_path(pool: PgPool) {
     .await
     .expect("audit count should be queryable");
     assert_eq!(reopened_audit_count_after_noop, 1);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_org_audit_includes_security_finding_triage_for_org_owned_packages(pool: PgPool) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let owner_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let reviewer_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &owner_jwt, "Acme Corp", "acme-corp").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id = org_body["id"].as_str().expect("org id should be returned");
+
+    let (status, _) = create_repository_with_options(
+        &app,
+        &owner_jwt,
+        "Acme Public",
+        "acme-public",
+        Some(org_id),
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_package_with_options(
+        &app,
+        &owner_jwt,
+        "npm",
+        "acme-widget",
+        "acme-public",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) =
+        create_release_for_package(&app, &owner_jwt, "npm", "acme-widget", "1.0.0").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let release_id = get_release_id(&pool, "npm", "acme-widget", "1.0.0").await;
+    let finding_id = insert_security_finding(
+        &pool,
+        release_id,
+        "policy_violation",
+        "medium",
+        "License policy violation",
+        false,
+    )
+    .await;
+
+    let (status, _) = add_org_member(&app, &owner_jwt, "acme-corp", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_team(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        "Security Reviewers",
+        "security-reviewers",
+        Some("Triages security findings."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) =
+        add_team_member_to_team(&app, &owner_jwt, "acme-corp", "security-reviewers", "bob").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = grant_team_repository_access(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        "security-reviewers",
+        "acme-public",
+        &["security_review"],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, resolved_body) = update_security_finding_request(
+        &app,
+        &reviewer_jwt,
+        "npm",
+        "acme-widget",
+        finding_id,
+        serde_json::json!({ "is_resolved": true, "note": "policy waiver" }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected response: {resolved_body}"
+    );
+
+    let (status, reopened_body) = update_security_finding_request(
+        &app,
+        &reviewer_jwt,
+        "npm",
+        "acme-widget",
+        finding_id,
+        serde_json::json!({ "is_resolved": false, "note": "needs follow-up" }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected response: {reopened_body}"
+    );
+
+    let (status, _) = create_repository_with_options(
+        &app,
+        &owner_jwt,
+        "Personal Pkgs",
+        "personal-pkgs",
+        None,
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_package_with_options(
+        &app,
+        &owner_jwt,
+        "npm",
+        "personal-widget",
+        "personal-pkgs",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) =
+        create_release_for_package(&app, &owner_jwt, "npm", "personal-widget", "1.0.0").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let personal_release_id = get_release_id(&pool, "npm", "personal-widget", "1.0.0").await;
+    let personal_finding_id = insert_security_finding(
+        &pool,
+        personal_release_id,
+        "vulnerability",
+        "high",
+        "Personal package issue",
+        false,
+    )
+    .await;
+
+    let (status, personal_resolved_body) = update_security_finding_request(
+        &app,
+        &owner_jwt,
+        "npm",
+        "personal-widget",
+        personal_finding_id,
+        serde_json::json!({ "is_resolved": true, "note": "personal-only triage" }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected personal resolve response: {personal_resolved_body}"
+    );
+
+    let (status, resolve_audit_body) = list_org_audit(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        Some("action=security_finding_resolve&per_page=20"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected org audit response: {resolve_audit_body}"
+    );
+
+    let resolve_logs = resolve_audit_body["logs"]
+        .as_array()
+        .expect("resolve audit logs response should be an array");
+    assert_eq!(resolve_logs.len(), 1, "response: {resolve_audit_body}");
+    let release_id_str = release_id.to_string();
+    assert_eq!(resolve_logs[0]["action"], "security_finding_resolve");
+    assert_eq!(resolve_logs[0]["actor_username"], "bob");
+    assert_eq!(resolve_logs[0]["target_org_id"].as_str(), Some(org_id));
+    assert_eq!(
+        resolve_logs[0]["target_release_id"].as_str(),
+        Some(release_id_str.as_str())
+    );
+    assert_eq!(resolve_logs[0]["metadata"]["package_name"], "acme-widget");
+    assert_eq!(resolve_logs[0]["metadata"]["release_version"], "1.0.0");
+    assert_eq!(resolve_logs[0]["metadata"]["note"], "policy waiver");
+    assert!(resolve_logs.iter().all(|log| {
+        match log["metadata"]["package_name"].as_str() {
+            Some(package_name) => package_name != "personal-widget",
+            None => true,
+        }
+    }));
+
+    let bob_user_id: String = sqlx::query_scalar("SELECT id::text FROM users WHERE username = $1")
+        .bind("bob")
+        .fetch_one(&pool)
+        .await
+        .expect("bob user id should be queryable");
+
+    let actor_query = format!("actor_user_id={bob_user_id}&per_page=20");
+    let (status, actor_audit_body) =
+        list_org_audit(&app, &owner_jwt, "acme-corp", Some(&actor_query)).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected actor-filtered org audit response: {actor_audit_body}"
+    );
+
+    let actor_logs = actor_audit_body["logs"]
+        .as_array()
+        .expect("actor-filtered logs response should be an array");
+    assert_eq!(actor_logs.len(), 2, "response: {actor_audit_body}");
+    assert!(actor_logs.iter().all(|log| log["actor_username"] == "bob"));
+
+    let mut actor_actions = actor_logs
+        .iter()
+        .map(|log| {
+            log["action"]
+                .as_str()
+                .expect("action should be present")
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
+    actor_actions.sort();
+    assert_eq!(
+        actor_actions,
+        vec![
+            "security_finding_reopen".to_owned(),
+            "security_finding_resolve".to_owned(),
+        ]
+    );
+
+    let reopen_export_query = format!("actor_user_id={bob_user_id}&action=security_finding_reopen");
+    let reopen_export_resp =
+        export_org_audit_csv(&app, &owner_jwt, "acme-corp", Some(&reopen_export_query)).await;
+    assert_eq!(reopen_export_resp.status(), StatusCode::OK);
+
+    let reopen_export_body = body_text(reopen_export_resp).await;
+    let reopen_export_lines = reopen_export_body.lines().collect::<Vec<_>>();
+    assert_eq!(
+        reopen_export_lines.len(),
+        2,
+        "unexpected CSV export body: {reopen_export_body}"
+    );
+    assert!(reopen_export_lines[1].contains(",security_finding_reopen,"));
+    assert!(reopen_export_lines[1].contains(org_id));
+    assert!(reopen_export_body.contains("acme-widget"));
+    assert!(reopen_export_body.contains("needs follow-up"));
+    assert!(!reopen_export_body.contains("security_finding_resolve"));
+    assert!(!reopen_export_body.contains("personal-widget"));
+    assert!(!reopen_export_body.contains("personal-only triage"));
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_release_lifecycle_audit_sets_target_org_id_for_org_owned_packages(pool: PgPool) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let owner_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &owner_jwt, "Acme Corp", "acme-corp").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id_str = org_body["id"]
+        .as_str()
+        .expect("org id should be returned")
+        .to_owned();
+    let org_id = uuid::Uuid::parse_str(&org_id_str).expect("org id should be a uuid");
+
+    let (status, _) = create_repository_with_options(
+        &app,
+        &owner_jwt,
+        "Acme Public",
+        "acme-public",
+        Some(&org_id_str),
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_package_with_options(
+        &app,
+        &owner_jwt,
+        "npm",
+        "acme-release-widget",
+        "acme-public",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) =
+        create_release_for_package(&app, &owner_jwt, "npm", "acme-release-widget", "1.0.0").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, upload_body) = upload_release_artifact(
+        &app,
+        &owner_jwt,
+        "npm",
+        "acme-release-widget",
+        "1.0.0",
+        "acme-release-widget-1.0.0.tgz",
+        "tarball",
+        "application/octet-stream",
+        b"release artifact bytes",
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected upload response: {upload_body}"
+    );
+
+    let (status, publish_body) =
+        publish_release_for_package(&app, &owner_jwt, "npm", "acme-release-widget", "1.0.0").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected publish response: {publish_body}"
+    );
+
+    let release_id = get_release_id(&pool, "npm", "acme-release-widget", "1.0.0").await;
+
+    let (status, _) = yank_release_for_package(
+        &app,
+        &owner_jwt,
+        "npm",
+        "acme-release-widget",
+        "1.0.0",
+        Some("CVE-2026-0001"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, unyank_body) =
+        unyank_release_for_package(&app, &owner_jwt, "npm", "acme-release-widget", "1.0.0").await;
+    assert_eq!(status, StatusCode::OK, "unyank body: {unyank_body}");
+
+    let (status, _) = deprecate_release_for_package(
+        &app,
+        &owner_jwt,
+        "npm",
+        "acme-release-widget",
+        "1.0.0",
+        Some("use v2 instead"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    for action in [
+        "release_publish",
+        "release_yank",
+        "release_unyank",
+        "release_deprecate",
+    ] {
+        let target_org_id: Option<uuid::Uuid> = sqlx::query_scalar(
+            "SELECT target_org_id FROM audit_logs \
+             WHERE action = $1::audit_action AND target_release_id = $2",
+        )
+        .bind(action)
+        .bind(release_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap_or_else(|_| panic!("audit row for {action} should exist"));
+        assert_eq!(
+            target_org_id,
+            Some(org_id),
+            "{action} audit row should carry the org id"
+        );
+    }
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_release_lifecycle_audit_leaves_target_org_id_null_for_personal_packages(
+    pool: PgPool,
+) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let owner_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, _) = create_repository_with_options(
+        &app,
+        &owner_jwt,
+        "Personal Pkgs",
+        "personal-pkgs",
+        None,
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_package_with_options(
+        &app,
+        &owner_jwt,
+        "npm",
+        "personal-release-widget",
+        "personal-pkgs",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) =
+        create_release_for_package(&app, &owner_jwt, "npm", "personal-release-widget", "1.0.0")
+            .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = upload_release_artifact(
+        &app,
+        &owner_jwt,
+        "npm",
+        "personal-release-widget",
+        "1.0.0",
+        "personal-release-widget-1.0.0.tgz",
+        "tarball",
+        "application/octet-stream",
+        b"release artifact bytes",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) =
+        publish_release_for_package(&app, &owner_jwt, "npm", "personal-release-widget", "1.0.0")
+            .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let release_id = get_release_id(&pool, "npm", "personal-release-widget", "1.0.0").await;
+
+    let (status, _) = yank_release_for_package(
+        &app,
+        &owner_jwt,
+        "npm",
+        "personal-release-widget",
+        "1.0.0",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, _) =
+        unyank_release_for_package(&app, &owner_jwt, "npm", "personal-release-widget", "1.0.0")
+            .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, _) = deprecate_release_for_package(
+        &app,
+        &owner_jwt,
+        "npm",
+        "personal-release-widget",
+        "1.0.0",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    for action in [
+        "release_publish",
+        "release_yank",
+        "release_unyank",
+        "release_deprecate",
+    ] {
+        let target_org_id: Option<uuid::Uuid> = sqlx::query_scalar(
+            "SELECT target_org_id FROM audit_logs \
+             WHERE action = $1::audit_action AND target_release_id = $2",
+        )
+        .bind(action)
+        .bind(release_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap_or_else(|_| panic!("audit row for {action} should exist"));
+        assert_eq!(
+            target_org_id, None,
+            "{action} audit row for a personal package should leave target_org_id NULL"
+        );
+    }
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_org_audit_includes_release_lifecycle_events_for_org_owned_packages(pool: PgPool) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let owner_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &owner_jwt, "Acme Corp", "acme-corp").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id = org_body["id"].as_str().expect("org id should be returned");
+
+    let (status, _) = create_repository_with_options(
+        &app,
+        &owner_jwt,
+        "Acme Public",
+        "acme-public",
+        Some(org_id),
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_package_with_options(
+        &app,
+        &owner_jwt,
+        "npm",
+        "acme-lifecycle-widget",
+        "acme-public",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) =
+        create_release_for_package(&app, &owner_jwt, "npm", "acme-lifecycle-widget", "1.0.0").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = upload_release_artifact(
+        &app,
+        &owner_jwt,
+        "npm",
+        "acme-lifecycle-widget",
+        "1.0.0",
+        "acme-lifecycle-widget-1.0.0.tgz",
+        "tarball",
+        "application/octet-stream",
+        b"release artifact bytes",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) =
+        publish_release_for_package(&app, &owner_jwt, "npm", "acme-lifecycle-widget", "1.0.0")
+            .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, _) = yank_release_for_package(
+        &app,
+        &owner_jwt,
+        "npm",
+        "acme-lifecycle-widget",
+        "1.0.0",
+        Some("supply chain issue"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Also publish a personal-package release that must NOT appear in org audit.
+    let (status, _) = create_repository_with_options(
+        &app,
+        &owner_jwt,
+        "Personal Pkgs",
+        "personal-pkgs",
+        None,
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_package_with_options(
+        &app,
+        &owner_jwt,
+        "npm",
+        "personal-lifecycle-widget",
+        "personal-pkgs",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_release_for_package(
+        &app,
+        &owner_jwt,
+        "npm",
+        "personal-lifecycle-widget",
+        "1.0.0",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = upload_release_artifact(
+        &app,
+        &owner_jwt,
+        "npm",
+        "personal-lifecycle-widget",
+        "1.0.0",
+        "personal-lifecycle-widget-1.0.0.tgz",
+        "tarball",
+        "application/octet-stream",
+        b"personal release artifact bytes",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = publish_release_for_package(
+        &app,
+        &owner_jwt,
+        "npm",
+        "personal-lifecycle-widget",
+        "1.0.0",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, publish_audit_body) = list_org_audit(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        Some("action=release_publish&per_page=20"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let publish_logs = publish_audit_body["logs"]
+        .as_array()
+        .expect("publish audit logs response should be an array");
+    assert_eq!(publish_logs.len(), 1, "response: {publish_audit_body}");
+    assert_eq!(publish_logs[0]["action"], "release_publish");
+    assert_eq!(publish_logs[0]["target_org_id"].as_str(), Some(org_id));
+    assert_eq!(publish_logs[0]["metadata"]["name"], "acme-lifecycle-widget");
+    assert_eq!(publish_logs[0]["metadata"]["version"], "1.0.0");
+
+    let (status, yank_audit_body) = list_org_audit(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        Some("action=release_yank&per_page=20"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let yank_logs = yank_audit_body["logs"]
+        .as_array()
+        .expect("yank audit logs response should be an array");
+    assert_eq!(yank_logs.len(), 1, "response: {yank_audit_body}");
+    assert_eq!(yank_logs[0]["action"], "release_yank");
+    assert_eq!(yank_logs[0]["target_org_id"].as_str(), Some(org_id));
+    assert_eq!(yank_logs[0]["metadata"]["reason"], "supply chain issue");
+
+    let publish_export_resp = export_org_audit_csv(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        Some("action=release_publish"),
+    )
+    .await;
+    assert_eq!(publish_export_resp.status(), StatusCode::OK);
+    let publish_export_body = body_text(publish_export_resp).await;
+    let publish_export_lines = publish_export_body.lines().collect::<Vec<_>>();
+    assert_eq!(
+        publish_export_lines.len(),
+        2,
+        "unexpected CSV export body: {publish_export_body}"
+    );
+    assert!(publish_export_lines[1].contains(",release_publish,"));
+    assert!(publish_export_lines[1].contains(org_id));
+    assert!(publish_export_body.contains("acme-lifecycle-widget"));
+    assert!(!publish_export_body.contains("personal-lifecycle-widget"));
 }
 
 #[sqlx::test(migrations = "../../migrations")]
@@ -8359,4 +9142,332 @@ async fn test_package_detail_reports_can_manage_security_for_security_reviewer(p
     assert_eq!(reviewer_detail["can_manage_releases"], false);
     assert_eq!(reviewer_detail["can_manage_metadata"], false);
     assert_eq!(reviewer_detail["can_manage_trusted_publishers"], false);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_package_lifecycle_audit_sets_target_org_id_for_org_owned_packages(pool: PgPool) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let owner_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, source_org_body) = create_org(&app, &owner_jwt, "Acme Corp", "acme-corp").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let source_org_id_str = source_org_body["id"]
+        .as_str()
+        .expect("source org id should be returned")
+        .to_owned();
+    let source_org_id =
+        uuid::Uuid::parse_str(&source_org_id_str).expect("source org id should be a uuid");
+
+    let (status, target_org_body) =
+        create_org(&app, &owner_jwt, "Acme Successor", "acme-successor").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let target_org_id_str = target_org_body["id"]
+        .as_str()
+        .expect("target org id should be returned")
+        .to_owned();
+    let target_org_id =
+        uuid::Uuid::parse_str(&target_org_id_str).expect("target org id should be a uuid");
+
+    let (status, _) = create_repository_with_options(
+        &app,
+        &owner_jwt,
+        "Acme Public",
+        "acme-public",
+        Some(&source_org_id_str),
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // The target org must have at least one repository to receive transferred packages.
+    let (status, _) = create_repository_with_options(
+        &app,
+        &owner_jwt,
+        "Acme Successor Repo",
+        "acme-successor-repo",
+        Some(&target_org_id_str),
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, create_body) = create_package_with_options(
+        &app,
+        &owner_jwt,
+        "npm",
+        "acme-lifecycle-package",
+        "acme-public",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let package_id_str = create_body["id"]
+        .as_str()
+        .expect("package id should be returned")
+        .to_owned();
+    let package_id = uuid::Uuid::parse_str(&package_id_str).expect("package id should be a uuid");
+
+    let create_target_org_id: Option<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT target_org_id FROM audit_logs \
+         WHERE action = 'package_create'::audit_action AND target_package_id = $1",
+    )
+    .bind(package_id)
+    .fetch_one(&pool)
+    .await
+    .expect("package_create audit row should exist");
+    assert_eq!(
+        create_target_org_id,
+        Some(source_org_id),
+        "package_create audit row should carry the source org id"
+    );
+
+    // Create a second package that we will transfer to the other org.
+    let (status, transfer_body) = create_package_with_options(
+        &app,
+        &owner_jwt,
+        "npm",
+        "acme-transfer-package",
+        "acme-public",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let transfer_package_id_str = transfer_body["id"]
+        .as_str()
+        .expect("transfer package id should be returned")
+        .to_owned();
+    let transfer_package_id = uuid::Uuid::parse_str(&transfer_package_id_str)
+        .expect("transfer package id should be a uuid");
+
+    let (status, transfer_resp) = transfer_package_ownership(
+        &app,
+        &owner_jwt,
+        "npm",
+        "acme-transfer-package",
+        "acme-successor",
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected transfer response: {transfer_resp}"
+    );
+
+    let transfer_target_org_id: Option<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT target_org_id FROM audit_logs \
+         WHERE action = 'package_transfer'::audit_action AND target_package_id = $1",
+    )
+    .bind(transfer_package_id)
+    .fetch_one(&pool)
+    .await
+    .expect("package_transfer audit row should exist");
+    assert_eq!(
+        transfer_target_org_id,
+        Some(target_org_id),
+        "package_transfer audit row should carry the new owner org id"
+    );
+
+    // Archive the first package; the audit row should carry the still-source org id.
+    let (status, delete_resp) =
+        delete_package_for_ecosystem(&app, &owner_jwt, "npm", "acme-lifecycle-package").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected delete response: {delete_resp}"
+    );
+
+    let delete_target_org_id: Option<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT target_org_id FROM audit_logs \
+         WHERE action = 'package_delete'::audit_action AND target_package_id = $1",
+    )
+    .bind(package_id)
+    .fetch_one(&pool)
+    .await
+    .expect("package_delete audit row should exist");
+    assert_eq!(
+        delete_target_org_id,
+        Some(source_org_id),
+        "package_delete audit row should carry the owner org id"
+    );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_package_lifecycle_audit_leaves_target_org_id_null_for_personal_packages(
+    pool: PgPool,
+) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let owner_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, _) = create_repository_with_options(
+        &app,
+        &owner_jwt,
+        "Personal Pkgs",
+        "personal-pkgs",
+        None,
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, create_body) = create_package_with_options(
+        &app,
+        &owner_jwt,
+        "npm",
+        "personal-lifecycle-package",
+        "personal-pkgs",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let package_id_str = create_body["id"]
+        .as_str()
+        .expect("package id should be returned")
+        .to_owned();
+    let package_id = uuid::Uuid::parse_str(&package_id_str).expect("package id should be a uuid");
+
+    let (status, _) =
+        delete_package_for_ecosystem(&app, &owner_jwt, "npm", "personal-lifecycle-package").await;
+    assert_eq!(status, StatusCode::OK);
+
+    for action in ["package_create", "package_delete"] {
+        let target_org_id: Option<uuid::Uuid> = sqlx::query_scalar(
+            "SELECT target_org_id FROM audit_logs \
+             WHERE action = $1::audit_action AND target_package_id = $2",
+        )
+        .bind(action)
+        .bind(package_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap_or_else(|_| panic!("{action} audit row should exist"));
+        assert_eq!(
+            target_org_id, None,
+            "{action} audit row for a personal package should leave target_org_id NULL"
+        );
+    }
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_trusted_publisher_audit_sets_target_org_id_for_org_owned_packages(pool: PgPool) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let owner_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &owner_jwt, "Acme Corp", "acme-corp").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id_str = org_body["id"]
+        .as_str()
+        .expect("org id should be returned")
+        .to_owned();
+    let org_id = uuid::Uuid::parse_str(&org_id_str).expect("org id should be a uuid");
+
+    let (status, _) = create_repository_with_options(
+        &app,
+        &owner_jwt,
+        "Acme Public",
+        "acme-public",
+        Some(&org_id_str),
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, create_body) = create_package_with_options(
+        &app,
+        &owner_jwt,
+        "pypi",
+        "acme-tp-widget",
+        "acme-public",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let package_id_str = create_body["id"]
+        .as_str()
+        .expect("package id should be returned")
+        .to_owned();
+    let package_id = uuid::Uuid::parse_str(&package_id_str).expect("package id should be a uuid");
+
+    let (status, publisher_body) = create_trusted_publisher_for_package(
+        &app,
+        &owner_jwt,
+        "pypi",
+        "acme-tp-widget",
+        json!({
+            "issuer": "https://token.actions.githubusercontent.com",
+            "subject": "repo:acme/tp-widget:ref:refs/heads/main",
+            "repository": "acme/tp-widget",
+            "workflow_ref": ".github/workflows/publish.yml@refs/heads/main",
+            "environment": "production",
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected trusted publisher response: {publisher_body}"
+    );
+    let publisher_id = publisher_body["id"]
+        .as_str()
+        .expect("publisher id should be returned")
+        .to_owned();
+
+    let create_target_org_id: Option<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT target_org_id FROM audit_logs \
+         WHERE action = 'trusted_publisher_create'::audit_action AND target_package_id = $1",
+    )
+    .bind(package_id)
+    .fetch_one(&pool)
+    .await
+    .expect("trusted_publisher_create audit row should exist");
+    assert_eq!(
+        create_target_org_id,
+        Some(org_id),
+        "trusted_publisher_create audit row should carry the org id"
+    );
+
+    let (status, _) = delete_trusted_publisher_for_package(
+        &app,
+        &owner_jwt,
+        "pypi",
+        "acme-tp-widget",
+        &publisher_id,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let delete_target_org_id: Option<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT target_org_id FROM audit_logs \
+         WHERE action = 'trusted_publisher_delete'::audit_action AND target_package_id = $1",
+    )
+    .bind(package_id)
+    .fetch_one(&pool)
+    .await
+    .expect("trusted_publisher_delete audit row should exist");
+    assert_eq!(
+        delete_target_org_id,
+        Some(org_id),
+        "trusted_publisher_delete audit row should carry the org id"
+    );
+
+    // Confirm org audit surfaces both events with the new target_org_id.
+    let (status, audit_body) = list_org_audit(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        Some("action=trusted_publisher_create&per_page=20"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let logs = audit_body["logs"]
+        .as_array()
+        .expect("audit logs response should be an array");
+    assert_eq!(logs.len(), 1, "response: {audit_body}");
+    assert_eq!(logs[0]["action"], "trusted_publisher_create");
+    assert_eq!(logs[0]["target_org_id"].as_str(), Some(org_id_str.as_str()));
 }

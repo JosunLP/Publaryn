@@ -150,13 +150,21 @@ async fn create_trusted_publisher(
         _ => ApiError(Error::Database(e)),
     })?;
 
+    let owner_org_id: Option<Uuid> =
+        sqlx::query_scalar("SELECT owner_org_id FROM packages WHERE id = $1")
+            .bind(package_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| ApiError(Error::Database(e)))?;
+
     sqlx::query(
-        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_package_id, metadata, occurred_at) \
-         VALUES ($1, 'trusted_publisher_create', $2, $3, $4, $5, NOW())",
+        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_org_id, target_package_id, metadata, occurred_at) \
+         VALUES ($1, 'trusted_publisher_create', $2, $3, $4, $5, $6, NOW())",
     )
     .bind(Uuid::new_v4())
     .bind(identity.user_id)
     .bind(identity.audit_actor_token_id())
+    .bind(owner_org_id)
     .bind(package_id)
     .bind(serde_json::json!({
         "trusted_publisher_id": publisher.id,
@@ -245,13 +253,21 @@ async fn delete_trusted_publisher(
         .try_get::<Option<String>, _>("environment")
         .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
 
+    let owner_org_id: Option<Uuid> =
+        sqlx::query_scalar("SELECT owner_org_id FROM packages WHERE id = $1")
+            .bind(package_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| ApiError(Error::Database(e)))?;
+
     sqlx::query(
-        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_package_id, metadata, occurred_at) \
-         VALUES ($1, 'trusted_publisher_delete', $2, $3, $4, $5, NOW())",
+        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_org_id, target_package_id, metadata, occurred_at) \
+         VALUES ($1, 'trusted_publisher_delete', $2, $3, $4, $5, $6, NOW())",
     )
     .bind(Uuid::new_v4())
     .bind(identity.user_id)
     .bind(identity.audit_actor_token_id())
+    .bind(owner_org_id)
     .bind(package_id)
     .bind(serde_json::json!({
         "trusted_publisher_id": publisher_id,

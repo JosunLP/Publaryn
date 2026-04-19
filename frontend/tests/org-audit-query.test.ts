@@ -139,6 +139,105 @@ describe('org audit query helpers', () => {
     expect(view.action).toBe('package_update');
   });
 
+  test('keeps security finding triage audit actions when building and parsing filters', () => {
+    for (const action of [
+      'security_finding_resolve',
+      'security_finding_reopen',
+    ] as const) {
+      const path = buildOrgAuditPath(
+        'acme-corp',
+        {
+          action,
+          actorUserId: '',
+          actorUsername: '',
+          page: 1,
+        },
+        '?tab=activity'
+      );
+
+      const url = new URL(path, 'https://example.test');
+      const view = getAuditViewFromQuery(url.searchParams);
+
+      expect(url.searchParams.get('action')).toBe(action);
+      expect(view.action).toBe(action);
+    }
+  });
+
+  test('keeps release lifecycle audit actions when building and parsing filters', () => {
+    for (const action of [
+      'release_publish',
+      'release_yank',
+      'release_unyank',
+      'release_deprecate',
+    ] as const) {
+      const path = buildOrgAuditPath(
+        'acme-corp',
+        {
+          action,
+          actorUserId: '',
+          actorUsername: '',
+          page: 1,
+        },
+        '?tab=activity'
+      );
+
+      const url = new URL(path, 'https://example.test');
+      const view = getAuditViewFromQuery(url.searchParams);
+
+      expect(url.searchParams.get('action')).toBe(action);
+      expect(view.action).toBe(action);
+    }
+  });
+
+  test('keeps package lifecycle audit actions when building and parsing filters', () => {
+    for (const action of [
+      'package_create',
+      'package_delete',
+      'package_transfer',
+    ] as const) {
+      const path = buildOrgAuditPath(
+        'acme-corp',
+        {
+          action,
+          actorUserId: '',
+          actorUsername: '',
+          page: 1,
+        },
+        '?tab=activity'
+      );
+
+      const url = new URL(path, 'https://example.test');
+      const view = getAuditViewFromQuery(url.searchParams);
+
+      expect(url.searchParams.get('action')).toBe(action);
+      expect(view.action).toBe(action);
+    }
+  });
+
+  test('keeps trusted publisher audit actions when building and parsing filters', () => {
+    for (const action of [
+      'trusted_publisher_create',
+      'trusted_publisher_delete',
+    ] as const) {
+      const path = buildOrgAuditPath(
+        'acme-corp',
+        {
+          action,
+          actorUserId: '',
+          actorUsername: '',
+          page: 1,
+        },
+        '?tab=activity'
+      );
+
+      const url = new URL(path, 'https://example.test');
+      const view = getAuditViewFromQuery(url.searchParams);
+
+      expect(url.searchParams.get('action')).toBe(action);
+      expect(view.action).toBe(action);
+    }
+  });
+
   test('keeps team repository access audit actions when building and parsing filters', () => {
     const path = buildOrgAuditPath(
       'acme-corp',

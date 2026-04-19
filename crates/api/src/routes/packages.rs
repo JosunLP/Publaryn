@@ -465,12 +465,13 @@ async fn create_package(
     })?;
 
     sqlx::query(
-        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_package_id, metadata, occurred_at) \
-         VALUES ($1, 'package_create', $2, $3, $4, $5, NOW())",
+        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_org_id, target_package_id, metadata, occurred_at) \
+         VALUES ($1, 'package_create', $2, $3, $4, $5, $6, NOW())",
     )
     .bind(Uuid::new_v4())
     .bind(identity.user_id)
     .bind(identity.audit_actor_token_id())
+    .bind(package.owner_org_id)
     .bind(package.id)
     .bind(serde_json::json!({
         "ecosystem": package.ecosystem.as_str(),
@@ -744,6 +745,13 @@ async fn delete_package(
     let package_id =
         ensure_package_admin_access(&state.db, eco.as_str(), &normalized, identity.user_id).await?;
 
+    let owner_org_id: Option<Uuid> =
+        sqlx::query_scalar("SELECT owner_org_id FROM packages WHERE id = $1")
+            .bind(package_id)
+            .fetch_one(&state.db)
+            .await
+            .map_err(|e| ApiError(Error::Database(e)))?;
+
     sqlx::query("UPDATE packages SET is_archived = true, updated_at = NOW() WHERE id = $1")
         .bind(package_id)
         .execute(&state.db)
@@ -751,12 +759,13 @@ async fn delete_package(
         .map_err(|e| ApiError(Error::Database(e)))?;
 
     sqlx::query(
-        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_package_id, metadata, occurred_at) \
-         VALUES ($1, 'package_delete', $2, $3, $4, $5, NOW())",
+        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_org_id, target_package_id, metadata, occurred_at) \
+         VALUES ($1, 'package_delete', $2, $3, $4, $5, $6, NOW())",
     )
     .bind(Uuid::new_v4())
     .bind(identity.user_id)
     .bind(identity.audit_actor_token_id())
+    .bind(owner_org_id)
     .bind(package_id)
     .bind(serde_json::json!({
         "ecosystem": eco.as_str(),
@@ -910,12 +919,13 @@ async fn transfer_package_ownership(
     };
 
     sqlx::query(
-        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_package_id, metadata, occurred_at) \
-         VALUES ($1, 'package_transfer', $2, $3, $4, $5, NOW())",
+        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_org_id, target_package_id, metadata, occurred_at) \
+         VALUES ($1, 'package_transfer', $2, $3, $4, $5, $6, NOW())",
     )
     .bind(Uuid::new_v4())
     .bind(identity.user_id)
     .bind(identity.audit_actor_token_id())
+    .bind(target_org.id)
     .bind(package_id)
     .bind(serde_json::json!({
         "ecosystem": eco.as_str(),
@@ -1151,13 +1161,21 @@ async fn yank_release(
         .try_get("id")
         .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
 
+    let owner_org_id: Option<Uuid> =
+        sqlx::query_scalar("SELECT owner_org_id FROM packages WHERE id = $1")
+            .bind(package_id)
+            .fetch_one(&state.db)
+            .await
+            .map_err(|e| ApiError(Error::Database(e)))?;
+
     sqlx::query(
-        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_package_id, target_release_id, metadata, occurred_at) \
-         VALUES ($1, 'release_yank', $2, $3, $4, $5, $6, NOW())",
+        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_org_id, target_package_id, target_release_id, metadata, occurred_at) \
+         VALUES ($1, 'release_yank', $2, $3, $4, $5, $6, $7, NOW())",
     )
     .bind(Uuid::new_v4())
     .bind(identity.user_id)
     .bind(identity.audit_actor_token_id())
+    .bind(owner_org_id)
     .bind(package_id)
     .bind(release_id)
     .bind(serde_json::json!({
@@ -1220,7 +1238,7 @@ async fn unyank_release(
         "UPDATE releases \
          SET is_yanked = false, \
              yank_reason = NULL, \
-             status = $1, \
+             status = $1::release_status, \
              updated_at = NOW() \
          WHERE id = $2",
     )
@@ -1230,13 +1248,21 @@ async fn unyank_release(
     .await
     .map_err(|e| ApiError(Error::Database(e)))?;
 
+    let owner_org_id: Option<Uuid> =
+        sqlx::query_scalar("SELECT owner_org_id FROM packages WHERE id = $1")
+            .bind(package_id)
+            .fetch_one(&state.db)
+            .await
+            .map_err(|e| ApiError(Error::Database(e)))?;
+
     sqlx::query(
-        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_package_id, target_release_id, metadata, occurred_at) \
-         VALUES ($1, 'release_unyank', $2, $3, $4, $5, $6, NOW())",
+        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_org_id, target_package_id, target_release_id, metadata, occurred_at) \
+         VALUES ($1, 'release_unyank', $2, $3, $4, $5, $6, $7, NOW())",
     )
     .bind(Uuid::new_v4())
     .bind(identity.user_id)
     .bind(identity.audit_actor_token_id())
+    .bind(owner_org_id)
     .bind(package_id)
     .bind(release_id)
     .bind(serde_json::json!({
@@ -1296,13 +1322,21 @@ async fn deprecate_release(
         .try_get("id")
         .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
 
+    let owner_org_id: Option<Uuid> =
+        sqlx::query_scalar("SELECT owner_org_id FROM packages WHERE id = $1")
+            .bind(package_id)
+            .fetch_one(&state.db)
+            .await
+            .map_err(|e| ApiError(Error::Database(e)))?;
+
     sqlx::query(
-        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_package_id, target_release_id, metadata, occurred_at) \
-         VALUES ($1, 'release_deprecate', $2, $3, $4, $5, $6, NOW())",
+        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_org_id, target_package_id, target_release_id, metadata, occurred_at) \
+         VALUES ($1, 'release_deprecate', $2, $3, $4, $5, $6, $7, NOW())",
     )
     .bind(Uuid::new_v4())
     .bind(identity.user_id)
     .bind(identity.audit_actor_token_id())
+    .bind(owner_org_id)
     .bind(package_id)
     .bind(release_id)
     .bind(serde_json::json!({
@@ -1507,13 +1541,21 @@ async fn publish_release(
     .await
     .map_err(|e| ApiError(Error::Database(e)))?;
 
+    let owner_org_id: Option<Uuid> =
+        sqlx::query_scalar("SELECT owner_org_id FROM packages WHERE id = $1")
+            .bind(package_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| ApiError(Error::Database(e)))?;
+
     sqlx::query(
-        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_package_id, target_release_id, metadata, occurred_at) \
-         VALUES ($1, 'release_publish', $2, $3, $4, $5, $6, NOW())",
+        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_org_id, target_package_id, target_release_id, metadata, occurred_at) \
+         VALUES ($1, 'release_publish', $2, $3, $4, $5, $6, $7, NOW())",
     )
     .bind(Uuid::new_v4())
     .bind(identity.user_id)
     .bind(identity.audit_actor_token_id())
+    .bind(owner_org_id)
     .bind(package_id)
     .bind(release_id)
     .bind(serde_json::json!({

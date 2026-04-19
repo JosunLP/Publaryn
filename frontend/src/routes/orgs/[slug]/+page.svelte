@@ -51,7 +51,6 @@
     listOrgPackages,
     listOrgRepositories,
     listOrgSecurityFindings,
-    searchOrgMembers,
     listTeamMembers,
     listTeamPackageAccess,
     listTeamRepositoryAccess,
@@ -63,6 +62,7 @@
     replaceTeamPackageAccess,
     replaceTeamRepositoryAccess,
     revokeInvitation,
+    searchOrgMembers,
     sendInvitation,
     transferOwnership,
     updateOrg,
@@ -81,6 +81,12 @@
     listRepositoryPackages,
     updateRepository,
   } from '../../../api/repositories';
+  import type { OrgAuditActorOption } from '../../../pages/org-audit-actors';
+  import {
+    buildAuditActorOptions,
+    buildRemoteAuditActorOptions,
+    nextAuditActorInputState,
+  } from '../../../pages/org-audit-actors';
   import {
     ORG_AUDIT_ACTION_VALUES,
     buildOrgAuditExportFilename,
@@ -91,19 +97,13 @@
     normalizeAuditActorUserId,
     normalizeAuditActorUsername,
   } from '../../../pages/org-audit-query';
-  import {
-    buildAuditActorOptions,
-    buildRemoteAuditActorOptions,
-    nextAuditActorInputState,
-  } from '../../../pages/org-audit-actors';
-  import type { OrgAuditActorOption } from '../../../pages/org-audit-actors';
-  import { buildPackageDetailPath } from '../../../pages/package-detail-tabs';
   import type { OrgMemberPickerOption } from '../../../pages/org-member-picker';
   import {
     buildOrgMemberPickerOptions,
     resolveOrgMemberPickerInput,
   } from '../../../pages/org-member-picker';
   import { canViewOrgPeopleWorkspace } from '../../../pages/org-workspace-access';
+  import { buildPackageDetailPath } from '../../../pages/package-detail-tabs';
   import { ECOSYSTEMS, ecosystemLabel } from '../../../utils/ecosystem';
   import { formatDate, formatNumber } from '../../../utils/format';
   import {
@@ -281,7 +281,10 @@
     void loadOrganizationPage();
   }
 
-  $: auditActorOptions = buildAuditActorOptions(members, auditActorRemoteOptions);
+  $: auditActorOptions = buildAuditActorOptions(
+    members,
+    auditActorRemoteOptions
+  );
   $: {
     const nextInputState = nextAuditActorInputState(
       auditActorInputSyncKey,
@@ -505,7 +508,10 @@
           ? listMembers(slug).catch(
               (caughtError: unknown): MemberListResponse => ({
                 members: [],
-                load_error: toErrorMessage(caughtError, 'Failed to load members.'),
+                load_error: toErrorMessage(
+                  caughtError,
+                  'Failed to load members.'
+                ),
               })
             )
           : Promise.resolve<MemberListResponse>({
@@ -516,7 +522,10 @@
           ? listTeams(slug).catch(
               (caughtError: unknown): TeamListResponse => ({
                 teams: [],
-                load_error: toErrorMessage(caughtError, 'Failed to load teams.'),
+                load_error: toErrorMessage(
+                  caughtError,
+                  'Failed to load teams.'
+                ),
               })
             )
           : Promise.resolve<TeamListResponse>({
@@ -1482,13 +1491,13 @@
     return typeof team.slug === 'string' && team.slug.trim().length > 0;
   }
 
-  function getEligibleTeamMemberOptions(teamSlug: string): OrgMemberPickerOption[] {
+  function getEligibleTeamMemberOptions(
+    teamSlug: string
+  ): OrgMemberPickerOption[] {
     const teamMembers = teamMembersBySlug[teamSlug]?.members || [];
     return buildOrgMemberPickerOptions(
       members,
-      teamMembers
-        .map((member) => member.username?.trim() || '')
-        .filter(Boolean)
+      teamMembers.map((member) => member.username?.trim() || '').filter(Boolean)
     );
   }
 
@@ -1546,6 +1555,17 @@
       org_create: 'Organization created',
       org_update: 'Organization updated',
       package_update: 'Package updated',
+      package_create: 'Package created',
+      package_delete: 'Package archived',
+      package_transfer: 'Package transferred',
+      release_publish: 'Release published',
+      release_yank: 'Release yanked',
+      release_unyank: 'Release restored',
+      release_deprecate: 'Release deprecated',
+      trusted_publisher_create: 'Trusted publisher added',
+      trusted_publisher_delete: 'Trusted publisher removed',
+      security_finding_resolve: 'Security finding resolved',
+      security_finding_reopen: 'Security finding reopened',
       namespace_claim_create: 'Namespace claim created',
       org_member_add: 'Member added',
       org_role_change: 'Member role updated',
@@ -1641,6 +1661,98 @@
         return changedFields.length > 0
           ? `Updated package settings for ${packageName}: ${changedFields.map((field) => formatIdentifierLabel(field)).join(', ')}.`
           : `Updated package settings for ${packageName}.`;
+      }
+      case 'release_publish':
+      case 'release_yank':
+      case 'release_unyank':
+      case 'release_deprecate': {
+        const packageName =
+          stringField(metadata.package_name) ||
+          stringField(metadata.name) ||
+          'selected package';
+        const version = stringField(metadata.version);
+        const releaseLabel = version
+          ? `${packageName} ${version}`
+          : packageName;
+        const reason = stringField(metadata.reason);
+        const note = stringField(metadata.message);
+
+        switch (log.action) {
+          case 'release_publish':
+            return `Published release ${releaseLabel}.`;
+          case 'release_yank':
+            return reason
+              ? `Yanked release ${releaseLabel} (${reason}).`
+              : `Yanked release ${releaseLabel}.`;
+          case 'release_unyank':
+            return `Restored release ${releaseLabel}.`;
+          case 'release_deprecate':
+            return note
+              ? `Deprecated release ${releaseLabel} (${note}).`
+              : `Deprecated release ${releaseLabel}.`;
+          default:
+            return null;
+        }
+      }
+      case 'package_create': {
+        const packageName =
+          stringField(metadata.name) ||
+          stringField(metadata.package_name) ||
+          'selected package';
+        const repositorySlug = stringField(metadata.repository_slug);
+        return repositorySlug
+          ? `Created package ${packageName} in repository ${repositorySlug}.`
+          : `Created package ${packageName}.`;
+      }
+      case 'package_delete': {
+        const packageName =
+          stringField(metadata.name) ||
+          stringField(metadata.package_name) ||
+          'selected package';
+        return `Archived package ${packageName}.`;
+      }
+      case 'package_transfer': {
+        const packageName =
+          stringField(metadata.name) ||
+          stringField(metadata.package_name) ||
+          'selected package';
+        const newOwnerSlug = stringField(metadata.new_owner_org_slug);
+        const newOwnerName = stringField(metadata.new_owner_org_name);
+        const targetLabel = newOwnerName || newOwnerSlug;
+        return targetLabel
+          ? `Transferred package ${packageName} to organization ${targetLabel}.`
+          : `Transferred package ${packageName}.`;
+      }
+      case 'trusted_publisher_create':
+      case 'trusted_publisher_delete': {
+        const issuer = stringField(metadata.issuer);
+        const subject = stringField(metadata.subject);
+        const repository = stringField(metadata.repository);
+        const descriptor = issuer
+          ? subject
+            ? `${issuer} (${subject})`
+            : issuer
+          : 'trusted publisher';
+        const repoSuffix = repository ? ` for ${repository}` : '';
+        return log.action === 'trusted_publisher_create'
+          ? `Added ${descriptor}${repoSuffix}.`
+          : `Removed ${descriptor}${repoSuffix}.`;
+      }
+      case 'security_finding_resolve':
+      case 'security_finding_reopen': {
+        const packageName =
+          stringField(metadata.package_name) || 'selected package';
+        const releaseVersion = stringField(metadata.release_version);
+        const note = stringField(metadata.note);
+        const actionLabel =
+          log.action === 'security_finding_resolve' ? 'Resolved' : 'Reopened';
+        const packageLabel = releaseVersion
+          ? `${packageName} ${releaseVersion}`
+          : packageName;
+
+        return note
+          ? `${actionLabel} a security finding for ${packageLabel} (${note}).`
+          : `${actionLabel} a security finding for ${packageLabel}.`;
       }
       case 'org_member_add':
         return stringField(metadata.username)
@@ -1869,14 +1981,16 @@
 
       <div class="org-kpi-grid">
         <div class="org-kpi">
-          <span class="org-kpi__value">{canViewPeopleWorkspace ? members.length : '—'}</span><span
-            class="org-kpi__label"
+          <span class="org-kpi__value"
+            >{canViewPeopleWorkspace ? members.length : '—'}</span
+          ><span class="org-kpi__label"
             >{canViewPeopleWorkspace ? 'Members' : 'Member directory'}</span
           >
         </div>
         <div class="org-kpi">
-          <span class="org-kpi__value">{canViewPeopleWorkspace ? teams.length : '—'}</span><span
-            class="org-kpi__label"
+          <span class="org-kpi__value"
+            >{canViewPeopleWorkspace ? teams.length : '—'}</span
+          ><span class="org-kpi__label"
             >{canViewPeopleWorkspace ? 'Teams' : 'Team directory'}</span
           >
         </div>
@@ -2395,13 +2509,16 @@
           {:else if teams.length === 0}
             <div class="empty-state">
               <h3>No teams yet</h3>
-              <p>Create the first team to delegate package work more clearly.</p>
+              <p>
+                Create the first team to delegate package work more clearly.
+              </p>
             </div>
           {:else}
             <div class="settings-section">
               {#each teams as team}
                 {@const teamSlug = team.slug || ''}
-                {@const teamMembers = teamMembersBySlug[teamSlug]?.members || []}
+                {@const teamMembers =
+                  teamMembersBySlug[teamSlug]?.members || []}
                 {@const teamMembersError =
                   teamMembersBySlug[teamSlug]?.load_error || null}
                 {@const teamRepositoryGrants =
@@ -2415,96 +2532,218 @@
                 {@const eligibleTeamMemberOptions =
                   getEligibleTeamMemberOptions(teamSlug)}
                 <div class="settings-subsection">
-                <div class="org-section-header">
-                  <div>
-                    <h3>{team.name || team.slug || 'Team'}</h3>
-                    <p class="settings-copy">
-                      {team.description || 'No team description yet.'}
-                    </p>
-                    <div class="token-row__meta">
-                      <span>@{team.slug || 'no-slug'}</span>
-                      <span>created {formatDate(team.created_at)}</span>
-                    </div>
-                  </div>
-                  {#if canAdminister && teamSlug}
-                    <button
-                      class="btn btn-danger btn-sm"
-                      type="button"
-                      on:click={() => handleDeleteTeam(teamSlug)}>Delete</button
-                    >
-                  {/if}
-                </div>
-
-                {#if canAdminister && teamSlug}
-                  <div class="grid gap-6 xl:grid-cols-2">
-                    <form
-                      on:submit={(event) => handleUpdateTeam(event, teamSlug)}
-                    >
-                      <div class="form-group">
-                        <label for={`team-name-${teamSlug}`}>Team name</label>
-                        <input
-                          id={`team-name-${teamSlug}`}
-                          name="name"
-                          class="form-input"
-                          value={team.name || ''}
-                          required
-                        />
-                      </div>
-                      <div class="form-group">
-                        <label for={`team-description-${teamSlug}`}
-                          >Description</label
-                        >
-                        <textarea
-                          id={`team-description-${teamSlug}`}
-                          name="description"
-                          class="form-input"
-                          rows="3">{team.description || ''}</textarea
-                        >
-                      </div>
-                      <button type="submit" class="btn btn-secondary"
-                        >Save changes</button
-                      >
-                    </form>
-
+                  <div class="org-section-header">
                     <div>
-                      <h4>Team members</h4>
-                      {#if teamMembersError}
-                        <div class="alert alert-error">{teamMembersError}</div>
-                      {:else if teamMembers.length === 0}
+                      <h3>{team.name || team.slug || 'Team'}</h3>
+                      <p class="settings-copy">
+                        {team.description || 'No team description yet.'}
+                      </p>
+                      <div class="token-row__meta">
+                        <span>@{team.slug || 'no-slug'}</span>
+                        <span>created {formatDate(team.created_at)}</span>
+                      </div>
+                    </div>
+                    {#if canAdminister && teamSlug}
+                      <button
+                        class="btn btn-danger btn-sm"
+                        type="button"
+                        on:click={() => handleDeleteTeam(teamSlug)}
+                        >Delete</button
+                      >
+                    {/if}
+                  </div>
+
+                  {#if canAdminister && teamSlug}
+                    <div class="grid gap-6 xl:grid-cols-2">
+                      <form
+                        on:submit={(event) => handleUpdateTeam(event, teamSlug)}
+                      >
+                        <div class="form-group">
+                          <label for={`team-name-${teamSlug}`}>Team name</label>
+                          <input
+                            id={`team-name-${teamSlug}`}
+                            name="name"
+                            class="form-input"
+                            value={team.name || ''}
+                            required
+                          />
+                        </div>
+                        <div class="form-group">
+                          <label for={`team-description-${teamSlug}`}
+                            >Description</label
+                          >
+                          <textarea
+                            id={`team-description-${teamSlug}`}
+                            name="description"
+                            class="form-input"
+                            rows="3">{team.description || ''}</textarea
+                          >
+                        </div>
+                        <button type="submit" class="btn btn-secondary"
+                          >Save changes</button
+                        >
+                      </form>
+
+                      <div>
+                        <h4>Team members</h4>
+                        {#if teamMembersError}
+                          <div class="alert alert-error">
+                            {teamMembersError}
+                          </div>
+                        {:else if teamMembers.length === 0}
+                          <p class="settings-copy">
+                            No members in this team yet.
+                          </p>
+                        {:else}
+                          <div class="token-list">
+                            {#each teamMembers as teamMember}
+                              <div class="token-row">
+                                <div class="token-row__main">
+                                  <div class="token-row__title">
+                                    {teamMember.display_name ||
+                                      teamMember.username ||
+                                      'Unknown member'}
+                                  </div>
+                                  <div class="token-row__meta">
+                                    <span
+                                      >@{teamMember.username || 'unknown'}</span
+                                    >
+                                    <span
+                                      >added {formatDate(
+                                        teamMember.added_at
+                                      )}</span
+                                    >
+                                  </div>
+                                </div>
+                                {#if teamMember.username}
+                                  <div class="token-row__actions">
+                                    <button
+                                      class="btn btn-secondary btn-sm"
+                                      type="button"
+                                      on:click={() =>
+                                        handleRemoveTeamMember(
+                                          teamSlug,
+                                          teamMember.username || ''
+                                        )}>Remove</button
+                                    >
+                                  </div>
+                                {/if}
+                              </div>
+                            {/each}
+                          </div>
+                        {/if}
+
+                        {#if eligibleTeamMemberOptions.length === 0}
+                          <p class="settings-copy">
+                            Every current organization member is already part of
+                            this team.
+                          </p>
+                        {:else}
+                          <form
+                            on:submit={(event) =>
+                              handleAddTeamMember(event, teamSlug)}
+                          >
+                            <div class="form-group">
+                              <label for={`team-member-${teamSlug}`}
+                                >Add organization member</label
+                              >
+                              <input
+                                id={`team-member-${teamSlug}`}
+                                name="username"
+                                class="form-input"
+                                list={`team-member-options-${teamSlug}`}
+                                placeholder="Search username or paste user id"
+                                autocomplete="off"
+                                required
+                              />
+                              <datalist id={`team-member-options-${teamSlug}`}>
+                                {#each eligibleTeamMemberOptions as option}
+                                  <option value={option.username}
+                                    >{option.label}</option
+                                  >
+                                  <option value={option.userId}
+                                    >{option.label}</option
+                                  >
+                                {/each}
+                              </datalist>
+                            </div>
+                            <button type="submit" class="btn btn-primary"
+                              >Add member</button
+                            >
+                          </form>
+                        {/if}
+                      </div>
+                    </div>
+
+                    <div class="mt-6">
+                      <h4>Repository access</h4>
+                      <p class="settings-copy">
+                        Repository grants apply across current and future
+                        packages in the selected repository. The <strong
+                          >Admin</strong
+                        >
+                        permission also unlocks repository setting updates.
+                      </p>
+                      {#if teamRepositoryGrantsError}
+                        <div class="alert alert-error">
+                          {teamRepositoryGrantsError}
+                        </div>
+                      {:else if teamRepositoryGrants.length === 0}
                         <p class="settings-copy">
-                          No members in this team yet.
+                          No repository grants assigned yet.
                         </p>
                       {:else}
                         <div class="token-list">
-                          {#each teamMembers as teamMember}
+                          {#each teamRepositoryGrants as grant}
                             <div class="token-row">
                               <div class="token-row__main">
                                 <div class="token-row__title">
-                                  {teamMember.display_name ||
-                                    teamMember.username ||
-                                    'Unknown member'}
+                                  {#if grant.slug}
+                                    <a
+                                      href={`/repositories/${encodeURIComponent(grant.slug || '')}`}
+                                      data-sveltekit-preload-data="hover"
+                                      >{grant.name || grant.slug}</a
+                                    >
+                                  {:else}
+                                    {grant.name || 'Unnamed repository'}
+                                  {/if}
                                 </div>
                                 <div class="token-row__meta">
+                                  <span>@{grant.slug || 'no-slug'}</span>
                                   <span
-                                    >@{teamMember.username || 'unknown'}</span
+                                    >{formatRepositoryKindLabel(
+                                      grant.kind
+                                    )}</span
                                   >
                                   <span
-                                    >added {formatDate(
-                                      teamMember.added_at
+                                    >{formatRepositoryVisibilityLabel(
+                                      grant.visibility
+                                    )}</span
+                                  >
+                                  <span
+                                    >granted {formatDate(
+                                      grant.granted_at
                                     )}</span
                                   >
                                 </div>
+                                <div class="token-row__scopes">
+                                  {#each grant.permissions || [] as permission}
+                                    <span class="badge badge-ecosystem"
+                                      >{formatPermission(permission)}</span
+                                    >
+                                  {/each}
+                                </div>
                               </div>
-                              {#if teamMember.username}
+                              {#if grant.slug}
                                 <div class="token-row__actions">
                                   <button
                                     class="btn btn-secondary btn-sm"
                                     type="button"
                                     on:click={() =>
-                                      handleRemoveTeamMember(
+                                      handleRemoveTeamRepositoryAccess(
                                         teamSlug,
-                                        teamMember.username || ''
-                                      )}>Remove</button
+                                        grant.slug || ''
+                                      )}>Revoke</button
                                   >
                                 </div>
                               {/if}
@@ -2513,426 +2752,315 @@
                         </div>
                       {/if}
 
-                      {#if eligibleTeamMemberOptions.length === 0}
-                        <p class="settings-copy">
-                          Every current organization member is already part of
-                          this team.
-                        </p>
-                      {:else}
-                        <form
-                          on:submit={(event) =>
-                            handleAddTeamMember(event, teamSlug)}
-                        >
-                          <div class="form-group">
-                            <label for={`team-member-${teamSlug}`}
-                              >Add organization member</label
-                            >
-                            <input
-                              id={`team-member-${teamSlug}`}
-                              name="username"
+                      <form
+                        class="settings-subsection"
+                        on:submit={(event) =>
+                          handleReplaceTeamRepositoryAccess(event, teamSlug)}
+                      >
+                        <div class="form-group">
+                          <label for={`team-repository-${teamSlug}`}
+                            >Organization repository</label
+                          >
+                          {#if repositoriesError}
+                            <div class="alert alert-error">
+                              {repositoriesError}
+                            </div>
+                          {:else if repositories.length === 0}
+                            <p class="settings-copy">
+                              Create a repository before delegating
+                              repository-wide access.
+                            </p>
+                          {:else}
+                            <select
+                              id={`team-repository-${teamSlug}`}
+                              name="repository_slug"
                               class="form-input"
-                              list={`team-member-options-${teamSlug}`}
-                              placeholder="Search username or paste user id"
-                              autocomplete="off"
                               required
-                            />
-                            <datalist id={`team-member-options-${teamSlug}`}>
-                              {#each eligibleTeamMemberOptions as option}
-                                <option value={option.username}
-                                  >{option.label}</option
-                                >
-                                <option value={option.userId}
-                                  >{option.label}</option
+                            >
+                              <option value="">Select a repository</option>
+                              {#each [...repositories].sort( (left, right) => `${left.name || left.slug || ''}`.localeCompare(`${right.name || right.slug || ''}`) ) as repository}
+                                <option value={repository.slug || ''}
+                                  >{`${repository.name || repository.slug || ''} · ${formatRepositoryKindLabel(repository.kind)} · ${formatRepositoryVisibilityLabel(repository.visibility)}`}</option
                                 >
                               {/each}
-                            </datalist>
+                            </select>
+                          {/if}
+                        </div>
+                        <fieldset class="form-group">
+                          <legend>Permissions</legend>
+                          <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                            {#each TEAM_PERMISSION_OPTIONS as permission}
+                              <label
+                                class="rounded-lg border border-neutral-200 p-3 text-sm"
+                              >
+                                <span class="flex items-start gap-3">
+                                  <input
+                                    type="checkbox"
+                                    name="permissions"
+                                    value={permission.value}
+                                    disabled={Boolean(repositoriesError) ||
+                                      repositories.length === 0}
+                                  />
+                                  <span>
+                                    <span class="block font-medium"
+                                      >{permission.label}</span
+                                    >
+                                    <span class="mt-1 block text-muted"
+                                      >{permission.description}</span
+                                    >
+                                  </span>
+                                </span>
+                              </label>
+                            {/each}
                           </div>
-                          <button type="submit" class="btn btn-primary"
-                            >Add member</button
-                          >
-                        </form>
+                        </fieldset>
+                        <button
+                          type="submit"
+                          class="btn btn-primary"
+                          disabled={Boolean(repositoriesError) ||
+                            repositories.length === 0}
+                          >Save repository access</button
+                        >
+                      </form>
+                    </div>
+
+                    <div class="mt-6">
+                      <h4>Package access</h4>
+                      {#if teamGrantsError}
+                        <div class="alert alert-error">{teamGrantsError}</div>
+                      {:else if teamGrants.length === 0}
+                        <p class="settings-copy">
+                          No package grants assigned yet.
+                        </p>
+                      {:else}
+                        <div class="token-list">
+                          {#each teamGrants as grant}
+                            <div class="token-row">
+                              <div class="token-row__main">
+                                <div class="token-row__title">
+                                  <a
+                                    href={`/packages/${encodeURIComponent(grant.ecosystem || 'unknown')}/${encodeURIComponent(grant.name || '')}`}
+                                    data-sveltekit-preload-data="hover"
+                                    >{grant.name || 'Unnamed package'}</a
+                                  >
+                                </div>
+                                <div class="token-row__meta">
+                                  <span>{grant.ecosystem || 'unknown'}</span>
+                                  <span
+                                    >granted {formatDate(
+                                      grant.granted_at
+                                    )}</span
+                                  >
+                                </div>
+                                <div class="token-row__scopes">
+                                  {#each grant.permissions || [] as permission}
+                                    <span class="badge badge-ecosystem"
+                                      >{formatPermission(permission)}</span
+                                    >
+                                  {/each}
+                                </div>
+                              </div>
+                              {#if grant.ecosystem && grant.name}
+                                <div class="token-row__actions">
+                                  <button
+                                    class="btn btn-secondary btn-sm"
+                                    type="button"
+                                    on:click={() =>
+                                      handleRemoveTeamPackageAccess(
+                                        teamSlug,
+                                        grant.ecosystem || '',
+                                        grant.name || ''
+                                      )}>Revoke</button
+                                  >
+                                </div>
+                              {/if}
+                            </div>
+                          {/each}
+                        </div>
                       {/if}
+
+                      <form
+                        class="settings-subsection"
+                        on:submit={(event) =>
+                          handleReplaceTeamPackageAccess(event, teamSlug)}
+                      >
+                        <div class="form-group">
+                          <label for={`team-package-${teamSlug}`}
+                            >Organization package</label
+                          >
+                          {#if packagesError}
+                            <div class="alert alert-error">{packagesError}</div>
+                          {:else if packages.length === 0}
+                            <p class="settings-copy">
+                              Create or transfer a package before delegating
+                              access.
+                            </p>
+                          {:else}
+                            <select
+                              id={`team-package-${teamSlug}`}
+                              name="package_key"
+                              class="form-input"
+                              required
+                            >
+                              <option value="">Select a package</option>
+                              {#each [...packages].sort( (left, right) => `${left.ecosystem || ''}:${left.name || ''}`.localeCompare(`${right.ecosystem || ''}:${right.name || ''}`) ) as pkg}
+                                <option
+                                  value={renderPackageSelectionValue(
+                                    pkg.ecosystem,
+                                    pkg.name
+                                  )}
+                                  >{`${pkg.ecosystem || ''} · ${pkg.name || ''}`}</option
+                                >
+                              {/each}
+                            </select>
+                          {/if}
+                        </div>
+                        <fieldset class="form-group">
+                          <legend>Permissions</legend>
+                          <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                            {#each TEAM_PERMISSION_OPTIONS as permission}
+                              <label
+                                class="rounded-lg border border-neutral-200 p-3 text-sm"
+                              >
+                                <span class="flex items-start gap-3">
+                                  <input
+                                    type="checkbox"
+                                    name="permissions"
+                                    value={permission.value}
+                                    disabled={Boolean(packagesError) ||
+                                      packages.length === 0}
+                                  />
+                                  <span>
+                                    <span class="block font-medium"
+                                      >{permission.label}</span
+                                    >
+                                    <span class="mt-1 block text-muted"
+                                      >{permission.description}</span
+                                    >
+                                  </span>
+                                </span>
+                              </label>
+                            {/each}
+                          </div>
+                        </fieldset>
+                        <button
+                          type="submit"
+                          class="btn btn-primary"
+                          disabled={Boolean(packagesError) ||
+                            packages.length === 0}>Save package access</button
+                        >
+                      </form>
+                    </div>
+                  {/if}
+                </div>
+              {/each}
+            </div>
+          {/if}
+        </section>
+
+        <section class="card settings-section">
+          <h2>Security overview</h2>
+          {#if securityError}
+            <div class="alert alert-error">{securityError}</div>
+          {:else if openFindingCount === 0 || securityPackages.length === 0}
+            <div class="empty-state">
+              <h3>No open security findings</h3>
+              <p>
+                The packages currently visible to you do not have any unresolved
+                findings.
+              </p>
+            </div>
+          {:else}
+            <div class="org-kpi-grid">
+              <div class="org-kpi">
+                <span class="org-kpi__value"
+                  >{formatNumber(openFindingCount)}</span
+                ><span class="org-kpi__label">Open findings</span>
+              </div>
+              <div class="org-kpi">
+                <span class="org-kpi__value"
+                  >{formatNumber(affectedPackageCount)}</span
+                ><span class="org-kpi__label">Affected packages</span>
+              </div>
+              <div class="org-kpi">
+                <span class="org-kpi__value"
+                  >{formatNumber(severityCounts.critical)}</span
+                ><span class="org-kpi__label">Critical</span>
+              </div>
+              <div class="org-kpi">
+                <span class="org-kpi__value"
+                  >{formatNumber(severityCounts.high)}</span
+                ><span class="org-kpi__label">High</span>
+              </div>
+            </div>
+
+            <div
+              class="token-row__scopes"
+              style="margin-top:1rem; margin-bottom:1rem;"
+            >
+              {#each SECURITY_SEVERITIES.filter((severity) => severityCounts[severity] > 0) as severity}
+                <span class={`badge badge-severity-${severity}`}
+                  >{formatNumber(severityCounts[severity])} {severity}</span
+                >
+              {/each}
+            </div>
+
+            <div class="token-list">
+              {#each sortedSecurityPackages as pkg}
+                {@const pkgCounts = normalizeSecuritySeverityCounts(
+                  pkg.severities
+                )}
+                {@const pkgOpenFindings =
+                  typeof pkg.open_findings === 'number' &&
+                  Number.isFinite(pkg.open_findings)
+                    ? Math.max(0, Math.trunc(pkg.open_findings))
+                    : totalSecuritySeverityCounts(pkg.severities)}
+                {@const pkgWorstSeverity = pkg.worst_severity
+                  ? normalizeSecuritySeverity(pkg.worst_severity)
+                  : worstSecuritySeverityFromCounts(pkg.severities)}
+                <div class="token-row">
+                  <div class="token-row__main">
+                    <div class="token-row__title">
+                      <a
+                        href={`/packages/${encodeURIComponent(pkg.ecosystem || 'unknown')}/${encodeURIComponent(pkg.name || '')}`}
+                        data-sveltekit-preload-data="hover"
+                        >{pkg.name || 'Unnamed package'}</a
+                      >
+                    </div>
+                    <div class="token-row__meta">
+                      <span>{ecosystemLabel(pkg.ecosystem)}</span>
+                      <span
+                        >{formatIdentifierLabel(
+                          pkg.visibility || 'public'
+                        )}</span
+                      >
+                      <span>{formatOpenFindingLabel(pkgOpenFindings)}</span>
+                      {#if pkg.latest_detected_at}<span
+                          >latest {formatDate(pkg.latest_detected_at)}</span
+                        >{/if}
+                    </div>
+                    <div class="token-row__scopes">
+                      <span class={`badge badge-severity-${pkgWorstSeverity}`}
+                        >{formatIdentifierLabel(pkgWorstSeverity)} highest</span
+                      >
+                      {#each SECURITY_SEVERITIES.filter((severity) => pkgCounts[severity] > 0) as severity}
+                        <span class={`badge badge-severity-${severity}`}
+                          >{formatNumber(pkgCounts[severity])} {severity}</span
+                        >
+                      {/each}
                     </div>
                   </div>
-
-                  <div class="mt-6">
-                    <h4>Repository access</h4>
-                    <p class="settings-copy">
-                      Repository grants apply across current and future packages
-                      in the selected repository. The <strong>Admin</strong>
-                      permission also unlocks repository setting updates.
-                    </p>
-                    {#if teamRepositoryGrantsError}
-                      <div class="alert alert-error">
-                        {teamRepositoryGrantsError}
-                      </div>
-                    {:else if teamRepositoryGrants.length === 0}
-                      <p class="settings-copy">
-                        No repository grants assigned yet.
-                      </p>
-                    {:else}
-                      <div class="token-list">
-                        {#each teamRepositoryGrants as grant}
-                          <div class="token-row">
-                            <div class="token-row__main">
-                              <div class="token-row__title">
-                                {#if grant.slug}
-                                  <a
-                                    href={`/repositories/${encodeURIComponent(grant.slug || '')}`}
-                                    data-sveltekit-preload-data="hover"
-                                    >{grant.name || grant.slug}</a
-                                  >
-                                {:else}
-                                  {grant.name || 'Unnamed repository'}
-                                {/if}
-                              </div>
-                              <div class="token-row__meta">
-                                <span>@{grant.slug || 'no-slug'}</span>
-                                <span
-                                  >{formatRepositoryKindLabel(grant.kind)}</span
-                                >
-                                <span
-                                  >{formatRepositoryVisibilityLabel(
-                                    grant.visibility
-                                  )}</span
-                                >
-                                <span
-                                  >granted {formatDate(grant.granted_at)}</span
-                                >
-                              </div>
-                              <div class="token-row__scopes">
-                                {#each grant.permissions || [] as permission}
-                                  <span class="badge badge-ecosystem"
-                                    >{formatPermission(permission)}</span
-                                  >
-                                {/each}
-                              </div>
-                            </div>
-                            {#if grant.slug}
-                              <div class="token-row__actions">
-                                <button
-                                  class="btn btn-secondary btn-sm"
-                                  type="button"
-                                  on:click={() =>
-                                    handleRemoveTeamRepositoryAccess(
-                                      teamSlug,
-                                      grant.slug || ''
-                                    )}>Revoke</button
-                                >
-                              </div>
-                            {/if}
-                          </div>
-                        {/each}
-                      </div>
-                    {/if}
-
-                    <form
-                      class="settings-subsection"
-                      on:submit={(event) =>
-                        handleReplaceTeamRepositoryAccess(event, teamSlug)}
-                    >
-                      <div class="form-group">
-                        <label for={`team-repository-${teamSlug}`}
-                          >Organization repository</label
-                        >
-                        {#if repositoriesError}
-                          <div class="alert alert-error">
-                            {repositoriesError}
-                          </div>
-                        {:else if repositories.length === 0}
-                          <p class="settings-copy">
-                            Create a repository before delegating
-                            repository-wide access.
-                          </p>
-                        {:else}
-                          <select
-                            id={`team-repository-${teamSlug}`}
-                            name="repository_slug"
-                            class="form-input"
-                            required
-                          >
-                            <option value="">Select a repository</option>
-                            {#each [...repositories].sort( (left, right) => `${left.name || left.slug || ''}`.localeCompare(`${right.name || right.slug || ''}`) ) as repository}
-                              <option value={repository.slug || ''}
-                                >{`${repository.name || repository.slug || ''} · ${formatRepositoryKindLabel(repository.kind)} · ${formatRepositoryVisibilityLabel(repository.visibility)}`}</option
-                              >
-                            {/each}
-                          </select>
-                        {/if}
-                      </div>
-                      <fieldset class="form-group">
-                        <legend>Permissions</legend>
-                        <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                          {#each TEAM_PERMISSION_OPTIONS as permission}
-                            <label
-                              class="rounded-lg border border-neutral-200 p-3 text-sm"
-                            >
-                              <span class="flex items-start gap-3">
-                                <input
-                                  type="checkbox"
-                                  name="permissions"
-                                  value={permission.value}
-                                  disabled={Boolean(repositoriesError) ||
-                                    repositories.length === 0}
-                                />
-                                <span>
-                                  <span class="block font-medium"
-                                    >{permission.label}</span
-                                  >
-                                  <span class="mt-1 block text-muted"
-                                    >{permission.description}</span
-                                  >
-                                </span>
-                              </span>
-                            </label>
-                          {/each}
-                        </div>
-                      </fieldset>
-                      <button
-                        type="submit"
-                        class="btn btn-primary"
-                        disabled={Boolean(repositoriesError) ||
-                          repositories.length === 0}
-                        >Save repository access</button
+                  {#if pkg.ecosystem && pkg.name}
+                    <div class="token-row__actions">
+                      <a
+                        class="btn btn-secondary btn-sm"
+                        href={buildPackageDetailPath(pkg.ecosystem, pkg.name, {
+                          tab: 'security',
+                        })}
+                        data-sveltekit-preload-data="hover">Open findings</a
                       >
-                    </form>
-                  </div>
-
-                  <div class="mt-6">
-                    <h4>Package access</h4>
-                    {#if teamGrantsError}
-                      <div class="alert alert-error">{teamGrantsError}</div>
-                    {:else if teamGrants.length === 0}
-                      <p class="settings-copy">
-                        No package grants assigned yet.
-                      </p>
-                    {:else}
-                      <div class="token-list">
-                        {#each teamGrants as grant}
-                          <div class="token-row">
-                            <div class="token-row__main">
-                              <div class="token-row__title">
-                                <a
-                                  href={`/packages/${encodeURIComponent(grant.ecosystem || 'unknown')}/${encodeURIComponent(grant.name || '')}`}
-                                  data-sveltekit-preload-data="hover"
-                                  >{grant.name || 'Unnamed package'}</a
-                                >
-                              </div>
-                              <div class="token-row__meta">
-                                <span>{grant.ecosystem || 'unknown'}</span>
-                                <span
-                                  >granted {formatDate(grant.granted_at)}</span
-                                >
-                              </div>
-                              <div class="token-row__scopes">
-                                {#each grant.permissions || [] as permission}
-                                  <span class="badge badge-ecosystem"
-                                    >{formatPermission(permission)}</span
-                                  >
-                                {/each}
-                              </div>
-                            </div>
-                            {#if grant.ecosystem && grant.name}
-                              <div class="token-row__actions">
-                                <button
-                                  class="btn btn-secondary btn-sm"
-                                  type="button"
-                                  on:click={() =>
-                                    handleRemoveTeamPackageAccess(
-                                      teamSlug,
-                                      grant.ecosystem || '',
-                                      grant.name || ''
-                                    )}>Revoke</button
-                                >
-                              </div>
-                            {/if}
-                          </div>
-                        {/each}
-                      </div>
-                    {/if}
-
-                    <form
-                      class="settings-subsection"
-                      on:submit={(event) =>
-                        handleReplaceTeamPackageAccess(event, teamSlug)}
-                    >
-                      <div class="form-group">
-                        <label for={`team-package-${teamSlug}`}
-                          >Organization package</label
-                        >
-                        {#if packagesError}
-                          <div class="alert alert-error">{packagesError}</div>
-                        {:else if packages.length === 0}
-                          <p class="settings-copy">
-                            Create or transfer a package before delegating
-                            access.
-                          </p>
-                        {:else}
-                          <select
-                            id={`team-package-${teamSlug}`}
-                            name="package_key"
-                            class="form-input"
-                            required
-                          >
-                            <option value="">Select a package</option>
-                            {#each [...packages].sort( (left, right) => `${left.ecosystem || ''}:${left.name || ''}`.localeCompare(`${right.ecosystem || ''}:${right.name || ''}`) ) as pkg}
-                              <option
-                                value={renderPackageSelectionValue(
-                                  pkg.ecosystem,
-                                  pkg.name
-                                )}
-                                >{`${pkg.ecosystem || ''} · ${pkg.name || ''}`}</option
-                              >
-                            {/each}
-                          </select>
-                        {/if}
-                      </div>
-                      <fieldset class="form-group">
-                        <legend>Permissions</legend>
-                        <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                          {#each TEAM_PERMISSION_OPTIONS as permission}
-                            <label
-                              class="rounded-lg border border-neutral-200 p-3 text-sm"
-                            >
-                              <span class="flex items-start gap-3">
-                                <input
-                                  type="checkbox"
-                                  name="permissions"
-                                  value={permission.value}
-                                  disabled={Boolean(packagesError) ||
-                                    packages.length === 0}
-                                />
-                                <span>
-                                  <span class="block font-medium"
-                                    >{permission.label}</span
-                                  >
-                                  <span class="mt-1 block text-muted"
-                                    >{permission.description}</span
-                                  >
-                                </span>
-                              </span>
-                            </label>
-                          {/each}
-                        </div>
-                      </fieldset>
-                      <button
-                        type="submit"
-                        class="btn btn-primary"
-                        disabled={Boolean(packagesError) ||
-                          packages.length === 0}>Save package access</button
-                      >
-                    </form>
-                  </div>
-                {/if}
-              </div>
-            {/each}
-          </div>
-        {/if}
-      </section>
-
-      <section class="card settings-section">
-        <h2>Security overview</h2>
-        {#if securityError}
-          <div class="alert alert-error">{securityError}</div>
-        {:else if openFindingCount === 0 || securityPackages.length === 0}
-          <div class="empty-state">
-            <h3>No open security findings</h3>
-            <p>
-              The packages currently visible to you do not have any unresolved
-              findings.
-            </p>
-          </div>
-        {:else}
-          <div class="org-kpi-grid">
-            <div class="org-kpi">
-              <span class="org-kpi__value"
-                >{formatNumber(openFindingCount)}</span
-              ><span class="org-kpi__label">Open findings</span>
-            </div>
-            <div class="org-kpi">
-              <span class="org-kpi__value"
-                >{formatNumber(affectedPackageCount)}</span
-              ><span class="org-kpi__label">Affected packages</span>
-            </div>
-            <div class="org-kpi">
-              <span class="org-kpi__value"
-                >{formatNumber(severityCounts.critical)}</span
-              ><span class="org-kpi__label">Critical</span>
-            </div>
-            <div class="org-kpi">
-              <span class="org-kpi__value"
-                >{formatNumber(severityCounts.high)}</span
-              ><span class="org-kpi__label">High</span>
-            </div>
-          </div>
-
-          <div
-            class="token-row__scopes"
-            style="margin-top:1rem; margin-bottom:1rem;"
-          >
-            {#each SECURITY_SEVERITIES.filter((severity) => severityCounts[severity] > 0) as severity}
-              <span class={`badge badge-severity-${severity}`}
-                >{formatNumber(severityCounts[severity])} {severity}</span
-              >
-            {/each}
-          </div>
-
-          <div class="token-list">
-            {#each sortedSecurityPackages as pkg}
-              {@const pkgCounts = normalizeSecuritySeverityCounts(
-                pkg.severities
-              )}
-              {@const pkgOpenFindings =
-                typeof pkg.open_findings === 'number' &&
-                Number.isFinite(pkg.open_findings)
-                  ? Math.max(0, Math.trunc(pkg.open_findings))
-                  : totalSecuritySeverityCounts(pkg.severities)}
-              {@const pkgWorstSeverity = pkg.worst_severity
-                ? normalizeSecuritySeverity(pkg.worst_severity)
-                : worstSecuritySeverityFromCounts(pkg.severities)}
-              <div class="token-row">
-                <div class="token-row__main">
-                  <div class="token-row__title">
-                    <a
-                      href={`/packages/${encodeURIComponent(pkg.ecosystem || 'unknown')}/${encodeURIComponent(pkg.name || '')}`}
-                      data-sveltekit-preload-data="hover"
-                      >{pkg.name || 'Unnamed package'}</a
-                    >
-                  </div>
-                  <div class="token-row__meta">
-                    <span>{ecosystemLabel(pkg.ecosystem)}</span>
-                    <span
-                      >{formatIdentifierLabel(pkg.visibility || 'public')}</span
-                    >
-                    <span>{formatOpenFindingLabel(pkgOpenFindings)}</span>
-                    {#if pkg.latest_detected_at}<span
-                        >latest {formatDate(pkg.latest_detected_at)}</span
-                      >{/if}
-                  </div>
-                  <div class="token-row__scopes">
-                    <span class={`badge badge-severity-${pkgWorstSeverity}`}
-                      >{formatIdentifierLabel(pkgWorstSeverity)} highest</span
-                    >
-                    {#each SECURITY_SEVERITIES.filter((severity) => pkgCounts[severity] > 0) as severity}
-                      <span class={`badge badge-severity-${severity}`}
-                        >{formatNumber(pkgCounts[severity])} {severity}</span
-                      >
-                    {/each}
-                  </div>
-                </div>
-                {#if pkg.ecosystem && pkg.name}
-                  <div class="token-row__actions">
-                    <a
-                      class="btn btn-secondary btn-sm"
-                      href={buildPackageDetailPath(
-                        pkg.ecosystem,
-                        pkg.name,
-                        { tab: 'security' }
-                      )}
-                      data-sveltekit-preload-data="hover">Open findings</a
-                    >
-                  </div>
-                {/if}
+                    </div>
+                  {/if}
                 </div>
               {/each}
             </div>
