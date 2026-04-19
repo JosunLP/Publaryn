@@ -42,9 +42,7 @@ pub fn validate_repository_name(name: &str) -> Result<()> {
 pub fn parse_reference(reference: &str) -> Result<OciReference> {
     let trimmed = reference.trim();
     if trimmed.is_empty() {
-        return Err(Error::Validation(
-            "OCI references must not be empty".into(),
-        ));
+        return Err(Error::Validation("OCI references must not be empty".into()));
     }
 
     if trimmed.starts_with(OCI_DIGEST_PREFIX) {
@@ -134,9 +132,9 @@ fn validate_tag(tag: &str) -> Result<()> {
         )));
     }
 
-    if !characters.all(|character| {
-        character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-')
-    }) {
+    if !characters
+        .all(|character| character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-'))
+    {
         return Err(Error::Validation(format!(
             "OCI tag '{tag}' contains unsupported characters"
         )));
@@ -171,8 +169,7 @@ mod tests {
         assert_eq!(
             reference,
             OciReference::Digest(
-                "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-                    .into()
+                "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".into()
             )
         );
     }

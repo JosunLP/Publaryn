@@ -84,9 +84,7 @@ pub fn challenge_scope_for_repository(name: &str, push: bool) -> String {
 
 pub fn challenge_response<S: OciAppState>(state: &S, scope: &str, message: &str) -> Response {
     let realm = state.base_url().trim_end_matches('/');
-    let header_value = format!(
-        "Bearer realm=\"{realm}\",service=\"publaryn\",scope=\"{scope}\""
-    );
+    let header_value = format!("Bearer realm=\"{realm}\",service=\"publaryn\",scope=\"{scope}\"");
 
     let mut response = oci_error_response(StatusCode::UNAUTHORIZED, "UNAUTHORIZED", message, None);
     let header = HeaderValue::from_str(&header_value).unwrap_or_else(|_| {
@@ -133,7 +131,9 @@ fn extract_bearer_token(headers: &HeaderMap) -> Result<Option<String>, AuthFailu
     let token = authorization
         .strip_prefix("Bearer ")
         .or_else(|| authorization.strip_prefix("bearer "))
-        .ok_or_else(|| AuthFailure::Invalid("Authorization header must use the Bearer scheme".into()))?
+        .ok_or_else(|| {
+            AuthFailure::Invalid("Authorization header must use the Bearer scheme".into())
+        })?
         .trim();
 
     if token.is_empty() {
@@ -179,7 +179,9 @@ async fn authenticate_token<S: OciAppState>(
         let user_id = row
             .try_get::<Option<Uuid>, _>("user_id")
             .unwrap_or(None)
-            .ok_or_else(|| AuthFailure::Invalid("API token is not associated with a user".into()))?;
+            .ok_or_else(|| {
+                AuthFailure::Invalid("API token is not associated with a user".into())
+            })?;
         let token_id: Option<Uuid> = row.try_get("id").ok();
         let scopes: Vec<String> = row.try_get("scopes").unwrap_or_default();
 

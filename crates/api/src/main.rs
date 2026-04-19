@@ -1,7 +1,7 @@
 use anyhow::Result;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
-use publaryn_api::{config, router, state};
+use publaryn_api::{config, job_handlers::ReindexSearchHandler, router, state};
 use publaryn_workers::queue::JobKind;
 use publaryn_workers::scanners::{PolicyScanner, ScanArtifactHandler, SecretsScanner};
 use publaryn_workers::worker::{Worker, WorkerConfig};
@@ -47,6 +47,12 @@ async fn main() -> Result<()> {
             scanners,
         });
         worker.register_handler(JobKind::ScanArtifact, scan_handler);
+
+        let reindex_handler = std::sync::Arc::new(ReindexSearchHandler {
+            db: app_state.db.clone(),
+            search: app_state.search.clone(),
+        });
+        worker.register_handler(JobKind::ReindexSearch, reindex_handler);
 
         worker.run(shutdown_rx).await;
     });

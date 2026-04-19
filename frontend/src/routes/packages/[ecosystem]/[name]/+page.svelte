@@ -611,6 +611,29 @@
       .replace(/\b\w/g, (char) => char.toUpperCase());
   }
 
+  $: packageMetadata = pkg?.ecosystem_metadata ?? null;
+  $: canonicalPackageEcosystem = pkg?.ecosystem ?? ecosystem;
+  $: showsRegistryFamily = Boolean(
+    pkg?.ecosystem && pkg.ecosystem.toLowerCase() !== ecosystem.toLowerCase()
+  );
+  $: npmPackageMetadata =
+    packageMetadata?.kind === 'npm' || packageMetadata?.kind === 'bun'
+      ? packageMetadata.details
+      : null;
+  $: pypiPackageMetadata =
+    packageMetadata?.kind === 'pypi' ? packageMetadata.details : null;
+  $: cargoPackageMetadata =
+    packageMetadata?.kind === 'cargo' ? packageMetadata.details : null;
+  $: nugetPackageMetadata =
+    packageMetadata?.kind === 'nuget' ? packageMetadata.details : null;
+  $: rubygemsPackageMetadata =
+    packageMetadata?.kind === 'rubygems' ? packageMetadata.details : null;
+  $: composerPackageMetadata =
+    packageMetadata?.kind === 'composer' ? packageMetadata.details : null;
+  $: mavenPackageMetadata =
+    packageMetadata?.kind === 'maven' ? packageMetadata.details : null;
+  $: ociPackageMetadata =
+    packageMetadata?.kind === 'oci' ? packageMetadata.details : null;
   $: openFindings = findings.filter((finding) => !finding.is_resolved);
   $: packageSettingsHasChanges = pkg
     ? packageMetadataHasChanges(pkg, {
@@ -868,6 +891,141 @@
       </div>
 
       <div class="pkg-detail__sidebar">
+        {#if packageMetadata}
+          <div class="card">
+            <div class="sidebar-section">
+              <h3>Ecosystem details</h3>
+
+              {#if showsRegistryFamily}
+                <div class="sidebar-row">
+                  <span class="sidebar-row__label">Registry family</span>
+                  <span class="sidebar-row__value"
+                    >{ecosystemLabel(canonicalPackageEcosystem)}</span
+                  >
+                </div>
+              {/if}
+
+              {#if npmPackageMetadata}
+                {#if npmPackageMetadata.scope}
+                  <div class="sidebar-row">
+                    <span class="sidebar-row__label">Scope</span>
+                    <span class="sidebar-row__value"
+                      ><code>{npmPackageMetadata.scope}</code></span
+                    >
+                  </div>
+                {/if}
+                <div class="sidebar-row">
+                  <span class="sidebar-row__label">Package</span>
+                  <span class="sidebar-row__value"
+                    ><code>{npmPackageMetadata.unscoped_name}</code></span
+                  >
+                </div>
+              {:else if pypiPackageMetadata}
+                <div class="sidebar-row">
+                  <span class="sidebar-row__label">Project</span>
+                  <span class="sidebar-row__value"
+                    ><code>{pypiPackageMetadata.project_name}</code></span
+                  >
+                </div>
+                <div class="sidebar-row">
+                  <span class="sidebar-row__label">Normalized</span>
+                  <span class="sidebar-row__value"
+                    ><code>{pypiPackageMetadata.normalized_name}</code></span
+                  >
+                </div>
+              {:else if cargoPackageMetadata}
+                <div class="sidebar-row">
+                  <span class="sidebar-row__label">Crate</span>
+                  <span class="sidebar-row__value"
+                    ><code>{cargoPackageMetadata.crate_name}</code></span
+                  >
+                </div>
+                <div class="sidebar-row">
+                  <span class="sidebar-row__label">Normalized</span>
+                  <span class="sidebar-row__value"
+                    ><code>{cargoPackageMetadata.normalized_name}</code></span
+                  >
+                </div>
+              {:else if nugetPackageMetadata}
+                <div class="sidebar-row">
+                  <span class="sidebar-row__label">Package ID</span>
+                  <span class="sidebar-row__value"
+                    ><code>{nugetPackageMetadata.package_id}</code></span
+                  >
+                </div>
+                <div class="sidebar-row">
+                  <span class="sidebar-row__label">Normalized</span>
+                  <span class="sidebar-row__value"
+                    ><code>{nugetPackageMetadata.normalized_id}</code></span
+                  >
+                </div>
+              {:else if rubygemsPackageMetadata}
+                <div class="sidebar-row">
+                  <span class="sidebar-row__label">Gem</span>
+                  <span class="sidebar-row__value"
+                    ><code>{rubygemsPackageMetadata.gem_name}</code></span
+                  >
+                </div>
+                <div class="sidebar-row">
+                  <span class="sidebar-row__label">Normalized</span>
+                  <span class="sidebar-row__value"
+                    ><code>{rubygemsPackageMetadata.normalized_name}</code
+                    ></span
+                  >
+                </div>
+              {:else if composerPackageMetadata}
+                <div class="sidebar-row">
+                  <span class="sidebar-row__label">Vendor</span>
+                  <span class="sidebar-row__value"
+                    ><code>{composerPackageMetadata.vendor}</code></span
+                  >
+                </div>
+                <div class="sidebar-row">
+                  <span class="sidebar-row__label">Package</span>
+                  <span class="sidebar-row__value"
+                    ><code>{composerPackageMetadata.package}</code></span
+                  >
+                </div>
+              {:else if mavenPackageMetadata}
+                <div class="sidebar-row">
+                  <span class="sidebar-row__label">Group ID</span>
+                  <span class="sidebar-row__value"
+                    ><code>{mavenPackageMetadata.group_id}</code></span
+                  >
+                </div>
+                <div class="sidebar-row">
+                  <span class="sidebar-row__label">Artifact ID</span>
+                  <span class="sidebar-row__value"
+                    ><code>{mavenPackageMetadata.artifact_id}</code></span
+                  >
+                </div>
+              {:else if ociPackageMetadata}
+                <div class="sidebar-row">
+                  <span class="sidebar-row__label">Repository</span>
+                  <span class="sidebar-row__value"
+                    ><code>{ociPackageMetadata.repository}</code></span
+                  >
+                </div>
+                {#if ociPackageMetadata.segments.length > 0}
+                  <div style="margin-top:8px;">
+                    <div
+                      class="sidebar-row__label"
+                      style="margin-bottom:6px; display:block;"
+                    >
+                      Path segments
+                    </div>
+                    <div style="display:flex; flex-wrap:wrap; gap:6px;">
+                      {#each ociPackageMetadata.segments as segment}
+                        <span class="badge badge-ecosystem">{segment}</span>
+                      {/each}
+                    </div>
+                  </div>
+                {/if}
+              {/if}
+            </div>
+          </div>
+        {/if}
+
         <div class="card">
           <div class="sidebar-section">
             <h3>Package info</h3>

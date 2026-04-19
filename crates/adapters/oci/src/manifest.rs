@@ -46,9 +46,7 @@ pub struct ParsedManifest {
 
 pub fn parse_manifest(bytes: Bytes, content_type: Option<&str>) -> Result<ParsedManifest> {
     if bytes.is_empty() {
-        return Err(Error::Validation(
-            "OCI manifests must not be empty".into(),
-        ));
+        return Err(Error::Validation("OCI manifests must not be empty".into()));
     }
 
     let raw: Value = serde_json::from_slice(&bytes)
@@ -102,9 +100,8 @@ pub fn parse_manifest(bytes: Bytes, content_type: Option<&str>) -> Result<Parsed
     let sha256 = hex::encode(Sha256::digest(&bytes));
     let sha512 = hex::encode(Sha512::digest(&bytes));
     let digest = format!("sha256:{sha256}");
-    let size_bytes = i64::try_from(bytes.len()).map_err(|_| {
-        Error::Validation("OCI manifests exceed supported size limits".into())
-    })?;
+    let size_bytes = i64::try_from(bytes.len())
+        .map_err(|_| Error::Validation("OCI manifests exceed supported size limits".into()))?;
 
     let media_type = object
         .get("mediaType")
@@ -151,15 +148,12 @@ fn parse_descriptor(value: &Value, kind: ManifestReferenceKind) -> Result<Manife
         })?;
     let digest = validate_digest(digest)?;
 
-    let size_bytes = object
-        .get("size")
-        .and_then(Value::as_i64)
-        .or_else(|| {
-            object
-                .get("size")
-                .and_then(Value::as_u64)
-                .and_then(|value| i64::try_from(value).ok())
-        });
+    let size_bytes = object.get("size").and_then(Value::as_i64).or_else(|| {
+        object
+            .get("size")
+            .and_then(Value::as_u64)
+            .and_then(|value| i64::try_from(value).ok())
+    });
 
     Ok(ManifestReference {
         digest,
@@ -200,7 +194,10 @@ mod tests {
         assert_eq!(parsed.references.len(), 2);
         assert_eq!(parsed.references[0].kind, ManifestReferenceKind::Config);
         assert_eq!(parsed.references[1].kind, ManifestReferenceKind::Layer);
-        assert_eq!(parsed.content_type, "application/vnd.oci.image.manifest.v1+json");
+        assert_eq!(
+            parsed.content_type,
+            "application/vnd.oci.image.manifest.v1+json"
+        );
     }
 
     #[test]

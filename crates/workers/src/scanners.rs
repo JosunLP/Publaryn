@@ -7,10 +7,13 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
-use crate::handler::JobHandler;
+use crate::{
+    handler::JobHandler,
+    queue::{self, JobKind},
+};
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -277,18 +280,75 @@ impl JobHandler for ScanArtifactHandler {
             }
         }
 
-        // Transition the release status based on findings.
-        let has_blocking = all_findings
-            .iter()
-            .any(|f| f.severity == "critical" || f.kind == "malware");
+        let remaining_scan_jobs: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*)::BIGINT \
+             FROM background_jobs \
+             WHERE kind = 'scan_artifact'::job_kind \
+               AND status IN ('pending'::job_status, 'running'::job_status, 'dead'::job_status) \
+               AND payload ->> 'release_id' = $1",
+        )
+        .bind(payload.release_id.to_string())
+        .fetch_one(&self.db)
+        .await
+        .map_err(|e| format!("Failed to inspect release scan queue state: {e}"))?;
+
+        if remaining_scan_jobs > 1 {
+            tracing::info!(
+                artifact_id = %payload.artifact_id,
+                release_id = %payload.release_id,
+                remaining_scan_jobs = remaining_scan_jobs - 1,
+                findings = all_findings.len(),
+                "Artifact scan completed; waiting for remaining scan jobs before finalizing release"
+            );
+
+            return Ok(());
+        }
+
+        let has_blocking: bool = sqlx::query_scalar(
+            "SELECT EXISTS ( \
+                 SELECT 1 \
+                 FROM security_findings \
+                 WHERE release_id = $1 \
+                   AND is_resolved = false \
+                   AND (severity = 'critical'::security_severity OR kind = 'malware'::finding_kind) \
+             )",
+        )
+        .bind(payload.release_id)
+        .fetch_one(&self.db)
+        .await
+        .map_err(|e| format!("Failed to inspect blocking findings: {e}"))?;
+
+        let release_row = sqlx::query(
+            "SELECT package_id, is_yanked, is_deprecated \
+             FROM releases \
+             WHERE id = $1",
+        )
+        .bind(payload.release_id)
+        .fetch_one(&self.db)
+        .await
+        .map_err(|e| format!("Failed to load release finalization context: {e}"))?;
+
+        let package_id: Uuid = release_row
+            .try_get("package_id")
+            .map_err(|e| format!("Failed to decode package id for finalization: {e}"))?;
+        let is_yanked = release_row
+            .try_get::<bool, _>("is_yanked")
+            .map_err(|e| format!("Failed to decode yank flag for finalization: {e}"))?;
+        let is_deprecated = release_row
+            .try_get::<bool, _>("is_deprecated")
+            .map_err(|e| format!("Failed to decode deprecation flag for finalization: {e}"))?;
 
         let new_status = if has_blocking {
             "quarantine"
+        } else if is_yanked {
+            "yanked"
+        } else if is_deprecated {
+            "deprecated"
         } else {
             "published"
         };
 
-        sqlx::query(
+        let update_result = sqlx::query(
             "UPDATE releases SET status = $2::release_status, updated_at = NOW() \
              WHERE id = $1 AND status = 'scanning'",
         )
@@ -297,6 +357,18 @@ impl JobHandler for ScanArtifactHandler {
         .execute(&self.db)
         .await
         .map_err(|e| format!("Failed to transition release status: {e}"))?;
+
+        if update_result.rows_affected() > 0 {
+            let reindex_payload = serde_json::json!({
+                "package_id": package_id,
+            });
+
+            queue::enqueue(&self.db, JobKind::ReindexSearch, reindex_payload)
+                .await
+                .map_err(|e| {
+                    format!("Failed to enqueue search reindex after scan completion: {e}")
+                })?;
+        }
 
         tracing::info!(
             artifact_id = %payload.artifact_id,

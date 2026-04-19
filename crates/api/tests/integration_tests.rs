@@ -5,12 +5,18 @@ use axum::{
 use base64::engine::{general_purpose::STANDARD as BASE64, Engine};
 use serde_json::{json, Value};
 use sqlx::{PgPool, Row};
-use std::net::ToSocketAddrs;
+use std::{net::ToSocketAddrs, sync::Arc};
 use tokio::time::Duration;
 use tower::ServiceExt;
 use url::Url;
 
-use publaryn_api::{config::Config, router::build_router, state::AppState};
+use publaryn_api::{
+    config::Config, router::build_router, state::AppState, storage::ArtifactStoreReaderAdapter,
+};
+use publaryn_workers::{
+    handler::JobHandler,
+    scanners::{PolicyScanner, ScanArtifactHandler, SecretsScanner},
+};
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -18,6 +24,11 @@ const TEST_RESPONSE_BODY_LIMIT: usize = 8 * 1024 * 1024;
 
 /// Build an Axum app backed by the given DB pool.
 fn app(pool: PgPool) -> axum::Router {
+    app_with_state(pool).1
+}
+
+/// Build Axum app state and the corresponding router backed by the given DB pool.
+fn app_with_state(pool: PgPool) -> (AppState, axum::Router) {
     // When constructing state with `new_with_pool`, the provided pool is used for
     // database access and `config.database.url` is not used to establish a
     // connection in this test helper. Keep the fallback as an explicit
@@ -26,7 +37,8 @@ fn app(pool: PgPool) -> axum::Router {
         std::env::var("DATABASE_URL").unwrap_or_else(|_| "unused://database-url".into());
     let config = Config::test_config(&database_url);
     let state = AppState::new_with_pool(pool, config);
-    build_router(state).expect("router should build")
+    let app = build_router(state.clone()).expect("router should build");
+    (state, app)
 }
 
 /// Parse a response body as JSON.
@@ -51,6 +63,10 @@ async fn body_bytes(resp: axum::response::Response) -> Vec<u8> {
         .await
         .expect("read body")
         .to_vec()
+}
+
+fn enc_path_segment(value: &str) -> String {
+    url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
 }
 
 /// Register a user via POST /v1/auth/register and return the JSON response.
@@ -745,9 +761,11 @@ async fn get_package_detail(
     ecosystem: &str,
     name: &str,
 ) -> (StatusCode, Value) {
-    let mut request = Request::builder()
-        .method(Method::GET)
-        .uri(format!("/v1/packages/{ecosystem}/{name}"));
+    let mut request = Request::builder().method(Method::GET).uri(format!(
+        "/v1/packages/{}/{}",
+        enc_path_segment(ecosystem),
+        enc_path_segment(name)
+    ));
 
     if let Some(jwt) = jwt {
         request = request.header(header::AUTHORIZATION, format!("Bearer {jwt}"));
@@ -1168,7 +1186,11 @@ async fn create_release_for_package_with_payload(
 ) -> (StatusCode, Value) {
     let req = Request::builder()
         .method(Method::POST)
-        .uri(format!("/v1/packages/{ecosystem}/{name}/releases"))
+        .uri(format!(
+            "/v1/packages/{}/{}/releases",
+            enc_path_segment(ecosystem),
+            enc_path_segment(name)
+        ))
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
         .body(Body::from(payload.to_string()))
@@ -1189,7 +1211,10 @@ async fn get_release_detail(
     version: &str,
 ) -> (StatusCode, Value) {
     let mut request = Request::builder().method(Method::GET).uri(format!(
-        "/v1/packages/{ecosystem}/{name}/releases/{version}"
+        "/v1/packages/{}/{}/releases/{}",
+        enc_path_segment(ecosystem),
+        enc_path_segment(name),
+        enc_path_segment(version)
     ));
 
     if let Some(jwt) = jwt {
@@ -1212,7 +1237,10 @@ async fn list_release_artifacts(
     version: &str,
 ) -> (StatusCode, Value) {
     let mut request = Request::builder().method(Method::GET).uri(format!(
-        "/v1/packages/{ecosystem}/{name}/releases/{version}/artifacts"
+        "/v1/packages/{}/{}/releases/{}/artifacts",
+        enc_path_segment(ecosystem),
+        enc_path_segment(name),
+        enc_path_segment(version)
     ));
 
     if let Some(jwt) = jwt {
@@ -1242,7 +1270,12 @@ async fn upload_release_artifact(
     let req = Request::builder()
         .method(Method::PUT)
         .uri(format!(
-            "/v1/packages/{ecosystem}/{name}/releases/{version}/artifacts/{filename}?kind={kind}"
+            "/v1/packages/{}/{}/releases/{}/artifacts/{}?kind={}",
+            enc_path_segment(ecosystem),
+            enc_path_segment(name),
+            enc_path_segment(version),
+            enc_path_segment(filename),
+            enc_path_segment(kind)
         ))
         .header(header::CONTENT_TYPE, content_type)
         .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
@@ -1266,7 +1299,10 @@ async fn publish_release_for_package(
     let req = Request::builder()
         .method(Method::POST)
         .uri(format!(
-            "/v1/packages/{ecosystem}/{name}/releases/{version}/publish"
+            "/v1/packages/{}/{}/releases/{}/publish",
+            enc_path_segment(ecosystem),
+            enc_path_segment(name),
+            enc_path_segment(version)
         ))
         .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
         .body(Body::empty())
@@ -1276,6 +1312,34 @@ async fn publish_release_for_package(
     let status = resp.status();
     let body = body_json(resp).await;
     (status, body)
+}
+
+async fn fetch_background_jobs(
+    pool: &PgPool,
+    kind: &str,
+) -> Vec<(String, serde_json::Value, String)> {
+    sqlx::query(
+        "SELECT kind::text AS kind, payload, status::text AS status \
+         FROM background_jobs \
+         WHERE kind::text = $1 \
+         ORDER BY created_at ASC",
+    )
+    .bind(kind)
+    .fetch_all(pool)
+    .await
+    .expect("background jobs should be queryable")
+    .into_iter()
+    .map(|row| {
+        (
+            row.try_get::<String, _>("kind")
+                .expect("job kind should be present"),
+            row.try_get::<serde_json::Value, _>("payload")
+                .expect("job payload should be present"),
+            row.try_get::<String, _>("status")
+                .expect("job status should be present"),
+        )
+    })
+    .collect()
 }
 
 /// Yank a release and return the response.
@@ -1860,7 +1924,11 @@ metadata:
         metadata_header.set_mode(0o644);
         metadata_header.set_cksum();
         tar_builder
-            .append_data(&mut metadata_header, "metadata.gz", Cursor::new(metadata_gz))
+            .append_data(
+                &mut metadata_header,
+                "metadata.gz",
+                Cursor::new(metadata_gz),
+            )
             .expect("metadata.gz should be appended to gem tarball");
 
         let mut data_header = tar::Header::new_gnu();
@@ -1979,8 +2047,8 @@ fn build_nuget_package(id: &str, version: &str) -> Vec<u8> {
 
     let cursor = std::io::Cursor::new(Vec::new());
     let mut zip_writer = zip::ZipWriter::new(cursor);
-    let options = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Stored);
+    let options =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
     zip_writer
         .start_file(format!("{id}.nuspec"), options)
         .expect("nuspec file should be created inside nupkg");
@@ -2001,10 +2069,8 @@ fn build_nuget_push_multipart(id: &str, version: &str, nupkg_bytes: &[u8]) -> (S
     let mut body = Vec::new();
     body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
     body.extend_from_slice(
-        format!(
-            "Content-Disposition: form-data; name=\"package\"; filename=\"{filename}\"\r\n"
-        )
-        .as_bytes(),
+        format!("Content-Disposition: form-data; name=\"package\"; filename=\"{filename}\"\r\n")
+            .as_bytes(),
     );
     body.extend_from_slice(b"Content-Type: application/octet-stream\r\n\r\n");
     body.extend_from_slice(nupkg_bytes);
@@ -7193,17 +7259,681 @@ async fn test_release_detail_surfaces_management_capability_and_visibility(pool:
         StatusCode::OK,
         "unexpected publish response: {publish_body}"
     );
-    assert_eq!(publish_body["status"], "published");
+    assert_eq!(publish_body["status"], "scanning");
     assert_eq!(publish_body["artifact_count"], 1);
 
     let (status, anonymous_published_release) =
         get_release_detail(&app, None, "npm", "release-ui-widget", "1.2.3").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(anonymous_published_release["error"]
+        .as_str()
+        .expect("error should be present")
+        .contains("not found"));
+
+    let (status, owner_scanning_release) =
+        get_release_detail(&app, Some(&alice_jwt), "npm", "release-ui-widget", "1.2.3").await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(anonymous_published_release["status"], "published");
-    assert_eq!(anonymous_published_release["can_manage_releases"], false);
+    assert_eq!(owner_scanning_release["status"], "scanning");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_package_detail_includes_ecosystem_identity_metadata(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, repository_body) = create_repository(
+        &app,
+        &alice_jwt,
+        "Alice Ecosystem Packages",
+        "alice-ecosystem-packages",
+        None,
+    )
+    .await;
     assert_eq!(
-        anonymous_published_release["description"],
-        "First managed release"
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let cases = [
+        (
+            "npm",
+            "@acme/web-widget",
+            "npm",
+            json!({
+                "kind": "npm",
+                "details": {
+                    "scope": "@acme",
+                    "unscoped_name": "web-widget"
+                }
+            }),
+        ),
+        (
+            "bun",
+            "@acme/bun-widget",
+            "npm",
+            json!({
+                "kind": "npm",
+                "details": {
+                    "scope": "@acme",
+                    "unscoped_name": "bun-widget"
+                }
+            }),
+        ),
+        (
+            "pypi",
+            "demo-widget",
+            "pypi",
+            json!({
+                "kind": "pypi",
+                "details": {
+                    "project_name": "demo-widget",
+                    "normalized_name": "demo-widget"
+                }
+            }),
+        ),
+        (
+            "cargo",
+            "demo_widget",
+            "cargo",
+            json!({
+                "kind": "cargo",
+                "details": {
+                    "crate_name": "demo_widget",
+                    "normalized_name": "demo_widget"
+                }
+            }),
+        ),
+        (
+            "nuget",
+            "Native.NuGet.Widget",
+            "nuget",
+            json!({
+                "kind": "nuget",
+                "details": {
+                    "package_id": "Native.NuGet.Widget",
+                    "normalized_id": "native.nuget.widget"
+                }
+            }),
+        ),
+        (
+            "rubygems",
+            "demo-widget-rb",
+            "rubygems",
+            json!({
+                "kind": "rubygems",
+                "details": {
+                    "gem_name": "demo-widget-rb",
+                    "normalized_name": "demo_widget_rb"
+                }
+            }),
+        ),
+        (
+            "composer",
+            "acme/demo-widget",
+            "composer",
+            json!({
+                "kind": "composer",
+                "details": {
+                    "vendor": "acme",
+                    "package": "demo-widget"
+                }
+            }),
+        ),
+        (
+            "maven",
+            "com.acme:demo-widget",
+            "maven",
+            json!({
+                "kind": "maven",
+                "details": {
+                    "group_id": "com.acme",
+                    "artifact_id": "demo-widget"
+                }
+            }),
+        ),
+        (
+            "oci",
+            "acme/demo-widget-image",
+            "oci",
+            json!({
+                "kind": "oci",
+                "details": {
+                    "repository": "acme/demo-widget-image",
+                    "segments": ["acme", "demo-widget-image"]
+                }
+            }),
+        ),
+    ];
+
+    for (ecosystem, name, expected_response_ecosystem, expected_metadata) in cases {
+        let (status, package_body) = create_package_with_options(
+            &app,
+            &alice_jwt,
+            ecosystem,
+            name,
+            "alice-ecosystem-packages",
+            Some("public"),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected package response for {ecosystem}/{name}: {package_body}"
+        );
+
+        let (status, package_detail) =
+            get_package_detail(&app, Some(&alice_jwt), ecosystem, name).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "unexpected package detail response for {ecosystem}/{name}: {package_detail}"
+        );
+        assert_eq!(
+            package_detail["ecosystem"],
+            expected_response_ecosystem,
+            "unexpected package ecosystem for {ecosystem}/{name}: {package_detail}"
+        );
+        assert_eq!(
+            package_detail["ecosystem_metadata"], expected_metadata,
+            "unexpected package metadata for {ecosystem}/{name}: {package_detail}"
+        );
+    }
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_release_detail_includes_ecosystem_native_metadata_blocks(pool: PgPool) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let alice_user_id: uuid::Uuid = sqlx::query_scalar("SELECT id FROM users WHERE username = $1")
+        .bind("alice")
+        .fetch_one(&pool)
+        .await
+        .expect("alice user id should be queryable");
+
+    let (status, repository_body) = create_repository(
+        &app,
+        &alice_jwt,
+        "Alice Release Metadata Packages",
+        "alice-release-metadata-packages",
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, cargo_package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "cargo",
+        "demo_widget",
+        "alice-release-metadata-packages",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{cargo_package_body}");
+
+    let (status, cargo_release_body) =
+        create_release_for_package(&app, &alice_jwt, "cargo", "demo_widget", "1.0.0").await;
+    assert_eq!(status, StatusCode::CREATED, "{cargo_release_body}");
+    let cargo_release_id = get_release_id(&pool, "cargo", "demo_widget", "1.0.0").await;
+    sqlx::query(
+        "INSERT INTO cargo_release_metadata (release_id, deps, features, features2, links, rust_version) \
+         VALUES ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind(cargo_release_id)
+    .bind(json!([
+        {
+            "name": "serde",
+            "req": "^1.0"
+        }
+    ]))
+    .bind(json!({
+        "serde": ["dep:serde"]
+    }))
+    .bind(json!({
+        "serde": ["dep:serde"]
+    }))
+    .bind("demo_widget_native")
+    .bind("1.78")
+    .execute(&pool)
+    .await
+    .expect("cargo metadata should insert");
+
+    let (status, cargo_release) =
+        get_release_detail(&app, Some(&alice_jwt), "cargo", "demo_widget", "1.0.0").await;
+    assert_eq!(status, StatusCode::OK, "{cargo_release}");
+    assert_eq!(cargo_release["ecosystem"], "cargo");
+    assert_eq!(
+        cargo_release["ecosystem_metadata"],
+        json!({
+            "kind": "cargo",
+            "details": {
+                "dependencies": [
+                    {
+                        "name": "serde",
+                        "req": "^1.0"
+                    }
+                ],
+                "features": {
+                    "serde": ["dep:serde"]
+                },
+                "features2": {
+                    "serde": ["dep:serde"]
+                },
+                "links": "demo_widget_native",
+                "rust_version": "1.78"
+            }
+        })
+    );
+
+    let (status, nuget_package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "nuget",
+        "Native.NuGet.Widget",
+        "alice-release-metadata-packages",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{nuget_package_body}");
+
+    let (status, nuget_release_body) =
+        create_release_for_package(&app, &alice_jwt, "nuget", "Native.NuGet.Widget", "2.0.0").await;
+    assert_eq!(status, StatusCode::CREATED, "{nuget_release_body}");
+    let nuget_release_id = get_release_id(&pool, "nuget", "Native.NuGet.Widget", "2.0.0").await;
+    sqlx::query(
+        "INSERT INTO nuget_release_metadata (release_id, authors, title, icon_url, license_url, \
+                license_expression, project_url, require_license_acceptance, min_client_version, \
+                summary, tags, dependency_groups, package_types, is_listed) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
+    )
+    .bind(nuget_release_id)
+    .bind("Alice Example")
+    .bind("Native NuGet Widget")
+    .bind("https://example.test/icon.png")
+    .bind("https://example.test/license")
+    .bind("MIT")
+    .bind("https://example.test/nuget")
+    .bind(true)
+    .bind("6.0.0")
+    .bind("NuGet metadata coverage")
+    .bind(vec!["demo".to_owned(), "nuget".to_owned()])
+    .bind(json!([
+        {
+            "target_framework": "net8.0",
+            "dependencies": [
+                {
+                    "id": "Newtonsoft.Json",
+                    "range": "[13.0.3,)"
+                }
+            ]
+        }
+    ]))
+    .bind(json!([
+        {
+            "name": "Dependency"
+        }
+    ]))
+    .bind(true)
+    .execute(&pool)
+    .await
+    .expect("nuget metadata should insert");
+
+    let (status, nuget_release) = get_release_detail(
+        &app,
+        Some(&alice_jwt),
+        "nuget",
+        "Native.NuGet.Widget",
+        "2.0.0",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{nuget_release}");
+    assert_eq!(nuget_release["ecosystem"], "nuget");
+    assert_eq!(
+        nuget_release["ecosystem_metadata"],
+        json!({
+            "kind": "nuget",
+            "details": {
+                "authors": "Alice Example",
+                "title": "Native NuGet Widget",
+                "icon_url": "https://example.test/icon.png",
+                "license_url": "https://example.test/license",
+                "license_expression": "MIT",
+                "project_url": "https://example.test/nuget",
+                "require_license_acceptance": true,
+                "min_client_version": "6.0.0",
+                "summary": "NuGet metadata coverage",
+                "tags": ["demo", "nuget"],
+                "dependency_groups": [
+                    {
+                        "target_framework": "net8.0",
+                        "dependencies": [
+                            {
+                                "id": "Newtonsoft.Json",
+                                "range": "[13.0.3,)"
+                            }
+                        ]
+                    }
+                ],
+                "package_types": [
+                    {
+                        "name": "Dependency"
+                    }
+                ],
+                "is_listed": true
+            }
+        })
+    );
+
+    let (status, rubygems_package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "rubygems",
+        "demo-widget-rb",
+        "alice-release-metadata-packages",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{rubygems_package_body}");
+
+    let (status, rubygems_release_body) =
+        create_release_for_package(&app, &alice_jwt, "rubygems", "demo-widget-rb", "3.0.0").await;
+    assert_eq!(status, StatusCode::CREATED, "{rubygems_release_body}");
+    let rubygems_release_id = get_release_id(&pool, "rubygems", "demo-widget-rb", "3.0.0").await;
+    sqlx::query(
+        "INSERT INTO rubygems_release_metadata (release_id, platform, summary, authors, licenses, \
+                required_ruby_version, required_rubygems_version, runtime_dependencies, \
+                development_dependencies) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+    )
+    .bind(rubygems_release_id)
+    .bind("ruby")
+    .bind("RubyGems metadata coverage")
+    .bind(vec!["Alice Example".to_owned()])
+    .bind(vec!["MIT".to_owned()])
+    .bind(">= 3.2")
+    .bind(">= 3.5")
+    .bind(json!([
+        {
+            "name": "rack",
+            "requirements": [">= 3.0"]
+        }
+    ]))
+    .bind(json!([
+        {
+            "name": "rspec",
+            "requirements": ["~> 3.0"]
+        }
+    ]))
+    .execute(&pool)
+    .await
+    .expect("rubygems metadata should insert");
+
+    let (status, rubygems_release) = get_release_detail(
+        &app,
+        Some(&alice_jwt),
+        "rubygems",
+        "demo-widget-rb",
+        "3.0.0",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{rubygems_release}");
+    assert_eq!(rubygems_release["ecosystem"], "rubygems");
+    assert_eq!(
+        rubygems_release["ecosystem_metadata"],
+        json!({
+            "kind": "rubygems",
+            "details": {
+                "platform": "ruby",
+                "summary": "RubyGems metadata coverage",
+                "authors": ["Alice Example"],
+                "licenses": ["MIT"],
+                "required_ruby_version": ">= 3.2",
+                "required_rubygems_version": ">= 3.5",
+                "runtime_dependencies": [
+                    {
+                        "name": "rack",
+                        "requirements": [">= 3.0"]
+                    }
+                ],
+                "development_dependencies": [
+                    {
+                        "name": "rspec",
+                        "requirements": ["~> 3.0"]
+                    }
+                ]
+            }
+        })
+    );
+
+    let (status, maven_package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "maven",
+        "com.acme:demo-widget",
+        "alice-release-metadata-packages",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{maven_package_body}");
+
+    let (status, maven_release_body) =
+        create_release_for_package(&app, &alice_jwt, "maven", "com.acme:demo-widget", "4.0.0")
+            .await;
+    assert_eq!(status, StatusCode::CREATED, "{maven_release_body}");
+    let maven_release_id = get_release_id(&pool, "maven", "com.acme:demo-widget", "4.0.0").await;
+    let maven_provenance = json!({
+        "source": "maven_deploy",
+        "group_id": "com.acme",
+        "artifact_id": "demo-widget",
+        "version": "4.0.0",
+        "packaging": "jar",
+        "display_name": "Demo Widget",
+        "description": "Maven metadata coverage",
+        "homepage": "https://example.test/maven",
+        "repository_url": "https://example.test/repo",
+        "licenses": ["Apache-2.0"]
+    });
+    sqlx::query("UPDATE releases SET provenance = $1 WHERE id = $2")
+        .bind(&maven_provenance)
+        .bind(maven_release_id)
+        .execute(&pool)
+        .await
+        .expect("maven provenance should update");
+
+    let (status, maven_release) = get_release_detail(
+        &app,
+        Some(&alice_jwt),
+        "maven",
+        "com.acme:demo-widget",
+        "4.0.0",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{maven_release}");
+    assert_eq!(maven_release["ecosystem"], "maven");
+    assert_eq!(
+        maven_release["ecosystem_metadata"],
+        json!({
+            "kind": "maven",
+            "details": maven_provenance
+        })
+    );
+
+    let (status, composer_package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "composer",
+        "acme/demo-widget",
+        "alice-release-metadata-packages",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{composer_package_body}");
+
+    let (status, composer_release_body) =
+        create_release_for_package(&app, &alice_jwt, "composer", "acme/demo-widget", "5.0.0").await;
+    assert_eq!(status, StatusCode::CREATED, "{composer_release_body}");
+    let composer_release_id = get_release_id(&pool, "composer", "acme/demo-widget", "5.0.0").await;
+    let composer_manifest = json!({
+        "name": "acme/demo-widget",
+        "type": "library",
+        "license": ["MIT"],
+        "keywords": ["composer", "demo"],
+        "require": {
+            "php": "^8.2",
+            "symfony/console": "^7.0"
+        },
+        "autoload": {
+            "psr-4": {
+                "Acme\\DemoWidget\\": "src/"
+            }
+        },
+        "support": {
+            "source": "https://example.test/repo"
+        }
+    });
+    sqlx::query("UPDATE releases SET provenance = $1 WHERE id = $2")
+        .bind(&composer_manifest)
+        .bind(composer_release_id)
+        .execute(&pool)
+        .await
+        .expect("composer manifest should update");
+
+    let (status, composer_release) = get_release_detail(
+        &app,
+        Some(&alice_jwt),
+        "composer",
+        "acme/demo-widget",
+        "5.0.0",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{composer_release}");
+    assert_eq!(composer_release["ecosystem"], "composer");
+    assert_eq!(
+        composer_release["ecosystem_metadata"],
+        json!({
+            "kind": "composer",
+            "details": composer_manifest
+        })
+    );
+
+    let (status, oci_package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "oci",
+        "acme/demo-widget-image",
+        "alice-release-metadata-packages",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{oci_package_body}");
+    let oci_package_id = uuid::Uuid::parse_str(
+        oci_package_body["id"]
+            .as_str()
+            .expect("oci package id should be returned"),
+    )
+    .expect("oci package id should parse");
+
+    let oci_release_id = uuid::Uuid::new_v4();
+    let oci_version = format!("sha256:{}", "a".repeat(64));
+    let config_digest = format!("sha256:{}", "b".repeat(64));
+    let layer_digest = format!("sha256:{}", "c".repeat(64));
+    let subject_digest = format!("sha256:{}", "d".repeat(64));
+    let oci_manifest = json!({
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "config": {
+            "mediaType": "application/vnd.oci.image.config.v1+json",
+            "digest": config_digest,
+            "size": 7023
+        },
+        "layers": [
+            {
+                "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+                "digest": layer_digest,
+                "size": 32654
+            }
+        ],
+        "subject": {
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "digest": subject_digest,
+            "size": 512
+        }
+    });
+    sqlx::query(
+        "INSERT INTO releases (id, package_id, version, status, published_by, provenance) \
+         VALUES ($1, $2, $3, 'published', $4, $5)",
+    )
+    .bind(oci_release_id)
+    .bind(oci_package_id)
+    .bind(&oci_version)
+    .bind(alice_user_id)
+    .bind(&oci_manifest)
+    .execute(&pool)
+    .await
+    .expect("oci release should insert");
+
+    for (digest, kind, size) in [
+        (&config_digest, "config", 7023_i64),
+        (&layer_digest, "layer", 32654_i64),
+        (&subject_digest, "subject", 512_i64),
+    ] {
+        sqlx::query(
+            "INSERT INTO oci_manifest_references (release_id, ref_digest, ref_kind, ref_size) \
+             VALUES ($1, $2, $3, $4)",
+        )
+        .bind(oci_release_id)
+        .bind(digest)
+        .bind(kind)
+        .bind(size)
+        .execute(&pool)
+        .await
+        .expect("oci manifest reference should insert");
+    }
+
+    let (status, oci_release) = get_release_detail(
+        &app,
+        Some(&alice_jwt),
+        "oci",
+        "acme/demo-widget-image",
+        &oci_version,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{oci_release}");
+    assert_eq!(oci_release["ecosystem"], "oci");
+    assert_eq!(oci_release["status"], "published");
+    assert_eq!(
+        oci_release["ecosystem_metadata"],
+        json!({
+            "kind": "oci",
+            "details": {
+                "manifest": oci_manifest,
+                "references": [
+                    {
+                        "digest": config_digest,
+                        "kind": "config",
+                        "size": 7023
+                    },
+                    {
+                        "digest": layer_digest,
+                        "kind": "layer",
+                        "size": 32654
+                    },
+                    {
+                        "digest": subject_digest,
+                        "kind": "subject",
+                        "size": 512
+                    }
+                ]
+            }
+        })
     );
 }
 
@@ -8746,7 +9476,6 @@ async fn test_native_composer_repository_publish_permission_allows_existing_pack
         versions_after_yank.is_empty(),
         "yanked releases should be hidden from metadata: {metadata_after_yank}"
     );
-
     let download_after_yank_req = Request::builder()
         .method(Method::GET)
         .uri(download_path)
@@ -9298,8 +10027,7 @@ async fn test_native_oci_push_auto_creates_org_owned_package_from_repository_pub
     );
 
     let (status, token_body) =
-        create_personal_access_token(&app, &bob_jwt, "bob-oci-publish", &["packages:write"])
-            .await;
+        create_personal_access_token(&app, &bob_jwt, "bob-oci-publish", &["packages:write"]).await;
     assert_eq!(
         status,
         StatusCode::CREATED,
@@ -9311,7 +10039,8 @@ async fn test_native_oci_push_auto_creates_org_owned_package_from_repository_pub
         .to_owned();
 
     let package_name = "acme/native-org-widget";
-    let config_bytes = br#"{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]}}"#;
+    let config_bytes =
+        br#"{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]}}"#;
     let layer_bytes = b"fake-oci-layer-for-delegated-org-package";
 
     let (config_digest, config_resp) =
@@ -9382,15 +10111,8 @@ async fn test_native_oci_push_auto_creates_org_owned_package_from_repository_pub
     .expect("oci release status should be queryable");
     assert_eq!(release_status, "published");
 
-    let probe_resp = send_oci_request(
-        &app,
-        Method::GET,
-        "/oci/v2/".to_owned(),
-        None,
-        None,
-        vec![],
-    )
-    .await;
+    let probe_resp =
+        send_oci_request(&app, Method::GET, "/oci/v2/".to_owned(), None, None, vec![]).await;
     assert_eq!(probe_resp.status(), StatusCode::UNAUTHORIZED);
     assert!(probe_resp
         .headers()
@@ -9532,7 +10254,8 @@ async fn test_native_oci_public_repository_supports_chunked_upload_anonymous_pul
         .expect("oci token should be returned")
         .to_owned();
 
-    let config_bytes = br#"{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]}}"#;
+    let config_bytes =
+        br#"{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]}}"#;
     let (config_digest, config_resp) =
         upload_oci_blob_monolithic(&app, &oci_token, package_name, config_bytes).await;
     assert_eq!(config_resp.status(), StatusCode::CREATED);
@@ -9627,7 +10350,10 @@ async fn test_native_oci_public_repository_supports_chunked_upload_anonymous_pul
     .await;
     assert_eq!(anonymous_catalog_resp.status(), StatusCode::OK);
     let anonymous_catalog_body = body_json(anonymous_catalog_resp).await;
-    assert_eq!(anonymous_catalog_body["repositories"], json!([package_name]));
+    assert_eq!(
+        anonymous_catalog_body["repositories"],
+        json!([package_name])
+    );
 
     let anonymous_tags_resp = send_oci_request(
         &app,
@@ -9675,7 +10401,10 @@ async fn test_native_oci_public_repository_supports_chunked_upload_anonymous_pul
         vec![],
     )
     .await;
-    assert_eq!(delete_blob_while_referenced_resp.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        delete_blob_while_referenced_resp.status(),
+        StatusCode::CONFLICT
+    );
     let delete_blob_while_referenced_body = body_json(delete_blob_while_referenced_resp).await;
     assert_eq!(
         delete_blob_while_referenced_body["errors"][0]["code"],
@@ -9739,7 +10468,10 @@ async fn test_native_oci_public_repository_supports_chunked_upload_anonymous_pul
         vec![],
     )
     .await;
-    assert_eq!(delete_blob_after_manifest_delete_resp.status(), StatusCode::ACCEPTED);
+    assert_eq!(
+        delete_blob_after_manifest_delete_resp.status(),
+        StatusCode::ACCEPTED
+    );
 
     let blob_after_delete_resp = send_oci_request(
         &app,
@@ -9839,12 +10571,14 @@ async fn test_native_rubygems_push_and_yank_keep_exact_downloads(pool: PgPool) {
     .expect("rubygems release status should be queryable");
     assert_eq!(release_status, "published");
 
-    let (status, metadata_body) = get_rubygems_metadata(&app, Some(&rubygems_token), gem_name).await;
+    let (status, metadata_body) =
+        get_rubygems_metadata(&app, Some(&rubygems_token), gem_name).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(metadata_body["name"], gem_name);
     assert_eq!(metadata_body["version"], "1.0.0");
 
-    let (status, versions_body) = get_rubygems_versions(&app, Some(&rubygems_token), gem_name).await;
+    let (status, versions_body) =
+        get_rubygems_versions(&app, Some(&rubygems_token), gem_name).await;
     assert_eq!(status, StatusCode::OK);
     let versions = versions_body
         .as_array()
@@ -9933,13 +10667,9 @@ async fn test_native_nuget_push_unlist_and_relist_roundtrip(pool: PgPool) {
     .await
     .expect("alice personal repositories should be made public for NuGet read checks");
 
-    let (status, token_body) = create_personal_access_token(
-        &app,
-        &alice_jwt,
-        "alice-nuget-publish",
-        &["packages:write"],
-    )
-    .await;
+    let (status, token_body) =
+        create_personal_access_token(&app, &alice_jwt, "alice-nuget-publish", &["packages:write"])
+            .await;
     assert_eq!(
         status,
         StatusCode::CREATED,
@@ -10072,6 +10802,148 @@ async fn test_native_nuget_push_unlist_and_relist_roundtrip(pool: PgPool) {
         registration_after_relist_body["items"][0]["items"][0]["catalogEntry"]["listed"],
         true
     );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_publish_release_enters_scanning_and_scan_completion_enqueues_reindex_search_job(
+    pool: PgPool,
+) {
+    let (state, app) = app_with_state(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, repository_body) = create_repository(
+        &app,
+        &alice_jwt,
+        "Async Search Repository",
+        "async-search-repository",
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, package_body) = create_package(
+        &app,
+        &alice_jwt,
+        "npm",
+        "async-search-widget",
+        "async-search-repository",
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    sqlx::query("DELETE FROM background_jobs")
+        .execute(&pool)
+        .await
+        .expect("test should be able to clear pre-existing background jobs");
+
+    let (status, create_release_body) =
+        create_release_for_package(&app, &alice_jwt, "npm", "async-search-widget", "1.0.0").await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected create release response: {create_release_body}"
+    );
+
+    let (status, upload_body) = upload_release_artifact(
+        &app,
+        &alice_jwt,
+        "npm",
+        "async-search-widget",
+        "1.0.0",
+        "async-search-widget-1.0.0.tgz",
+        "tarball",
+        "application/octet-stream",
+        br#"pretend npm tarball bytes"#,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected upload response: {upload_body}"
+    );
+
+    let (status, publish_body) =
+        publish_release_for_package(&app, &alice_jwt, "npm", "async-search-widget", "1.0.0").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected publish response: {publish_body}"
+    );
+    assert_eq!(publish_body["status"], "scanning");
+
+    let (status, _) = get_release_detail(&app, None, "npm", "async-search-widget", "1.0.0").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let release_id = get_release_id(&pool, "npm", "async-search-widget", "1.0.0").await;
+
+    let package_id: uuid::Uuid = sqlx::query_scalar(
+        "SELECT id FROM packages WHERE ecosystem = 'npm' AND normalized_name = $1",
+    )
+    .bind("async-search-widget")
+    .fetch_one(&pool)
+    .await
+    .expect("package id should be queryable");
+
+    let scan_jobs = fetch_background_jobs(&pool, "scan_artifact").await;
+    assert_eq!(scan_jobs.len(), 1, "scan jobs: {scan_jobs:?}");
+    assert_eq!(scan_jobs[0].0, "scan_artifact");
+    assert_eq!(scan_jobs[0].2, "pending");
+    assert_eq!(scan_jobs[0].1["release_id"], release_id.to_string());
+
+    let reindex_jobs_before = fetch_background_jobs(&pool, "reindex_search").await;
+    assert!(
+        reindex_jobs_before.is_empty(),
+        "reindex jobs should not be enqueued before scanning finishes: {reindex_jobs_before:?}"
+    );
+
+    let scan_handler = ScanArtifactHandler {
+        db: pool.clone(),
+        artifact_store: Arc::new(ArtifactStoreReaderAdapter::new(
+            state.artifact_store.clone(),
+        )),
+        scanners: vec![
+            Box::new(PolicyScanner {
+                max_artifact_bytes: 500 * 1024 * 1024,
+            }),
+            Box::new(SecretsScanner::new()),
+        ],
+    };
+
+    scan_handler
+        .handle(scan_jobs[0].1.clone())
+        .await
+        .expect("scan handler should finish successfully");
+
+    let release_status: String =
+        sqlx::query_scalar("SELECT status::text FROM releases WHERE id = $1")
+            .bind(release_id)
+            .fetch_one(&pool)
+            .await
+            .expect("release status should be queryable after scanning");
+    assert_eq!(release_status, "published");
+
+    let reindex_jobs_after = fetch_background_jobs(&pool, "reindex_search").await;
+    assert_eq!(reindex_jobs_after.len(), 1, "jobs: {reindex_jobs_after:?}");
+    assert_eq!(reindex_jobs_after[0].0, "reindex_search");
+    assert_eq!(reindex_jobs_after[0].2, "pending");
+    assert_eq!(
+        reindex_jobs_after[0].1["package_id"],
+        package_id.to_string()
+    );
+
+    let (status, anonymous_published_release) =
+        get_release_detail(&app, None, "npm", "async-search-widget", "1.0.0").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(anonymous_published_release["status"], "published");
 }
 
 #[sqlx::test(migrations = "../../migrations")]

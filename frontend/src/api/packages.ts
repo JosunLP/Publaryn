@@ -1,6 +1,133 @@
 import { api } from './client';
 
 type NullableString = string | null;
+export type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | JsonValue[]
+  | { [key: string]: JsonValue };
+
+export type PackageEcosystemMetadata =
+  | {
+      kind: 'npm' | 'bun';
+      details: {
+        scope?: NullableString;
+        unscoped_name: string;
+      };
+    }
+  | {
+      kind: 'pypi';
+      details: {
+        project_name: string;
+        normalized_name: string;
+      };
+    }
+  | {
+      kind: 'cargo';
+      details: {
+        crate_name: string;
+        normalized_name: string;
+      };
+    }
+  | {
+      kind: 'nuget';
+      details: {
+        package_id: string;
+        normalized_id: string;
+      };
+    }
+  | {
+      kind: 'rubygems';
+      details: {
+        gem_name: string;
+        normalized_name: string;
+      };
+    }
+  | {
+      kind: 'composer';
+      details: {
+        vendor: string;
+        package: string;
+      };
+    }
+  | {
+      kind: 'maven';
+      details: {
+        group_id: string;
+        artifact_id: string;
+      };
+    }
+  | {
+      kind: 'oci';
+      details: {
+        repository: string;
+        segments: string[];
+      };
+    };
+
+export type ReleaseEcosystemMetadata =
+  | {
+      kind: 'cargo';
+      details: {
+        dependencies: JsonValue;
+        features: JsonValue;
+        features2?: JsonValue | null;
+        links?: NullableString;
+        rust_version?: NullableString;
+      };
+    }
+  | {
+      kind: 'nuget';
+      details: {
+        authors?: NullableString;
+        title?: NullableString;
+        icon_url?: NullableString;
+        license_url?: NullableString;
+        license_expression?: NullableString;
+        project_url?: NullableString;
+        require_license_acceptance?: boolean;
+        min_client_version?: NullableString;
+        summary?: NullableString;
+        tags: string[];
+        dependency_groups: JsonValue;
+        package_types: JsonValue;
+        is_listed: boolean;
+      };
+    }
+  | {
+      kind: 'rubygems';
+      details: {
+        platform: string;
+        summary?: NullableString;
+        authors: string[];
+        licenses: string[];
+        required_ruby_version?: NullableString;
+        required_rubygems_version?: NullableString;
+        runtime_dependencies: JsonValue;
+        development_dependencies: JsonValue;
+      };
+    }
+  | {
+      kind: 'maven';
+      details: { [key: string]: JsonValue };
+    }
+  | {
+      kind: 'composer';
+      details: { [key: string]: JsonValue };
+    }
+  | {
+      kind: 'oci';
+      details: {
+        manifest?: JsonValue | null;
+        references: Array<{
+          digest?: NullableString;
+          kind?: NullableString;
+          size?: number | null;
+        }>;
+      };
+    };
 
 export interface SearchPackagesOptions {
   q?: string;
@@ -29,6 +156,7 @@ export interface SearchPackagesResponse {
 }
 
 export interface PackageDetail {
+  ecosystem?: NullableString;
   name: string;
   display_name?: NullableString;
   latest_version?: NullableString;
@@ -51,6 +179,7 @@ export interface PackageDetail {
   homepage?: NullableString;
   repository_url?: NullableString;
   keywords?: string[] | null;
+  ecosystem_metadata?: PackageEcosystemMetadata | null;
 }
 
 export interface CreatePackageInput {
@@ -120,6 +249,7 @@ export interface PackageTransferOwnershipResult {
 }
 
 export interface Release {
+  ecosystem?: NullableString;
   version: string;
   published_at?: NullableString;
   created_at?: NullableString;
@@ -134,6 +264,7 @@ export interface Release {
   source_ref?: NullableString;
   can_manage_releases?: boolean;
   sha256?: NullableString;
+  ecosystem_metadata?: ReleaseEcosystemMetadata | null;
 }
 
 export interface Artifact {

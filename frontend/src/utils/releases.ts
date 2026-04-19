@@ -71,8 +71,7 @@ export function getReleaseActionAvailability(
 
   return {
     canUploadArtifact: matchesStatus(status, ['quarantine', 'scanning']),
-    canPublish:
-      matchesStatus(status, ['quarantine', 'scanning']) && artifactCount > 0,
+    canPublish: matchesStatus(status, ['quarantine']) && artifactCount > 0,
     canYank: !release.is_yanked && isFinalized,
     canRestore: release.is_yanked === true,
     canDeprecate: !release.is_deprecated && isFinalized,
@@ -85,7 +84,7 @@ export function describeReleaseReadiness(
 ): ReleaseReadiness {
   const status = normalizeStatus(release.status);
 
-  if (matchesStatus(status, ['quarantine', 'scanning'])) {
+  if (matchesStatus(status, ['quarantine'])) {
     if (artifactCount === 0) {
       return {
         tone: 'warning',
@@ -97,6 +96,14 @@ export function describeReleaseReadiness(
       tone: 'success',
       message:
         'This release is ready to publish once you confirm the uploaded artifacts.',
+    };
+  }
+
+  if (matchesStatus(status, ['scanning'])) {
+    return {
+      tone: 'info',
+      message:
+        'This release is being scanned and will become readable after the checks finish.',
     };
   }
 

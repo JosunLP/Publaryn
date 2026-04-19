@@ -26,10 +26,12 @@ use publaryn_core::{
     policy::{self, PolicyViolation},
     validation,
 };
-use publaryn_search::{PackageDocument, SearchIndex};
 
 use crate::{
     error::{ApiError, ApiResult},
+    job_handlers::{
+        enqueue_package_reindex_job, enqueue_release_scan_jobs, enqueue_scan_artifact_job,
+    },
     request_auth::{
         actor_can_admin_package_by_id, actor_can_publish_package_by_id,
         actor_can_security_review_package_by_id, actor_can_transfer_package_by_id,
@@ -195,6 +197,261 @@ async fn can_manage_security_for_package(
     }
 }
 
+fn build_package_ecosystem_metadata(
+    ecosystem: &Ecosystem,
+    package_name: &str,
+) -> serde_json::Value {
+    let normalized_name = normalize_package_name(package_name, ecosystem);
+
+    let details = match ecosystem {
+        Ecosystem::Npm | Ecosystem::Bun => {
+            let (scope, unscoped_name) = package_name
+                .split_once('/')
+                .map(|(scope, unscoped_name)| (Some(scope.to_owned()), unscoped_name.to_owned()))
+                .unwrap_or((None, package_name.to_owned()));
+
+            serde_json::json!({
+                "scope": scope,
+                "unscoped_name": unscoped_name,
+            })
+        }
+        Ecosystem::Pypi => serde_json::json!({
+            "project_name": package_name,
+            "normalized_name": normalized_name,
+        }),
+        Ecosystem::Cargo => serde_json::json!({
+            "crate_name": package_name,
+            "normalized_name": normalized_name,
+        }),
+        Ecosystem::Nuget => serde_json::json!({
+            "package_id": package_name,
+            "normalized_id": normalized_name,
+        }),
+        Ecosystem::Rubygems => serde_json::json!({
+            "gem_name": package_name,
+            "normalized_name": normalized_name,
+        }),
+        Ecosystem::Composer => {
+            let (vendor, package) = package_name
+                .split_once('/')
+                .map(|(vendor, package)| (vendor.to_owned(), package.to_owned()))
+                .unwrap_or_else(|| (package_name.to_owned(), String::new()));
+
+            serde_json::json!({
+                "vendor": vendor,
+                "package": package,
+            })
+        }
+        Ecosystem::Maven => {
+            let (group_id, artifact_id) = package_name
+                .split_once(':')
+                .map(|(group_id, artifact_id)| (group_id.to_owned(), artifact_id.to_owned()))
+                .unwrap_or_else(|| (String::new(), package_name.to_owned()));
+
+            serde_json::json!({
+                "group_id": group_id,
+                "artifact_id": artifact_id,
+            })
+        }
+        Ecosystem::Oci => serde_json::json!({
+            "repository": package_name,
+            "segments": package_name
+                .split('/')
+                .filter(|segment| !segment.is_empty())
+                .collect::<Vec<_>>(),
+        }),
+    };
+
+    serde_json::json!({
+        "kind": ecosystem.as_str(),
+        "details": details,
+    })
+}
+
+async fn load_release_ecosystem_metadata(
+    db: &sqlx::PgPool,
+    ecosystem: &Ecosystem,
+    release_id: Uuid,
+    provenance: Option<&serde_json::Value>,
+) -> ApiResult<Option<serde_json::Value>> {
+    let details = match ecosystem {
+        Ecosystem::Cargo => load_cargo_release_metadata(db, release_id).await?,
+        Ecosystem::Nuget => load_nuget_release_metadata(db, release_id).await?,
+        Ecosystem::Rubygems => load_rubygems_release_metadata(db, release_id).await?,
+        Ecosystem::Maven | Ecosystem::Composer => provenance.cloned(),
+        Ecosystem::Oci => load_oci_release_metadata(db, release_id, provenance).await?,
+        Ecosystem::Npm | Ecosystem::Bun | Ecosystem::Pypi => None,
+    };
+
+    Ok(details.map(|details| {
+        serde_json::json!({
+            "kind": ecosystem.as_str(),
+            "details": details,
+        })
+    }))
+}
+
+async fn load_cargo_release_metadata(
+    db: &sqlx::PgPool,
+    release_id: Uuid,
+) -> ApiResult<Option<serde_json::Value>> {
+    let row = sqlx::query(
+        "SELECT deps, features, features2, links, rust_version \
+         FROM cargo_release_metadata \
+         WHERE release_id = $1",
+    )
+    .bind(release_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    Ok(row.map(|row| {
+        serde_json::json!({
+            "dependencies": row
+                .try_get::<serde_json::Value, _>("deps")
+                .unwrap_or_else(|_| serde_json::json!([])),
+            "features": row
+                .try_get::<serde_json::Value, _>("features")
+                .unwrap_or_else(|_| serde_json::json!({})),
+            "features2": row.try_get::<Option<serde_json::Value>, _>("features2").ok().flatten(),
+            "links": row.try_get::<Option<String>, _>("links").ok().flatten(),
+            "rust_version": row
+                .try_get::<Option<String>, _>("rust_version")
+                .ok()
+                .flatten(),
+        })
+    }))
+}
+
+async fn load_nuget_release_metadata(
+    db: &sqlx::PgPool,
+    release_id: Uuid,
+) -> ApiResult<Option<serde_json::Value>> {
+    let row = sqlx::query(
+        "SELECT authors, title, icon_url, license_url, license_expression, project_url, \
+                require_license_acceptance, min_client_version, summary, tags, \
+                dependency_groups, package_types, is_listed \
+         FROM nuget_release_metadata \
+         WHERE release_id = $1",
+    )
+    .bind(release_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    Ok(row.map(|row| {
+        serde_json::json!({
+            "authors": row.try_get::<Option<String>, _>("authors").ok().flatten(),
+            "title": row.try_get::<Option<String>, _>("title").ok().flatten(),
+            "icon_url": row.try_get::<Option<String>, _>("icon_url").ok().flatten(),
+            "license_url": row.try_get::<Option<String>, _>("license_url").ok().flatten(),
+            "license_expression": row
+                .try_get::<Option<String>, _>("license_expression")
+                .ok()
+                .flatten(),
+            "project_url": row.try_get::<Option<String>, _>("project_url").ok().flatten(),
+            "require_license_acceptance": row
+                .try_get::<bool, _>("require_license_acceptance")
+                .unwrap_or(false),
+            "min_client_version": row
+                .try_get::<Option<String>, _>("min_client_version")
+                .ok()
+                .flatten(),
+            "summary": row.try_get::<Option<String>, _>("summary").ok().flatten(),
+            "tags": row.try_get::<Vec<String>, _>("tags").unwrap_or_default(),
+            "dependency_groups": row
+                .try_get::<serde_json::Value, _>("dependency_groups")
+                .unwrap_or_else(|_| serde_json::json!([])),
+            "package_types": row
+                .try_get::<serde_json::Value, _>("package_types")
+                .unwrap_or_else(|_| serde_json::json!([])),
+            "is_listed": row.try_get::<bool, _>("is_listed").unwrap_or(true),
+        })
+    }))
+}
+
+async fn load_rubygems_release_metadata(
+    db: &sqlx::PgPool,
+    release_id: Uuid,
+) -> ApiResult<Option<serde_json::Value>> {
+    let row = sqlx::query(
+        "SELECT platform, summary, authors, licenses, required_ruby_version, \
+                required_rubygems_version, runtime_dependencies, development_dependencies \
+         FROM rubygems_release_metadata \
+         WHERE release_id = $1",
+    )
+    .bind(release_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    Ok(row.map(|row| {
+        serde_json::json!({
+            "platform": row
+                .try_get::<String, _>("platform")
+                .unwrap_or_else(|_| "ruby".to_owned()),
+            "summary": row.try_get::<Option<String>, _>("summary").ok().flatten(),
+            "authors": row.try_get::<Vec<String>, _>("authors").unwrap_or_default(),
+            "licenses": row.try_get::<Vec<String>, _>("licenses").unwrap_or_default(),
+            "required_ruby_version": row
+                .try_get::<Option<String>, _>("required_ruby_version")
+                .ok()
+                .flatten(),
+            "required_rubygems_version": row
+                .try_get::<Option<String>, _>("required_rubygems_version")
+                .ok()
+                .flatten(),
+            "runtime_dependencies": row
+                .try_get::<serde_json::Value, _>("runtime_dependencies")
+                .unwrap_or_else(|_| serde_json::json!([])),
+            "development_dependencies": row
+                .try_get::<serde_json::Value, _>("development_dependencies")
+                .unwrap_or_else(|_| serde_json::json!([])),
+        })
+    }))
+}
+
+async fn load_oci_release_metadata(
+    db: &sqlx::PgPool,
+    release_id: Uuid,
+    provenance: Option<&serde_json::Value>,
+) -> ApiResult<Option<serde_json::Value>> {
+    let rows = sqlx::query(
+        "SELECT ref_digest, ref_kind, ref_size \
+         FROM oci_manifest_references \
+         WHERE release_id = $1 \
+         ORDER BY CASE ref_kind \
+                      WHEN 'config' THEN 0 \
+                      WHEN 'layer' THEN 1 \
+                      ELSE 2 \
+                  END, created_at ASC, ref_digest ASC",
+    )
+    .bind(release_id)
+    .fetch_all(db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let references = rows
+        .iter()
+        .map(|row| {
+            serde_json::json!({
+                "digest": row.try_get::<String, _>("ref_digest").ok(),
+                "kind": row.try_get::<String, _>("ref_kind").ok(),
+                "size": row.try_get::<Option<i64>, _>("ref_size").ok().flatten(),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    if provenance.is_none() && references.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(serde_json::json!({
+        "manifest": provenance.cloned(),
+        "references": references,
+    })))
+}
+
 async fn get_package(
     State(state): State<AppState>,
     identity: OptionalAuthenticatedIdentity,
@@ -245,6 +502,11 @@ async fn get_package(
         )))
     })?;
 
+    let package_name = row
+        .try_get::<String, _>("name")
+        .unwrap_or_else(|_| name.clone());
+    let ecosystem_metadata = build_package_ecosystem_metadata(&eco, &package_name);
+
     Ok(Json(serde_json::json!({
         "id": row.try_get::<Uuid, _>("id").ok(),
         "name": row.try_get::<String, _>("name").ok(),
@@ -268,6 +530,7 @@ async fn get_package(
         "can_manage_trusted_publishers": can_manage_trusted_publishers,
         "can_manage_security": can_manage_security,
         "can_transfer": can_transfer,
+        "ecosystem_metadata": ecosystem_metadata,
         "created_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at").ok(),
         "updated_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("updated_at").ok(),
     })))
@@ -487,6 +750,14 @@ async fn create_package(
     tx.commit()
         .await
         .map_err(|e| ApiError(Error::Database(e)))?;
+
+    if let Err(error) = enqueue_package_reindex_job(&state.db, package.id).await {
+        tracing::warn!(
+            package_id = %package.id,
+            error = %error,
+            "Failed to enqueue package reindex after creation"
+        );
+    }
 
     if let Err(error) = index_package_after_creation(&state, &package).await {
         tracing::warn!(
@@ -721,6 +992,14 @@ async fn update_package(
     tx.commit()
         .await
         .map_err(|e| ApiError(Error::Database(e)))?;
+
+    if let Err(error) = enqueue_package_reindex_job(&state.db, package_id).await {
+        tracing::warn!(
+            package_id = %package_id,
+            error = %error,
+            "Failed to enqueue package reindex after metadata update"
+        );
+    }
 
     if let Err(error) = reindex_package_document(&state, package_id).await {
         tracing::warn!(
@@ -1087,10 +1366,11 @@ async fn get_release(
         can_manage_releases_for_package(&state.db, release_access.package_id, &identity).await?;
 
     let row = sqlx::query(
-        "SELECT r.id, r.version, r.status::text AS status, r.is_yanked, r.yank_reason, r.is_deprecated, \
-                r.deprecation_message, r.is_prerelease, r.description, r.changelog, \
-                r.source_ref, r.published_at \
+        "SELECT r.id, p.name AS package_name, r.version, r.status::text AS status, r.is_yanked, \
+            r.yank_reason, r.is_deprecated, r.deprecation_message, r.is_prerelease, \
+            r.description, r.changelog, r.source_ref, r.provenance, r.published_at \
          FROM releases r \
+         JOIN packages p ON p.id = r.package_id \
          WHERE r.package_id = $1 AND r.version = $2",
     )
     .bind(release_access.package_id)
@@ -1104,8 +1384,20 @@ async fn get_release(
         )))
     })?;
 
+    let release_id = row
+        .try_get::<Uuid, _>("id")
+        .unwrap_or(release_access.release_id);
+    let release_provenance = row
+        .try_get::<Option<serde_json::Value>, _>("provenance")
+        .ok()
+        .flatten();
+    let ecosystem_metadata =
+        load_release_ecosystem_metadata(&state.db, &eco, release_id, release_provenance.as_ref())
+            .await?;
+
     Ok(Json(serde_json::json!({
         "id": row.try_get::<Uuid, _>("id").ok(),
+        "ecosystem": eco.as_str(),
         "version": row.try_get::<String, _>("version").ok(),
         "status": Some(release_access.status),
         "can_manage_releases": can_manage_releases,
@@ -1117,6 +1409,7 @@ async fn get_release(
         "description": row.try_get::<Option<String>, _>("description").ok().flatten(),
         "changelog": row.try_get::<Option<String>, _>("changelog").ok().flatten(),
         "source_ref": row.try_get::<Option<String>, _>("source_ref").ok().flatten(),
+        "ecosystem_metadata": ecosystem_metadata,
         "published_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("published_at").ok(),
     })))
 }
@@ -1468,7 +1761,7 @@ async fn publish_release(
         .map_err(|e| ApiError(Error::Database(e)))?;
 
     let release_row = sqlx::query(
-        "SELECT id, status::text AS status, is_yanked, is_deprecated \
+        "SELECT id, status::text AS status \
          FROM releases \
          WHERE package_id = $1 AND version = $2 \
          FOR UPDATE",
@@ -1485,12 +1778,6 @@ async fn publish_release(
         .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
     let current_status = release_row
         .try_get::<String, _>("status")
-        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
-    let is_yanked = release_row
-        .try_get::<bool, _>("is_yanked")
-        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
-    let is_deprecated = release_row
-        .try_get::<bool, _>("is_deprecated")
         .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
 
     let artifact_count: i64 = sqlx::query_scalar(
@@ -1516,6 +1803,19 @@ async fn publish_release(
         })));
     }
 
+    if current_status == "scanning" {
+        tx.commit()
+            .await
+            .map_err(|e| ApiError(Error::Database(e)))?;
+
+        return Ok(Json(serde_json::json!({
+            "message": "Release scanning is already in progress",
+            "version": version,
+            "status": current_status,
+            "artifact_count": artifact_count,
+        })));
+    }
+
     if !release_status_can_be_published(&current_status) {
         return Err(ApiError(Error::Conflict(format!(
             "Release '{version}' cannot be published from status '{current_status}'"
@@ -1528,14 +1828,12 @@ async fn publish_release(
         )));
     }
 
-    let next_status = finalize_release_status(is_deprecated, is_yanked);
-
     sqlx::query(
         "UPDATE releases \
          SET status = $1::release_status, updated_at = NOW() \
          WHERE id = $2",
     )
-    .bind(next_status)
+    .bind("scanning")
     .bind(release_id)
     .execute(&mut *tx)
     .await
@@ -1562,7 +1860,7 @@ async fn publish_release(
         "ecosystem": eco.as_str(),
         "name": normalized,
         "version": version,
-        "status": next_status,
+        "status": "scanning",
         "artifact_count": artifact_count,
     }))
     .execute(&mut *tx)
@@ -1573,20 +1871,33 @@ async fn publish_release(
         .await
         .map_err(|e| ApiError(Error::Database(e)))?;
 
-    if let Err(error) = reindex_package_document(&state, package_id).await {
+    let scan_jobs_enqueued = match enqueue_release_scan_jobs(&state.db, release_id).await {
+        Ok(job_ids) => job_ids.len(),
+        Err(error) => {
+            tracing::warn!(
+                package_id = %package_id,
+                release_id = %release_id,
+                error = %error,
+                "Failed to enqueue release artifact scans after publish"
+            );
+            0
+        }
+    };
+
+    if scan_jobs_enqueued == 0 {
         tracing::warn!(
             package_id = %package_id,
             release_id = %release_id,
-            error = %error,
-            "Failed to reindex package after release publication"
+            "Release entered scanning without any scan jobs being enqueued"
         );
     }
 
     Ok(Json(serde_json::json!({
-        "message": "Release published",
+        "message": "Release submitted for scanning",
         "version": version,
-        "status": next_status,
+        "status": "scanning",
         "artifact_count": artifact_count,
+        "scan_jobs_enqueued": scan_jobs_enqueued,
     })))
 }
 
@@ -1811,6 +2122,26 @@ async fn upload_artifact(
         ));
     }
 
+    if release_access.status == "scanning" {
+        let scan_payload = publaryn_workers::scanners::ScanArtifactPayload {
+            release_id: artifact.release_id,
+            artifact_id: artifact.id,
+            storage_key: artifact.storage_key.clone(),
+            filename: artifact.filename.clone(),
+            ecosystem: eco.as_str().to_owned(),
+        };
+
+        if let Err(error) = enqueue_scan_artifact_job(&state.db, scan_payload).await {
+            tracing::warn!(
+                release_id = %artifact.release_id,
+                artifact_id = %artifact.id,
+                filename = %artifact.filename,
+                error = %error,
+                "Failed to enqueue artifact scan after upload during scanning"
+            );
+        }
+    }
+
     Ok((
         StatusCode::CREATED,
         Json(serde_json::json!({
@@ -1959,16 +2290,6 @@ fn ensure_release_allows_status_mutation(status: &str, action: &str) -> ApiResul
     }
 
     Ok(())
-}
-
-fn finalize_release_status(is_deprecated: bool, is_yanked: bool) -> &'static str {
-    if is_yanked {
-        "yanked"
-    } else if is_deprecated {
-        "deprecated"
-    } else {
-        "published"
-    }
 }
 
 fn version_looks_prerelease(version: &str) -> bool {
@@ -2383,82 +2704,8 @@ async fn index_package_after_creation(
 }
 
 async fn reindex_package_document(state: &AppState, package_id: Uuid) -> publaryn_core::Result<()> {
-    let row = sqlx::query(
-        "SELECT p.id, p.name, p.normalized_name, p.display_name, p.description, p.ecosystem, \
-                p.keywords, p.download_count, p.is_deprecated, p.visibility, p.updated_at, \
-                u.username AS owner_username, o.slug AS owner_org_slug, \
-                latest_release.version AS latest_version \
-         FROM packages p \
-         LEFT JOIN users u ON u.id = p.owner_user_id \
-         LEFT JOIN organizations o ON o.id = p.owner_org_id \
-         LEFT JOIN LATERAL ( \
-             SELECT version \
-             FROM releases \
-             WHERE package_id = p.id AND status::text = ANY($2) \
-             ORDER BY published_at DESC \
-             LIMIT 1 \
-         ) latest_release ON true \
-         WHERE p.id = $1",
-    )
-    .bind(package_id)
-    .bind(release_history_visible_statuses())
-    .fetch_optional(&state.db)
-    .await
-    .map_err(Error::Database)?
-    .ok_or_else(|| Error::NotFound(format!("Package '{package_id}' not found for indexing")))?;
-
-    let owner_name = row
-        .try_get::<Option<String>, _>("owner_org_slug")
-        .map_err(|e| Error::Internal(e.to_string()))?
-        .or_else(|| {
-            row.try_get::<Option<String>, _>("owner_username")
-                .ok()
-                .flatten()
-        });
-
-    let document = PackageDocument {
-        id: row
-            .try_get::<Uuid, _>("id")
-            .map_err(|e| Error::Internal(e.to_string()))?
-            .to_string(),
-        name: row
-            .try_get("name")
-            .map_err(|e| Error::Internal(e.to_string()))?,
-        normalized_name: row
-            .try_get("normalized_name")
-            .map_err(|e| Error::Internal(e.to_string()))?,
-        display_name: row
-            .try_get::<Option<String>, _>("display_name")
-            .map_err(|e| Error::Internal(e.to_string()))?,
-        description: row
-            .try_get::<Option<String>, _>("description")
-            .map_err(|e| Error::Internal(e.to_string()))?,
-        ecosystem: row
-            .try_get::<String, _>("ecosystem")
-            .map_err(|e| Error::Internal(e.to_string()))?,
-        keywords: row
-            .try_get::<Vec<String>, _>("keywords")
-            .map_err(|e| Error::Internal(e.to_string()))?,
-        latest_version: row
-            .try_get::<Option<String>, _>("latest_version")
-            .map_err(|e| Error::Internal(e.to_string()))?,
-        download_count: row
-            .try_get::<i64, _>("download_count")
-            .map_err(|e| Error::Internal(e.to_string()))?,
-        is_deprecated: row
-            .try_get::<bool, _>("is_deprecated")
-            .map_err(|e| Error::Internal(e.to_string()))?,
-        visibility: row
-            .try_get::<String, _>("visibility")
-            .map_err(|e| Error::Internal(e.to_string()))?,
-        owner_name,
-        updated_at: row
-            .try_get::<chrono::DateTime<chrono::Utc>, _>("updated_at")
-            .map_err(|e| Error::Internal(e.to_string()))?
-            .to_rfc3339(),
-    };
-
-    state.search.index_package(document).await
+    crate::package_search::reindex_package_document(&state.db, state.search.as_ref(), package_id)
+        .await
 }
 
 #[cfg(test)]
@@ -2473,13 +2720,12 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        build_artifact_storage_key, derive_package_visibility,
+        build_artifact_storage_key, build_package_ecosystem_metadata, derive_package_visibility,
         ensure_release_allows_status_mutation, extract_namespace_claim_value,
-        finalize_release_status, join_policy_violations, package_owner_from_fields,
-        release_history_visible_statuses, release_management_visible_statuses,
-        release_status_accepts_artifact_upload, release_status_after_unyank,
-        release_status_allows_direct_read, release_status_can_be_published,
-        validate_artifact_filename, validate_expected_sha256,
+        join_policy_violations, package_owner_from_fields, release_history_visible_statuses,
+        release_management_visible_statuses, release_status_accepts_artifact_upload,
+        release_status_after_unyank, release_status_allows_direct_read,
+        release_status_can_be_published, validate_artifact_filename, validate_expected_sha256,
         validate_package_creation_repository_kind, validate_package_transfer_target,
         version_looks_prerelease, visibility_scope_rank, PackageOwner,
     };
@@ -2573,13 +2819,6 @@ mod tests {
         assert!(release_status_can_be_published("scanning"));
         assert!(release_status_can_be_published("published"));
         assert!(!release_status_can_be_published("deprecated"));
-    }
-
-    #[test]
-    fn finalize_release_status_prefers_yanked_over_deprecated() {
-        assert_eq!(finalize_release_status(false, false), "published");
-        assert_eq!(finalize_release_status(true, false), "deprecated");
-        assert_eq!(finalize_release_status(true, true), "yanked");
     }
 
     #[test]
@@ -2730,6 +2969,35 @@ mod tests {
         assert_eq!(
             extract_namespace_claim_value(&Ecosystem::Pypi, "acme-widget"),
             None
+        );
+    }
+
+    #[test]
+    fn package_ecosystem_metadata_splits_maven_coordinates() {
+        let metadata = build_package_ecosystem_metadata(&Ecosystem::Maven, "com.acme:widget");
+
+        assert_eq!(metadata["kind"], "maven");
+        assert_eq!(metadata["details"]["group_id"], "com.acme");
+        assert_eq!(metadata["details"]["artifact_id"], "widget");
+    }
+
+    #[test]
+    fn package_ecosystem_metadata_splits_composer_vendor_and_package() {
+        let metadata = build_package_ecosystem_metadata(&Ecosystem::Composer, "acme/widget");
+
+        assert_eq!(metadata["kind"], "composer");
+        assert_eq!(metadata["details"]["vendor"], "acme");
+        assert_eq!(metadata["details"]["package"], "widget");
+    }
+
+    #[test]
+    fn package_ecosystem_metadata_preserves_oci_repository_segments() {
+        let metadata = build_package_ecosystem_metadata(&Ecosystem::Oci, "registry/team/widget");
+
+        assert_eq!(metadata["kind"], "oci");
+        assert_eq!(
+            metadata["details"]["segments"],
+            serde_json::json!(["registry", "team", "widget"])
         );
     }
 

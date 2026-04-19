@@ -1,5 +1,6 @@
 export type EcosystemId =
   | 'npm'
+  | 'bun'
   | 'pypi'
   | 'cargo'
   | 'nuget'
@@ -50,8 +51,9 @@ export function installCommand(
 
   switch (ecosystem?.toLowerCase()) {
     case 'npm':
-    case 'bun':
       return `npm install ${name}${suffix}`;
+    case 'bun':
+      return `bun add ${name}${suffix}`;
     case 'pypi':
       return version
         ? `pip install ${name}==${version}`
@@ -92,6 +94,7 @@ export function installCommand(
  */
 export const ECOSYSTEMS: EcosystemDefinition[] = [
   { id: 'npm', label: 'npm', icon: '📦' },
+  { id: 'bun', label: 'Bun', icon: '🥟' },
   { id: 'pypi', label: 'PyPI', icon: '🐍' },
   { id: 'cargo', label: 'Cargo', icon: '🦀' },
   { id: 'nuget', label: 'NuGet', icon: '🔷' },

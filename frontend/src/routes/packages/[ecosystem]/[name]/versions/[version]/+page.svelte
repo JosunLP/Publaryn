@@ -148,7 +148,7 @@
 
     try {
       const result = await publishRelease(eecosystem(), ename(), eversion());
-      notice = result.message || 'Release published successfully.';
+      notice = result.message || 'Release submitted for scanning.';
       await loadVersionPage();
     } catch (caughtError: unknown) {
       error =
@@ -233,6 +233,62 @@
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   }
 
+  function formatJson(value: unknown): string {
+    return JSON.stringify(value ?? null, null, 2);
+  }
+
+  function isRecord(value: unknown): value is Record<string, unknown> {
+    return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+  }
+
+  function stringValue(value: unknown): string | null {
+    return typeof value === 'string' && value.trim().length > 0 ? value : null;
+  }
+
+  function stringArrayValue(value: unknown): string[] {
+    return Array.isArray(value)
+      ? value.filter(
+          (entry): entry is string =>
+            typeof entry === 'string' && entry.trim().length > 0
+        )
+      : [];
+  }
+
+  function numberValue(value: unknown): number | null {
+    return typeof value === 'number' && Number.isFinite(value) ? value : null;
+  }
+
+  function booleanLabel(value: boolean | null | undefined): string {
+    return value ? 'Yes' : 'No';
+  }
+
+  function hasJsonContent(value: unknown): boolean {
+    if (Array.isArray(value)) {
+      return value.length > 0;
+    }
+
+    if (isRecord(value)) {
+      return Object.keys(value).length > 0;
+    }
+
+    return (
+      value !== null && value !== undefined && `${value}`.trim().length > 0
+    );
+  }
+
+  function formatOciReferenceKind(kind: string | null | undefined): string {
+    switch ((kind || '').toLowerCase()) {
+      case 'config':
+        return 'Config';
+      case 'layer':
+        return 'Layer';
+      case 'subject':
+        return 'Subject';
+      default:
+        return kind || 'Reference';
+    }
+  }
+
   function eecosystem(): string {
     return ecosystem;
   }
@@ -246,6 +302,40 @@
   }
 
   $: artifactCount = artifacts.length;
+  $: releaseMetadata = release?.ecosystem_metadata ?? null;
+  $: cargoMetadata =
+    releaseMetadata?.kind === 'cargo' ? releaseMetadata.details : null;
+  $: nugetMetadata =
+    releaseMetadata?.kind === 'nuget' ? releaseMetadata.details : null;
+  $: rubygemsMetadata =
+    releaseMetadata?.kind === 'rubygems' ? releaseMetadata.details : null;
+  $: mavenMetadata =
+    releaseMetadata?.kind === 'maven' && isRecord(releaseMetadata.details)
+      ? releaseMetadata.details
+      : null;
+  $: composerMetadata =
+    releaseMetadata?.kind === 'composer' && isRecord(releaseMetadata.details)
+      ? releaseMetadata.details
+      : null;
+  $: ociMetadata =
+    releaseMetadata?.kind === 'oci' ? releaseMetadata.details : null;
+  $: mavenLicenses = stringArrayValue(mavenMetadata?.licenses);
+  $: composerLicenses = stringArrayValue(composerMetadata?.license);
+  $: composerKeywords = stringArrayValue(composerMetadata?.keywords);
+  $: composerRequire = isRecord(composerMetadata?.require)
+    ? composerMetadata.require
+    : null;
+  $: composerAutoload = isRecord(composerMetadata?.autoload)
+    ? composerMetadata.autoload
+    : null;
+  $: composerSupport = isRecord(composerMetadata?.support)
+    ? composerMetadata.support
+    : null;
+  $: ociManifest =
+    ociMetadata && isRecord(ociMetadata.manifest) ? ociMetadata.manifest : null;
+  $: ociConfig = isRecord(ociManifest?.config) ? ociManifest.config : null;
+  $: ociLayers = Array.isArray(ociManifest?.layers) ? ociManifest.layers : [];
+  $: ociSubject = isRecord(ociManifest?.subject) ? ociManifest.subject : null;
   $: actionAvailability = release
     ? getReleaseActionAvailability(release, artifactCount)
     : {
@@ -255,6 +345,7 @@
         canRestore: false,
         canDeprecate: false,
       };
+  $: releaseStatus = (release?.status || '').trim().toLowerCase();
   $: readiness = release
     ? describeReleaseReadiness(release, artifactCount)
     : { tone: 'info', message: '' };
@@ -365,6 +456,485 @@
             <h3 style="margin-bottom:8px;">Changelog</h3>
             <pre style="white-space:pre-wrap;">{release.changelog}</pre>
           </div>
+        {/if}
+
+        {#if cargoMetadata}
+          <div class="card mb-4">
+            <h3 style="margin-bottom:8px;">Cargo metadata</h3>
+            {#if cargoMetadata.rust_version}
+              <div class="sidebar-row">
+                <span class="sidebar-row__label">Rust version</span>
+                <span class="sidebar-row__value"
+                  ><code>{cargoMetadata.rust_version}</code></span
+                >
+              </div>
+            {/if}
+            {#if cargoMetadata.links}
+              <div class="sidebar-row">
+                <span class="sidebar-row__label">Links</span>
+                <span class="sidebar-row__value"
+                  ><code>{cargoMetadata.links}</code></span
+                >
+              </div>
+            {/if}
+            {#if hasJsonContent(cargoMetadata.dependencies)}
+              <div style="margin-top:12px;">
+                <h4
+                  style="font-size:0.875rem; font-weight:600; margin-bottom:8px;"
+                >
+                  Dependencies
+                </h4>
+                <pre style="white-space:pre-wrap; overflow:auto;"><code
+                    >{formatJson(cargoMetadata.dependencies)}</code
+                  ></pre>
+              </div>
+            {/if}
+            {#if hasJsonContent(cargoMetadata.features)}
+              <div style="margin-top:12px;">
+                <h4
+                  style="font-size:0.875rem; font-weight:600; margin-bottom:8px;"
+                >
+                  Features
+                </h4>
+                <pre style="white-space:pre-wrap; overflow:auto;"><code
+                    >{formatJson(cargoMetadata.features)}</code
+                  ></pre>
+              </div>
+            {/if}
+            {#if hasJsonContent(cargoMetadata.features2)}
+              <div style="margin-top:12px;">
+                <h4
+                  style="font-size:0.875rem; font-weight:600; margin-bottom:8px;"
+                >
+                  Extended features
+                </h4>
+                <pre style="white-space:pre-wrap; overflow:auto;"><code
+                    >{formatJson(cargoMetadata.features2)}</code
+                  ></pre>
+              </div>
+            {/if}
+          </div>
+        {/if}
+
+        {#if nugetMetadata}
+          <div class="card mb-4">
+            <h3 style="margin-bottom:8px;">NuGet metadata</h3>
+            {#if nugetMetadata.title}
+              <div class="sidebar-row">
+                <span class="sidebar-row__label">Title</span>
+                <span class="sidebar-row__value">{nugetMetadata.title}</span>
+              </div>
+            {/if}
+            {#if nugetMetadata.authors}
+              <div class="sidebar-row">
+                <span class="sidebar-row__label">Authors</span>
+                <span class="sidebar-row__value">{nugetMetadata.authors}</span>
+              </div>
+            {/if}
+            <div class="sidebar-row">
+              <span class="sidebar-row__label">Listed</span>
+              <span class="sidebar-row__value"
+                >{booleanLabel(nugetMetadata.is_listed)}</span
+              >
+            </div>
+            {#if nugetMetadata.min_client_version}
+              <div class="sidebar-row">
+                <span class="sidebar-row__label">Minimum client</span>
+                <span class="sidebar-row__value"
+                  ><code>{nugetMetadata.min_client_version}</code></span
+                >
+              </div>
+            {/if}
+            {#if nugetMetadata.summary}
+              <p style="margin-top:12px;">{nugetMetadata.summary}</p>
+            {/if}
+            {#if nugetMetadata.tags.length > 0}
+              <div
+                style="margin-top:12px; display:flex; flex-wrap:wrap; gap:6px;"
+              >
+                {#each nugetMetadata.tags as tag}
+                  <span class="badge badge-ecosystem">{tag}</span>
+                {/each}
+              </div>
+            {/if}
+            {#if nugetMetadata.project_url || nugetMetadata.icon_url || nugetMetadata.license_url}
+              <div
+                style="margin-top:12px; display:flex; flex-direction:column; gap:6px;"
+              >
+                {#if nugetMetadata.project_url}
+                  <a
+                    href={nugetMetadata.project_url}
+                    target="_blank"
+                    rel="noopener noreferrer">Project URL</a
+                  >
+                {/if}
+                {#if nugetMetadata.icon_url}
+                  <a
+                    href={nugetMetadata.icon_url}
+                    target="_blank"
+                    rel="noopener noreferrer">Icon URL</a
+                  >
+                {/if}
+                {#if nugetMetadata.license_url}
+                  <a
+                    href={nugetMetadata.license_url}
+                    target="_blank"
+                    rel="noopener noreferrer">License URL</a
+                  >
+                {/if}
+              </div>
+            {/if}
+            {#if nugetMetadata.license_expression}
+              <div class="sidebar-row" style="margin-top:12px;">
+                <span class="sidebar-row__label">License expression</span>
+                <span class="sidebar-row__value"
+                  ><code>{nugetMetadata.license_expression}</code></span
+                >
+              </div>
+            {/if}
+            {#if hasJsonContent(nugetMetadata.dependency_groups)}
+              <div style="margin-top:12px;">
+                <h4
+                  style="font-size:0.875rem; font-weight:600; margin-bottom:8px;"
+                >
+                  Dependency groups
+                </h4>
+                <pre style="white-space:pre-wrap; overflow:auto;"><code
+                    >{formatJson(nugetMetadata.dependency_groups)}</code
+                  ></pre>
+              </div>
+            {/if}
+            {#if hasJsonContent(nugetMetadata.package_types)}
+              <div style="margin-top:12px;">
+                <h4
+                  style="font-size:0.875rem; font-weight:600; margin-bottom:8px;"
+                >
+                  Package types
+                </h4>
+                <pre style="white-space:pre-wrap; overflow:auto;"><code
+                    >{formatJson(nugetMetadata.package_types)}</code
+                  ></pre>
+              </div>
+            {/if}
+          </div>
+        {/if}
+
+        {#if rubygemsMetadata}
+          <div class="card mb-4">
+            <h3 style="margin-bottom:8px;">RubyGems metadata</h3>
+            <div class="sidebar-row">
+              <span class="sidebar-row__label">Platform</span>
+              <span class="sidebar-row__value"
+                ><code>{rubygemsMetadata.platform}</code></span
+              >
+            </div>
+            {#if rubygemsMetadata.summary}
+              <p style="margin-top:12px;">{rubygemsMetadata.summary}</p>
+            {/if}
+            {#if rubygemsMetadata.authors.length > 0}
+              <div class="sidebar-row" style="margin-top:12px;">
+                <span class="sidebar-row__label">Authors</span>
+                <span class="sidebar-row__value"
+                  >{rubygemsMetadata.authors.join(', ')}</span
+                >
+              </div>
+            {/if}
+            {#if rubygemsMetadata.licenses.length > 0}
+              <div class="sidebar-row">
+                <span class="sidebar-row__label">Licenses</span>
+                <span class="sidebar-row__value"
+                  >{rubygemsMetadata.licenses.join(', ')}</span
+                >
+              </div>
+            {/if}
+            {#if rubygemsMetadata.required_ruby_version}
+              <div class="sidebar-row">
+                <span class="sidebar-row__label">Required Ruby</span>
+                <span class="sidebar-row__value"
+                  ><code>{rubygemsMetadata.required_ruby_version}</code></span
+                >
+              </div>
+            {/if}
+            {#if rubygemsMetadata.required_rubygems_version}
+              <div class="sidebar-row">
+                <span class="sidebar-row__label">Required RubyGems</span>
+                <span class="sidebar-row__value"
+                  ><code>{rubygemsMetadata.required_rubygems_version}</code
+                  ></span
+                >
+              </div>
+            {/if}
+            {#if hasJsonContent(rubygemsMetadata.runtime_dependencies)}
+              <div style="margin-top:12px;">
+                <h4
+                  style="font-size:0.875rem; font-weight:600; margin-bottom:8px;"
+                >
+                  Runtime dependencies
+                </h4>
+                <pre style="white-space:pre-wrap; overflow:auto;"><code
+                    >{formatJson(rubygemsMetadata.runtime_dependencies)}</code
+                  ></pre>
+              </div>
+            {/if}
+            {#if hasJsonContent(rubygemsMetadata.development_dependencies)}
+              <div style="margin-top:12px;">
+                <h4
+                  style="font-size:0.875rem; font-weight:600; margin-bottom:8px;"
+                >
+                  Development dependencies
+                </h4>
+                <pre style="white-space:pre-wrap; overflow:auto;"><code
+                    >{formatJson(
+                      rubygemsMetadata.development_dependencies
+                    )}</code
+                  ></pre>
+              </div>
+            {/if}
+          </div>
+        {/if}
+
+        {#if mavenMetadata}
+          <div class="card mb-4">
+            <h3 style="margin-bottom:8px;">Maven provenance</h3>
+            {#if stringValue(mavenMetadata.group_id)}
+              <div class="sidebar-row">
+                <span class="sidebar-row__label">Group ID</span>
+                <span class="sidebar-row__value"
+                  ><code>{stringValue(mavenMetadata.group_id)}</code></span
+                >
+              </div>
+            {/if}
+            {#if stringValue(mavenMetadata.artifact_id)}
+              <div class="sidebar-row">
+                <span class="sidebar-row__label">Artifact ID</span>
+                <span class="sidebar-row__value"
+                  ><code>{stringValue(mavenMetadata.artifact_id)}</code></span
+                >
+              </div>
+            {/if}
+            {#if stringValue(mavenMetadata.version)}
+              <div class="sidebar-row">
+                <span class="sidebar-row__label">Version</span>
+                <span class="sidebar-row__value"
+                  ><code>{stringValue(mavenMetadata.version)}</code></span
+                >
+              </div>
+            {/if}
+            {#if stringValue(mavenMetadata.packaging)}
+              <div class="sidebar-row">
+                <span class="sidebar-row__label">Packaging</span>
+                <span class="sidebar-row__value"
+                  ><code>{stringValue(mavenMetadata.packaging)}</code></span
+                >
+              </div>
+            {/if}
+            {#if stringValue(mavenMetadata.display_name)}
+              <div class="sidebar-row">
+                <span class="sidebar-row__label">Display name</span>
+                <span class="sidebar-row__value"
+                  >{stringValue(mavenMetadata.display_name)}</span
+                >
+              </div>
+            {/if}
+            {#if stringValue(mavenMetadata.description)}
+              <p style="margin-top:12px;">
+                {stringValue(mavenMetadata.description)}
+              </p>
+            {/if}
+            {#if stringValue(mavenMetadata.homepage) || stringValue(mavenMetadata.repository_url)}
+              <div
+                style="margin-top:12px; display:flex; flex-direction:column; gap:6px;"
+              >
+                {#if stringValue(mavenMetadata.homepage)}
+                  <a
+                    href={stringValue(mavenMetadata.homepage)}
+                    target="_blank"
+                    rel="noopener noreferrer">Homepage</a
+                  >
+                {/if}
+                {#if stringValue(mavenMetadata.repository_url)}
+                  <a
+                    href={stringValue(mavenMetadata.repository_url)}
+                    target="_blank"
+                    rel="noopener noreferrer">Repository</a
+                  >
+                {/if}
+              </div>
+            {/if}
+            {#if mavenLicenses.length > 0}
+              <div
+                style="margin-top:12px; display:flex; flex-wrap:wrap; gap:6px;"
+              >
+                {#each mavenLicenses as license}
+                  <span class="badge badge-ecosystem">{license}</span>
+                {/each}
+              </div>
+            {/if}
+          </div>
+        {/if}
+
+        {#if composerMetadata}
+          <div class="card mb-4">
+            <h3 style="margin-bottom:8px;">Composer manifest</h3>
+            {#if stringValue(composerMetadata.name)}
+              <div class="sidebar-row">
+                <span class="sidebar-row__label">Name</span>
+                <span class="sidebar-row__value"
+                  ><code>{stringValue(composerMetadata.name)}</code></span
+                >
+              </div>
+            {/if}
+            {#if stringValue(composerMetadata.type)}
+              <div class="sidebar-row">
+                <span class="sidebar-row__label">Type</span>
+                <span class="sidebar-row__value"
+                  >{stringValue(composerMetadata.type)}</span
+                >
+              </div>
+            {/if}
+            {#if composerLicenses.length > 0}
+              <div
+                style="margin-top:12px; display:flex; flex-wrap:wrap; gap:6px;"
+              >
+                {#each composerLicenses as license}
+                  <span class="badge badge-ecosystem">{license}</span>
+                {/each}
+              </div>
+            {/if}
+            {#if composerKeywords.length > 0}
+              <div
+                style="margin-top:12px; display:flex; flex-wrap:wrap; gap:6px;"
+              >
+                {#each composerKeywords as keyword}
+                  <span class="badge badge-ecosystem">{keyword}</span>
+                {/each}
+              </div>
+            {/if}
+            {#if composerRequire}
+              <div style="margin-top:12px;">
+                <h4
+                  style="font-size:0.875rem; font-weight:600; margin-bottom:8px;"
+                >
+                  Require
+                </h4>
+                <pre style="white-space:pre-wrap; overflow:auto;"><code
+                    >{formatJson(composerRequire)}</code
+                  ></pre>
+              </div>
+            {/if}
+            {#if composerAutoload}
+              <div style="margin-top:12px;">
+                <h4
+                  style="font-size:0.875rem; font-weight:600; margin-bottom:8px;"
+                >
+                  Autoload
+                </h4>
+                <pre style="white-space:pre-wrap; overflow:auto;"><code
+                    >{formatJson(composerAutoload)}</code
+                  ></pre>
+              </div>
+            {/if}
+            {#if composerSupport}
+              <div style="margin-top:12px;">
+                <h4
+                  style="font-size:0.875rem; font-weight:600; margin-bottom:8px;"
+                >
+                  Support
+                </h4>
+                <pre style="white-space:pre-wrap; overflow:auto;"><code
+                    >{formatJson(composerSupport)}</code
+                  ></pre>
+              </div>
+            {/if}
+          </div>
+        {/if}
+
+        {#if ociMetadata}
+          <div class="card mb-4">
+            <h3 style="margin-bottom:8px;">OCI manifest</h3>
+            {#if numberValue(ociManifest?.schemaVersion) != null}
+              <div class="sidebar-row">
+                <span class="sidebar-row__label">Schema version</span>
+                <span class="sidebar-row__value"
+                  >{numberValue(ociManifest?.schemaVersion)}</span
+                >
+              </div>
+            {/if}
+            {#if stringValue(ociManifest?.mediaType)}
+              <div class="sidebar-row">
+                <span class="sidebar-row__label">Media type</span>
+                <span class="sidebar-row__value"
+                  ><code>{stringValue(ociManifest?.mediaType)}</code></span
+                >
+              </div>
+            {/if}
+            {#if stringValue(ociConfig?.digest)}
+              <div class="sidebar-row">
+                <span class="sidebar-row__label">Config digest</span>
+                <span class="sidebar-row__value"
+                  ><code>{stringValue(ociConfig?.digest)}</code></span
+                >
+              </div>
+            {/if}
+            {#if numberValue(ociConfig?.size) != null}
+              <div class="sidebar-row">
+                <span class="sidebar-row__label">Config size</span>
+                <span class="sidebar-row__value"
+                  >{formatFileSize(numberValue(ociConfig?.size) ?? 0)}</span
+                >
+              </div>
+            {/if}
+            <div class="sidebar-row">
+              <span class="sidebar-row__label">Layers</span>
+              <span class="sidebar-row__value">{ociLayers.length}</span>
+            </div>
+            {#if stringValue(ociSubject?.digest)}
+              <div class="sidebar-row">
+                <span class="sidebar-row__label">Subject digest</span>
+                <span class="sidebar-row__value"
+                  ><code>{stringValue(ociSubject?.digest)}</code></span
+                >
+              </div>
+            {/if}
+          </div>
+
+          {#if ociMetadata.references.length > 0}
+            <div class="card mb-4" style="padding:0;">
+              <div style="padding:16px 20px 8px;">
+                <h3 style="font-size:0.875rem; font-weight:600;">
+                  Referenced blobs
+                </h3>
+              </div>
+              {#each ociMetadata.references as reference}
+                <div class="release-row">
+                  <div>
+                    <div class="release-row__version">
+                      {formatOciReferenceKind(reference.kind)}
+                    </div>
+                    {#if reference.digest}
+                      <div class="settings-copy" style="margin-top:6px;">
+                        <code>{reference.digest}</code>
+                      </div>
+                    {/if}
+                  </div>
+                  <div class="release-row__meta">
+                    {#if reference.size != null}
+                      {formatFileSize(reference.size)}
+                    {/if}
+                  </div>
+                </div>
+              {/each}
+            </div>
+          {/if}
+
+          {#if ociMetadata.manifest}
+            <div class="card mb-4">
+              <h3 style="margin-bottom:8px;">Manifest JSON</h3>
+              <pre style="white-space:pre-wrap; overflow:auto;"><code
+                  >{formatJson(ociMetadata.manifest)}</code
+                ></pre>
+            </div>
+          {/if}
         {/if}
 
         <div class="card" style="padding:0;">
@@ -549,7 +1119,7 @@
                 >
                   {publishing ? 'Publishing…' : 'Publish release'}
                 </button>
-              {:else if !actionAvailability.canPublish && actionAvailability.canUploadArtifact}
+              {:else if releaseStatus === 'quarantine' && actionAvailability.canUploadArtifact}
                 <p class="settings-copy" style="margin-bottom:12px;">
                   Upload at least one artifact before publishing.
                 </p>

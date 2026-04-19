@@ -7,8 +7,8 @@ use aws_sdk_s3::{
 };
 use bytes::Bytes;
 
-use publaryn_core::{Error, Result};
 use crate::config::StorageConfig;
+use publaryn_core::{Error, Result};
 
 #[derive(Debug, Clone)]
 pub struct PutArtifactObject {

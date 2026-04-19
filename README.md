@@ -8,18 +8,20 @@ A self-hostable, security-first package registry platform that speaks the native
 
 ## Supported Ecosystems
 
-| Ecosystem    | Protocol                     | Status        |
-| ------------ | ---------------------------- | ------------- |
-| npm / Bun    | npm Registry Protocol        | 🚧 In progress |
-| pip / PyPI   | Simple Index + Legacy Upload | 🚧 In progress |
-| Rust Crates  | Cargo Sparse Index           | 🚧 In progress |
-| NuGet        | NuGet v3                     | 🚧 In progress |
-| Apache Maven | Maven2                       | 🚧 In progress |
-| RubyGems     | RubyGems / Compact Index     | 🚧 In progress |
-| Composer     | Composer Repository          | 🚧 In progress |
-| Containers   | OCI Distribution Spec        | 🚧 In progress |
+| Ecosystem    | Protocol                     | Status                 |
+| ------------ | ---------------------------- | ---------------------- |
+| npm / Bun    | npm Registry Protocol        | ✅ Baseline implemented |
+| pip / PyPI   | Simple Index + Legacy Upload | ✅ Baseline implemented |
+| Rust Crates  | Cargo Sparse Index           | ✅ Baseline implemented |
+| NuGet        | NuGet v3                     | ✅ Baseline implemented |
+| Apache Maven | Maven2                       | ✅ Baseline implemented |
+| RubyGems     | RubyGems / Compact Index     | ✅ Baseline implemented |
+| Composer     | Composer Repository          | ✅ Baseline implemented |
+| Containers   | OCI Distribution Spec        | ✅ Baseline implemented |
 
 > **Note:** Bun uses the npm adapter — no separate protocol implementation is required.
+
+The current documented baseline includes native publish/read flows for every ecosystem above, shared quarantine → scan → publish lifecycle controls, ecosystem-aware package/release detail responses, and a SvelteKit web portal that can browse package metadata, releases, security findings, trusted publishers, and OCI manifest references. Future roadmap items such as proxy/virtual repositories, detached attestations/signatures beyond the current baseline, and broader actor-aware discovery remain intentionally separate follow-on work.
 
 ---
 
@@ -282,6 +284,8 @@ POST   /v1/packages/:ecosystem/:name/trusted-publishers
 ```
 
 Release history responses include published, deprecated, and yanked versions so maintainers and consumers can inspect full version state. Yanked releases can be restored with the dedicated unyank endpoint.
+
+`GET /v1/packages/:ecosystem/:name` and `GET /v1/packages/:ecosystem/:name/releases/:version` also return an `ecosystem_metadata` block. This nested payload preserves native package coordinates and release metadata such as Cargo dependencies/features, NuGet dependency groups, RubyGems runtime requirements, Maven and Composer provenance, and OCI manifest/blob references so API clients and the web portal can render ecosystem-correct details without reverse-engineering adapter storage.
 
 The control-plane publish workflow is now explicit and quarantine-first:
 

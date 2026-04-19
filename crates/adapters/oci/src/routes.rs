@@ -196,22 +196,20 @@ async fn catalog<S: OciAppState>(
     let last = query.last.as_deref().map(name::normalize_repository_name);
     let repositories = repositories
         .into_iter()
-        .filter(|(normalized, _)| {
-            last.as_ref()
-                .map(|last| normalized > last)
-                .unwrap_or(true)
-        })
+        .filter(|(normalized, _)| last.as_ref().map(|last| normalized > last).unwrap_or(true))
         .take(query.limit())
         .map(|(_, package_name)| package_name)
         .collect::<Vec<_>>();
 
-    auth::with_registry_headers((
-        StatusCode::OK,
-        Json(serde_json::json!({
-            "repositories": repositories,
-        })),
+    auth::with_registry_headers(
+        (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "repositories": repositories,
+            })),
+        )
+            .into_response(),
     )
-        .into_response())
 }
 
 async fn get_dispatch<S: OciAppState>(
@@ -375,7 +373,13 @@ async fn tags_list<S: OciAppState>(
         Err(response) => return response,
     };
 
-    if !package_readable(&package, state.db(), identity.as_ref().map(|identity| identity.user_id)).await {
+    if !package_readable(
+        &package,
+        state.db(),
+        identity.as_ref().map(|identity| identity.user_id),
+    )
+    .await
+    {
         if identity.is_none() {
             return auth::challenge_response(
                 &state,
@@ -424,14 +428,16 @@ async fn tags_list<S: OciAppState>(
         .take(query.limit())
         .collect::<Vec<_>>();
 
-    auth::with_registry_headers((
-        StatusCode::OK,
-        Json(serde_json::json!({
-            "name": package.package_name,
-            "tags": tags,
-        })),
+    auth::with_registry_headers(
+        (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "name": package.package_name,
+                "tags": tags,
+            })),
+        )
+            .into_response(),
     )
-        .into_response())
 }
 
 async fn manifest_get<S: OciAppState>(
@@ -465,7 +471,13 @@ async fn manifest_get<S: OciAppState>(
         Err(response) => return response,
     };
 
-    if !package_readable(&package, state.db(), identity.as_ref().map(|identity| identity.user_id)).await {
+    if !package_readable(
+        &package,
+        state.db(),
+        identity.as_ref().map(|identity| identity.user_id),
+    )
+    .await
+    {
         if identity.is_none() {
             return auth::challenge_response(
                 &state,
@@ -513,7 +525,14 @@ async fn manifest_get<S: OciAppState>(
 
     let mut response = Response::builder()
         .status(StatusCode::OK)
-        .header(CONTENT_TYPE, if stored.content_type.is_empty() { manifest.content_type.as_str() } else { stored.content_type.as_str() })
+        .header(
+            CONTENT_TYPE,
+            if stored.content_type.is_empty() {
+                manifest.content_type.as_str()
+            } else {
+                stored.content_type.as_str()
+            },
+        )
         .header(CONTENT_LENGTH, stored.bytes.len().to_string())
         .header("docker-content-digest", manifest.digest.clone())
         .body(Body::from(stored.bytes))
@@ -565,7 +584,13 @@ async fn blob_get<S: OciAppState>(
         Err(response) => return response,
     };
 
-    if !package_readable(&package, state.db(), identity.as_ref().map(|identity| identity.user_id)).await {
+    if !package_readable(
+        &package,
+        state.db(),
+        identity.as_ref().map(|identity| identity.user_id),
+    )
+    .await
+    {
         if identity.is_none() {
             return auth::challenge_response(
                 &state,
@@ -582,25 +607,26 @@ async fn blob_get<S: OciAppState>(
         ));
     }
 
-    let blob_size = match blob_is_referenced_by_package(state.db(), package.package_id, &digest).await {
-        Ok(Some(size_bytes)) => size_bytes,
-        Ok(None) => {
-            return auth::with_registry_headers(auth::oci_error_response(
-                StatusCode::NOT_FOUND,
-                "BLOB_UNKNOWN",
-                "OCI blob not found",
-                None,
-            ))
-        }
-        Err(_) => {
-            return auth::with_registry_headers(auth::oci_error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "UNKNOWN",
-                "Failed to load OCI blob metadata",
-                None,
-            ))
-        }
-    };
+    let blob_size =
+        match blob_is_referenced_by_package(state.db(), package.package_id, &digest).await {
+            Ok(Some(size_bytes)) => size_bytes,
+            Ok(None) => {
+                return auth::with_registry_headers(auth::oci_error_response(
+                    StatusCode::NOT_FOUND,
+                    "BLOB_UNKNOWN",
+                    "OCI blob not found",
+                    None,
+                ))
+            }
+            Err(_) => {
+                return auth::with_registry_headers(auth::oci_error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "UNKNOWN",
+                    "Failed to load OCI blob metadata",
+                    None,
+                ))
+            }
+        };
 
     let storage_key = upload::blob_storage_key(&digest);
     if !include_body {
@@ -636,7 +662,14 @@ async fn blob_get<S: OciAppState>(
 
     let mut response = Response::builder()
         .status(StatusCode::OK)
-        .header(CONTENT_TYPE, if stored.content_type.is_empty() { "application/octet-stream" } else { stored.content_type.as_str() })
+        .header(
+            CONTENT_TYPE,
+            if stored.content_type.is_empty() {
+                "application/octet-stream"
+            } else {
+                stored.content_type.as_str()
+            },
+        )
         .header(CONTENT_LENGTH, stored.bytes.len().to_string())
         .header("docker-content-digest", digest)
         .body(Body::from(stored.bytes))
@@ -747,12 +780,15 @@ async fn manifest_put<S: OciAppState>(
         Err(response) => return response,
     };
 
-    let manifest_context = match upsert_manifest_artifact(&state, release_id, &parsed_manifest).await {
-        Ok(context) => context,
-        Err(response) => return response,
-    };
+    let manifest_context =
+        match upsert_manifest_artifact(&state, release_id, &parsed_manifest).await {
+            Ok(context) => context,
+            Err(response) => return response,
+        };
 
-    if let Err(response) = replace_manifest_references(state.db(), release_id, &parsed_manifest.references).await {
+    if let Err(response) =
+        replace_manifest_references(state.db(), release_id, &parsed_manifest.references).await
+    {
         return response;
     }
 
@@ -920,7 +956,12 @@ async fn begin_blob_upload<S: OciAppState>(
         }
     };
 
-    upload_session_response(&state, &package.package_name, &session, StatusCode::ACCEPTED)
+    upload_session_response(
+        &state,
+        &package.package_name,
+        &session,
+        StatusCode::ACCEPTED,
+    )
 }
 
 async fn append_blob_upload<S: OciAppState>(
@@ -1123,10 +1164,12 @@ async fn manifest_delete<S: OciAppState>(
         Ok(identity) => identity,
         Err(response) => return response,
     };
-    let package = match resolve_existing_package_for_write(state.db(), identity.user_id, &package_name).await {
-        Ok(package) => package,
-        Err(response) => return response,
-    };
+    let package =
+        match resolve_existing_package_for_write(state.db(), identity.user_id, &package_name).await
+        {
+            Ok(package) => package,
+            Err(response) => return response,
+        };
 
     match name::parse_reference(&reference) {
         Ok(OciReference::Tag(tag)) => {
@@ -1161,10 +1204,11 @@ async fn manifest_delete<S: OciAppState>(
             auth::with_registry_headers(StatusCode::ACCEPTED.into_response())
         }
         Ok(OciReference::Digest(digest)) => {
-            let manifest = match load_manifest_artifact(state.db(), package.package_id, &digest).await {
-                Ok(manifest) => manifest,
-                Err(response) => return response,
-            };
+            let manifest =
+                match load_manifest_artifact(state.db(), package.package_id, &digest).await {
+                    Ok(manifest) => manifest,
+                    Err(response) => return response,
+                };
 
             let _ = sqlx::query("DELETE FROM channel_refs WHERE package_id = $1 AND release_id = $2 AND ecosystem = 'oci'")
                 .bind(package.package_id)
@@ -1175,10 +1219,12 @@ async fn manifest_delete<S: OciAppState>(
                 .bind(manifest.release_id)
                 .execute(state.db())
                 .await;
-            let _ = sqlx::query("DELETE FROM artifacts WHERE release_id = $1 AND kind = 'oci_manifest'")
-                .bind(manifest.release_id)
-                .execute(state.db())
-                .await;
+            let _ = sqlx::query(
+                "DELETE FROM artifacts WHERE release_id = $1 AND kind = 'oci_manifest'",
+            )
+            .bind(manifest.release_id)
+            .execute(state.db())
+            .await;
             let _ = state.artifact_delete(&manifest.storage_key).await;
             let _ = sqlx::query(
                 "UPDATE releases SET status = 'deleted', updated_at = NOW() WHERE id = $1",
@@ -1208,10 +1254,12 @@ async fn blob_delete<S: OciAppState>(
         Ok(identity) => identity,
         Err(response) => return response,
     };
-    let package = match resolve_existing_package_for_write(state.db(), identity.user_id, &package_name).await {
-        Ok(package) => package,
-        Err(response) => return response,
-    };
+    let package =
+        match resolve_existing_package_for_write(state.db(), identity.user_id, &package_name).await
+        {
+            Ok(package) => package,
+            Err(response) => return response,
+        };
 
     if !has_package_admin_access(
         state.db(),
@@ -1680,7 +1728,9 @@ async fn upsert_manifest_artifact<S: OciAppState>(
             content_type: existing
                 .try_get("content_type")
                 .unwrap_or_else(|_| manifest.content_type.clone()),
-            size_bytes: existing.try_get("size_bytes").unwrap_or(manifest.size_bytes),
+            size_bytes: existing
+                .try_get("size_bytes")
+                .unwrap_or(manifest.size_bytes),
             digest: manifest.digest.clone(),
         });
     }
@@ -1798,20 +1848,19 @@ async fn publish_manifest_release(
     package_name: &str,
     manifest_json: &serde_json::Value,
 ) -> Result<(), Response> {
-    let current_status: String = sqlx::query_scalar(
-        "SELECT status::text FROM releases WHERE id = $1",
-    )
-    .bind(release_id)
-    .fetch_one(db)
-    .await
-    .map_err(|_| {
-        auth::with_registry_headers(auth::oci_error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "UNKNOWN",
-            "Failed to load OCI manifest release status",
-            None,
-        ))
-    })?;
+    let current_status: String =
+        sqlx::query_scalar("SELECT status::text FROM releases WHERE id = $1")
+            .bind(release_id)
+            .fetch_one(db)
+            .await
+            .map_err(|_| {
+                auth::with_registry_headers(auth::oci_error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "UNKNOWN",
+                    "Failed to load OCI manifest release status",
+                    None,
+                ))
+            })?;
 
     if current_status != "published" {
         sqlx::query(
@@ -2242,7 +2291,13 @@ async fn can_read_package(
     let Some(actor_user_id) = actor_user_id else {
         return false;
     };
-    let package_access = is_owner_or_member(db, package_owner_user_id, package_owner_org_id, actor_user_id).await;
+    let package_access = is_owner_or_member(
+        db,
+        package_owner_user_id,
+        package_owner_org_id,
+        actor_user_id,
+    )
+    .await;
     let repository_access = is_owner_or_member(
         db,
         repository_owner_user_id,
@@ -2336,7 +2391,8 @@ mod tests {
 
     #[test]
     fn parses_manifest_paths() {
-        let parsed = parse_manifest_path("acme/widget/manifests/latest").expect("path should parse");
+        let parsed =
+            parse_manifest_path("acme/widget/manifests/latest").expect("path should parse");
         assert_eq!(parsed.0, "acme/widget");
         assert_eq!(parsed.1, "latest");
     }
