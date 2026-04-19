@@ -103,6 +103,10 @@ once_cell = "1.21.4"
 strsim = "0.11"
 quick-xml = "0.39.2"
 zip = { version = "8.5.1", default-features = false, features = ["deflate"] }
+flate2 = "1"
+tar = "0.4"
+# YAML parser used by the RubyGems adapter to read gemspec metadata.
+serde_yaml_ng = "0.10"
 
 # Internal crates
 publaryn-core = { path = "crates/core" }
@@ -117,3 +121,4 @@ publaryn-adapter-composer = { path = "crates/adapters/composer" }
 publaryn-adapter-maven = { path = "crates/adapters/maven" }
 publaryn-adapter-nuget = { path = "crates/adapters/nuget" }
 publaryn-adapter-rubygems = { path = "crates/adapters/rubygems" }
+publaryn-adapter-oci = { path = "crates/adapters/oci" }

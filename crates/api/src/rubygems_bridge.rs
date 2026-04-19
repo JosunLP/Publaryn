@@ -1,11 +1,13 @@
 //! Bridge between the API crate's `AppState` and the RubyGems adapter's
 //! `RubyGemsAppState` trait.
 
+use bytes::Bytes;
 use publaryn_adapter_rubygems::routes::{RubyGemsAppState, StoredObject};
 use publaryn_core::error::Error;
 use sqlx::PgPool;
 
 use crate::state::AppState;
+use crate::storage::PutArtifactObject;
 
 impl RubyGemsAppState for AppState {
     fn db(&self) -> &PgPool {
@@ -18,6 +20,21 @@ impl RubyGemsAppState for AppState {
             content_type: object.content_type,
             bytes: object.bytes,
         }))
+    }
+
+    async fn artifact_put(
+        &self,
+        key: String,
+        content_type: String,
+        bytes: Bytes,
+    ) -> Result<(), Error> {
+        self.artifact_store
+            .put_object(PutArtifactObject {
+                storage_key: key,
+                content_type,
+                bytes,
+            })
+            .await
     }
 
     fn base_url(&self) -> &str {

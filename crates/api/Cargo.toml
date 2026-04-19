@@ -25,6 +25,7 @@ publaryn-adapter-composer = { workspace = true }
 publaryn-adapter-maven = { workspace = true }
 publaryn-adapter-nuget = { workspace = true }
 publaryn-adapter-rubygems = { workspace = true }
+publaryn-adapter-oci = { workspace = true }
 
 tokio = { workspace = true }
 axum = { workspace = true }
