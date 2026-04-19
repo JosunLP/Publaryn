@@ -166,7 +166,7 @@
     resetTrustedPublisherForm();
 
     try {
-      pkg = await getPackage(eecosystem(), ename());
+      pkg = await getPackage(currentEcosystem(), currentName());
       resetPackageSettingsForm(pkg);
     } catch (caughtError: unknown) {
       if (caughtError instanceof ApiError && caughtError.status === 404) {
@@ -188,11 +188,11 @@
       loadedTransferState,
       loadedTrustedPublisherState,
     ] = await Promise.all([
-      listReleases(eecosystem(), ename(), { perPage: 20 }).catch(
+      listReleases(currentEcosystem(), currentName(), { perPage: 20 }).catch(
         () => [] as Release[]
       ),
-      listTags(eecosystem(), ename()).catch(() => [] as Tag[]),
-      listSecurityFindings(eecosystem(), ename()).catch(
+      listTags(currentEcosystem(), currentName()).catch(() => [] as Tag[]),
+      listSecurityFindings(currentEcosystem(), currentName()).catch(
         () => [] as SecurityFinding[]
       ),
       loadTransferState(pkg),
@@ -271,7 +271,11 @@
     packageSettingsNotice = null;
 
     try {
-      const result = await updatePackage(eecosystem(), ename(), input);
+      const result = await updatePackage(
+        currentEcosystem(),
+        currentName(),
+        input
+      );
       await loadPackagePage();
       packageSettingsNotice = result.message || 'Package updated';
     } catch (caughtError: unknown) {
@@ -287,7 +291,7 @@
   async function loadTrustedPublisherState(
     currentPackage: PackageDetail | null
   ): Promise<TrustedPublisherState> {
-    if (!currentPackage || eecosystem() !== 'pypi') {
+    if (!currentPackage || currentEcosystem() !== 'pypi') {
       return {
         publishers: [],
         loadError: null,
@@ -297,8 +301,8 @@
     try {
       return {
         publishers: await listTrustedPublishersForPackage(
-          eecosystem(),
-          ename()
+          currentEcosystem(),
+          currentName()
         ),
         loadError: null,
       };
@@ -322,8 +326,8 @@
       pkg.latest_version ??
       (releases.length > 0 ? (releases[0]?.version ?? null) : null);
     const command = latestVersion
-      ? installCommand(eecosystem(), pkg.name, latestVersion)
-      : installCommand(eecosystem(), pkg.name);
+      ? installCommand(currentEcosystem(), pkg.name, latestVersion)
+      : installCommand(currentEcosystem(), pkg.name);
     await copyToClipboard(command);
   }
 
@@ -333,15 +337,24 @@
     }
 
     await goto(
-      buildPackageDetailPath(eecosystem(), ename(), { tab }, $page.url.searchParams)
+      buildPackageDetailPath(
+        currentEcosystem(),
+        currentName(),
+        { tab },
+        $page.url.searchParams
+      )
     );
   }
 
   async function handleResolvedToggleChange(): Promise<void> {
     try {
-      findings = await listSecurityFindings(eecosystem(), ename(), {
-        includeResolved: includeResolvedFindings,
-      });
+      findings = await listSecurityFindings(
+        currentEcosystem(),
+        currentName(),
+        {
+          includeResolved: includeResolvedFindings,
+        }
+      );
     } catch {
       findings = [];
     }
@@ -366,8 +379,8 @@
     }
     try {
       const updated = await updateSecurityFinding(
-        eecosystem(),
-        ename(),
+        currentEcosystem(),
+        currentName(),
         finding.id,
         {
           isResolved: targetIsResolved,
@@ -409,7 +422,7 @@
     releaseNotice = null;
 
     try {
-      await createRelease(eecosystem(), ename(), {
+      await createRelease(currentEcosystem(), currentName(), {
         version: newReleaseVersion.trim(),
         description: optional(newReleaseDescription),
         changelog: optional(newReleaseChangelog),
@@ -421,7 +434,7 @@
         `Release ${newReleaseVersion.trim()} created in quarantine. Upload at least one artifact before publishing.`
       );
       await goto(
-        `/packages/${encodeURIComponent(eecosystem())}/${encodeURIComponent(ename())}/versions/${encodeURIComponent(newReleaseVersion.trim())}?notice=${notice}`
+        `/packages/${encodeURIComponent(currentEcosystem())}/${encodeURIComponent(currentName())}/versions/${encodeURIComponent(newReleaseVersion.trim())}?notice=${notice}`
       );
     } catch (caughtError: unknown) {
       releaseError =
@@ -454,9 +467,13 @@
     transferNotice = null;
 
     try {
-      const result = await transferPackageOwnership(eecosystem(), ename(), {
-        targetOrgSlug: targetOrgSlug.trim(),
-      });
+      const result = await transferPackageOwnership(
+        currentEcosystem(),
+        currentName(),
+        {
+          targetOrgSlug: targetOrgSlug.trim(),
+        }
+      );
       transferNotice = `Package ownership transferred to ${result.owner?.name || result.owner?.slug || targetOrgSlug.trim()}.`;
       await loadPackagePage();
     } catch (caughtError: unknown) {
@@ -497,7 +514,11 @@
     trustedPublisherNotice = null;
 
     try {
-      await createTrustedPublisherForPackage(eecosystem(), ename(), input);
+      await createTrustedPublisherForPackage(
+        currentEcosystem(),
+        currentName(),
+        input
+      );
       trustedPublisherState = await loadTrustedPublisherState(pkg);
       trustedPublisherNotice = 'Trusted publisher added.';
       resetTrustedPublisherForm();
@@ -531,8 +552,8 @@
 
     try {
       await deleteTrustedPublisherForPackage(
-        eecosystem(),
-        ename(),
+        currentEcosystem(),
+        currentName(),
         publisher.id
       );
       trustedPublisherState = await loadTrustedPublisherState(pkg);
@@ -590,11 +611,11 @@
     return trimmed ? trimmed : undefined;
   }
 
-  function eecosystem(): string {
+  function currentEcosystem(): string {
     return ecosystem;
   }
 
-  function ename(): string {
+  function currentName(): string {
     return name;
   }
 
@@ -668,14 +689,14 @@
 {:else}
   {@const latestVersion = latestVersionForPackage(pkg)}
   {@const install = latestVersion
-    ? installCommand(eecosystem(), pkg.name, latestVersion)
-    : installCommand(eecosystem(), pkg.name)}
+    ? installCommand(currentEcosystem(), pkg.name, latestVersion)
+    : installCommand(currentEcosystem(), pkg.name)}
 
   <div class="mt-6">
     <div class="pkg-header">
       <h1 class="pkg-header__name">{pkg.display_name || pkg.name}</h1>
       <span class="badge badge-ecosystem"
-        >{ecosystemIcon(eecosystem())} {ecosystemLabel(eecosystem())}</span
+        >{ecosystemIcon(currentEcosystem())} {ecosystemLabel(currentEcosystem())}</span
       >
       {#if latestVersion}
         <span class="pkg-header__version">v{latestVersion}</span>
@@ -758,7 +779,7 @@
               <div class="release-row">
                 <div>
                   <a
-                    href={`/packages/${encodeURIComponent(eecosystem())}/${encodeURIComponent(ename())}/versions/${encodeURIComponent(release.version)}`}
+                    href={`/packages/${encodeURIComponent(currentEcosystem())}/${encodeURIComponent(currentName())}/versions/${encodeURIComponent(release.version)}`}
                     class="release-row__version"
                     data-sveltekit-preload-data="hover"
                   >
@@ -1050,7 +1071,7 @@
           </div>
         {/if}
 
-        {#if eecosystem() === 'pypi'}
+        {#if currentEcosystem() === 'pypi'}
           <div class="card">
             <div class="sidebar-section">
               <h3>PyPI trusted publishing</h3>
