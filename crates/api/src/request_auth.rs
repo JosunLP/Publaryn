@@ -762,6 +762,22 @@ pub async fn ensure_org_admin_by_slug(
     Ok(org_id)
 }
 
+pub async fn ensure_org_member_by_slug(
+    db: &PgPool,
+    slug: &str,
+    actor_user_id: Uuid,
+) -> ApiResult<Uuid> {
+    let org_id = fetch_org_id_by_slug(db, slug).await?;
+
+    if is_org_member(db, org_id, actor_user_id).await? {
+        return Ok(org_id);
+    }
+
+    Err(ApiError(Error::Forbidden(
+        "Organization member and team directories require organization membership".into(),
+    )))
+}
+
 pub async fn ensure_org_audit_access_by_slug(
     db: &PgPool,
     slug: &str,

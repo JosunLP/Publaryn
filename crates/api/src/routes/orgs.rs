@@ -26,8 +26,8 @@ use crate::{
     error::{ApiError, ApiResult},
     request_auth::{
         actor_can_transfer_package_by_id, ensure_org_admin_by_slug,
-        ensure_org_audit_access_by_slug, is_org_member, AuthenticatedIdentity,
-        OptionalAuthenticatedIdentity,
+        ensure_org_audit_access_by_slug, ensure_org_member_by_slug, is_org_member,
+        AuthenticatedIdentity, OptionalAuthenticatedIdentity,
     },
     scopes::{ensure_scope, SCOPE_ORGS_TRANSFER, SCOPE_ORGS_WRITE},
     state::AppState,
@@ -679,8 +679,11 @@ fn org_audit_filter_end_exclusive(
 
 async fn list_members(
     State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
     Path(slug): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
+    ensure_org_member_by_slug(&state.db, &slug, identity.user_id).await?;
+
     let rows = sqlx::query(
         "SELECT u.id AS user_id, u.username, u.display_name, om.role::text AS role, om.joined_at \
          FROM org_memberships om \
@@ -712,9 +715,12 @@ async fn list_members(
 
 async fn search_org_members(
     State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
     Path(slug): Path<String>,
     Query(query): Query<MemberSearchQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
+    ensure_org_member_by_slug(&state.db, &slug, identity.user_id).await?;
+
     let Some(search) = query
         .query
         .as_deref()
@@ -1161,8 +1167,11 @@ fn validate_ownership_transfer(
 
 async fn list_teams(
     State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
     Path(slug): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
+    ensure_org_member_by_slug(&state.db, &slug, identity.user_id).await?;
+
     let rows = sqlx::query(
         "SELECT t.id, t.name, t.slug, t.description, t.created_at \
          FROM teams t \
