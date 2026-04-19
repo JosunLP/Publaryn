@@ -21,7 +21,7 @@ A self-hostable, security-first package registry platform that speaks the native
 
 > **Note:** Bun uses the npm adapter — no separate protocol implementation is required.
 
-The current documented baseline includes native publish/read flows for every ecosystem above, shared quarantine → scan → publish lifecycle controls, ecosystem-aware package/release detail responses, and a SvelteKit web portal that can browse package metadata, releases, security findings, trusted publishers, and OCI manifest references. Future roadmap items such as proxy/virtual repositories, detached attestations/signatures beyond the current baseline, and broader actor-aware discovery remain intentionally separate follow-on work.
+The current documented baseline includes native publish/read flows for every ecosystem above, shared quarantine → scan → publish lifecycle controls, ecosystem-aware package/release detail responses, and a SvelteKit web portal that can browse package metadata, releases, security findings, trusted publishers, and OCI manifest references. The OCI adapter now also exposes native referrers discovery for subject-linked manifests (for example SBOMs or signatures already pushed through the registry), while broader attestation policy, signing UX, proxy/virtual repositories, and broader actor-aware discovery remain intentionally separate follow-on work.
 
 ---
 

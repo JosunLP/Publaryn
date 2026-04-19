@@ -1878,11 +1878,34 @@ fn build_oci_image_manifest(
     layer_digest: &str,
     layer_size: usize,
 ) -> Vec<u8> {
-    serde_json::to_vec(&json!({
+    build_oci_image_manifest_with_options(
+        config_digest,
+        config_size,
+        "application/vnd.oci.image.config.v1+json",
+        layer_digest,
+        layer_size,
+        None,
+        None,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_oci_image_manifest_with_options(
+    config_digest: &str,
+    config_size: usize,
+    config_media_type: &str,
+    layer_digest: &str,
+    layer_size: usize,
+    subject_digest: Option<&str>,
+    subject_size: Option<usize>,
+    annotations: Option<Value>,
+) -> Vec<u8> {
+    let mut manifest = json!({
         "schemaVersion": 2,
         "mediaType": "application/vnd.oci.image.manifest.v1+json",
         "config": {
-            "mediaType": "application/vnd.oci.image.config.v1+json",
+            "mediaType": config_media_type,
             "digest": config_digest,
             "size": config_size,
         },
@@ -1893,8 +1916,65 @@ fn build_oci_image_manifest(
                 "size": layer_size,
             }
         ]
-    }))
-    .expect("oci manifest should serialize")
+    });
+
+    if let Some(subject_digest) = subject_digest {
+        manifest
+            .as_object_mut()
+            .expect("oci manifest should serialize as an object")
+            .insert(
+                "subject".into(),
+                json!({
+                    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                    "digest": subject_digest,
+                    "size": subject_size.expect("subject-sized manifests should provide a size"),
+                }),
+            );
+    }
+
+    if let Some(annotations) = annotations {
+        manifest
+            .as_object_mut()
+            .expect("oci manifest should serialize as an object")
+            .insert("annotations".into(), annotations);
+    }
+
+    serde_json::to_vec(&manifest).expect("oci manifest should serialize")
+}
+
+fn build_oci_artifact_manifest(
+    artifact_type: &str,
+    subject_digest: &str,
+    subject_size: usize,
+    blob_digest: &str,
+    blob_size: usize,
+    annotations: Option<Value>,
+) -> Vec<u8> {
+    let mut manifest = json!({
+        "mediaType": "application/vnd.oci.artifact.manifest.v1+json",
+        "artifactType": artifact_type,
+        "blobs": [
+            {
+                "mediaType": "application/octet-stream",
+                "digest": blob_digest,
+                "size": blob_size,
+            }
+        ],
+        "subject": {
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "digest": subject_digest,
+            "size": subject_size,
+        }
+    });
+
+    if let Some(annotations) = annotations {
+        manifest
+            .as_object_mut()
+            .expect("oci artifact manifest should serialize as an object")
+            .insert("annotations".into(), annotations);
+    }
+
+    serde_json::to_vec(&manifest).expect("oci artifact manifest should serialize")
 }
 
 async fn send_oci_request(
@@ -1917,6 +1997,23 @@ async fn send_oci_request(
 
     let req = request.body(Body::from(body)).unwrap();
     app.clone().oneshot(req).await.unwrap()
+}
+
+async fn get_oci_referrers(
+    app: &axum::Router,
+    token: Option<&str>,
+    package_name: &str,
+    subject_digest: &str,
+    query: Option<&str>,
+) -> axum::response::Response {
+    let uri = match query {
+        Some(query) if !query.trim().is_empty() => {
+            format!("/oci/v2/{package_name}/referrers/{subject_digest}?{query}")
+        }
+        _ => format!("/oci/v2/{package_name}/referrers/{subject_digest}"),
+    };
+
+    send_oci_request(app, Method::GET, uri, token, None, vec![]).await
 }
 
 async fn upload_oci_blob_monolithic(
@@ -11187,6 +11284,415 @@ async fn test_native_oci_public_repository_supports_chunked_upload_anonymous_pul
     )
     .await;
     assert_eq!(manifest_after_delete_resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_native_oci_referrers_support_subject_headers_filters_and_pagination(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Public OCI Referrer Packages",
+        "public-oci-referrer-packages",
+        None,
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let package_name = "acme/public-referrer-widget";
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "oci",
+        package_name,
+        "public-oci-referrer-packages",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let (status, token_body) =
+        create_personal_access_token(&app, &alice_jwt, "alice-oci-referrers", &["packages:write"])
+            .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
+    let oci_token = token_body["token"]
+        .as_str()
+        .expect("oci token should be returned")
+        .to_owned();
+
+    let subject_config_bytes =
+        br#"{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]}}"#;
+    let subject_layer_bytes = b"subject-image-layer";
+    let (subject_config_digest, subject_config_resp) =
+        upload_oci_blob_monolithic(&app, &oci_token, package_name, subject_config_bytes).await;
+    assert_eq!(subject_config_resp.status(), StatusCode::CREATED);
+    let (subject_layer_digest, subject_layer_resp) =
+        upload_oci_blob_monolithic(&app, &oci_token, package_name, subject_layer_bytes).await;
+    assert_eq!(subject_layer_resp.status(), StatusCode::CREATED);
+
+    let subject_manifest_bytes = build_oci_image_manifest(
+        &subject_config_digest,
+        subject_config_bytes.len(),
+        &subject_layer_digest,
+        subject_layer_bytes.len(),
+    );
+    let subject_manifest_digest = oci_digest(&subject_manifest_bytes);
+    let subject_put_resp = send_oci_request(
+        &app,
+        Method::PUT,
+        format!("/oci/v2/{package_name}/manifests/latest"),
+        Some(&oci_token),
+        Some("application/vnd.oci.image.manifest.v1+json"),
+        subject_manifest_bytes.clone(),
+    )
+    .await;
+    assert_eq!(subject_put_resp.status(), StatusCode::CREATED);
+
+    let sbom_blob_bytes = br#"{"spdxVersion":"SPDX-2.3"}"#;
+    let (sbom_blob_digest, sbom_blob_resp) =
+        upload_oci_blob_monolithic(&app, &oci_token, package_name, sbom_blob_bytes).await;
+    assert_eq!(sbom_blob_resp.status(), StatusCode::CREATED);
+    let sbom_annotations = json!({
+        "org.opencontainers.artifact.created": "2026-04-20T12:00:00Z",
+        "org.example.sbom.format": "json",
+    });
+    let sbom_manifest_bytes = build_oci_artifact_manifest(
+        "application/vnd.example.sbom.v1+json",
+        &subject_manifest_digest,
+        subject_manifest_bytes.len(),
+        &sbom_blob_digest,
+        sbom_blob_bytes.len(),
+        Some(sbom_annotations.clone()),
+    );
+    let sbom_manifest_digest = oci_digest(&sbom_manifest_bytes);
+    let sbom_put_resp = send_oci_request(
+        &app,
+        Method::PUT,
+        format!("/oci/v2/{package_name}/manifests/sbom"),
+        Some(&oci_token),
+        Some("application/vnd.oci.artifact.manifest.v1+json"),
+        sbom_manifest_bytes,
+    )
+    .await;
+    assert_eq!(sbom_put_resp.status(), StatusCode::CREATED);
+    assert_eq!(
+        sbom_put_resp
+            .headers()
+            .get("OCI-Subject")
+            .expect("subject-bearing manifest pushes should acknowledge the subject"),
+        subject_manifest_digest.as_str()
+    );
+
+    let signature_config_media_type = "application/vnd.dev.cosign.simplesigning.v1+json";
+    let signature_config_bytes =
+        br#"{"critical":{"identity":{"docker-reference":"acme/public-referrer-widget"}}}"#;
+    let signature_layer_bytes = b"signature-manifest-layer";
+    let (signature_config_digest, signature_config_resp) =
+        upload_oci_blob_monolithic(&app, &oci_token, package_name, signature_config_bytes).await;
+    assert_eq!(signature_config_resp.status(), StatusCode::CREATED);
+    let (signature_layer_digest, signature_layer_resp) =
+        upload_oci_blob_monolithic(&app, &oci_token, package_name, signature_layer_bytes).await;
+    assert_eq!(signature_layer_resp.status(), StatusCode::CREATED);
+    let signature_annotations = json!({
+        "org.opencontainers.artifact.created": "2026-04-20T12:05:00Z",
+        "org.example.signature.kind": "simplesigning",
+    });
+    let signature_manifest_bytes = build_oci_image_manifest_with_options(
+        &signature_config_digest,
+        signature_config_bytes.len(),
+        signature_config_media_type,
+        &signature_layer_digest,
+        signature_layer_bytes.len(),
+        Some(&subject_manifest_digest),
+        Some(subject_manifest_bytes.len()),
+        Some(signature_annotations.clone()),
+    );
+    let signature_manifest_digest = oci_digest(&signature_manifest_bytes);
+    let signature_put_resp = send_oci_request(
+        &app,
+        Method::PUT,
+        format!("/oci/v2/{package_name}/manifests/signature"),
+        Some(&oci_token),
+        Some("application/vnd.oci.image.manifest.v1+json"),
+        signature_manifest_bytes,
+    )
+    .await;
+    assert_eq!(signature_put_resp.status(), StatusCode::CREATED);
+    assert_eq!(
+        signature_put_resp
+            .headers()
+            .get("OCI-Subject")
+            .expect("subject-bearing manifest pushes should acknowledge the subject"),
+        subject_manifest_digest.as_str()
+    );
+
+    let referrers_resp =
+        get_oci_referrers(&app, None, package_name, &subject_manifest_digest, None).await;
+    assert_eq!(referrers_resp.status(), StatusCode::OK);
+    assert_eq!(
+        referrers_resp
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .expect("referrers response should expose the OCI image index media type"),
+        "application/vnd.oci.image.index.v1+json"
+    );
+    let referrers_body = body_json(referrers_resp).await;
+    assert_eq!(referrers_body["schemaVersion"], 2);
+    assert_eq!(
+        referrers_body["mediaType"],
+        "application/vnd.oci.image.index.v1+json"
+    );
+    let referrers = referrers_body["manifests"]
+        .as_array()
+        .expect("referrers response should contain a manifests array");
+    assert_eq!(referrers.len(), 2, "response: {referrers_body}");
+
+    let sbom_descriptor = referrers
+        .iter()
+        .find(|descriptor| descriptor["digest"] == sbom_manifest_digest)
+        .expect("sbom referrer should be present");
+    assert_eq!(
+        sbom_descriptor["mediaType"],
+        "application/vnd.oci.artifact.manifest.v1+json"
+    );
+    assert_eq!(
+        sbom_descriptor["artifactType"],
+        "application/vnd.example.sbom.v1+json"
+    );
+    assert_eq!(
+        sbom_descriptor["annotations"]["org.example.sbom.format"],
+        "json"
+    );
+
+    let signature_descriptor = referrers
+        .iter()
+        .find(|descriptor| descriptor["digest"] == signature_manifest_digest)
+        .expect("signature referrer should be present");
+    assert_eq!(
+        signature_descriptor["mediaType"],
+        "application/vnd.oci.image.manifest.v1+json"
+    );
+    assert_eq!(
+        signature_descriptor["artifactType"],
+        signature_config_media_type
+    );
+    assert_eq!(
+        signature_descriptor["annotations"]["org.example.signature.kind"],
+        "simplesigning"
+    );
+
+    let first_page_resp = get_oci_referrers(
+        &app,
+        None,
+        package_name,
+        &subject_manifest_digest,
+        Some("n=1"),
+    )
+    .await;
+    assert_eq!(first_page_resp.status(), StatusCode::OK);
+    let next_link = first_page_resp
+        .headers()
+        .get(header::LINK)
+        .expect("paginated referrers responses should include a next link")
+        .to_str()
+        .expect("link header should be utf-8")
+        .to_owned();
+    assert!(next_link.contains("rel=\"next\""));
+    let first_page_body = body_json(first_page_resp).await;
+    let first_page_manifests = first_page_body["manifests"]
+        .as_array()
+        .expect("first page should contain a manifests array");
+    assert_eq!(first_page_manifests.len(), 1);
+    let first_page_digest = first_page_manifests[0]["digest"]
+        .as_str()
+        .expect("first page digest should be present")
+        .to_owned();
+    let next_uri = next_link
+        .split(';')
+        .next()
+        .and_then(|part| part.strip_prefix('<'))
+        .and_then(|part| part.strip_suffix('>'))
+        .expect("link header should wrap the next URI in angle brackets")
+        .to_owned();
+
+    let second_page_resp = send_oci_request(&app, Method::GET, next_uri, None, None, vec![]).await;
+    assert_eq!(second_page_resp.status(), StatusCode::OK);
+    let second_page_body = body_json(second_page_resp).await;
+    let second_page_manifests = second_page_body["manifests"]
+        .as_array()
+        .expect("second page should contain a manifests array");
+    assert_eq!(second_page_manifests.len(), 1);
+    let second_page_digest = second_page_manifests[0]["digest"]
+        .as_str()
+        .expect("second page digest should be present")
+        .to_owned();
+    assert_ne!(first_page_digest, second_page_digest);
+    let paged_digests = std::collections::BTreeSet::from([first_page_digest, second_page_digest]);
+    assert_eq!(
+        paged_digests,
+        std::collections::BTreeSet::from([
+            sbom_manifest_digest.clone(),
+            signature_manifest_digest.clone(),
+        ])
+    );
+
+    let encoded_filter: String =
+        url::form_urlencoded::byte_serialize(signature_config_media_type.as_bytes()).collect();
+    let filtered_resp = get_oci_referrers(
+        &app,
+        None,
+        package_name,
+        &subject_manifest_digest,
+        Some(&format!("artifactType={encoded_filter}")),
+    )
+    .await;
+    assert_eq!(filtered_resp.status(), StatusCode::OK);
+    assert_eq!(
+        filtered_resp
+            .headers()
+            .get("OCI-Filters-Applied")
+            .expect("artifactType filters should be acknowledged"),
+        "artifactType"
+    );
+    let filtered_body = body_json(filtered_resp).await;
+    let filtered_manifests = filtered_body["manifests"]
+        .as_array()
+        .expect("filtered response should contain a manifests array");
+    assert_eq!(filtered_manifests.len(), 1);
+    assert_eq!(filtered_manifests[0]["digest"], signature_manifest_digest);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_native_oci_referrers_require_auth_for_private_repositories_and_return_empty_indexes(
+    pool: PgPool,
+) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Private OCI Referrer Packages",
+        "private-oci-referrer-packages",
+        None,
+        Some("private"),
+        Some("private"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let package_name = "acme/private-referrer-widget";
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "oci",
+        package_name,
+        "private-oci-referrer-packages",
+        Some("private"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let (status, token_body) = create_personal_access_token(
+        &app,
+        &alice_jwt,
+        "alice-private-oci-referrers",
+        &["packages:write"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
+    let oci_token = token_body["token"]
+        .as_str()
+        .expect("oci token should be returned")
+        .to_owned();
+
+    let config_bytes =
+        br#"{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]}}"#;
+    let layer_bytes = b"private-referrer-layer";
+    let (config_digest, config_resp) =
+        upload_oci_blob_monolithic(&app, &oci_token, package_name, config_bytes).await;
+    assert_eq!(config_resp.status(), StatusCode::CREATED);
+    let (layer_digest, layer_resp) =
+        upload_oci_blob_monolithic(&app, &oci_token, package_name, layer_bytes).await;
+    assert_eq!(layer_resp.status(), StatusCode::CREATED);
+
+    let manifest_bytes = build_oci_image_manifest(
+        &config_digest,
+        config_bytes.len(),
+        &layer_digest,
+        layer_bytes.len(),
+    );
+    let manifest_digest = oci_digest(&manifest_bytes);
+    let manifest_put_resp = send_oci_request(
+        &app,
+        Method::PUT,
+        format!("/oci/v2/{package_name}/manifests/latest"),
+        Some(&oci_token),
+        Some("application/vnd.oci.image.manifest.v1+json"),
+        manifest_bytes,
+    )
+    .await;
+    assert_eq!(manifest_put_resp.status(), StatusCode::CREATED);
+
+    let anonymous_referrers_resp =
+        get_oci_referrers(&app, None, package_name, &manifest_digest, None).await;
+    assert_eq!(anonymous_referrers_resp.status(), StatusCode::UNAUTHORIZED);
+    assert!(anonymous_referrers_resp
+        .headers()
+        .get(header::WWW_AUTHENTICATE)
+        .expect("private referrers should challenge unauthenticated clients")
+        .to_str()
+        .expect("challenge header should be utf-8")
+        .contains(&format!("repository:{package_name}:pull")));
+
+    let authenticated_empty_resp =
+        get_oci_referrers(&app, Some(&oci_token), package_name, &manifest_digest, None).await;
+    assert_eq!(authenticated_empty_resp.status(), StatusCode::OK);
+    let authenticated_empty_body = body_json(authenticated_empty_resp).await;
+    assert_eq!(authenticated_empty_body["schemaVersion"], 2);
+    assert_eq!(authenticated_empty_body["manifests"], json!([]));
+
+    let invalid_digest_resp = get_oci_referrers(
+        &app,
+        Some(&oci_token),
+        package_name,
+        "not-a-valid-digest",
+        None,
+    )
+    .await;
+    assert_eq!(invalid_digest_resp.status(), StatusCode::BAD_REQUEST);
+    let invalid_digest_body = body_json(invalid_digest_resp).await;
+    assert_eq!(invalid_digest_body["errors"][0]["code"], "DIGEST_INVALID");
 }
 
 #[sqlx::test(migrations = "../../migrations")]

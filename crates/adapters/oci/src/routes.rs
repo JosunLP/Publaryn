@@ -2,7 +2,7 @@ use axum::{
     body::{Body, Bytes},
     extract::{DefaultBodyLimit, Path, Query, State},
     http::{
-        header::{CONTENT_LENGTH, CONTENT_TYPE, LOCATION},
+        header::{CONTENT_LENGTH, CONTENT_TYPE, LINK, LOCATION},
         HeaderMap, HeaderName, StatusCode,
     },
     response::{IntoResponse, Response},
@@ -28,7 +28,7 @@ use publaryn_core::{
 
 use crate::{
     auth::{self, AuthFailure, OciIdentity},
-    manifest::{self, ManifestReference},
+    manifest::{self, ManifestReference, ManifestReferenceKind},
     name::{self, OciReference},
     upload::{self, UploadSessionRecord},
 };
@@ -39,6 +39,8 @@ const TEAM_PACKAGE_PUBLISH_PERMISSIONS: &[&str] = &["admin", "publish"];
 const TEAM_PACKAGE_ADMIN_PERMISSIONS: &[&str] = &["admin"];
 const TEAM_REPOSITORY_PUBLISH_PERMISSIONS: &[&str] = &["admin", "publish"];
 const TEAM_REPOSITORY_ADMIN_PERMISSIONS: &[&str] = &["admin"];
+const OCI_IMAGE_INDEX_MEDIA_TYPE: &str = "application/vnd.oci.image.index.v1+json";
+const OCI_IMAGE_MANIFEST_MEDIA_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
 
 pub trait OciAppState: Clone + Send + Sync + 'static {
     fn db(&self) -> &PgPool;
@@ -100,9 +102,67 @@ struct UploadQuery {
     digest: Option<String>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct ReferrersQuery {
+    n: Option<usize>,
+    last: Option<String>,
+    #[serde(rename = "artifactType")]
+    artifact_type: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ReferrerDescriptor {
+    media_type: String,
+    digest: String,
+    size_bytes: i64,
+    artifact_type: Option<String>,
+    annotations: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
 impl ListQuery {
     fn limit(&self) -> usize {
         self.n.unwrap_or(100).clamp(1, 1000)
+    }
+}
+
+impl ReferrersQuery {
+    fn limit(&self) -> Option<usize> {
+        self.n.map(|limit| limit.min(1000))
+    }
+}
+
+impl From<ReferrersQuery> for ListQuery {
+    fn from(value: ReferrersQuery) -> Self {
+        Self {
+            n: value.n,
+            last: value.last,
+        }
+    }
+}
+
+impl ReferrerDescriptor {
+    fn into_json(self) -> serde_json::Value {
+        let mut descriptor = serde_json::Map::new();
+        descriptor.insert(
+            "mediaType".into(),
+            serde_json::Value::String(self.media_type),
+        );
+        descriptor.insert("size".into(), serde_json::json!(self.size_bytes));
+        descriptor.insert("digest".into(), serde_json::Value::String(self.digest));
+        if let Some(artifact_type) = self.artifact_type {
+            descriptor.insert(
+                "artifactType".into(),
+                serde_json::Value::String(artifact_type),
+            );
+        }
+        if let Some(annotations) = self
+            .annotations
+            .filter(|annotations| !annotations.is_empty())
+        {
+            descriptor.insert("annotations".into(), serde_json::Value::Object(annotations));
+        }
+
+        serde_json::Value::Object(descriptor)
     }
 }
 
@@ -216,18 +276,13 @@ async fn get_dispatch<S: OciAppState>(
     State(state): State<S>,
     Path(path): Path<String>,
     headers: HeaderMap,
-    Query(query): Query<ListQuery>,
+    Query(query): Query<ReferrersQuery>,
 ) -> Response {
-    if let Some(name) = parse_referrers_path(&path) {
-        return auth::with_registry_headers(auth::oci_error_response(
-            StatusCode::NOT_FOUND,
-            "UNSUPPORTED",
-            &format!("OCI referrers are not implemented for repository '{name}'"),
-            None,
-        ));
+    if let Some((name, digest)) = parse_referrers_path(&path) {
+        return referrers_list(state, headers, query, name, digest).await;
     }
     if let Some(name) = parse_tags_path(&path) {
-        return tags_list(state, headers, query, name).await;
+        return tags_list(state, headers, query.into(), name).await;
     }
     if let Some((name, reference)) = parse_manifest_path(&path) {
         return manifest_get(state, headers, name, reference, true).await;
@@ -437,6 +492,152 @@ async fn tags_list<S: OciAppState>(
             })),
         )
             .into_response(),
+    )
+}
+
+async fn referrers_list<S: OciAppState>(
+    state: S,
+    headers: HeaderMap,
+    query: ReferrersQuery,
+    package_name: String,
+    subject_digest: String,
+) -> Response {
+    if let Err(error) = name::validate_repository_name(&package_name) {
+        return auth::with_registry_headers(auth::oci_error_response(
+            StatusCode::BAD_REQUEST,
+            "NAME_INVALID",
+            &error.to_string(),
+            None,
+        ));
+    }
+
+    let subject_digest = match name::validate_digest(&subject_digest) {
+        Ok(digest) => digest,
+        Err(error) => {
+            return auth::with_registry_headers(auth::oci_error_response(
+                StatusCode::BAD_REQUEST,
+                "DIGEST_INVALID",
+                &error.to_string(),
+                None,
+            ))
+        }
+    };
+
+    let identity = match auth::authenticate_optional(&state, &headers).await {
+        Ok(identity) => identity,
+        Err(_) => {
+            return auth::challenge_response(
+                &state,
+                &auth::challenge_scope_for_repository(&package_name, false),
+                "Authentication required for OCI pulls",
+            )
+        }
+    };
+    let package = match load_package_context(state.db(), &package_name).await {
+        Ok(package) => package,
+        Err(response) => return response,
+    };
+
+    if !package_readable(
+        &package,
+        state.db(),
+        identity.as_ref().map(|identity| identity.user_id),
+    )
+    .await
+    {
+        if identity.is_none() {
+            return auth::challenge_response(
+                &state,
+                &auth::challenge_scope_for_repository(&package_name, false),
+                "Authentication required for OCI pulls",
+            );
+        }
+
+        return auth::with_registry_headers(auth::oci_error_response(
+            StatusCode::NOT_FOUND,
+            "NAME_UNKNOWN",
+            "OCI repository not found",
+            None,
+        ));
+    }
+
+    let mut descriptors =
+        match load_referrer_descriptors(state.db(), package.package_id, &subject_digest).await {
+            Ok(descriptors) => descriptors,
+            Err(_) => {
+                return auth::with_registry_headers(auth::oci_error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "UNKNOWN",
+                    "Failed to load OCI referrers",
+                    None,
+                ))
+            }
+        };
+
+    descriptors.sort_by(|left, right| left.digest.cmp(&right.digest));
+
+    if let Some(last) = query.last.as_deref() {
+        descriptors.retain(|descriptor| descriptor.digest.as_str() > last);
+    }
+
+    if let Some(artifact_type) = query.artifact_type.as_deref() {
+        descriptors.retain(|descriptor| descriptor.artifact_type.as_deref() == Some(artifact_type));
+    }
+
+    let next_link = match query.limit() {
+        Some(0) => {
+            descriptors.clear();
+            None
+        }
+        Some(limit) if descriptors.len() > limit => {
+            let last_digest = descriptors[limit - 1].digest.clone();
+            descriptors.truncate(limit);
+            Some(build_referrers_next_link(
+                &package.package_name,
+                &subject_digest,
+                limit,
+                &last_digest,
+                query.artifact_type.as_deref(),
+            ))
+        }
+        _ => None,
+    };
+
+    let body = serde_json::json!({
+        "schemaVersion": 2,
+        "mediaType": OCI_IMAGE_INDEX_MEDIA_TYPE,
+        "manifests": descriptors
+            .into_iter()
+            .map(ReferrerDescriptor::into_json)
+            .collect::<Vec<_>>(),
+    });
+    let body_bytes = match serde_json::to_vec(&body) {
+        Ok(body_bytes) => body_bytes,
+        Err(_) => {
+            return auth::with_registry_headers(auth::oci_error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "UNKNOWN",
+                "Failed to serialize OCI referrers response",
+                None,
+            ))
+        }
+    };
+
+    let mut builder = Response::builder()
+        .status(StatusCode::OK)
+        .header(CONTENT_TYPE, OCI_IMAGE_INDEX_MEDIA_TYPE)
+        .header(CONTENT_LENGTH, body_bytes.len().to_string());
+    if query.artifact_type.is_some() {
+        builder = builder.header("OCI-Filters-Applied", "artifactType");
+    }
+    if let Some(next_link) = next_link {
+        builder = builder.header(LINK, next_link);
+    }
+
+    auth::with_registry_headers(
+        builder
+            .body(Body::from(body_bytes))
+            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()),
     )
 }
 
@@ -743,6 +944,9 @@ async fn manifest_put<S: OciAppState>(
     }
 
     for reference in &parsed_manifest.references {
+        if matches!(reference.kind, ManifestReferenceKind::Subject) {
+            continue;
+        }
         let storage_key = upload::blob_storage_key(&reference.digest);
         match state.artifact_get(&storage_key).await {
             Ok(Some(_)) => {}
@@ -826,11 +1030,19 @@ async fn manifest_put<S: OciAppState>(
         parsed_manifest.digest,
     );
 
-    let mut response = Response::builder()
+    let subject_digest = parsed_manifest.references.iter().find_map(|reference| {
+        (reference.kind == ManifestReferenceKind::Subject).then_some(reference.digest.as_str())
+    });
+    let mut builder = Response::builder()
         .status(StatusCode::CREATED)
         .header(LOCATION, location)
         .header("docker-content-digest", parsed_manifest.digest)
-        .header(CONTENT_LENGTH, "0")
+        .header(CONTENT_LENGTH, "0");
+    if let Some(subject_digest) = subject_digest {
+        builder = builder.header("OCI-Subject", subject_digest);
+    }
+
+    let mut response = builder
         .body(Body::empty())
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
     response = auth::with_registry_headers(response);
@@ -2003,6 +2215,156 @@ async fn load_manifest_artifact(
     })
 }
 
+async fn load_referrer_descriptors(
+    db: &PgPool,
+    package_id: Uuid,
+    subject_digest: &str,
+) -> Result<Vec<ReferrerDescriptor>, sqlx::Error> {
+    sqlx::query(
+        "SELECT a.content_type, a.size_bytes, a.sha256, rel.provenance \
+         FROM oci_manifest_references omr \
+         JOIN releases rel ON rel.id = omr.release_id \
+         JOIN artifacts a ON a.release_id = rel.id AND a.kind = 'oci_manifest' \
+         WHERE rel.package_id = $1 \
+           AND rel.status = 'published' \
+           AND omr.ref_kind = 'subject' \
+           AND omr.ref_digest = $2 \
+         ORDER BY a.sha256 ASC",
+    )
+    .bind(package_id)
+    .bind(subject_digest)
+    .fetch_all(db)
+    .await
+    .map(|rows| {
+        rows.into_iter()
+            .map(|row| {
+                let provenance = row
+                    .try_get::<Option<serde_json::Value>, _>("provenance")
+                    .unwrap_or(None);
+                let fallback_content_type: String = row
+                    .try_get("content_type")
+                    .unwrap_or_else(|_| OCI_IMAGE_MANIFEST_MEDIA_TYPE.into());
+                let media_type = resolve_referrer_media_type(
+                    provenance.as_ref(),
+                    fallback_content_type.as_str(),
+                );
+
+                ReferrerDescriptor {
+                    media_type: media_type.clone(),
+                    digest: format!(
+                        "sha256:{}",
+                        row.try_get::<String, _>("sha256").unwrap_or_default()
+                    ),
+                    size_bytes: row.try_get("size_bytes").unwrap_or_default(),
+                    artifact_type: resolve_referrer_artifact_type(
+                        media_type.as_str(),
+                        provenance.as_ref(),
+                    ),
+                    annotations: resolve_referrer_annotations(provenance.as_ref()),
+                }
+            })
+            .collect()
+    })
+}
+
+fn resolve_referrer_media_type(
+    provenance: Option<&serde_json::Value>,
+    fallback_content_type: &str,
+) -> String {
+    provenance
+        .and_then(serde_json::Value::as_object)
+        .and_then(|object| object.get("mediaType"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| {
+            let fallback = fallback_content_type.trim();
+            if fallback.is_empty() {
+                OCI_IMAGE_MANIFEST_MEDIA_TYPE
+            } else {
+                fallback
+            }
+        })
+        .to_owned()
+}
+
+fn resolve_referrer_artifact_type(
+    media_type: &str,
+    provenance: Option<&serde_json::Value>,
+) -> Option<String> {
+    let object = provenance.and_then(serde_json::Value::as_object);
+    if let Some(artifact_type) = object
+        .and_then(|object| object.get("artifactType"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Some(artifact_type.to_owned());
+    }
+
+    if media_type == OCI_IMAGE_MANIFEST_MEDIA_TYPE {
+        return object
+            .and_then(|object| object.get("config"))
+            .and_then(serde_json::Value::as_object)
+            .and_then(|config| config.get("mediaType"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+    }
+
+    None
+}
+
+fn resolve_referrer_annotations(
+    provenance: Option<&serde_json::Value>,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
+    provenance
+        .and_then(serde_json::Value::as_object)
+        .and_then(|object| object.get("annotations"))
+        .and_then(serde_json::Value::as_object)
+        .filter(|annotations| !annotations.is_empty())
+        .cloned()
+}
+
+fn build_referrers_next_link(
+    package_name: &str,
+    subject_digest: &str,
+    limit: usize,
+    last_digest: &str,
+    artifact_type: Option<&str>,
+) -> String {
+    let mut query = vec![
+        format!("n={limit}"),
+        format!("last={}", percent_encode_query_value(last_digest)),
+    ];
+    if let Some(artifact_type) = artifact_type {
+        query.push(format!(
+            "artifactType={}",
+            percent_encode_query_value(artifact_type)
+        ));
+    }
+
+    format!(
+        "</oci/v2/{package_name}/referrers/{subject_digest}?{}>; rel=\"next\"",
+        query.join("&")
+    )
+}
+
+fn percent_encode_query_value(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                encoded.push(byte as char)
+            }
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+
+    encoded
+}
+
 async fn blob_is_referenced_by_package(
     db: &PgPool,
     package_id: Uuid,
@@ -2379,10 +2741,15 @@ fn parse_blob_path(path: &str) -> Option<(String, String)> {
     Some((name.to_owned(), digest.to_owned()))
 }
 
-fn parse_referrers_path(path: &str) -> Option<String> {
-    path.strip_suffix("/referrers")
-        .map(|name| name.trim_matches('/').to_owned())
-        .filter(|name| !name.is_empty())
+fn parse_referrers_path(path: &str) -> Option<(String, String)> {
+    let (name, digest) = path.rsplit_once("/referrers/")?;
+    let name = name.trim_matches('/');
+    let digest = digest.trim_matches('/');
+    if name.is_empty() || digest.is_empty() {
+        return None;
+    }
+
+    Some((name.to_owned(), digest.to_owned()))
 }
 
 #[cfg(test)]
@@ -2404,5 +2771,18 @@ mod tests {
         let parsed = parse_upload_session_path(&path).expect("path should parse");
         assert_eq!(parsed.0, "acme/widget");
         assert_eq!(parsed.1, session_id);
+    }
+
+    #[test]
+    fn parses_referrers_paths() {
+        let parsed = parse_referrers_path(
+            "acme/widget/referrers/sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        )
+        .expect("path should parse");
+        assert_eq!(parsed.0, "acme/widget");
+        assert_eq!(
+            parsed.1,
+            "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+        );
     }
 }
