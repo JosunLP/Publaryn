@@ -97,6 +97,7 @@
     nextAuditActorInputState,
   } from '../../../pages/org-audit-actors';
   import type { OrgAuditActorOption } from '../../../pages/org-audit-actors';
+  import { buildPackageDetailPath } from '../../../pages/package-detail-tabs';
   import type { OrgMemberPickerOption } from '../../../pages/org-member-picker';
   import {
     buildOrgMemberPickerOptions,
@@ -2902,6 +2903,19 @@
                     {/each}
                   </div>
                 </div>
+                {#if pkg.ecosystem && pkg.name}
+                  <div class="token-row__actions">
+                    <a
+                      class="btn btn-secondary btn-sm"
+                      href={buildPackageDetailPath(
+                        pkg.ecosystem,
+                        pkg.name,
+                        { tab: 'security' }
+                      )}
+                      data-sveltekit-preload-data="hover">Open findings</a
+                    >
+                  </div>
+                {/if}
               </div>
             {/each}
           </div>

@@ -42,6 +42,11 @@
     createPackageMetadataFormValues,
     packageMetadataHasChanges,
   } from '../../../../utils/package-metadata';
+  import {
+    buildPackageDetailPath,
+    getPackageDetailTabFromQuery,
+  } from '../../../../pages/package-detail-tabs';
+  import type { PackageDetailTab } from '../../../../pages/package-detail-tabs';
   import { selectPackageTransferTargets } from '../../../../utils/package-transfer';
   import {
     normalizeTrustedPublisherInput,
@@ -86,7 +91,7 @@
   let trustedPublisherNotice: string | null = null;
   let trustedPublisherError: string | null = null;
   let includeResolvedFindings = false;
-  let activeTab: 'readme' | 'versions' | 'security' = 'readme';
+  let activeTab: PackageDetailTab = 'readme';
 
   let findingsNotice: string | null = null;
   let findingsError: string | null = null;
@@ -122,6 +127,7 @@
 
   $: ecosystem = $page.params.ecosystem ?? '';
   $: name = $page.params.name ?? '';
+  $: activeTab = getPackageDetailTabFromQuery($page.url.searchParams);
   $: loadKey = `${ecosystem}|${name}`;
   $: if (ecosystem && name && loadKey !== lastLoadKey) {
     lastLoadKey = loadKey;
@@ -153,7 +159,6 @@
     packageSettingsError = null;
     trustedPublisherNotice = null;
     trustedPublisherError = null;
-    activeTab = 'readme';
     includeResolvedFindings = false;
     resetReleaseForm();
     resetTransferForm();
@@ -320,6 +325,16 @@
       ? installCommand(eecosystem(), pkg.name, latestVersion)
       : installCommand(eecosystem(), pkg.name);
     await copyToClipboard(command);
+  }
+
+  async function handlePackageTabChange(tab: PackageDetailTab): Promise<void> {
+    if (tab === activeTab) {
+      return;
+    }
+
+    await goto(
+      buildPackageDetailPath(eecosystem(), ename(), { tab }, $page.url.searchParams)
+    );
   }
 
   async function handleResolvedToggleChange(): Promise<void> {
@@ -700,20 +715,20 @@
             class:active={activeTab === 'readme'}
             class="tab"
             type="button"
-            on:click={() => (activeTab = 'readme')}>Readme</button
+            on:click={() => void handlePackageTabChange('readme')}>Readme</button
           >
           <button
             class:active={activeTab === 'versions'}
             class="tab"
             type="button"
-            on:click={() => (activeTab = 'versions')}
+            on:click={() => void handlePackageTabChange('versions')}
             >Versions ({releases.length})</button
           >
           <button
             class:active={activeTab === 'security'}
             class="tab"
             type="button"
-            on:click={() => (activeTab = 'security')}
+            on:click={() => void handlePackageTabChange('security')}
           >
             Security
             {#if openFindings.length > 0}
