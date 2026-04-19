@@ -91,8 +91,6 @@
   let trustedPublisherNotice: string | null = null;
   let trustedPublisherError: string | null = null;
   let includeResolvedFindings = false;
-  let activeTab: PackageDetailTab = 'readme';
-
   let findingsNotice: string | null = null;
   let findingsError: string | null = null;
   let updatingFindingId: string | null = null;
@@ -127,7 +125,6 @@
 
   $: ecosystem = $page.params.ecosystem ?? '';
   $: name = $page.params.name ?? '';
-  $: activeTab = getPackageDetailTabFromQuery($page.url.searchParams);
   $: loadKey = `${ecosystem}|${name}`;
   $: if (ecosystem && name && loadKey !== lastLoadKey) {
     lastLoadKey = loadKey;
@@ -332,7 +329,7 @@
   }
 
   async function handlePackageTabChange(tab: PackageDetailTab): Promise<void> {
-    if (tab === activeTab) {
+    if (tab === activePackageTab()) {
       return;
     }
 
@@ -628,6 +625,10 @@
     );
   }
 
+  function activePackageTab(): PackageDetailTab {
+    return getPackageDetailTabFromQuery($page.url.searchParams);
+  }
+
   function worstSeverity(openFindings: SecurityFinding[]): string {
     if (openFindings.length === 0) {
       return 'info';
@@ -733,23 +734,23 @@
 
         <div class="tabs">
           <button
-            class:active={activeTab === 'readme'}
+            class:active={activePackageTab() === 'readme'}
             class="tab"
             type="button"
-            on:click={() => void handlePackageTabChange('readme')}>Readme</button
+            on:click={() => handlePackageTabChange('readme')}>Readme</button
           >
           <button
-            class:active={activeTab === 'versions'}
+            class:active={activePackageTab() === 'versions'}
             class="tab"
             type="button"
-            on:click={() => void handlePackageTabChange('versions')}
+            on:click={() => handlePackageTabChange('versions')}
             >Versions ({releases.length})</button
           >
           <button
-            class:active={activeTab === 'security'}
+            class:active={activePackageTab() === 'security'}
             class="tab"
             type="button"
-            on:click={() => void handlePackageTabChange('security')}
+            on:click={() => handlePackageTabChange('security')}
           >
             Security
             {#if openFindings.length > 0}
@@ -761,7 +762,7 @@
           </button>
         </div>
 
-        {#if activeTab === 'readme'}
+        {#if activePackageTab() === 'readme'}
           {#if readmeHtml}
             <div class="readme-content">{@html readmeHtml}</div>
           {:else}
@@ -771,7 +772,7 @@
           {/if}
         {/if}
 
-        {#if activeTab === 'versions'}
+        {#if activePackageTab() === 'versions'}
           {#if releases.length === 0}
             <div class="empty-state"><p>No releases yet.</p></div>
           {:else}
@@ -800,7 +801,7 @@
           {/if}
         {/if}
 
-        {#if activeTab === 'security'}
+        {#if activePackageTab() === 'security'}
           <div class="findings-toggle">
             <label>
               <input
