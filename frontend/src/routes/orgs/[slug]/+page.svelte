@@ -2171,38 +2171,44 @@
           <div class="alert alert-warning">
             <strong>This action is immediate.</strong> You will be demoted to Admin.
           </div>
-          <form on:submit={handleTransferOwnership}>
-            <div class="form-group">
-              <label for="org-transfer-owner">New owner username</label>
-              <input
-                id="org-transfer-owner"
-                name="username"
-                class="form-input"
-                list="org-transfer-owner-options"
-                bind:value={ownershipMemberInput}
-                placeholder="Search member username or paste user id"
-                autocomplete="off"
-                required
-              />
-              <datalist id="org-transfer-owner-options">
-                {#each ownershipMemberOptions as option}
-                  <option value={option.username}>{option.label}</option>
-                  <option value={option.userId}>{option.label}</option>
-                {/each}
-              </datalist>
-            </div>
-            <div class="form-group">
-              <label class="flex items-start gap-2">
-                <input type="checkbox" name="confirm" required />
-                <span
-                  >I understand this transfer is immediate and irreversible.</span
-                >
-              </label>
-            </div>
-            <button type="submit" class="btn btn-danger"
-              >Transfer ownership</button
-            >
-          </form>
+          {#if ownershipMemberOptions.length === 0}
+            <p class="settings-copy">
+              Add another organization member before transferring ownership.
+            </p>
+          {:else}
+            <form on:submit={handleTransferOwnership}>
+              <div class="form-group">
+                <label for="org-transfer-owner">New owner username</label>
+                <input
+                  id="org-transfer-owner"
+                  name="username"
+                  class="form-input"
+                  list="org-transfer-owner-options"
+                  bind:value={ownershipMemberInput}
+                  placeholder="Search member username or paste user id"
+                  autocomplete="off"
+                  required
+                />
+                <datalist id="org-transfer-owner-options">
+                  {#each ownershipMemberOptions as option}
+                    <option value={option.username}>{option.label}</option>
+                    <option value={option.userId}>{option.label}</option>
+                  {/each}
+                </datalist>
+              </div>
+              <div class="form-group">
+                <label class="flex items-start gap-2">
+                  <input type="checkbox" name="confirm" required />
+                  <span
+                    >I understand this transfer is immediate and irreversible.</span
+                  >
+                </label>
+              </div>
+              <button type="submit" class="btn btn-danger"
+                >Transfer ownership</button
+              >
+            </form>
+          {/if}
         </section>
       {/if}
 
