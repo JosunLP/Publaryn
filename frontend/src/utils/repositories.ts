@@ -8,6 +8,22 @@ export interface RepositoryOwnerSummary {
   href: string | null;
 }
 
+type NullableString = string | null | undefined;
+
+interface RepositoryTransferOrganizationLike {
+  slug?: NullableString;
+  name?: NullableString;
+  role?: NullableString;
+}
+
+interface TransferableRepositoryLike {
+  slug?: NullableString;
+  name?: NullableString;
+  can_transfer?: boolean | null;
+}
+
+const REPOSITORY_TRANSFER_ADMIN_ROLES = new Set(['owner', 'admin']);
+
 export const REPOSITORY_KIND_OPTIONS: RepositoryOption[] = [
   { value: 'public', label: 'Public' },
   { value: 'private', label: 'Private' },
@@ -66,6 +82,45 @@ export function formatRepositoryPackageCoverageLabel(
     : `Showing ${safeTotalCount} visible packages.`;
 }
 
+export function selectRepositoryTransferTargets<
+  T extends RepositoryTransferOrganizationLike,
+>(organizations: T[], currentOwnerOrgSlug?: NullableString): T[] {
+  const normalizedOwnerSlug = normalizeSlug(currentOwnerOrgSlug);
+
+  return [...organizations]
+    .filter((organization) => {
+      const slug = normalizeSlug(organization.slug);
+      const role = normalizeRole(organization.role);
+
+      return (
+        Boolean(slug) &&
+        REPOSITORY_TRANSFER_ADMIN_ROLES.has(role) &&
+        slug !== normalizedOwnerSlug
+      );
+    })
+    .sort((left, right) => {
+      const leftLabel = (left.name || left.slug || '').toLowerCase();
+      const rightLabel = (right.name || right.slug || '').toLowerCase();
+      return leftLabel.localeCompare(rightLabel);
+    });
+}
+
+export function selectTransferableRepositories<
+  T extends TransferableRepositoryLike,
+>(repositories: T[]): T[] {
+  return [...repositories]
+    .filter(
+      (repository) =>
+        repository.can_transfer === true &&
+        Boolean(normalizeText(repository.slug))
+    )
+    .sort((left, right) => {
+      const leftLabel = `${normalizeText(left.name) || normalizeText(left.slug)}:${normalizeText(left.slug)}`;
+      const rightLabel = `${normalizeText(right.name) || normalizeText(right.slug)}:${normalizeText(right.slug)}`;
+      return leftLabel.localeCompare(rightLabel);
+    });
+}
+
 export function resolveRepositoryOwnerSummary({
   ownerOrgName,
   ownerOrgSlug,
@@ -122,4 +177,16 @@ function findRepositoryOptionLabel(
     .filter(Boolean)
     .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
     .join(' ');
+}
+
+function normalizeSlug(value: NullableString): string {
+  return normalizeText(value).toLowerCase();
+}
+
+function normalizeRole(value: NullableString): string {
+  return normalizeText(value).toLowerCase();
+}
+
+function normalizeText(value: NullableString): string {
+  return typeof value === 'string' ? value.trim() : '';
 }

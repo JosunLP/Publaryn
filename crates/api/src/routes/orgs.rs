@@ -25,9 +25,9 @@ use publaryn_core::{
 use crate::{
     error::{ApiError, ApiResult},
     request_auth::{
-        actor_can_transfer_package_by_id, ensure_org_admin_by_slug,
-        ensure_org_audit_access_by_slug, ensure_org_member_by_slug, is_org_member,
-        AuthenticatedIdentity, OptionalAuthenticatedIdentity,
+        actor_can_transfer_package_by_id, actor_can_transfer_repository_by_id,
+        ensure_org_admin_by_slug, ensure_org_audit_access_by_slug, ensure_org_member_by_slug,
+        is_org_member, AuthenticatedIdentity, OptionalAuthenticatedIdentity,
     },
     scopes::{ensure_scope, SCOPE_ORGS_TRANSFER, SCOPE_ORGS_WRITE},
     state::AppState,
@@ -2240,7 +2240,8 @@ async fn list_org_repositories(
     let org_id: Uuid = org_row
         .try_get("id")
         .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
-    let can_view_non_public = match identity.user_id() {
+    let actor_user_id = identity.user_id();
+    let can_view_non_public = match actor_user_id {
         Some(actor_user_id) => is_org_member(&state.db, org_id, actor_user_id).await?,
         None => false,
     };
@@ -2265,22 +2266,27 @@ async fn list_org_repositories(
     .await
     .map_err(|e| ApiError(Error::Database(e)))?;
 
-    let repositories: Vec<serde_json::Value> = rows
-        .iter()
-        .map(|row| {
-            serde_json::json!({
-                "id": row.try_get::<Uuid, _>("id").ok(),
-                "name": row.try_get::<String, _>("name").ok(),
-                "slug": row.try_get::<String, _>("slug").ok(),
-                "description": row.try_get::<Option<String>, _>("description").ok().flatten(),
-                "kind": row.try_get::<String, _>("kind").ok(),
-                "visibility": row.try_get::<String, _>("visibility").ok(),
-                "upstream_url": row.try_get::<Option<String>, _>("upstream_url").ok().flatten(),
-                "package_count": row.try_get::<i64, _>("package_count").ok(),
-                "created_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at").ok(),
-            })
-        })
-        .collect();
+    let mut repositories = Vec::with_capacity(rows.len());
+    for row in rows {
+        let repository_id: Uuid = row
+            .try_get("id")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+        let can_transfer =
+            actor_can_transfer_repository_by_id(&state.db, repository_id, actor_user_id).await?;
+
+        repositories.push(serde_json::json!({
+            "id": repository_id,
+            "name": row.try_get::<String, _>("name").ok(),
+            "slug": row.try_get::<String, _>("slug").ok(),
+            "description": row.try_get::<Option<String>, _>("description").ok().flatten(),
+            "kind": row.try_get::<String, _>("kind").ok(),
+            "visibility": row.try_get::<String, _>("visibility").ok(),
+            "upstream_url": row.try_get::<Option<String>, _>("upstream_url").ok().flatten(),
+            "package_count": row.try_get::<i64, _>("package_count").ok(),
+            "created_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at").ok(),
+            "can_transfer": can_transfer,
+        }));
+    }
 
     Ok(Json(serde_json::json!({ "repositories": repositories })))
 }

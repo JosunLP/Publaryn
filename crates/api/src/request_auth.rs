@@ -37,6 +37,7 @@ const TEAM_REPOSITORY_PACKAGE_CREATION_PERMISSIONS: &[&str] =
 const TEAM_REPOSITORY_PACKAGE_METADATA_PERMISSIONS: &[&str] = &["admin", "write_metadata"];
 const TEAM_REPOSITORY_PACKAGE_PUBLISH_PERMISSIONS: &[&str] = &["admin", "publish"];
 const TEAM_REPOSITORY_ADMIN_PERMISSIONS: &[&str] = &["admin"];
+const TEAM_REPOSITORY_TRANSFER_PERMISSIONS: &[&str] = &["admin", "transfer_ownership"];
 const TEAM_REPOSITORY_PACKAGE_TRANSFER_PERMISSIONS: &[&str] = &["admin", "transfer_ownership"];
 const TEAM_REPOSITORY_PACKAGE_SECURITY_REVIEW_PERMISSIONS: &[&str] = &["admin", "security_review"];
 const TEAM_REPOSITORY_PACKAGE_MANAGEMENT_VISIBILITY_PERMISSIONS: &[&str] = &[
@@ -443,6 +444,32 @@ async fn actor_can_create_packages_in_owned_repository(
         }
         None => Ok(false),
     }
+}
+
+async fn actor_can_transfer_owned_repository(
+    db: &PgPool,
+    repository_id: Uuid,
+    owner_user_id: Option<Uuid>,
+    owner_org_id: Option<Uuid>,
+    actor_user_id: Uuid,
+) -> ApiResult<bool> {
+    if owner_user_id == Some(actor_user_id) {
+        return Ok(true);
+    }
+
+    if let Some(owner_org_id) = owner_org_id {
+        if actor_has_org_roles(db, owner_org_id, actor_user_id, ORG_ADMIN_ROLES).await? {
+            return Ok(true);
+        }
+    }
+
+    actor_has_team_repository_permissions(
+        db,
+        repository_id,
+        actor_user_id,
+        TEAM_REPOSITORY_TRANSFER_PERMISSIONS,
+    )
+    .await
 }
 
 async fn actor_has_any_team_package_access(
@@ -901,6 +928,31 @@ pub async fn ensure_repository_write_access(
     ensure_repository_admin_access(db, slug, actor_user_id).await
 }
 
+pub async fn ensure_repository_transfer_access(
+    db: &PgPool,
+    slug: &str,
+    actor_user_id: Uuid,
+) -> ApiResult<Uuid> {
+    let (repository_id, owner_user_id, owner_org_id) =
+        fetch_repository_access_fields_by_slug(db, slug).await?;
+
+    if actor_can_transfer_owned_repository(
+        db,
+        repository_id,
+        owner_user_id,
+        owner_org_id,
+        actor_user_id,
+    )
+    .await?
+    {
+        return Ok(repository_id);
+    }
+
+    Err(ApiError(Error::Forbidden(
+        "You do not have permission to transfer ownership of this repository".into(),
+    )))
+}
+
 pub async fn ensure_package_metadata_write_access(
     db: &PgPool,
     ecosystem: &str,
@@ -1076,6 +1128,28 @@ pub async fn actor_can_create_packages_in_repository_by_id(
         fetch_repository_owner_fields_by_id(db, repository_id).await?;
 
     actor_can_create_packages_in_owned_repository(
+        db,
+        repository_id,
+        owner_user_id,
+        owner_org_id,
+        actor_user_id,
+    )
+    .await
+}
+
+pub async fn actor_can_transfer_repository_by_id(
+    db: &PgPool,
+    repository_id: Uuid,
+    actor_user_id: Option<Uuid>,
+) -> ApiResult<bool> {
+    let Some(actor_user_id) = actor_user_id else {
+        return Ok(false);
+    };
+
+    let (owner_user_id, owner_org_id) =
+        fetch_repository_owner_fields_by_id(db, repository_id).await?;
+
+    actor_can_transfer_owned_repository(
         db,
         repository_id,
         owner_user_id,

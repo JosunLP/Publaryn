@@ -162,19 +162,20 @@ For example, user-owned namespaces and repositories are created for the authenti
 
 Initial control-plane scopes:
 
-| Scope                | Purpose                                                        |
-| -------------------- | -------------------------------------------------------------- |
-| `profile:write`      | Update the authenticated user's profile                        |
-| `tokens:read`        | List the authenticated user's API tokens                       |
-| `tokens:write`       | Create and revoke API tokens                                   |
-| `orgs:write`         | Create organizations and mutate organization governance data   |
-| `orgs:join`          | Review, accept, and decline invitations for the current user   |
-| `orgs:transfer`      | Transfer organization ownership to another active member       |
-| `namespaces:write`   | Create namespace claims                                        |
-| `repositories:write` | Create and update repositories                                 |
-| `packages:write`     | Update packages, releases, tags, and trusted publishers        |
-| `packages:transfer`  | Transfer package ownership into an organization you administer |
-| `audit:read`         | Read the platform audit log (platform administrators only)     |
+| Scope                   | Purpose                                                           |
+| ----------------------- | ----------------------------------------------------------------- |
+| `profile:write`         | Update the authenticated user's profile                           |
+| `tokens:read`           | List the authenticated user's API tokens                          |
+| `tokens:write`          | Create and revoke API tokens                                      |
+| `orgs:write`            | Create organizations and mutate organization governance data      |
+| `orgs:join`             | Review, accept, and decline invitations for the current user      |
+| `orgs:transfer`         | Transfer organization ownership to another active member          |
+| `namespaces:write`      | Create namespace claims                                           |
+| `repositories:write`    | Create and update repositories                                    |
+| `repositories:transfer` | Transfer repository ownership into an organization you administer |
+| `packages:write`        | Update packages, releases, tags, and trusted publishers           |
+| `packages:transfer`     | Transfer package ownership into an organization you administer    |
+| `audit:read`            | Read the platform audit log (platform administrators only)        |
 
 JWT login sessions receive a default interactive scope set for standard self-service control-plane actions.
 Opaque API tokens must request one or more supported scopes, and unsupported scope strings are rejected.
@@ -182,6 +183,8 @@ Opaque API tokens must request one or more supported scopes, and unsupported sco
 The first invitation slice supports invitations for existing active user accounts. Invited users discover pending invitations through authenticated control-plane endpoints and can accept or decline them in product.
 
 The first ownership-transfer slice allows a current organization owner to hand off their owner role to another existing active member. The transfer is applied atomically, the initiating owner is demoted to `admin`, and the action is written to the audit log.
+
+The first repository-transfer slice allows a repository owner or delegated repository transfer maintainer to move a repository into an organization they already administer. This supports personal-to-organization handoff and organization-to-organization transfer when the authenticated actor controls both sides. Existing repository-scoped team grants are revoked during the move, while package ownership intentionally remains unchanged.
 
 The first package-transfer slice allows a package owner to move a package into an organization they already administer. This supports personal-to-organization handoff and organization-to-organization transfer when the authenticated actor controls both sides. Direct transfer to another user account is intentionally deferred until an acceptance-based flow exists.
 
@@ -237,6 +240,8 @@ These grants are stored in PostgreSQL, enforced by the management API, and autom
 Organization administrators can also delegate repository-scoped responsibilities to teams for organization-owned repositories.
 Repository-wide grants use the same permission vocabulary, apply across current and future packages in the selected repository, and the `admin` permission additionally allows repository configuration changes.
 These repository grants are stored in PostgreSQL, enforced by the management API, and automatically cleared when the team or repository is removed.
+Repository ownership can be transferred through `POST /v1/repositories/:slug/ownership-transfer` when the caller has `repositories:transfer`, currently controls the source repository, and is also an owner/admin in the target organization.
+Cross-organization repository transfers revoke any repository-scoped team grants tied to the previous owner organization, but they do not automatically re-home packages that already belong to the repository.
 The organization workspace also includes an aggregated security overview backed by `GET /v1/orgs/:slug/security-findings`, scoped to the packages currently visible to the requesting actor.
 That endpoint and `GET /v1/orgs/:slug/security-findings/export` both accept the same unresolved-finding filters: repeated or comma-separated `severity` values, a single `ecosystem`, and a package-name substring through `package`.
 The CSV export applies the same filters as the JSON view and remains visibility-aware, so anonymous actors only receive public package rows while organization members can export the broader package set they are allowed to see.
@@ -257,6 +262,7 @@ GET    /v1/namespaces/lookup?ecosystem=<eco>&namespace=<claim>
 POST   /v1/repositories
 GET    /v1/repositories/:slug
 PATCH  /v1/repositories/:slug
+POST   /v1/repositories/:slug/ownership-transfer
 GET    /v1/repositories/:slug/packages
 ```
 

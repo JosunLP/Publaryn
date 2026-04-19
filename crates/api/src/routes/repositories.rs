@@ -18,10 +18,13 @@ use crate::{
     error::{ApiError, ApiResult},
     request_auth::{
         actor_can_create_packages_in_repository_by_id, actor_can_manage_repository_by_id,
-        ensure_org_admin_by_id, ensure_repository_admin_access, ensure_repository_read_access,
-        AuthenticatedIdentity, OptionalAuthenticatedIdentity,
+        actor_can_transfer_repository_by_id, ensure_org_admin_by_id,
+        ensure_repository_admin_access, ensure_repository_read_access,
+        ensure_repository_transfer_access, AuthenticatedIdentity, OptionalAuthenticatedIdentity,
     },
-    scopes::{ensure_scope, SCOPE_PACKAGES_WRITE, SCOPE_REPOSITORIES_WRITE},
+    scopes::{
+        ensure_scope, SCOPE_PACKAGES_WRITE, SCOPE_REPOSITORIES_TRANSFER, SCOPE_REPOSITORIES_WRITE,
+    },
     state::AppState,
 };
 
@@ -30,6 +33,10 @@ pub fn router() -> Router<AppState> {
         .route("/v1/repositories", post(create_repository))
         .route("/v1/repositories/{slug}", get(get_repository))
         .route("/v1/repositories/{slug}", patch(update_repository))
+        .route(
+            "/v1/repositories/{slug}/ownership-transfer",
+            post(transfer_repository_ownership),
+        )
         .route(
             "/v1/repositories/{slug}/packages",
             get(list_repository_packages),
@@ -59,6 +66,24 @@ struct UpdateRepositoryRequest {
 struct PackageListQuery {
     page: Option<u32>,
     per_page: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TransferRepositoryOwnershipRequest {
+    target_org_slug: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RepositoryOwner {
+    User(Uuid),
+    Organization(Uuid),
+}
+
+#[derive(Debug, Clone)]
+struct TargetOrganization {
+    id: Uuid,
+    slug: String,
+    name: String,
 }
 
 async fn can_manage_repository(
@@ -93,6 +118,24 @@ async fn can_create_packages_in_repository(
         {
             actor_can_create_packages_in_repository_by_id(db, repository_id, Some(identity.user_id))
                 .await
+        }
+        _ => Ok(false),
+    }
+}
+
+async fn can_transfer_repository(
+    db: &sqlx::PgPool,
+    repository_id: Uuid,
+    identity: &OptionalAuthenticatedIdentity,
+) -> ApiResult<bool> {
+    match identity.0.as_ref() {
+        Some(identity)
+            if identity
+                .scopes()
+                .iter()
+                .any(|scope| scope == SCOPE_REPOSITORIES_TRANSFER) =>
+        {
+            actor_can_transfer_repository_by_id(db, repository_id, Some(identity.user_id)).await
         }
         _ => Ok(false),
     }
@@ -181,6 +224,7 @@ async fn get_repository(
     let can_manage = can_manage_repository(&state.db, access.repository_id, &identity).await?;
     let can_create_packages =
         can_create_packages_in_repository(&state.db, access.repository_id, &identity).await?;
+    let can_transfer = can_transfer_repository(&state.db, access.repository_id, &identity).await?;
 
     let row = sqlx::query(
         "SELECT r.id, r.name, r.slug, r.description, r.kind::text AS kind, r.visibility::text AS visibility, r.owner_user_id, r.owner_org_id, \
@@ -210,6 +254,7 @@ async fn get_repository(
         "owner_org_name": row.try_get::<Option<String>, _>("owner_org_name").ok().flatten(),
         "can_manage": can_manage,
         "can_create_packages": can_create_packages,
+        "can_transfer": can_transfer,
         "upstream_url": row.try_get::<Option<String>, _>("upstream_url").ok().flatten(),
         "created_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at").ok(),
         "updated_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("updated_at").ok(),
@@ -248,6 +293,192 @@ async fn update_repository(
     .map_err(|e| ApiError(Error::Database(e)))?;
 
     Ok(Json(serde_json::json!({ "message": "Repository updated" })))
+}
+
+async fn transfer_repository_ownership(
+    State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
+    Path(slug): Path<String>,
+    Json(body): Json<TransferRepositoryOwnershipRequest>,
+) -> ApiResult<Json<serde_json::Value>> {
+    ensure_scope(&identity, SCOPE_REPOSITORIES_TRANSFER)?;
+    validation::validate_slug(&body.target_org_slug).map_err(ApiError::from)?;
+
+    ensure_repository_transfer_access(&state.db, &slug, identity.user_id).await?;
+
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let repository_row = sqlx::query(
+        "SELECT id, name, slug, kind::text AS kind, visibility::text AS visibility, owner_user_id, owner_org_id \
+         FROM repositories \
+         WHERE slug = $1 \
+         FOR UPDATE",
+    )
+    .bind(&slug)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?
+    .ok_or_else(|| ApiError(Error::NotFound(format!("Repository '{slug}' not found"))))?;
+
+    let repository_id: Uuid = repository_row
+        .try_get("id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let repository_name: String = repository_row
+        .try_get("name")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let repository_slug: String = repository_row
+        .try_get("slug")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let repository_kind: String = repository_row
+        .try_get("kind")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let repository_visibility: String = repository_row
+        .try_get("visibility")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let current_owner = repository_owner_from_fields(
+        repository_row
+            .try_get::<Option<Uuid>, _>("owner_user_id")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        repository_row
+            .try_get::<Option<Uuid>, _>("owner_org_id")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+    )?;
+
+    let target_org_row = sqlx::query(
+        "SELECT id, slug, name \
+         FROM organizations \
+         WHERE slug = $1",
+    )
+    .bind(&body.target_org_slug)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?
+    .ok_or_else(|| {
+        ApiError(Error::NotFound(format!(
+            "Organization '{}' not found",
+            body.target_org_slug
+        )))
+    })?;
+
+    let target_org = TargetOrganization {
+        id: target_org_row
+            .try_get("id")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        slug: target_org_row
+            .try_get("slug")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        name: target_org_row
+            .try_get("name")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+    };
+
+    let actor_controls_target = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (\
+             SELECT 1 \
+             FROM org_memberships \
+             WHERE org_id = $1 AND user_id = $2 AND role::text = ANY($3)\
+         )",
+    )
+    .bind(target_org.id)
+    .bind(identity.user_id)
+    .bind(vec!["owner".to_owned(), "admin".to_owned()])
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    if !actor_controls_target {
+        return Err(ApiError(Error::Forbidden(
+            "Transferring a repository into an organization requires owner or admin membership in the target organization".into(),
+        )));
+    }
+
+    validate_repository_transfer_target(&current_owner, target_org.id)?;
+
+    let revoked_team_grants: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::BIGINT \
+         FROM team_repository_access \
+         WHERE repository_id = $1",
+    )
+    .bind(repository_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    sqlx::query("DELETE FROM team_repository_access WHERE repository_id = $1")
+        .bind(repository_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    sqlx::query(
+        "UPDATE repositories \
+         SET owner_user_id = NULL, \
+             owner_org_id = $1, \
+             updated_at = NOW() \
+         WHERE id = $2",
+    )
+    .bind(target_org.id)
+    .bind(repository_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let (previous_owner_type, previous_owner_user_id, previous_owner_org_id) = match current_owner {
+        RepositoryOwner::User(user_id) => ("user", Some(user_id), None),
+        RepositoryOwner::Organization(org_id) => ("organization", None, Some(org_id)),
+    };
+
+    sqlx::query(
+        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_org_id, metadata, occurred_at) \
+         VALUES ($1, 'repository_transfer', $2, $3, $4, $5, NOW())",
+    )
+    .bind(Uuid::new_v4())
+    .bind(identity.user_id)
+    .bind(identity.audit_actor_token_id())
+    .bind(target_org.id)
+    .bind(serde_json::json!({
+        "repository_id": repository_id,
+        "repository_name": repository_name,
+        "repository_slug": repository_slug,
+        "repository_kind": repository_kind,
+        "repository_visibility": repository_visibility,
+        "previous_owner_type": previous_owner_type,
+        "previous_owner_user_id": previous_owner_user_id,
+        "previous_owner_org_id": previous_owner_org_id,
+        "new_owner_type": "organization",
+        "new_owner_org_id": target_org.id,
+        "new_owner_org_slug": target_org.slug,
+        "new_owner_org_name": target_org.name,
+        "revoked_team_grants": revoked_team_grants,
+    }))
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    Ok(Json(serde_json::json!({
+        "message": "Repository ownership transferred",
+        "repository": {
+            "id": repository_id,
+            "name": repository_name,
+            "slug": repository_slug,
+            "kind": repository_kind,
+            "visibility": repository_visibility,
+        },
+        "owner": {
+            "type": "organization",
+            "id": target_org.id,
+            "slug": target_org.slug,
+            "name": target_org.name,
+        },
+    })))
 }
 
 async fn list_repository_packages(
@@ -292,6 +523,36 @@ async fn list_repository_packages(
         .collect();
 
     Ok(Json(serde_json::json!({ "packages": packages })))
+}
+
+fn repository_owner_from_fields(
+    owner_user_id: Option<Uuid>,
+    owner_org_id: Option<Uuid>,
+) -> ApiResult<RepositoryOwner> {
+    match (owner_user_id, owner_org_id) {
+        (Some(user_id), None) => Ok(RepositoryOwner::User(user_id)),
+        (None, Some(org_id)) => Ok(RepositoryOwner::Organization(org_id)),
+        (None, None) => Err(ApiError(Error::Internal(
+            "Repository owner is not set".into(),
+        ))),
+        (Some(_), Some(_)) => Err(ApiError(Error::Internal(
+            "Repository owner state is invalid".into(),
+        ))),
+    }
+}
+
+fn validate_repository_transfer_target(
+    current_owner: &RepositoryOwner,
+    target_org_id: Uuid,
+) -> ApiResult<()> {
+    if matches!(current_owner, RepositoryOwner::Organization(current_org_id) if *current_org_id == target_org_id)
+    {
+        return Err(ApiError(Error::Conflict(
+            "The selected organization already owns this repository".into(),
+        )));
+    }
+
+    Ok(())
 }
 
 fn parse_repository_kind(input: &str) -> ApiResult<RepositoryKind> {

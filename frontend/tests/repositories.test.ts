@@ -9,6 +9,8 @@ import {
   REPOSITORY_KIND_OPTIONS,
   REPOSITORY_VISIBILITY_OPTIONS,
   resolveRepositoryOwnerSummary,
+  selectRepositoryTransferTargets,
+  selectTransferableRepositories,
 } from '../src/utils/repositories';
 
 describe('repository option helpers', () => {
@@ -69,6 +71,40 @@ describe('repository option helpers', () => {
       label: 'Unknown owner',
       href: null,
     });
+  });
+
+  test('filters repository transfer targets to admin roles outside the current owner organization', () => {
+    const targets = selectRepositoryTransferTargets(
+      [
+        { slug: 'viewer-org', name: 'Viewer Org', role: 'viewer' },
+        { slug: 'target-b', name: 'Zulu Org', role: 'owner' },
+        { slug: 'source-org', name: 'Source Org', role: 'admin' },
+        { slug: 'target-a', name: 'Alpha Org', role: 'admin' },
+        { slug: null, name: 'Missing slug', role: 'owner' },
+      ],
+      'source-org'
+    );
+
+    expect(targets).toEqual([
+      { slug: 'target-a', name: 'Alpha Org', role: 'admin' },
+      { slug: 'target-b', name: 'Zulu Org', role: 'owner' },
+    ]);
+  });
+
+  test('keeps only transferable repositories and sorts them by display label', () => {
+    const repositories = selectTransferableRepositories([
+      { slug: 'zeta-registry', name: 'Zulu Registry', can_transfer: true },
+      { slug: 'alpha-registry', name: 'Alpha Registry', can_transfer: true },
+      { slug: 'source-registry', name: 'Source Registry', can_transfer: false },
+      { slug: '', name: 'Missing slug', can_transfer: true },
+      { slug: 'beta-registry', name: null, can_transfer: true },
+    ]);
+
+    expect(repositories).toEqual([
+      { slug: 'alpha-registry', name: 'Alpha Registry', can_transfer: true },
+      { slug: 'beta-registry', name: null, can_transfer: true },
+      { slug: 'zeta-registry', name: 'Zulu Registry', can_transfer: true },
+    ]);
   });
 
   test('exposes the supported option sets', () => {

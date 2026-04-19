@@ -929,6 +929,31 @@ async fn transfer_package_ownership(
     (status, body)
 }
 
+/// Transfer repository ownership and return the response.
+async fn transfer_repository_ownership(
+    app: &axum::Router,
+    jwt: &str,
+    repository_slug: &str,
+    target_org_slug: &str,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri(format!(
+            "/v1/repositories/{repository_slug}/ownership-transfer"
+        ))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::from(
+            json!({ "target_org_slug": target_org_slug }).to_string(),
+        ))
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
 /// Archive a package via `DELETE /v1/packages/{ecosystem}/{name}` and return the response.
 async fn delete_package_for_ecosystem(
     app: &axum::Router,
@@ -6604,6 +6629,379 @@ async fn test_team_repository_access_rows_cascade_on_repository_delete(pool: PgP
     .await
     .expect("team repository access count after repository delete");
     assert_eq!(access_rows_after_delete, 0);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_org_repository_list_surfaces_transfer_capability(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &alice_jwt, "Acme Org", "acme-org").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id = org_body["id"].as_str().expect("org id should be returned");
+
+    let (status, repository_body) = create_repository(
+        &app,
+        &alice_jwt,
+        "Acme Packages",
+        "acme-packages",
+        Some(org_id),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, owner_body) = list_org_repositories(&app, Some(&alice_jwt), "acme-org").await;
+    assert_eq!(status, StatusCode::OK);
+    let owner_repositories = owner_body["repositories"]
+        .as_array()
+        .expect("owner repositories response should be an array");
+    assert_eq!(owner_repositories.len(), 1);
+    assert_eq!(owner_repositories[0]["slug"], "acme-packages");
+    assert_eq!(owner_repositories[0]["can_transfer"], true);
+
+    let (status, anonymous_body) = list_org_repositories(&app, None, "acme-org").await;
+    assert_eq!(status, StatusCode::OK);
+    let anonymous_repositories = anonymous_body["repositories"]
+        .as_array()
+        .expect("anonymous repositories response should be an array");
+    assert_eq!(anonymous_repositories.len(), 1);
+    assert_eq!(anonymous_repositories[0]["slug"], "acme-packages");
+    assert_eq!(anonymous_repositories[0]["can_transfer"], false);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_repository_ownership_transfer_success_clears_team_access_and_updates_org_views(
+    pool: PgPool,
+) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, source_org_body) = create_org(&app, &alice_jwt, "Source Org", "source-org").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let source_org_id = source_org_body["id"].as_str().expect("source org id");
+    let source_org_uuid =
+        uuid::Uuid::parse_str(source_org_id).expect("source org id should parse as UUID");
+
+    let (status, target_org_body) = create_org(&app, &alice_jwt, "Target Org", "target-org").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let target_org_id = target_org_body["id"].as_str().expect("target org id");
+    let target_org_uuid =
+        uuid::Uuid::parse_str(target_org_id).expect("target org id should parse as UUID");
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Source Packages",
+        "source-packages",
+        Some(source_org_id),
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+    let repository_id = uuid::Uuid::parse_str(
+        repository_body["id"]
+            .as_str()
+            .expect("repository id should be returned"),
+    )
+    .expect("repository id should parse as UUID");
+
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "Release Engineering",
+        "release-engineering",
+        Some("Owns temporary repository-scoped grants."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, grant_body) = grant_team_repository_access(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "release-engineering",
+        "source-packages",
+        &["publish", "write_metadata"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team repository access response: {grant_body}"
+    );
+
+    let team_grants_before_transfer: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::BIGINT FROM team_repository_access WHERE repository_id = $1",
+    )
+    .bind(repository_id)
+    .fetch_one(&pool)
+    .await
+    .expect("team repository access count before transfer");
+    assert_eq!(team_grants_before_transfer, 2);
+
+    let (status, detail_before_transfer) =
+        get_repository_detail(&app, Some(&alice_jwt), "source-packages").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail_before_transfer["owner_org_slug"], "source-org");
+    assert_eq!(detail_before_transfer["can_transfer"], true);
+
+    let (status, transfer_body) =
+        transfer_repository_ownership(&app, &alice_jwt, "source-packages", "target-org").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected repository transfer response: {transfer_body}"
+    );
+    assert_eq!(transfer_body["message"], "Repository ownership transferred");
+    assert_eq!(transfer_body["owner"]["slug"], "target-org");
+
+    let team_grants_after_transfer: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::BIGINT FROM team_repository_access WHERE repository_id = $1",
+    )
+    .bind(repository_id)
+    .fetch_one(&pool)
+    .await
+    .expect("team repository access count after transfer");
+    assert_eq!(team_grants_after_transfer, 0);
+
+    let (status, detail_after_transfer) =
+        get_repository_detail(&app, Some(&alice_jwt), "source-packages").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail_after_transfer["owner_org_slug"], "target-org");
+    assert_eq!(detail_after_transfer["can_transfer"], true);
+
+    let (status, source_org_repositories) =
+        list_org_repositories(&app, Some(&alice_jwt), "source-org").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        source_org_repositories["repositories"]
+            .as_array()
+            .expect("source org repositories response should be an array")
+            .len(),
+        0
+    );
+
+    let (status, target_org_repositories) =
+        list_org_repositories(&app, Some(&alice_jwt), "target-org").await;
+    assert_eq!(status, StatusCode::OK);
+    let target_repositories = target_org_repositories["repositories"]
+        .as_array()
+        .expect("target org repositories response should be an array");
+    assert_eq!(target_repositories.len(), 1);
+    assert_eq!(target_repositories[0]["slug"], "source-packages");
+    assert_eq!(target_repositories[0]["can_transfer"], true);
+
+    let audit_row = sqlx::query(
+        "SELECT target_org_id, metadata \
+         FROM audit_logs \
+         WHERE action = 'repository_transfer'::audit_action \
+         ORDER BY occurred_at DESC \
+         LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("repository transfer audit row should exist");
+    let audit_target_org_id: Option<uuid::Uuid> = audit_row
+        .try_get("target_org_id")
+        .expect("audit target org id should be readable");
+    let audit_metadata: Value = audit_row
+        .try_get("metadata")
+        .expect("audit metadata should be readable");
+
+    assert_eq!(audit_target_org_id, Some(target_org_uuid));
+    assert_eq!(audit_metadata["repository_id"], json!(repository_id));
+    assert_eq!(audit_metadata["repository_slug"], "source-packages");
+    assert_eq!(
+        audit_metadata["previous_owner_org_id"],
+        json!(source_org_uuid)
+    );
+    assert_eq!(audit_metadata["new_owner_org_id"], json!(target_org_uuid));
+    assert_eq!(audit_metadata["new_owner_org_slug"], "target-org");
+    assert_eq!(audit_metadata["revoked_team_grants"], 2);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_repository_ownership_transfer_requires_source_transfer_access(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+
+    let (status, repository_body) =
+        create_repository(&app, &alice_jwt, "Alice Packages", "alice-packages", None).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, _) = create_org(&app, &bob_jwt, "Bob Org", "bob-org").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, detail_before_transfer) =
+        get_repository_detail(&app, Some(&bob_jwt), "alice-packages").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail_before_transfer["owner_username"], "alice");
+    assert_eq!(detail_before_transfer["can_transfer"], false);
+
+    let (status, transfer_body) =
+        transfer_repository_ownership(&app, &bob_jwt, "alice-packages", "bob-org").await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(transfer_body["error"]
+        .as_str()
+        .expect("error should be present")
+        .contains("transfer ownership"));
+
+    let (status, detail_after_transfer) =
+        get_repository_detail(&app, Some(&alice_jwt), "alice-packages").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail_after_transfer["owner_username"], "alice");
+    assert_eq!(detail_after_transfer["owner_org_slug"], Value::Null);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_repository_ownership_transfer_requires_target_org_admin_membership(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+
+    let (status, _) = create_org(&app, &bob_jwt, "Bob Org", "bob-org").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, repository_body) =
+        create_repository(&app, &alice_jwt, "Alice Packages", "alice-packages", None).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, detail_before_transfer) =
+        get_repository_detail(&app, Some(&alice_jwt), "alice-packages").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail_before_transfer["owner_username"], "alice");
+    assert_eq!(detail_before_transfer["can_transfer"], true);
+
+    let (status, transfer_body) =
+        transfer_repository_ownership(&app, &alice_jwt, "alice-packages", "bob-org").await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(transfer_body["error"]
+        .as_str()
+        .expect("error should be present")
+        .contains("target organization"));
+
+    let (status, detail_after_transfer) =
+        get_repository_detail(&app, Some(&alice_jwt), "alice-packages").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail_after_transfer["owner_username"], "alice");
+    assert_eq!(detail_after_transfer["owner_org_slug"], Value::Null);
+    assert_eq!(detail_after_transfer["can_transfer"], true);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_team_repository_transfer_permission_allows_repository_transfer(pool: PgPool) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+
+    let (status, source_org_body) = create_org(&app, &alice_jwt, "Source Org", "source-org").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let source_org_id = source_org_body["id"].as_str().expect("source org id");
+
+    let (status, _) = create_org(&app, &bob_jwt, "Target Org", "target-org").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Source Packages",
+        "source-packages",
+        Some(source_org_id),
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, _) = add_org_member(&app, &alice_jwt, "source-org", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "Transfer Team",
+        "transfer-team",
+        Some("Can transfer repository ownership into controlled organizations."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) =
+        add_team_member_to_team(&app, &alice_jwt, "source-org", "transfer-team", "bob").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, detail_before_grant) =
+        get_repository_detail(&app, Some(&bob_jwt), "source-packages").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail_before_grant["can_transfer"], false);
+
+    let (status, grant_body) = grant_team_repository_access(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "transfer-team",
+        "source-packages",
+        &["transfer_ownership"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team repository access response: {grant_body}"
+    );
+
+    let (status, detail_after_grant) =
+        get_repository_detail(&app, Some(&bob_jwt), "source-packages").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail_after_grant["can_transfer"], true);
+
+    let (status, transfer_body) =
+        transfer_repository_ownership(&app, &bob_jwt, "source-packages", "target-org").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected repository transfer response: {transfer_body}"
+    );
+    assert_eq!(transfer_body["message"], "Repository ownership transferred");
+    assert_eq!(transfer_body["owner"]["slug"], "target-org");
+
+    let (status, detail_after_transfer) =
+        get_repository_detail(&app, Some(&bob_jwt), "source-packages").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail_after_transfer["owner_org_slug"], "target-org");
+    assert_eq!(detail_after_transfer["can_transfer"], true);
 }
 
 #[sqlx::test(migrations = "../../migrations")]

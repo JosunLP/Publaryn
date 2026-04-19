@@ -81,6 +81,7 @@
   import {
     createRepository,
     listRepositoryPackages,
+    transferRepositoryOwnership,
     updateRepository,
   } from '../../../api/repositories';
   import type { OrgAuditActorOption } from '../../../pages/org-audit-actors';
@@ -140,6 +141,8 @@
     formatRepositoryKindLabel,
     formatRepositoryPackageCoverageLabel,
     formatRepositoryVisibilityLabel,
+    selectRepositoryTransferTargets,
+    selectTransferableRepositories,
   } from '../../../utils/repositories';
   import {
     SECURITY_SEVERITIES,
@@ -265,6 +268,7 @@
   let packages: OrgPackageSummary[] = [];
   let packagesError: string | null = null;
   let packageTransferTargets: OrganizationMembership[] = [];
+  let repositoryTransferTargets: OrganizationMembership[] = [];
   let securitySummary: OrgSecuritySummary | null = null;
   let securityPackages: OrgSecurityPackageSummary[] = [];
   let securityError: string | null = null;
@@ -354,6 +358,7 @@
   }
 
   $: transferablePackages = selectTransferablePackages(packages);
+  $: transferableRepositories = selectTransferableRepositories(repositories);
   $: {
     const { active, history } = partitionOrgInvitations(invitations);
     activeInvitations = active;
@@ -535,6 +540,10 @@
       securityPackages = securityData.packages || [];
       securityError = securityData.load_error || null;
       packageTransferTargets = selectPackageTransferTargets(
+        myOrganizationsData.organizations,
+        slug
+      );
+      repositoryTransferTargets = selectRepositoryTransferTargets(
         myOrganizationsData.organizations,
         slug
       );
@@ -1593,6 +1602,53 @@
     } catch (caughtError: unknown) {
       await loadOrganizationPage({
         error: toErrorMessage(caughtError, 'Failed to update repository.'),
+      });
+    }
+  }
+
+  async function handleRepositoryTransfer(event: SubmitEvent): Promise<void> {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget as HTMLFormElement);
+    const repositorySlug =
+      formData.get('repository_slug')?.toString().trim() || '';
+    const targetOrgSlug =
+      formData.get('target_org_slug')?.toString().trim() || '';
+
+    if (!repositorySlug) {
+      await loadOrganizationPage({
+        error: 'Select a repository to transfer.',
+      });
+      return;
+    }
+
+    if (!targetOrgSlug) {
+      await loadOrganizationPage({
+        error: 'Select a target organization.',
+      });
+      return;
+    }
+
+    if (!formData.get('confirm')) {
+      await loadOrganizationPage({
+        error: 'Please confirm the repository transfer.',
+      });
+      return;
+    }
+
+    try {
+      const result = await transferRepositoryOwnership(repositorySlug, {
+        targetOrgSlug,
+      });
+
+      await loadOrganizationPage({
+        notice: `Transferred ${result.repository?.name || result.repository?.slug || repositorySlug} to ${result.owner?.name || result.owner?.slug || targetOrgSlug}.`,
+      });
+    } catch (caughtError: unknown) {
+      await loadOrganizationPage({
+        error: toErrorMessage(
+          caughtError,
+          'Failed to transfer repository ownership.'
+        ),
       });
     }
   }
@@ -3390,6 +3446,86 @@
                 {/if}
               </div>
             {/each}
+          </div>
+        {/if}
+
+        {#if canAdminister}
+          <div class="settings-subsection">
+            <h3>Transfer repository ownership</h3>
+            {#if repositoriesError}
+              <p class="settings-copy">
+                Repositories must load successfully before you can transfer one.
+              </p>
+            {:else if transferableRepositories.length === 0}
+              <p class="settings-copy">
+                No visible repositories are currently transferable with this
+                credential.
+              </p>
+            {:else if repositoryTransferTargets.length === 0}
+              <p class="settings-copy">
+                You do not administer another organization that can receive one
+                of these repositories.
+              </p>
+            {:else}
+              <div class="alert alert-warning" style="margin-bottom:12px;">
+                This transfer is immediate and revokes existing team grants on
+                the repository.
+              </div>
+              <form on:submit={handleRepositoryTransfer}>
+                <div class="grid gap-4 xl:grid-cols-2">
+                  <div class="form-group">
+                    <label for="org-repository-transfer-repository"
+                      >Organization repository</label
+                    >
+                    <select
+                      id="org-repository-transfer-repository"
+                      name="repository_slug"
+                      class="form-input"
+                      required
+                    >
+                      <option value="">Select a repository</option>
+                      {#each transferableRepositories as repository}
+                        <option value={repository.slug || ''}
+                          >{`${repository.name || repository.slug || ''} · ${formatRepositoryKindLabel(repository.kind)} · ${formatRepositoryVisibilityLabel(repository.visibility)}`}</option
+                        >
+                      {/each}
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label for="org-repository-transfer-target"
+                      >Target organization</label
+                    >
+                    <select
+                      id="org-repository-transfer-target"
+                      name="target_org_slug"
+                      class="form-input"
+                      required
+                    >
+                      <option value="">Select an organization</option>
+                      {#each repositoryTransferTargets as target}
+                        <option value={target.slug || ''}
+                          >{target.name ||
+                            target.slug ||
+                            'Unnamed organization'}</option
+                        >
+                      {/each}
+                    </select>
+                  </div>
+                </div>
+                <div class="form-group" style="margin-bottom:12px;">
+                  <label class="flex items-start gap-2">
+                    <input type="checkbox" name="confirm" required />
+                    <span
+                      >I understand this repository transfer is immediate and
+                      existing team grants will be removed.</span
+                    >
+                  </label>
+                </div>
+                <button type="submit" class="btn btn-danger"
+                  >Transfer repository</button
+                >
+              </form>
+            {/if}
           </div>
         {/if}
 

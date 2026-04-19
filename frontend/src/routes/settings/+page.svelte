@@ -37,6 +37,7 @@
     'orgs:transfer',
     'namespaces:write',
     'repositories:write',
+    'repositories:transfer',
     'packages:write',
     'packages:transfer',
     'audit:read',

@@ -17,6 +17,7 @@ export interface RepositoryDetail {
   owner_org_name?: NullableString;
   can_manage?: boolean | null;
   can_create_packages?: boolean | null;
+  can_transfer?: boolean | null;
   created_at?: NullableString;
   updated_at?: NullableString;
 }
@@ -57,6 +58,23 @@ export interface UpdateRepositoryInput {
   upstreamUrl?: string | null;
 }
 
+export interface RepositoryTransferOwnershipResult {
+  message?: NullableString;
+  repository?: {
+    id?: NullableString;
+    name?: NullableString;
+    slug?: NullableString;
+    kind?: NullableString;
+    visibility?: NullableString;
+  } | null;
+  owner?: {
+    type?: NullableString;
+    id?: NullableString;
+    slug?: NullableString;
+    name?: NullableString;
+  } | null;
+}
+
 export async function createRepository(
   input: CreateRepositoryInput
 ): Promise<RepositoryDetail> {
@@ -94,6 +112,22 @@ export async function updateRepository(
         description: updates.description,
         visibility: updates.visibility,
         upstream_url: updates.upstreamUrl,
+      },
+    }
+  );
+
+  return data;
+}
+
+export async function transferRepositoryOwnership(
+  slug: string,
+  { targetOrgSlug }: { targetOrgSlug: string }
+): Promise<RepositoryTransferOwnershipResult> {
+  const { data } = await api.post<RepositoryTransferOwnershipResult>(
+    `/v1/repositories/${encodeURIComponent(slug)}/ownership-transfer`,
+    {
+      body: {
+        target_org_slug: targetOrgSlug,
       },
     }
   );

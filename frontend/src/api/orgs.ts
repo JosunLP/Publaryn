@@ -146,6 +146,7 @@ export interface OrgRepositorySummary {
   upstream_url?: NullableString;
   package_count?: number | null;
   created_at?: NullableString;
+  can_transfer?: boolean | null;
 }
 
 export interface OrgRepositoryListResponse {
