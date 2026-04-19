@@ -185,6 +185,12 @@ export interface OrgSecurityFindingsResponse {
   load_error?: NullableString;
 }
 
+export interface OrgSecurityQuery {
+  severities?: string[];
+  ecosystem?: string;
+  package?: string;
+}
+
 export interface OrgAuditLog {
   id?: NullableString;
   action?: NullableString;
@@ -660,10 +666,45 @@ export async function listOrgRepositories(
 }
 
 export async function listOrgSecurityFindings(
-  slug: string
+  slug: string,
+  query: OrgSecurityQuery = {}
 ): Promise<OrgSecurityFindingsResponse> {
   const { data } = await api.get<OrgSecurityFindingsResponse>(
-    `/v1/orgs/${enc(slug)}/security-findings`
+    `/v1/orgs/${enc(slug)}/security-findings`,
+    {
+      query: {
+        severity:
+          query.severities && query.severities.length > 0
+            ? query.severities.join(',')
+            : undefined,
+        ecosystem: query.ecosystem,
+        package: query.package,
+      },
+    }
+  );
+
+  return data;
+}
+
+export async function exportOrgSecurityFindingsCsv(
+  slug: string,
+  query: OrgSecurityQuery = {}
+): Promise<string> {
+  const { data } = await api.get<string>(
+    `/v1/orgs/${enc(slug)}/security-findings/export`,
+    {
+      headers: {
+        Accept: 'text/csv',
+      },
+      query: {
+        severity:
+          query.severities && query.severities.length > 0
+            ? query.severities.join(',')
+            : undefined,
+        ecosystem: query.ecosystem,
+        package: query.package,
+      },
+    }
   );
 
   return data;

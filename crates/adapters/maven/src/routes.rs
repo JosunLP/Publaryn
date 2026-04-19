@@ -516,16 +516,13 @@ async fn auto_create_package<S: MavenAppState>(
         }
     };
 
-    if let Err(response) = validate_namespace_claim_for_group_id(
+    validate_namespace_claim_for_group_id(
         state.db(),
         &upload.group_id,
         repository.owner_user_id,
         repository.owner_org_id,
     )
-    .await
-    {
-        return Err(response);
-    }
+    .await?;
 
     let package_id = Uuid::new_v4();
     let now = Utc::now();

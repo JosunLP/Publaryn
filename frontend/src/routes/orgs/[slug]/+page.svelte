@@ -24,6 +24,7 @@
     OrgRepositorySummary,
     OrgSecurityFindingsResponse,
     OrgSecurityPackageSummary,
+    OrgSecurityQuery,
     OrgSecuritySummary,
     OrganizationDetail,
     OrganizationListResponse,
@@ -43,6 +44,7 @@
     createTeam,
     deleteTeam,
     exportOrgAuditLogsCsv,
+    exportOrgSecurityFindingsCsv,
     getOrg,
     listMembers,
     listMyOrganizations,
@@ -114,6 +116,11 @@
     buildOrgMemberPickerOptions,
     resolveOrgMemberPickerInput,
   } from '../../../pages/org-member-picker';
+  import {
+    buildOrgSecurityExportFilename,
+    buildOrgSecurityPath,
+    getOrgSecurityViewFromQuery,
+  } from '../../../pages/org-security-query';
   import { canViewOrgPeopleWorkspace } from '../../../pages/org-workspace-access';
   import { buildPackageDetailPath } from '../../../pages/package-detail-tabs';
   import { ECOSYSTEMS, ecosystemLabel } from '../../../utils/ecosystem';
@@ -189,6 +196,16 @@
       description: 'Transfer a package to another owner.',
     },
   ] as const;
+  const SECURITY_FILTER_ECOSYSTEM_OPTIONS = [
+    { value: 'npm', label: 'npm / Bun' },
+    { value: 'pypi', label: 'PyPI' },
+    { value: 'cargo', label: 'Cargo' },
+    { value: 'nuget', label: 'NuGet' },
+    { value: 'rubygems', label: 'RubyGems' },
+    { value: 'maven', label: 'Maven' },
+    { value: 'composer', label: 'Composer' },
+    { value: 'oci', label: 'OCI / Docker' },
+  ] as const;
 
   interface TeamMemberState {
     members: TeamMember[];
@@ -251,6 +268,7 @@
   let securitySummary: OrgSecuritySummary | null = null;
   let securityPackages: OrgSecurityPackageSummary[] = [];
   let securityError: string | null = null;
+  let exportingSecurity = false;
   let auditLogs: OrgAuditLog[] = [];
   let auditError: string | null = null;
   let auditHasNext = false;
@@ -291,6 +309,7 @@
   );
   $: ownershipMemberOptions = buildOrgMemberPickerOptions(transferCandidates);
   $: auditView = getAuditViewFromQuery($page.url.searchParams);
+  $: securityView = getOrgSecurityViewFromQuery($page.url.searchParams);
   $: loadKey = `${slug}|${$page.url.search}`;
   $: if (slug && loadKey !== lastLoadKey) {
     lastLoadKey = loadKey;
@@ -396,6 +415,10 @@
     Number.isFinite(securitySummary.affected_packages)
       ? Math.max(0, Math.trunc(securitySummary.affected_packages))
       : securityPackages.length;
+  $: hasSecurityFilters =
+    securityView.severities.length > 0 ||
+    Boolean(securityView.ecosystem) ||
+    Boolean(securityView.packageQuery);
   $: sortedSecurityPackages = [...securityPackages].sort((left, right) => {
     const leftSeverity = left.worst_severity
       ? normalizeSecuritySeverity(left.worst_severity)
@@ -445,6 +468,14 @@
     const resolvedAuditActorUserId = normalizeAuditActorUserId(
       auditView.actorUserId
     );
+    const securityQuery: OrgSecurityQuery = {
+      severities:
+        securityView.severities.length > 0
+          ? securityView.severities
+          : undefined,
+      ecosystem: securityView.ecosystem || undefined,
+      package: securityView.packageQuery || undefined,
+    };
 
     try {
       const [
@@ -470,7 +501,7 @@
             load_error: toErrorMessage(caughtError, 'Failed to load packages.'),
           })
         ),
-        listOrgSecurityFindings(slug).catch(
+        listOrgSecurityFindings(slug, securityQuery).catch(
           (caughtError: unknown): OrgSecurityFindingsResponse => ({
             summary: null,
             packages: [],
@@ -933,6 +964,107 @@
       });
     } finally {
       exportingAudit = false;
+    }
+  }
+
+  async function handleSecurityFilterSubmit(event: SubmitEvent): Promise<void> {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget as HTMLFormElement);
+    const severities = formData
+      .getAll('security_severity')
+      .map((value) => value.toString().trim())
+      .filter(Boolean);
+
+    await goto(
+      buildOrgSecurityPath(
+        slug,
+        {
+          severities,
+          ecosystem: formData.get('security_ecosystem')?.toString() || '',
+          packageQuery: formData.get('security_package')?.toString() || '',
+        },
+        $page.url.searchParams
+      )
+    );
+  }
+
+  async function clearSecuritySeverityFilter(): Promise<void> {
+    await goto(
+      buildOrgSecurityPath(
+        slug,
+        {
+          severities: [],
+          ecosystem: securityView.ecosystem,
+          packageQuery: securityView.packageQuery,
+        },
+        $page.url.searchParams
+      )
+    );
+  }
+
+  async function clearSecurityEcosystemFilter(): Promise<void> {
+    await goto(
+      buildOrgSecurityPath(
+        slug,
+        {
+          severities: securityView.severities,
+          ecosystem: '',
+          packageQuery: securityView.packageQuery,
+        },
+        $page.url.searchParams
+      )
+    );
+  }
+
+  async function clearSecurityPackageFilter(): Promise<void> {
+    await goto(
+      buildOrgSecurityPath(
+        slug,
+        {
+          severities: securityView.severities,
+          ecosystem: securityView.ecosystem,
+          packageQuery: '',
+        },
+        $page.url.searchParams
+      )
+    );
+  }
+
+  async function handleExportSecurity(): Promise<void> {
+    exportingSecurity = true;
+
+    try {
+      const csv = await exportOrgSecurityFindingsCsv(slug, {
+        severities:
+          securityView.severities.length > 0
+            ? securityView.severities
+            : undefined,
+        ecosystem: securityView.ecosystem || undefined,
+        package: securityView.packageQuery || undefined,
+      });
+
+      downloadTextFile(
+        buildOrgSecurityExportFilename(
+          slug,
+          {
+            severities: securityView.severities,
+            ecosystem: securityView.ecosystem,
+            packageQuery: securityView.packageQuery,
+          },
+          new Date()
+        ),
+        csv,
+        'text/csv;charset=utf-8'
+      );
+    } catch (caughtError: unknown) {
+      await loadOrganizationPage({
+        error: toErrorMessage(
+          caughtError,
+          'Failed to export security findings.'
+        ),
+      });
+    } finally {
+      exportingSecurity = false;
     }
   }
 
@@ -1660,6 +1792,26 @@
     return count === 1
       ? '1 open finding'
       : `${formatNumber(count)} open findings`;
+  }
+
+  function formatSecurityFilterSummary(): string {
+    const filters: string[] = [];
+
+    if (securityView.severities.length > 0) {
+      filters.push(
+        `severity ${securityView.severities.map(formatIdentifierLabel).join(', ')}`
+      );
+    }
+    if (securityView.ecosystem) {
+      filters.push(`${ecosystemLabel(securityView.ecosystem)} packages`);
+    }
+    if (securityView.packageQuery) {
+      filters.push(`package matching "${securityView.packageQuery}"`);
+    }
+
+    return filters.length > 0
+      ? `Showing unresolved findings filtered by ${filters.join(', ')}.`
+      : 'Showing unresolved findings across all visible packages.';
   }
 
   async function searchAuditActors(query: string): Promise<void> {
@@ -2837,15 +2989,126 @@
         </section>
 
         <section class="card settings-section">
-          <h2>Security overview</h2>
+          <div class="org-section-header">
+            <div>
+              <h2>Security overview</h2>
+              <p class="settings-copy">
+                Filter unresolved findings across the packages currently visible
+                to you and export the current rollup as CSV.
+              </p>
+            </div>
+          </div>
+          <form
+            class="settings-subsection"
+            on:submit={handleSecurityFilterSubmit}
+          >
+            <div class="flex flex-wrap items-end gap-4">
+              <fieldset
+                class="form-group"
+                style="margin-bottom:0; min-width:320px;"
+              >
+                <legend>Severity</legend>
+                <div class="token-row__scopes">
+                  {#each SECURITY_SEVERITIES as severity}
+                    <label class="badge badge-ecosystem">
+                      <input
+                        type="checkbox"
+                        name="security_severity"
+                        value={severity}
+                        checked={securityView.severities.includes(severity)}
+                        style="margin-right:0.35rem;"
+                      />
+                      {formatIdentifierLabel(severity)}
+                    </label>
+                  {/each}
+                </div>
+              </fieldset>
+              <div class="form-group" style="margin-bottom:0; min-width:220px;">
+                <label for="org-security-ecosystem">Ecosystem</label>
+                <select
+                  id="org-security-ecosystem"
+                  name="security_ecosystem"
+                  class="form-input"
+                  value={securityView.ecosystem}
+                >
+                  <option value="">All ecosystems</option>
+                  {#each SECURITY_FILTER_ECOSYSTEM_OPTIONS as ecosystem}
+                    <option
+                      value={ecosystem.value}
+                      selected={ecosystem.value === securityView.ecosystem}
+                      >{ecosystem.label}</option
+                    >
+                  {/each}
+                </select>
+              </div>
+              <div class="form-group" style="margin-bottom:0; min-width:260px;">
+                <label for="org-security-package">Package name</label>
+                <input
+                  id="org-security-package"
+                  name="security_package"
+                  class="form-input"
+                  list="org-security-package-options"
+                  value={securityView.packageQuery}
+                  placeholder="Match package name"
+                  autocomplete="off"
+                />
+                <datalist id="org-security-package-options">
+                  {#each [...packages].sort( (left, right) => `${left.ecosystem || ''}:${left.name || ''}`.localeCompare(`${right.ecosystem || ''}:${right.name || ''}`) ) as pkg}
+                    <option value={pkg.name || ''}
+                      >{`${pkg.ecosystem || ''} · ${pkg.name || ''}`}</option
+                    >
+                  {/each}
+                </datalist>
+              </div>
+              <button type="submit" class="btn btn-secondary">Apply</button>
+              <button
+                type="button"
+                class="btn btn-secondary"
+                disabled={exportingSecurity}
+                on:click={handleExportSecurity}
+              >
+                {exportingSecurity ? 'Exporting…' : 'Export CSV'}
+              </button>
+              {#if securityView.severities.length > 0}<button
+                  type="button"
+                  class="btn btn-secondary"
+                  on:click={clearSecuritySeverityFilter}>Clear severity</button
+                >{/if}
+              {#if securityView.ecosystem}<button
+                  type="button"
+                  class="btn btn-secondary"
+                  on:click={clearSecurityEcosystemFilter}
+                  >Clear ecosystem</button
+                >{/if}
+              {#if securityView.packageQuery}<button
+                  type="button"
+                  class="btn btn-secondary"
+                  on:click={clearSecurityPackageFilter}>Clear package</button
+                >{/if}
+            </div>
+            <p
+              class="settings-copy"
+              style="margin-top:0.75rem; margin-bottom:0;"
+            >
+              {formatSecurityFilterSummary()}
+            </p>
+          </form>
           {#if securityError}
             <div class="alert alert-error">{securityError}</div>
           {:else if openFindingCount === 0 || securityPackages.length === 0}
             <div class="empty-state">
-              <h3>No open security findings</h3>
+              <h3>
+                {hasSecurityFilters
+                  ? 'No matching open security findings'
+                  : 'No open security findings'}
+              </h3>
               <p>
-                The packages currently visible to you do not have any unresolved
-                findings.
+                {#if hasSecurityFilters}
+                  Try adjusting or clearing the current filters.
+                {:else}
+                  The packages currently visible to you do not have any
+                  unresolved findings.
+                {/if}
               </p>
             </div>
           {:else}

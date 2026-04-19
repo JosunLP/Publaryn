@@ -223,6 +223,7 @@ PUT    /v1/orgs/:slug/teams/:team_slug/repository-access/:repository_slug
 DELETE /v1/orgs/:slug/teams/:team_slug/repository-access/:repository_slug
 GET    /v1/orgs/:slug/repositories
 GET    /v1/orgs/:slug/security-findings
+GET    /v1/orgs/:slug/security-findings/export
 GET    /v1/orgs/:slug/packages
 GET    /v1/org-invitations
 POST   /v1/org-invitations/:id/accept
@@ -237,6 +238,8 @@ Organization administrators can also delegate repository-scoped responsibilities
 Repository-wide grants use the same permission vocabulary, apply across current and future packages in the selected repository, and the `admin` permission additionally allows repository configuration changes.
 These repository grants are stored in PostgreSQL, enforced by the management API, and automatically cleared when the team or repository is removed.
 The organization workspace also includes an aggregated security overview backed by `GET /v1/orgs/:slug/security-findings`, scoped to the packages currently visible to the requesting actor.
+That endpoint and `GET /v1/orgs/:slug/security-findings/export` both accept the same unresolved-finding filters: repeated or comma-separated `severity` values, a single `ecosystem`, and a package-name substring through `package`.
+The CSV export applies the same filters as the JSON view and remains visibility-aware, so anonymous actors only receive public package rows while organization members can export the broader package set they are allowed to see.
 Organization audit reads now support action, actor, pagination, and UTC date-range filtering through the `occurred_from` and `occurred_until` query parameters.
 Organization administrators can also export the full filtered audit view as CSV through `GET /v1/orgs/:slug/audit/export`; the export applies the same action, actor, and UTC date filters but ignores pagination.
 

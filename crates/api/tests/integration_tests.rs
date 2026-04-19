@@ -676,9 +676,22 @@ async fn list_org_security_findings(
     jwt: Option<&str>,
     org_slug: &str,
 ) -> (StatusCode, Value) {
-    let mut request = Request::builder()
-        .method(Method::GET)
-        .uri(format!("/v1/orgs/{org_slug}/security-findings"));
+    list_org_security_findings_with_query(app, jwt, org_slug, None).await
+}
+
+/// List security findings aggregated for an organization with query parameters and return the response.
+async fn list_org_security_findings_with_query(
+    app: &axum::Router,
+    jwt: Option<&str>,
+    org_slug: &str,
+    query: Option<&str>,
+) -> (StatusCode, Value) {
+    let mut request = Request::builder().method(Method::GET).uri(match query {
+        Some(query) if !query.trim().is_empty() => {
+            format!("/v1/orgs/{org_slug}/security-findings?{query}")
+        }
+        _ => format!("/v1/orgs/{org_slug}/security-findings"),
+    });
 
     if let Some(jwt) = jwt {
         request = request.header(header::AUTHORIZATION, format!("Bearer {jwt}"));
@@ -689,6 +702,28 @@ async fn list_org_security_findings(
     let status = resp.status();
     let body = body_json(resp).await;
     (status, body)
+}
+
+/// Export security findings aggregated for an organization as CSV and return the raw response.
+async fn export_org_security_findings_csv(
+    app: &axum::Router,
+    jwt: Option<&str>,
+    org_slug: &str,
+    query: Option<&str>,
+) -> axum::response::Response {
+    let mut request = Request::builder().method(Method::GET).uri(match query {
+        Some(query) if !query.trim().is_empty() => {
+            format!("/v1/orgs/{org_slug}/security-findings/export?{query}")
+        }
+        _ => format!("/v1/orgs/{org_slug}/security-findings/export"),
+    });
+
+    if let Some(jwt) = jwt {
+        request = request.header(header::AUTHORIZATION, format!("Bearer {jwt}"));
+    }
+
+    let req = request.body(Body::empty()).unwrap();
+    app.clone().oneshot(req).await.unwrap()
 }
 
 /// List packages inside a repository and return the response.
@@ -1779,6 +1814,7 @@ fn build_maven_pom(group_id: &str, artifact_id: &str, version: &str) -> Vec<u8> 
 }
 
 /// Upload a Maven repository file through the native Maven deploy adapter.
+#[allow(clippy::too_many_arguments)]
 async fn upload_maven_artifact(
     app: &axum::Router,
     token: &str,
@@ -3673,6 +3709,266 @@ async fn test_org_security_findings_return_empty_summary_without_open_findings(p
     assert_eq!(body["summary"]["severities"]["critical"], 0);
     assert_eq!(body["summary"]["severities"]["low"], 0);
     assert_eq!(body["packages"], json!([]));
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_org_security_findings_support_filters_validation_and_csv_export(pool: PgPool) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let owner_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let member_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &owner_jwt, "Acme Corp", "acme-corp").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id = org_body["id"].as_str().expect("org id should be returned");
+
+    let (status, body) = add_org_member(&app, &owner_jwt, "acme-corp", "bob", "viewer").await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected member response: {body}"
+    );
+
+    let (status, body) = create_repository_with_options(
+        &app,
+        &owner_jwt,
+        "Acme Public",
+        "acme-public",
+        Some(org_id),
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected public repository response: {body}"
+    );
+
+    let (status, body) = create_repository_with_options(
+        &app,
+        &owner_jwt,
+        "Acme Internal",
+        "acme-internal",
+        Some(org_id),
+        Some("private"),
+        Some("internal_org"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected internal repository response: {body}"
+    );
+
+    let (status, body) = create_package_with_options(
+        &app,
+        &owner_jwt,
+        "npm",
+        "acme-public-widget",
+        "acme-public",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected public package response: {body}"
+    );
+
+    let (status, body) = create_package_with_options(
+        &app,
+        &owner_jwt,
+        "npm",
+        "acme-private-widget",
+        "acme-public",
+        Some("private"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected private package response: {body}"
+    );
+
+    let (status, body) = create_package_with_options(
+        &app,
+        &owner_jwt,
+        "npm",
+        "acme-internal-widget",
+        "acme-internal",
+        Some("internal_org"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected internal package response: {body}"
+    );
+
+    for package_name in [
+        "acme-public-widget",
+        "acme-private-widget",
+        "acme-internal-widget",
+    ] {
+        let (status, body) =
+            create_release_for_package(&app, &owner_jwt, "npm", package_name, "1.0.0").await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected release response for {package_name}: {body}"
+        );
+    }
+
+    let public_release_id = get_release_id(&pool, "npm", "acme-public-widget", "1.0.0").await;
+    let private_release_id = get_release_id(&pool, "npm", "acme-private-widget", "1.0.0").await;
+    let internal_release_id = get_release_id(&pool, "npm", "acme-internal-widget", "1.0.0").await;
+
+    insert_security_finding(
+        &pool,
+        public_release_id,
+        "vulnerability",
+        "critical",
+        "Critical public issue",
+        false,
+    )
+    .await;
+    insert_security_finding(
+        &pool,
+        public_release_id,
+        "policy_violation",
+        "low",
+        "Low public issue",
+        false,
+    )
+    .await;
+    insert_security_finding(
+        &pool,
+        private_release_id,
+        "secrets_exposed",
+        "high",
+        "Private secret exposure",
+        false,
+    )
+    .await;
+    insert_security_finding(
+        &pool,
+        internal_release_id,
+        "archive_bomb",
+        "medium",
+        "Internal archive bomb",
+        false,
+    )
+    .await;
+
+    let (status, critical_body) = list_org_security_findings_with_query(
+        &app,
+        Some(&member_jwt),
+        "acme-corp",
+        Some("severity=critical"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected critical-filtered response: {critical_body}"
+    );
+    assert_eq!(critical_body["summary"]["open_findings"], 1);
+    assert_eq!(critical_body["summary"]["affected_packages"], 1);
+    assert_eq!(critical_body["summary"]["severities"]["critical"], 1);
+    assert_eq!(critical_body["summary"]["severities"]["low"], 0);
+    let critical_packages = critical_body["packages"]
+        .as_array()
+        .expect("critical packages response should be an array");
+    assert_eq!(critical_packages.len(), 1, "response: {critical_body}");
+    assert_eq!(critical_packages[0]["name"], "acme-public-widget");
+    assert_eq!(critical_packages[0]["open_findings"], 1);
+    assert_eq!(critical_packages[0]["worst_severity"], "critical");
+
+    let (status, package_body) = list_org_security_findings_with_query(
+        &app,
+        Some(&member_jwt),
+        "acme-corp",
+        Some("ecosystem=npm&package=internal"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected package-filtered response: {package_body}"
+    );
+    assert_eq!(package_body["summary"]["open_findings"], 1);
+    assert_eq!(package_body["summary"]["severities"]["medium"], 1);
+    let package_rows = package_body["packages"]
+        .as_array()
+        .expect("package-filtered response should be an array");
+    assert_eq!(package_rows.len(), 1, "response: {package_body}");
+    assert_eq!(package_rows[0]["name"], "acme-internal-widget");
+
+    let (status, invalid_body) = list_org_security_findings_with_query(
+        &app,
+        Some(&member_jwt),
+        "acme-corp",
+        Some("severity=catastrophic"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "unexpected invalid-filter response: {invalid_body}"
+    );
+    assert!(invalid_body["error"]
+        .as_str()
+        .expect("error should be present")
+        .contains("Unknown security severity filter"));
+
+    let member_export_response = export_org_security_findings_csv(
+        &app,
+        Some(&member_jwt),
+        "acme-corp",
+        Some("ecosystem=npm&package=private"),
+    )
+    .await;
+    assert_eq!(member_export_response.status(), StatusCode::OK);
+    assert_eq!(
+        member_export_response.headers()[header::CONTENT_TYPE],
+        "text/csv; charset=utf-8"
+    );
+    assert!(
+        member_export_response.headers()[header::CONTENT_DISPOSITION]
+            .to_str()
+            .expect("content disposition should be valid text")
+            .contains("org-security-findings-acme-corp.csv")
+    );
+
+    let member_export_body = body_text(member_export_response).await;
+    let member_export_lines = member_export_body.lines().collect::<Vec<_>>();
+    assert_eq!(
+        member_export_lines.len(),
+        2,
+        "unexpected CSV body: {member_export_body}"
+    );
+    assert!(member_export_lines[0].starts_with("package_id,ecosystem,name,"));
+    assert!(member_export_body.contains("acme-private-widget"));
+    assert!(member_export_body.contains(",1,high,"));
+    assert!(!member_export_body.contains("acme-public-widget"));
+    assert!(!member_export_body.contains("acme-internal-widget"));
+
+    let anonymous_export_response =
+        export_org_security_findings_csv(&app, None, "acme-corp", Some("severity=critical")).await;
+    assert_eq!(anonymous_export_response.status(), StatusCode::OK);
+
+    let anonymous_export_body = body_text(anonymous_export_response).await;
+    let anonymous_export_lines = anonymous_export_body.lines().collect::<Vec<_>>();
+    assert_eq!(
+        anonymous_export_lines.len(),
+        2,
+        "unexpected anonymous CSV body: {anonymous_export_body}"
+    );
+    assert!(anonymous_export_body.contains("acme-public-widget"));
+    assert!(!anonymous_export_body.contains("acme-private-widget"));
+    assert!(!anonymous_export_body.contains("acme-internal-widget"));
 }
 
 #[sqlx::test(migrations = "../../migrations")]
@@ -7431,8 +7727,7 @@ async fn test_package_detail_includes_ecosystem_identity_metadata(pool: PgPool) 
             "unexpected package detail response for {ecosystem}/{name}: {package_detail}"
         );
         assert_eq!(
-            package_detail["ecosystem"],
-            expected_response_ecosystem,
+            package_detail["ecosystem"], expected_response_ecosystem,
             "unexpected package ecosystem for {ecosystem}/{name}: {package_detail}"
         );
         assert_eq!(

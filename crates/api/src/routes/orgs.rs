@@ -84,6 +84,10 @@ pub fn router() -> Router<AppState> {
             "/v1/orgs/{slug}/security-findings",
             get(list_org_security_findings),
         )
+        .route(
+            "/v1/orgs/{slug}/security-findings/export",
+            get(export_org_security_findings_csv),
+        )
         .route("/v1/orgs/{slug}/packages", get(list_org_packages))
 }
 
@@ -216,6 +220,20 @@ struct ResolvedOrgAuditFilters {
     actor_user_id: Option<Uuid>,
     occurred_from: Option<chrono::NaiveDate>,
     occurred_until: Option<chrono::NaiveDate>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OrgSecurityFindingsQuery {
+    severity: Option<String>,
+    ecosystem: Option<String>,
+    package: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ResolvedOrgSecurityFilters {
+    severities: Vec<String>,
+    ecosystem: Option<String>,
+    package: Option<String>,
 }
 
 async fn update_org(
@@ -2267,6 +2285,239 @@ async fn list_org_repositories(
     Ok(Json(serde_json::json!({ "repositories": repositories })))
 }
 
+const ORG_SECURITY_SEVERITY_VALUES: [&str; 5] = ["critical", "high", "medium", "low", "info"];
+
+async fn resolve_org_security_scope(
+    db: &sqlx::PgPool,
+    slug: &str,
+    actor_user_id: Option<Uuid>,
+) -> ApiResult<(Uuid, bool)> {
+    let org_row = sqlx::query("SELECT id FROM organizations WHERE slug = $1")
+        .bind(slug)
+        .fetch_optional(db)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?
+        .ok_or_else(|| ApiError(Error::NotFound(format!("Organization '{slug}' not found"))))?;
+
+    let org_id: Uuid = org_row
+        .try_get("id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let can_view_non_public = match actor_user_id {
+        Some(actor_user_id) => is_org_member(db, org_id, actor_user_id).await?,
+        None => false,
+    };
+
+    Ok((org_id, can_view_non_public))
+}
+
+fn resolve_org_security_filters(
+    query: &OrgSecurityFindingsQuery,
+) -> ApiResult<ResolvedOrgSecurityFilters> {
+    let severities = parse_org_security_severity_filters(query.severity.as_deref())?;
+    let ecosystem = match normalize_optional_query_string(query.ecosystem.as_deref()) {
+        Some(value) => Some(crate::routes::parse_ecosystem(&value)?.as_str().to_owned()),
+        None => None,
+    };
+
+    Ok(ResolvedOrgSecurityFilters {
+        severities,
+        ecosystem,
+        package: normalize_optional_query_string(query.package.as_deref()),
+    })
+}
+
+fn parse_org_security_severity_filters(value: Option<&str>) -> ApiResult<Vec<String>> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+
+    let mut selected = BTreeSet::new();
+    for segment in value.split(',') {
+        let trimmed = segment.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        selected.insert(normalize_org_security_severity(trimmed)?);
+    }
+
+    Ok(ORG_SECURITY_SEVERITY_VALUES
+        .iter()
+        .filter(|severity| {
+            selected
+                .iter()
+                .any(|selected_severity| selected_severity == *severity)
+        })
+        .map(|severity| (*severity).to_owned())
+        .collect())
+}
+
+fn normalize_org_security_severity(value: &str) -> ApiResult<String> {
+    let normalized = value.trim().to_ascii_lowercase();
+    if ORG_SECURITY_SEVERITY_VALUES.contains(&normalized.as_str()) {
+        Ok(normalized)
+    } else {
+        Err(ApiError(Error::Validation(format!(
+            "Unknown security severity filter: {value}"
+        ))))
+    }
+}
+
+fn build_org_security_query(
+    org_id: Uuid,
+    can_view_non_public: bool,
+) -> QueryBuilder<'static, Postgres> {
+    let mut builder = QueryBuilder::<Postgres>::new(
+        "SELECT p.id, p.ecosystem, p.name, p.description, p.visibility::text AS visibility, \
+                MAX(sf.detected_at) AS latest_detected_at, \
+                COUNT(sf.id) FILTER (WHERE sf.severity = 'critical'::security_severity)::BIGINT AS critical_count, \
+                COUNT(sf.id) FILTER (WHERE sf.severity = 'high'::security_severity)::BIGINT AS high_count, \
+                COUNT(sf.id) FILTER (WHERE sf.severity = 'medium'::security_severity)::BIGINT AS medium_count, \
+                COUNT(sf.id) FILTER (WHERE sf.severity = 'low'::security_severity)::BIGINT AS low_count, \
+                COUNT(sf.id) FILTER (WHERE sf.severity = 'info'::security_severity)::BIGINT AS info_count \
+         FROM packages p \
+         JOIN repositories r ON r.id = p.repository_id \
+         JOIN releases rel ON rel.package_id = p.id \
+         JOIN security_findings sf ON sf.release_id = rel.id \
+         WHERE p.owner_org_id = ",
+    );
+    builder.push_bind(org_id);
+    builder
+        .push(" AND sf.is_resolved = false AND (")
+        .push_bind(can_view_non_public)
+        .push("::bool = true OR (p.visibility = 'public' AND r.visibility = 'public'))");
+
+    builder
+}
+
+fn apply_org_security_filters(
+    builder: &mut QueryBuilder<'_, Postgres>,
+    filters: &ResolvedOrgSecurityFilters,
+) {
+    if !filters.severities.is_empty() {
+        builder.push(" AND sf.severity::text IN (");
+        let mut is_first = true;
+        for severity in &filters.severities {
+            if !is_first {
+                builder.push(", ");
+            }
+            is_first = false;
+            builder.push_bind(severity.clone());
+        }
+        builder.push(")");
+    }
+
+    if let Some(ecosystem) = &filters.ecosystem {
+        builder
+            .push(" AND p.ecosystem = ")
+            .push_bind(ecosystem.clone());
+    }
+
+    if let Some(package) = &filters.package {
+        let pattern = format!("%{package}%");
+        builder
+            .push(" AND (p.name ILIKE ")
+            .push_bind(pattern.clone())
+            .push(" OR p.normalized_name ILIKE ")
+            .push_bind(pattern)
+            .push(")");
+    }
+}
+
+async fn load_org_security_packages(
+    db: &sqlx::PgPool,
+    org_id: Uuid,
+    can_view_non_public: bool,
+    filters: &ResolvedOrgSecurityFilters,
+) -> ApiResult<Vec<OrgSecurityPackageSummary>> {
+    let mut builder = build_org_security_query(org_id, can_view_non_public);
+    apply_org_security_filters(&mut builder, filters);
+    builder.push(" GROUP BY p.id, p.ecosystem, p.name, p.description, p.visibility");
+
+    let rows = builder
+        .build()
+        .fetch_all(db)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let mut packages = rows
+        .iter()
+        .map(build_org_security_package_summary)
+        .collect::<ApiResult<Vec<_>>>()?;
+
+    packages.sort_by(|left, right| {
+        right
+            .worst_rank()
+            .cmp(&left.worst_rank())
+            .then_with(|| right.open_findings().cmp(&left.open_findings()))
+            .then_with(|| left.ecosystem.cmp(&right.ecosystem))
+            .then_with(|| left.name.cmp(&right.name))
+    });
+
+    Ok(packages)
+}
+
+fn summarize_org_security_packages(
+    packages: &[OrgSecurityPackageSummary],
+) -> SecuritySeverityCounts {
+    let mut summary = SecuritySeverityCounts::default();
+    for package in packages {
+        summary.merge_from(&package.severities);
+    }
+
+    summary
+}
+
+fn build_org_security_csv(packages: &[OrgSecurityPackageSummary]) -> ApiResult<String> {
+    let mut writer = WriterBuilder::new().from_writer(Vec::new());
+    writer
+        .write_record([
+            "package_id",
+            "ecosystem",
+            "name",
+            "description",
+            "visibility",
+            "open_findings",
+            "worst_severity",
+            "latest_detected_at",
+            "critical_count",
+            "high_count",
+            "medium_count",
+            "low_count",
+            "info_count",
+        ])
+        .map_err(csv_write_error)?;
+
+    for package in packages {
+        writer
+            .write_record([
+                package.package_id.to_string(),
+                package.ecosystem.clone(),
+                package.name.clone(),
+                package.description.clone().unwrap_or_default(),
+                package.visibility.clone(),
+                package.open_findings().to_string(),
+                package.severities.worst_severity().to_owned(),
+                package
+                    .latest_detected_at
+                    .map(|value| value.to_rfc3339())
+                    .unwrap_or_default(),
+                package.severities.critical.to_string(),
+                package.severities.high.to_string(),
+                package.severities.medium.to_string(),
+                package.severities.low.to_string(),
+                package.severities.info.to_string(),
+            ])
+            .map_err(csv_write_error)?;
+    }
+
+    let bytes = writer
+        .into_inner()
+        .map_err(|error| ApiError(Error::Internal(error.to_string())))?;
+
+    String::from_utf8(bytes).map_err(|error| ApiError(Error::Internal(error.to_string())))
+}
+
 #[derive(Debug, Clone, Default)]
 struct SecuritySeverityCounts {
     critical: i64,
@@ -2363,64 +2614,14 @@ async fn list_org_security_findings(
     State(state): State<AppState>,
     identity: OptionalAuthenticatedIdentity,
     Path(slug): Path<String>,
+    Query(query): Query<OrgSecurityFindingsQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let org_row = sqlx::query("SELECT id FROM organizations WHERE slug = $1")
-        .bind(&slug)
-        .fetch_optional(&state.db)
-        .await
-        .map_err(|e| ApiError(Error::Database(e)))?
-        .ok_or_else(|| ApiError(Error::NotFound(format!("Organization '{slug}' not found"))))?;
-
-    let org_id: Uuid = org_row
-        .try_get("id")
-        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
-    let actor_user_id = identity.user_id();
-    let can_view_non_public = match actor_user_id {
-        Some(actor_user_id) => is_org_member(&state.db, org_id, actor_user_id).await?,
-        None => false,
-    };
-
-    let rows = sqlx::query(
-        "SELECT p.id, p.ecosystem, p.name, p.description, p.visibility::text AS visibility, \
-                MAX(sf.detected_at) AS latest_detected_at, \
-                COUNT(sf.id) FILTER (WHERE sf.severity = 'critical'::security_severity)::BIGINT AS critical_count, \
-                COUNT(sf.id) FILTER (WHERE sf.severity = 'high'::security_severity)::BIGINT AS high_count, \
-                COUNT(sf.id) FILTER (WHERE sf.severity = 'medium'::security_severity)::BIGINT AS medium_count, \
-                COUNT(sf.id) FILTER (WHERE sf.severity = 'low'::security_severity)::BIGINT AS low_count, \
-                COUNT(sf.id) FILTER (WHERE sf.severity = 'info'::security_severity)::BIGINT AS info_count \
-         FROM packages p \
-         JOIN repositories r ON r.id = p.repository_id \
-         JOIN releases rel ON rel.package_id = p.id \
-         JOIN security_findings sf ON sf.release_id = rel.id \
-         WHERE p.owner_org_id = $1 \
-           AND sf.is_resolved = false \
-           AND ($2::bool = true OR (p.visibility = 'public' AND r.visibility = 'public')) \
-         GROUP BY p.id, p.ecosystem, p.name, p.description, p.visibility",
-    )
-    .bind(org_id)
-    .bind(can_view_non_public)
-    .fetch_all(&state.db)
-    .await
-    .map_err(|e| ApiError(Error::Database(e)))?;
-
-    let mut packages = rows
-        .iter()
-        .map(build_org_security_package_summary)
-        .collect::<ApiResult<Vec<_>>>()?;
-
-    packages.sort_by(|left, right| {
-        right
-            .worst_rank()
-            .cmp(&left.worst_rank())
-            .then_with(|| right.open_findings().cmp(&left.open_findings()))
-            .then_with(|| left.ecosystem.cmp(&right.ecosystem))
-            .then_with(|| left.name.cmp(&right.name))
-    });
-
-    let mut summary_severities = SecuritySeverityCounts::default();
-    for package in &packages {
-        summary_severities.merge_from(&package.severities);
-    }
+    let (org_id, can_view_non_public) =
+        resolve_org_security_scope(&state.db, &slug, identity.user_id()).await?;
+    let filters = resolve_org_security_filters(&query)?;
+    let packages =
+        load_org_security_packages(&state.db, org_id, can_view_non_public, &filters).await?;
+    let summary_severities = summarize_org_security_packages(&packages);
 
     let package_count = packages.len();
     let packages = packages
@@ -2436,6 +2637,35 @@ async fn list_org_security_findings(
         },
         "packages": packages,
     })))
+}
+
+async fn export_org_security_findings_csv(
+    State(state): State<AppState>,
+    identity: OptionalAuthenticatedIdentity,
+    Path(slug): Path<String>,
+    Query(query): Query<OrgSecurityFindingsQuery>,
+) -> ApiResult<impl IntoResponse> {
+    let (org_id, can_view_non_public) =
+        resolve_org_security_scope(&state.db, &slug, identity.user_id()).await?;
+    let filters = resolve_org_security_filters(&query)?;
+    let packages =
+        load_org_security_packages(&state.db, org_id, can_view_non_public, &filters).await?;
+    let csv_body = build_org_security_csv(&packages)?;
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/csv; charset=utf-8"),
+    );
+    headers.insert(
+        header::CONTENT_DISPOSITION,
+        HeaderValue::from_str(&format!(
+            "attachment; filename=\"org-security-findings-{slug}.csv\""
+        ))
+        .map_err(|error| ApiError(Error::Internal(error.to_string())))?,
+    );
+
+    Ok((headers, csv_body))
 }
 
 fn build_org_security_package_summary(
@@ -2659,7 +2889,8 @@ mod tests {
     use publaryn_core::domain::{organization::OrgRole, team::TeamPermission};
 
     use super::{
-        normalize_optional_org_field, normalize_team_permissions, validate_ownership_transfer,
+        normalize_optional_org_field, normalize_team_permissions, resolve_org_security_filters,
+        validate_ownership_transfer, OrgSecurityFindingsQuery,
     };
 
     #[test]
@@ -2762,6 +2993,35 @@ mod tests {
         assert_eq!(
             error.0.to_string(),
             "Validation error: Unknown team permission: superpowers"
+        );
+    }
+
+    #[test]
+    fn resolve_org_security_filters_normalizes_supported_values() {
+        let filters = resolve_org_security_filters(&OrgSecurityFindingsQuery {
+            severity: Some("low, critical, low".into()),
+            ecosystem: Some("bun".into()),
+            package: Some("  widget  ".into()),
+        })
+        .expect("security filters should normalize");
+
+        assert_eq!(filters.severities, vec!["critical", "low"]);
+        assert_eq!(filters.ecosystem.as_deref(), Some("npm"));
+        assert_eq!(filters.package.as_deref(), Some("widget"));
+    }
+
+    #[test]
+    fn resolve_org_security_filters_rejects_unknown_severity_values() {
+        let error = resolve_org_security_filters(&OrgSecurityFindingsQuery {
+            severity: Some("catastrophic".into()),
+            ecosystem: None,
+            package: None,
+        })
+        .expect_err("unknown severities must be rejected");
+
+        assert_eq!(
+            error.0.to_string(),
+            "Validation error: Unknown security severity filter: catastrophic"
         );
     }
 }
