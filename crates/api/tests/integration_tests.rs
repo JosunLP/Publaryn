@@ -1750,6 +1750,7 @@ async fn test_add_org_member_updates_existing_member_role(pool: PgPool) {
     let req = Request::builder()
         .method(Method::GET)
         .uri("/v1/orgs/acme-corp/members")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
         .body(Body::empty())
         .unwrap();
 
@@ -1774,6 +1775,107 @@ async fn test_add_org_member_updates_existing_member_role(pool: PgPool) {
         bob_memberships[0]["role"], "maintainer",
         "members response: {body}"
     );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_org_member_and_team_directory_reads_require_org_membership(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let owner_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let outsider_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+
+    let (status, _) = create_org(&app, &owner_jwt, "Acme Corp", "acme-corp").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_team(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        "Release Engineering",
+        "release-engineering",
+        Some("Owns package publication workflows"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let anonymous_members_req = Request::builder()
+        .method(Method::GET)
+        .uri("/v1/orgs/acme-corp/members")
+        .body(Body::empty())
+        .unwrap();
+    let anonymous_members_resp = app.clone().oneshot(anonymous_members_req).await.unwrap();
+    assert_eq!(anonymous_members_resp.status(), StatusCode::UNAUTHORIZED);
+
+    let outsider_members_req = Request::builder()
+        .method(Method::GET)
+        .uri("/v1/orgs/acme-corp/members")
+        .header(header::AUTHORIZATION, format!("Bearer {outsider_jwt}"))
+        .body(Body::empty())
+        .unwrap();
+    let outsider_members_resp = app.clone().oneshot(outsider_members_req).await.unwrap();
+    assert_eq!(outsider_members_resp.status(), StatusCode::FORBIDDEN);
+
+    let member_members_req = Request::builder()
+        .method(Method::GET)
+        .uri("/v1/orgs/acme-corp/members")
+        .header(header::AUTHORIZATION, format!("Bearer {owner_jwt}"))
+        .body(Body::empty())
+        .unwrap();
+    let member_members_resp = app.clone().oneshot(member_members_req).await.unwrap();
+    assert_eq!(member_members_resp.status(), StatusCode::OK);
+
+    let anonymous_teams_req = Request::builder()
+        .method(Method::GET)
+        .uri("/v1/orgs/acme-corp/teams")
+        .body(Body::empty())
+        .unwrap();
+    let anonymous_teams_resp = app.clone().oneshot(anonymous_teams_req).await.unwrap();
+    assert_eq!(anonymous_teams_resp.status(), StatusCode::UNAUTHORIZED);
+
+    let outsider_teams_req = Request::builder()
+        .method(Method::GET)
+        .uri("/v1/orgs/acme-corp/teams")
+        .header(header::AUTHORIZATION, format!("Bearer {outsider_jwt}"))
+        .body(Body::empty())
+        .unwrap();
+    let outsider_teams_resp = app.clone().oneshot(outsider_teams_req).await.unwrap();
+    assert_eq!(outsider_teams_resp.status(), StatusCode::FORBIDDEN);
+
+    let member_teams_req = Request::builder()
+        .method(Method::GET)
+        .uri("/v1/orgs/acme-corp/teams")
+        .header(header::AUTHORIZATION, format!("Bearer {owner_jwt}"))
+        .body(Body::empty())
+        .unwrap();
+    let member_teams_resp = app.clone().oneshot(member_teams_req).await.unwrap();
+    assert_eq!(member_teams_resp.status(), StatusCode::OK);
+
+    let anonymous_search_req = Request::builder()
+        .method(Method::GET)
+        .uri("/v1/orgs/acme-corp/members/search?query=al")
+        .body(Body::empty())
+        .unwrap();
+    let anonymous_search_resp = app.clone().oneshot(anonymous_search_req).await.unwrap();
+    assert_eq!(anonymous_search_resp.status(), StatusCode::UNAUTHORIZED);
+
+    let outsider_search_req = Request::builder()
+        .method(Method::GET)
+        .uri("/v1/orgs/acme-corp/members/search?query=al")
+        .header(header::AUTHORIZATION, format!("Bearer {outsider_jwt}"))
+        .body(Body::empty())
+        .unwrap();
+    let outsider_search_resp = app.clone().oneshot(outsider_search_req).await.unwrap();
+    assert_eq!(outsider_search_resp.status(), StatusCode::FORBIDDEN);
+
+    let member_search_req = Request::builder()
+        .method(Method::GET)
+        .uri("/v1/orgs/acme-corp/members/search?query=al")
+        .header(header::AUTHORIZATION, format!("Bearer {owner_jwt}"))
+        .body(Body::empty())
+        .unwrap();
+    let member_search_resp = app.clone().oneshot(member_search_req).await.unwrap();
+    assert_eq!(member_search_resp.status(), StatusCode::OK);
 }
 
 #[sqlx::test(migrations = "../../migrations")]
@@ -3550,6 +3652,7 @@ async fn test_team_crud_roundtrip(pool: PgPool) {
     let req = Request::builder()
         .method(Method::GET)
         .uri("/v1/orgs/acme-corp/teams")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
         .body(Body::empty())
         .unwrap();
 
@@ -3588,6 +3691,7 @@ async fn test_team_crud_roundtrip(pool: PgPool) {
     let req = Request::builder()
         .method(Method::GET)
         .uri("/v1/orgs/acme-corp/teams")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
         .body(Body::empty())
         .unwrap();
 
@@ -3618,6 +3722,7 @@ async fn test_team_crud_roundtrip(pool: PgPool) {
     let req = Request::builder()
         .method(Method::GET)
         .uri("/v1/orgs/acme-corp/teams")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
         .body(Body::empty())
         .unwrap();
 

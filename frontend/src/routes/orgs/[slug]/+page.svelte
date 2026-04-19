@@ -103,6 +103,7 @@
     buildOrgMemberPickerOptions,
     resolveOrgMemberPickerInput,
   } from '../../../pages/org-member-picker';
+  import { canViewOrgPeopleWorkspace } from '../../../pages/org-workspace-access';
   import { ECOSYSTEMS, ecosystemLabel } from '../../../utils/ecosystem';
   import { formatDate, formatNumber } from '../../../utils/format';
   import {
@@ -211,6 +212,7 @@
   let isAuthenticated = false;
   let canAdminister = false;
   let canViewAudit = false;
+  let canViewPeopleWorkspace = false;
   let isOwner = false;
 
   let members: OrgMember[] = [];
@@ -406,6 +408,7 @@
     loadError = null;
     notice = options.notice ?? null;
     error = options.error ?? null;
+    canViewPeopleWorkspace = false;
 
     isAuthenticated = Boolean(getAuthToken());
 
@@ -417,26 +420,12 @@
     try {
       const [
         loadedOrg,
-        memberData,
-        teamData,
         repositoryData,
         packageData,
         securityData,
         myOrganizationsData,
       ] = await Promise.all([
         getOrg(slug),
-        listMembers(slug).catch(
-          (caughtError: unknown): MemberListResponse => ({
-            members: [],
-            load_error: toErrorMessage(caughtError, 'Failed to load members.'),
-          })
-        ),
-        listTeams(slug).catch(
-          (caughtError: unknown): TeamListResponse => ({
-            teams: [],
-            load_error: toErrorMessage(caughtError, 'Failed to load teams.'),
-          })
-        ),
         listOrgRepositories(slug).catch(
           (caughtError: unknown): OrgRepositoryListResponse => ({
             repositories: [],
@@ -473,14 +462,11 @@
       membership = myOrganizationsData.organizations.find(
         (item) => item.slug === slug
       );
+      canViewPeopleWorkspace = canViewOrgPeopleWorkspace(membership);
       canAdminister = ADMIN_ROLES.has(membership?.role || '');
       canViewAudit = AUDIT_ROLES.has(membership?.role || '');
       isOwner = membership?.role === 'owner';
 
-      members = memberData.members || [];
-      membersError = memberData.load_error || null;
-      teams = teamData.teams || [];
-      teamsError = teamData.load_error || null;
       repositories = repositoryData.repositories || [];
       repositoriesError = repositoryData.load_error || null;
       packages = packageData.packages || [];
@@ -495,9 +481,8 @@
 
       const [
         invitationData,
-        teamMembersData,
-        teamPackageAccessData,
-        teamRepositoryAccessData,
+        memberData,
+        teamData,
         namespaceData,
         auditData,
         repositoryPackageData,
@@ -516,15 +501,28 @@
               invitations: [],
               load_error: null,
             }),
-        canAdminister
-          ? loadTeamMembers(slug, teams)
-          : Promise.resolve<Record<string, TeamMemberState>>({}),
-        canAdminister
-          ? loadTeamPackageAccess(slug, teams)
-          : Promise.resolve<Record<string, TeamPackageAccessState>>({}),
-        canAdminister
-          ? loadTeamRepositoryAccess(slug, teams)
-          : Promise.resolve<Record<string, TeamRepositoryAccessState>>({}),
+        canViewPeopleWorkspace
+          ? listMembers(slug).catch(
+              (caughtError: unknown): MemberListResponse => ({
+                members: [],
+                load_error: toErrorMessage(caughtError, 'Failed to load members.'),
+              })
+            )
+          : Promise.resolve<MemberListResponse>({
+              members: [],
+              load_error: null,
+            }),
+        canViewPeopleWorkspace
+          ? listTeams(slug).catch(
+              (caughtError: unknown): TeamListResponse => ({
+                teams: [],
+                load_error: toErrorMessage(caughtError, 'Failed to load teams.'),
+              })
+            )
+          : Promise.resolve<TeamListResponse>({
+              teams: [],
+              load_error: null,
+            }),
         org?.id
           ? listOrgNamespaces(org.id).catch(
               (caughtError: unknown): NamespaceListResponse => ({
@@ -572,6 +570,22 @@
 
       invitations = invitationData.invitations || [];
       invitationsError = invitationData.load_error || null;
+      members = memberData.members || [];
+      membersError = memberData.load_error || null;
+      teams = teamData.teams || [];
+      teamsError = teamData.load_error || null;
+      const [teamMembersData, teamPackageAccessData, teamRepositoryAccessData] =
+        await Promise.all([
+          canAdminister
+            ? loadTeamMembers(slug, teams)
+            : Promise.resolve<Record<string, TeamMemberState>>({}),
+          canAdminister
+            ? loadTeamPackageAccess(slug, teams)
+            : Promise.resolve<Record<string, TeamPackageAccessState>>({}),
+          canAdminister
+            ? loadTeamRepositoryAccess(slug, teams)
+            : Promise.resolve<Record<string, TeamRepositoryAccessState>>({}),
+        ]);
       teamMembersBySlug = teamMembersData;
       teamPackageAccessBySlug = teamPackageAccessData;
       teamRepositoryAccessBySlug = teamRepositoryAccessData;
@@ -1855,13 +1869,15 @@
 
       <div class="org-kpi-grid">
         <div class="org-kpi">
-          <span class="org-kpi__value">{members.length}</span><span
-            class="org-kpi__label">Members</span
+          <span class="org-kpi__value">{canViewPeopleWorkspace ? members.length : '—'}</span><span
+            class="org-kpi__label"
+            >{canViewPeopleWorkspace ? 'Members' : 'Member directory'}</span
           >
         </div>
         <div class="org-kpi">
-          <span class="org-kpi__value">{teams.length}</span><span
-            class="org-kpi__label">Teams</span
+          <span class="org-kpi__value">{canViewPeopleWorkspace ? teams.length : '—'}</span><span
+            class="org-kpi__label"
+            >{canViewPeopleWorkspace ? 'Teams' : 'Team directory'}</span
           >
         </div>
         <div class="org-kpi">
@@ -2262,142 +2278,143 @@
       </section>
     {/if}
 
-    <section class="card settings-section">
-      <h2>Members</h2>
-      {#if membersError}
-        <div class="alert alert-error">{membersError}</div>
-      {:else if members.length === 0}
-        <div class="empty-state">
-          <h3>No members yet</h3>
-          <p>This organization has not added any members yet.</p>
-        </div>
-      {:else}
-        <div class="token-list">
-          {#each members as member}
-            <div class="token-row">
-              <div class="token-row__main">
-                <div class="token-row__title">
-                  {member.display_name || member.username || 'Unknown member'}
-                </div>
-                <div class="token-row__meta">
-                  <span>@{member.username || 'unknown'}</span>
-                  <span>{formatRole(member.role || 'viewer')}</span>
-                  <span>joined {formatDate(member.joined_at)}</span>
-                </div>
-              </div>
-              {#if canAdminister && member.role !== 'owner' && member.username}
-                <div class="token-row__actions">
-                  <form
-                    class="flex flex-wrap items-center gap-2"
-                    on:submit={(event) =>
-                      handleUpdateMemberRole(
-                        event,
-                        member.username || '',
-                        member.role || 'viewer'
-                      )}
-                  >
-                    <label
-                      class="text-sm text-muted"
-                      for={`member-role-${member.username || 'member'}`}
-                      >Role</label
-                    >
-                    <select
-                      id={`member-role-${member.username || 'member'}`}
-                      name="role"
-                      class="form-input"
-                      style="width:auto; min-width:150px;"
-                    >
-                      {#each ORG_ROLE_OPTIONS as role}
-                        <option
-                          value={role.value}
-                          selected={role.value === (member.role || 'viewer')}
-                          >{role.label}</option
-                        >
-                      {/each}
-                    </select>
-                    <button class="btn btn-secondary btn-sm" type="submit"
-                      >Save</button
-                    >
-                  </form>
-                  <button
-                    class="btn btn-danger btn-sm"
-                    type="button"
-                    on:click={() => handleRemoveMember(member.username || '')}
-                    >Remove</button
-                  >
-                </div>
-              {/if}
-            </div>
-          {/each}
-        </div>
-      {/if}
-    </section>
-
-    <div class="settings-grid">
+    {#if canViewPeopleWorkspace}
       <section class="card settings-section">
-        <h2>Teams</h2>
-        {#if canAdminister}
-          <form class="settings-subsection" on:submit={handleCreateTeam}>
-            <div class="grid gap-4 xl:grid-cols-2">
-              <div class="form-group">
-                <label for="team-create-name">Team name</label>
-                <input
-                  id="team-create-name"
-                  name="name"
-                  class="form-input"
-                  placeholder="Release engineering"
-                  required
-                />
-              </div>
-              <div class="form-group">
-                <label for="team-create-slug">Team slug</label>
-                <input
-                  id="team-create-slug"
-                  name="team_slug"
-                  class="form-input"
-                  placeholder="release-engineering"
-                  required
-                />
-              </div>
-            </div>
-            <div class="form-group">
-              <label for="team-create-description">Description</label>
-              <textarea
-                id="team-create-description"
-                name="description"
-                class="form-input"
-                rows="3"
-              ></textarea>
-            </div>
-            <button type="submit" class="btn btn-primary">Create team</button>
-          </form>
-        {/if}
-
-        {#if teamsError}
-          <div class="alert alert-error">{teamsError}</div>
-        {:else if teams.length === 0}
+        <h2>Members</h2>
+        {#if membersError}
+          <div class="alert alert-error">{membersError}</div>
+        {:else if members.length === 0}
           <div class="empty-state">
-            <h3>No teams yet</h3>
-            <p>Create the first team to delegate package work more clearly.</p>
+            <h3>No members yet</h3>
+            <p>This organization has not added any members yet.</p>
           </div>
         {:else}
-          <div class="settings-section">
-            {#each teams as team}
-              {@const teamSlug = team.slug || ''}
-              {@const teamMembers = teamMembersBySlug[teamSlug]?.members || []}
-              {@const teamMembersError =
-                teamMembersBySlug[teamSlug]?.load_error || null}
-              {@const teamRepositoryGrants =
-                teamRepositoryAccessBySlug[teamSlug]?.grants || []}
-              {@const teamRepositoryGrantsError =
-                teamRepositoryAccessBySlug[teamSlug]?.load_error || null}
-              {@const teamGrants =
-                teamPackageAccessBySlug[teamSlug]?.grants || []}
-              {@const teamGrantsError =
-                teamPackageAccessBySlug[teamSlug]?.load_error || null}
-              {@const eligibleTeamMemberOptions =
-                getEligibleTeamMemberOptions(teamSlug)}
-              <div class="settings-subsection">
+          <div class="token-list">
+            {#each members as member}
+              <div class="token-row">
+                <div class="token-row__main">
+                  <div class="token-row__title">
+                    {member.display_name || member.username || 'Unknown member'}
+                  </div>
+                  <div class="token-row__meta">
+                    <span>@{member.username || 'unknown'}</span>
+                    <span>{formatRole(member.role || 'viewer')}</span>
+                    <span>joined {formatDate(member.joined_at)}</span>
+                  </div>
+                </div>
+                {#if canAdminister && member.role !== 'owner' && member.username}
+                  <div class="token-row__actions">
+                    <form
+                      class="flex flex-wrap items-center gap-2"
+                      on:submit={(event) =>
+                        handleUpdateMemberRole(
+                          event,
+                          member.username || '',
+                          member.role || 'viewer'
+                        )}
+                    >
+                      <label
+                        class="text-sm text-muted"
+                        for={`member-role-${member.username || 'member'}`}
+                        >Role</label
+                      >
+                      <select
+                        id={`member-role-${member.username || 'member'}`}
+                        name="role"
+                        class="form-input"
+                        style="width:auto; min-width:150px;"
+                      >
+                        {#each ORG_ROLE_OPTIONS as role}
+                          <option
+                            value={role.value}
+                            selected={role.value === (member.role || 'viewer')}
+                            >{role.label}</option
+                          >
+                        {/each}
+                      </select>
+                      <button class="btn btn-secondary btn-sm" type="submit"
+                        >Save</button
+                      >
+                    </form>
+                    <button
+                      class="btn btn-danger btn-sm"
+                      type="button"
+                      on:click={() => handleRemoveMember(member.username || '')}
+                      >Remove</button
+                    >
+                  </div>
+                {/if}
+              </div>
+            {/each}
+          </div>
+        {/if}
+      </section>
+
+      <div class="settings-grid">
+        <section class="card settings-section">
+          <h2>Teams</h2>
+          {#if canAdminister}
+            <form class="settings-subsection" on:submit={handleCreateTeam}>
+              <div class="grid gap-4 xl:grid-cols-2">
+                <div class="form-group">
+                  <label for="team-create-name">Team name</label>
+                  <input
+                    id="team-create-name"
+                    name="name"
+                    class="form-input"
+                    placeholder="Release engineering"
+                    required
+                  />
+                </div>
+                <div class="form-group">
+                  <label for="team-create-slug">Team slug</label>
+                  <input
+                    id="team-create-slug"
+                    name="team_slug"
+                    class="form-input"
+                    placeholder="release-engineering"
+                    required
+                  />
+                </div>
+              </div>
+              <div class="form-group">
+                <label for="team-create-description">Description</label>
+                <textarea
+                  id="team-create-description"
+                  name="description"
+                  class="form-input"
+                  rows="3"
+                ></textarea>
+              </div>
+              <button type="submit" class="btn btn-primary">Create team</button>
+            </form>
+          {/if}
+
+          {#if teamsError}
+            <div class="alert alert-error">{teamsError}</div>
+          {:else if teams.length === 0}
+            <div class="empty-state">
+              <h3>No teams yet</h3>
+              <p>Create the first team to delegate package work more clearly.</p>
+            </div>
+          {:else}
+            <div class="settings-section">
+              {#each teams as team}
+                {@const teamSlug = team.slug || ''}
+                {@const teamMembers = teamMembersBySlug[teamSlug]?.members || []}
+                {@const teamMembersError =
+                  teamMembersBySlug[teamSlug]?.load_error || null}
+                {@const teamRepositoryGrants =
+                  teamRepositoryAccessBySlug[teamSlug]?.grants || []}
+                {@const teamRepositoryGrantsError =
+                  teamRepositoryAccessBySlug[teamSlug]?.load_error || null}
+                {@const teamGrants =
+                  teamPackageAccessBySlug[teamSlug]?.grants || []}
+                {@const teamGrantsError =
+                  teamPackageAccessBySlug[teamSlug]?.load_error || null}
+                {@const eligibleTeamMemberOptions =
+                  getEligibleTeamMemberOptions(teamSlug)}
+                <div class="settings-subsection">
                 <div class="org-section-header">
                   <div>
                     <h3>{team.name || team.slug || 'Team'}</h3>
@@ -2916,12 +2933,21 @@
                     >
                   </div>
                 {/if}
-              </div>
-            {/each}
-          </div>
-        {/if}
+                </div>
+              {/each}
+            </div>
+          {/if}
+        </section>
+      </div>
+    {:else}
+      <section class="card settings-section">
+        <h2>People and teams</h2>
+        <p class="settings-copy">
+          Organization membership and team structure are only visible to current
+          organization members.
+        </p>
       </section>
-    </div>
+    {/if}
 
     <div class="settings-grid">
       <section class="card settings-section">

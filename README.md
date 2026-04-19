@@ -228,6 +228,7 @@ POST   /v1/org-invitations/:id/decline
 ```
 
 Organization administrators can delegate package responsibilities to teams for organization-owned packages.
+Member and team directory reads require an authenticated user who already belongs to the target organization, while audit, invitation, delegated-access, and ownership-transfer routes keep their stricter role-based checks.
 Current package-scoped team permissions are `admin`, `publish`, `write_metadata`, `read_private`, `security_review`, and `transfer_ownership`.
 These grants are stored in PostgreSQL, enforced by the management API, and automatically cleared when package ownership moves to a different organization.
 Organization administrators can also delegate repository-scoped responsibilities to teams for organization-owned repositories.
