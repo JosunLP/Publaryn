@@ -1111,6 +1111,48 @@ pub async fn actor_can_transfer_package_by_id(
     .await
 }
 
+pub async fn actor_can_security_review_package_by_id(
+    db: &PgPool,
+    package_id: Uuid,
+    actor_user_id: Option<Uuid>,
+) -> ApiResult<bool> {
+    let Some(actor_user_id) = actor_user_id else {
+        return Ok(false);
+    };
+
+    let (owner_user_id, owner_org_id, repository_id) =
+        fetch_package_owner_fields_by_id(db, package_id).await?;
+
+    if owner_user_id == Some(actor_user_id) {
+        return Ok(true);
+    }
+
+    if let Some(owner_org_id) = owner_org_id {
+        if actor_has_org_roles(db, owner_org_id, actor_user_id, PACKAGE_ADMIN_ROLES).await? {
+            return Ok(true);
+        }
+    }
+
+    if actor_has_team_package_permissions(
+        db,
+        package_id,
+        actor_user_id,
+        TEAM_PACKAGE_SECURITY_REVIEW_PERMISSIONS,
+    )
+    .await?
+    {
+        return Ok(true);
+    }
+
+    actor_has_team_repository_permissions(
+        db,
+        repository_id,
+        actor_user_id,
+        TEAM_REPOSITORY_PACKAGE_SECURITY_REVIEW_PERMISSIONS,
+    )
+    .await
+}
+
 pub async fn actor_can_publish_package_by_id(
     db: &PgPool,
     package_id: Uuid,

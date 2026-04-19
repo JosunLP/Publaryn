@@ -8164,3 +8164,94 @@ async fn test_security_finding_update_allowed_via_team_security_review_permissio
     .expect("audit count should be queryable");
     assert_eq!(audit_count, 1);
 }
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_package_detail_reports_can_manage_security_for_security_reviewer(pool: PgPool) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    register_user(&app, "carol", "carol@test.dev", "super_secret_pw!").await;
+    let owner_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let reviewer_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+    let unrelated_jwt = login_user(&app, "carol", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &owner_jwt, "Acme Corp", "acme-corp").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id = org_body["id"].as_str().expect("org id");
+
+    let (status, _) = create_repository_with_options(
+        &app,
+        &owner_jwt,
+        "Acme Public",
+        "acme-public",
+        Some(org_id),
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_package_with_options(
+        &app,
+        &owner_jwt,
+        "npm",
+        "acme-sec-widget",
+        "acme-public",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // Baseline: owner has can_manage_security = true.
+    let (status, owner_detail) =
+        get_package_detail(&app, Some(&owner_jwt), "npm", "acme-sec-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(owner_detail["can_manage_security"], true);
+
+    // Anonymous readers and unrelated users must see can_manage_security = false.
+    let (status, anon_detail) = get_package_detail(&app, None, "npm", "acme-sec-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(anon_detail["can_manage_security"], false);
+
+    let (status, unrelated_detail) =
+        get_package_detail(&app, Some(&unrelated_jwt), "npm", "acme-sec-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(unrelated_detail["can_manage_security"], false);
+    assert_eq!(unrelated_detail["can_manage_releases"], false);
+
+    // Bob is added to the org and to a team with repository-scoped security_review.
+    let (status, _) = add_org_member(&app, &owner_jwt, "acme-corp", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = create_team(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        "Security Reviewers",
+        "security-reviewers",
+        Some("Triages findings."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) =
+        add_team_member_to_team(&app, &owner_jwt, "acme-corp", "security-reviewers", "bob").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = grant_team_repository_access(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        "security-reviewers",
+        "acme-public",
+        &["security_review"],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Bob now sees can_manage_security = true, but still cannot manage releases or metadata.
+    let (status, reviewer_detail) =
+        get_package_detail(&app, Some(&reviewer_jwt), "npm", "acme-sec-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(reviewer_detail["can_manage_security"], true);
+    assert_eq!(reviewer_detail["can_manage_releases"], false);
+    assert_eq!(reviewer_detail["can_manage_metadata"], false);
+    assert_eq!(reviewer_detail["can_manage_trusted_publishers"], false);
+}

@@ -32,10 +32,10 @@ use crate::{
     error::{ApiError, ApiResult},
     request_auth::{
         actor_can_admin_package_by_id, actor_can_publish_package_by_id,
-        actor_can_transfer_package_by_id, actor_can_write_package_by_id,
-        actor_can_write_package_metadata_by_id, ensure_package_admin_access,
-        ensure_package_metadata_write_access, ensure_package_publish_access,
-        ensure_package_read_access, ensure_package_transfer_access,
+        actor_can_security_review_package_by_id, actor_can_transfer_package_by_id,
+        actor_can_write_package_by_id, actor_can_write_package_metadata_by_id,
+        ensure_package_admin_access, ensure_package_metadata_write_access,
+        ensure_package_publish_access, ensure_package_read_access, ensure_package_transfer_access,
         ensure_repository_package_creation_access, AuthenticatedIdentity,
         OptionalAuthenticatedIdentity,
     },
@@ -177,6 +177,24 @@ async fn can_manage_trusted_publishers_for_package(
     }
 }
 
+async fn can_manage_security_for_package(
+    db: &sqlx::PgPool,
+    package_id: Uuid,
+    identity: &OptionalAuthenticatedIdentity,
+) -> ApiResult<bool> {
+    match identity.0.as_ref() {
+        Some(identity)
+            if identity
+                .scopes()
+                .iter()
+                .any(|scope| scope == SCOPE_PACKAGES_WRITE) =>
+        {
+            actor_can_security_review_package_by_id(db, package_id, Some(identity.user_id)).await
+        }
+        _ => Ok(false),
+    }
+}
+
 async fn get_package(
     State(state): State<AppState>,
     identity: OptionalAuthenticatedIdentity,
@@ -193,6 +211,8 @@ async fn get_package(
         can_manage_releases_for_package(&state.db, package_id, &identity).await?;
     let can_manage_trusted_publishers =
         can_manage_trusted_publishers_for_package(&state.db, package_id, &identity).await?;
+    let can_manage_security =
+        can_manage_security_for_package(&state.db, package_id, &identity).await?;
     let can_transfer = match identity.0.as_ref() {
         Some(identity)
             if identity
@@ -246,6 +266,7 @@ async fn get_package(
         "can_manage_metadata": can_manage_metadata,
         "can_manage_releases": can_manage_releases,
         "can_manage_trusted_publishers": can_manage_trusted_publishers,
+        "can_manage_security": can_manage_security,
         "can_transfer": can_transfer,
         "created_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at").ok(),
         "updated_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("updated_at").ok(),

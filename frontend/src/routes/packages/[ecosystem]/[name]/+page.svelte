@@ -91,6 +91,7 @@
   let findingsNotice: string | null = null;
   let findingsError: string | null = null;
   let updatingFindingId: string | null = null;
+  let findingNotes: Record<string, string> = {};
 
   let newReleaseVersion = '';
   let newReleaseDescription = '';
@@ -341,12 +342,22 @@
     updatingFindingId = finding.id;
     findingsError = null;
     findingsNotice = null;
+    const rawNote = findingNotes[finding.id] ?? '';
+    const trimmedNote = rawNote.trim();
+    if (trimmedNote.length > 2000) {
+      findingsError = 'Security finding note must be 2000 characters or fewer.';
+      updatingFindingId = null;
+      return;
+    }
     try {
       const updated = await updateSecurityFinding(
         eecosystem(),
         ename(),
         finding.id,
-        { isResolved: targetIsResolved }
+        {
+          isResolved: targetIsResolved,
+          note: trimmedNote.length > 0 ? trimmedNote : undefined,
+        }
       );
       findings = findings.map((current) =>
         current.id === updated.id ? { ...current, ...updated } : current
@@ -355,6 +366,7 @@
         // Remove newly-resolved finding when resolved findings are hidden.
         findings = findings.filter((current) => !current.is_resolved);
       }
+      findingNotes = { ...findingNotes, [finding.id]: '' };
       findingsNotice = targetIsResolved
         ? 'Finding marked as resolved.'
         : 'Finding reopened.';
@@ -820,8 +832,19 @@
                     {finding.description}
                   </div>
                 {/if}
-                {#if pkg.can_manage_releases}
+                {#if pkg.can_manage_security}
                   <div class="finding-row__actions">
+                    <label class="finding-row__note">
+                      <span class="sr-only"
+                        >Security finding note for {finding.title}</span
+                      >
+                      <textarea
+                        rows="2"
+                        maxlength="2000"
+                        placeholder="Optional note (recorded in audit log)"
+                        bind:value={findingNotes[finding.id]}
+                      ></textarea>
+                    </label>
                     <button
                       type="button"
                       class="btn btn-sm btn-secondary"

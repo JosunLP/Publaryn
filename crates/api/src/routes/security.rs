@@ -16,6 +16,7 @@ use crate::{
         OptionalAuthenticatedIdentity,
     },
     routes::parse_ecosystem,
+    scopes::{ensure_scope, SCOPE_PACKAGES_WRITE},
     state::AppState,
 };
 
@@ -106,6 +107,8 @@ async fn update_security_finding(
     Path((ecosystem_str, name, finding_id)): Path<(String, String, Uuid)>,
     Json(payload): Json<UpdateSecurityFindingRequest>,
 ) -> ApiResult<Json<serde_json::Value>> {
+    ensure_scope(&identity, SCOPE_PACKAGES_WRITE)?;
+
     let ecosystem = parse_ecosystem(&ecosystem_str)?;
     let normalized_name = normalize_package_name(&name, &ecosystem);
     let package_id = ensure_package_security_review_access(

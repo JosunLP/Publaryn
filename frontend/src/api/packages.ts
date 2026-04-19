@@ -46,6 +46,7 @@ export interface PackageDetail {
   can_manage_metadata?: boolean;
   can_manage_releases?: boolean;
   can_manage_trusted_publishers?: boolean;
+  can_manage_security?: boolean;
   can_transfer?: boolean;
   homepage?: NullableString;
   repository_url?: NullableString;
