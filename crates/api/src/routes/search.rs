@@ -18,6 +18,11 @@ use crate::{
     state::AppState,
 };
 
+const DEFAULT_SEARCH_PER_PAGE: u32 = 20;
+const MAX_SEARCH_PER_PAGE: u32 = 100;
+const MIN_SEARCH_BATCH_SIZE: u32 = 50;
+const MAX_SEARCH_BATCH_SIZE: u32 = 100;
+
 pub fn router() -> Router<AppState> {
     Router::new().route("/v1/search", get(search_packages))
 }
@@ -35,11 +40,12 @@ async fn search_packages(
     identity: OptionalAuthenticatedIdentity,
     Query(params): Query<SearchQueryParams>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    use publaryn_search::SearchIndex;
-
-    let per_page = params.per_page.unwrap_or(20).min(100);
+    let per_page = params
+        .per_page
+        .unwrap_or(DEFAULT_SEARCH_PER_PAGE)
+        .min(MAX_SEARCH_PER_PAGE);
     let page = params.page.unwrap_or(1);
-    let batch_size = per_page.max(50).min(100);
+    let batch_size = search_batch_size(per_page);
 
     let query = SearchQuery {
         q: params.q.unwrap_or_default(),
@@ -93,7 +99,7 @@ async fn load_visible_search_page(
     loop {
         let batch_query = SearchQuery {
             q: query.q.clone(),
-            ecosystem: query.ecosystem,
+            ecosystem: query.ecosystem.clone(),
             limit: Some(batch_size),
             offset: Some(search_offset),
         };
@@ -112,7 +118,7 @@ async fn load_visible_search_page(
         let previous_visible_total = visible_total;
         visible_total += batch_visible_count;
 
-        if packages.len() < page_size && visible_total > visible_offset as u64 {
+        if should_collect_batch(page_size, packages.len(), visible_total, visible_offset) {
             let skip = visible_offset.saturating_sub(previous_visible_total as usize);
             packages.extend(
                 visible_hits
@@ -132,6 +138,19 @@ async fn load_visible_search_page(
         total: visible_total,
         packages,
     })
+}
+
+fn search_batch_size(per_page: u32) -> u32 {
+    per_page.clamp(MIN_SEARCH_BATCH_SIZE, MAX_SEARCH_BATCH_SIZE)
+}
+
+fn should_collect_batch(
+    page_size: usize,
+    collected_count: usize,
+    visible_total: u64,
+    visible_offset: usize,
+) -> bool {
+    collected_count < page_size && visible_total > visible_offset as u64
 }
 
 async fn filter_visible_search_hits(
@@ -328,9 +347,9 @@ mod tests {
         .expect("membership should insert");
 
         sqlx::query(
-            "INSERT INTO repositories (id, name, slug, kind, visibility, default_package_visibility, owner_org_id, created_at, updated_at) \
-             VALUES ($1, 'Public', 'public', 'public', 'public', 'public', $3, NOW(), NOW()), \
-                    ($2, 'Private', 'private', 'release', 'private', 'private', $3, NOW(), NOW())",
+            "INSERT INTO repositories (id, name, slug, kind, visibility, owner_org_id, created_at, updated_at) \
+             VALUES ($1, 'Public', 'public', 'public', 'public', $3, NOW(), NOW()), \
+                    ($2, 'Private', 'private', 'release', 'private', $3, NOW(), NOW())",
         )
         .bind(public_repo_id)
         .bind(private_repo_id)
@@ -400,9 +419,9 @@ mod tests {
         .expect("user should insert");
 
         sqlx::query(
-            "INSERT INTO repositories (id, name, slug, kind, visibility, default_package_visibility, owner_user_id, created_at, updated_at) \
-             VALUES ($1, 'Public', 'public', 'public', 'public', 'public', $3, NOW(), NOW()), \
-                    ($2, 'Private', 'private', 'release', 'private', 'private', $3, NOW(), NOW())",
+            "INSERT INTO repositories (id, name, slug, kind, visibility, owner_user_id, created_at, updated_at) \
+             VALUES ($1, 'Public', 'public', 'public', 'public', $3, NOW(), NOW()), \
+                    ($2, 'Private', 'private', 'release', 'private', $3, NOW(), NOW())",
         )
         .bind(public_repo_id)
         .bind(private_repo_id)
