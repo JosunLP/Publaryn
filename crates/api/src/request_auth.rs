@@ -24,6 +24,7 @@ const TEAM_PACKAGE_METADATA_PERMISSIONS: &[&str] = &["admin", "write_metadata"];
 const TEAM_PACKAGE_PUBLISH_PERMISSIONS: &[&str] = &["admin", "publish"];
 const TEAM_PACKAGE_ADMIN_PERMISSIONS: &[&str] = &["admin"];
 const TEAM_PACKAGE_TRANSFER_PERMISSIONS: &[&str] = &["admin", "transfer_ownership"];
+const TEAM_PACKAGE_SECURITY_REVIEW_PERMISSIONS: &[&str] = &["admin", "security_review"];
 const TEAM_PACKAGE_MANAGEMENT_VISIBILITY_PERMISSIONS: &[&str] = &[
     "admin",
     "publish",
@@ -37,6 +38,7 @@ const TEAM_REPOSITORY_PACKAGE_METADATA_PERMISSIONS: &[&str] = &["admin", "write_
 const TEAM_REPOSITORY_PACKAGE_PUBLISH_PERMISSIONS: &[&str] = &["admin", "publish"];
 const TEAM_REPOSITORY_ADMIN_PERMISSIONS: &[&str] = &["admin"];
 const TEAM_REPOSITORY_PACKAGE_TRANSFER_PERMISSIONS: &[&str] = &["admin", "transfer_ownership"];
+const TEAM_REPOSITORY_PACKAGE_SECURITY_REVIEW_PERMISSIONS: &[&str] = &["admin", "security_review"];
 const TEAM_REPOSITORY_PACKAGE_MANAGEMENT_VISIBILITY_PERMISSIONS: &[&str] = &[
     "admin",
     "publish",
@@ -51,6 +53,7 @@ enum PackageAccessRequirement {
     Publish,
     Admin,
     TransferOwnership,
+    SecurityReview,
 }
 
 impl PackageAccessRequirement {
@@ -60,6 +63,7 @@ impl PackageAccessRequirement {
             Self::Publish => PACKAGE_PUBLISH_ROLES,
             Self::Admin => PACKAGE_ADMIN_ROLES,
             Self::TransferOwnership => PACKAGE_ADMIN_ROLES,
+            Self::SecurityReview => PACKAGE_ADMIN_ROLES,
         }
     }
 
@@ -69,6 +73,7 @@ impl PackageAccessRequirement {
             Self::Publish => TEAM_PACKAGE_PUBLISH_PERMISSIONS,
             Self::Admin => TEAM_PACKAGE_ADMIN_PERMISSIONS,
             Self::TransferOwnership => TEAM_PACKAGE_TRANSFER_PERMISSIONS,
+            Self::SecurityReview => TEAM_PACKAGE_SECURITY_REVIEW_PERMISSIONS,
         }
     }
 
@@ -78,6 +83,7 @@ impl PackageAccessRequirement {
             Self::Publish => TEAM_REPOSITORY_PACKAGE_PUBLISH_PERMISSIONS,
             Self::Admin => TEAM_REPOSITORY_ADMIN_PERMISSIONS,
             Self::TransferOwnership => TEAM_REPOSITORY_PACKAGE_TRANSFER_PERMISSIONS,
+            Self::SecurityReview => TEAM_REPOSITORY_PACKAGE_SECURITY_REVIEW_PERMISSIONS,
         }
     }
 
@@ -90,6 +96,9 @@ impl PackageAccessRequirement {
             Self::Admin => "You do not have package administration permission",
             Self::TransferOwnership => {
                 "You do not have permission to transfer ownership of this package"
+            }
+            Self::SecurityReview => {
+                "You do not have permission to manage security findings for this package"
             }
         }
     }
@@ -940,6 +949,22 @@ pub async fn ensure_package_transfer_access(
     .await
 }
 
+pub async fn ensure_package_security_review_access(
+    db: &PgPool,
+    ecosystem: &str,
+    normalized_name: &str,
+    actor_user_id: Uuid,
+) -> ApiResult<Uuid> {
+    ensure_package_access_by_requirement(
+        db,
+        ecosystem,
+        normalized_name,
+        actor_user_id,
+        PackageAccessRequirement::SecurityReview,
+    )
+    .await
+}
+
 async fn fetch_package_owner_fields_by_id(
     db: &PgPool,
     package_id: Uuid,
@@ -1082,6 +1107,48 @@ pub async fn actor_can_transfer_package_by_id(
         repository_id,
         actor_user_id,
         TEAM_REPOSITORY_PACKAGE_TRANSFER_PERMISSIONS,
+    )
+    .await
+}
+
+pub async fn actor_can_security_review_package_by_id(
+    db: &PgPool,
+    package_id: Uuid,
+    actor_user_id: Option<Uuid>,
+) -> ApiResult<bool> {
+    let Some(actor_user_id) = actor_user_id else {
+        return Ok(false);
+    };
+
+    let (owner_user_id, owner_org_id, repository_id) =
+        fetch_package_owner_fields_by_id(db, package_id).await?;
+
+    if owner_user_id == Some(actor_user_id) {
+        return Ok(true);
+    }
+
+    if let Some(owner_org_id) = owner_org_id {
+        if actor_has_org_roles(db, owner_org_id, actor_user_id, PACKAGE_ADMIN_ROLES).await? {
+            return Ok(true);
+        }
+    }
+
+    if actor_has_team_package_permissions(
+        db,
+        package_id,
+        actor_user_id,
+        TEAM_PACKAGE_SECURITY_REVIEW_PERMISSIONS,
+    )
+    .await?
+    {
+        return Ok(true);
+    }
+
+    actor_has_team_repository_permissions(
+        db,
+        repository_id,
+        actor_user_id,
+        TEAM_REPOSITORY_PACKAGE_SECURITY_REVIEW_PERMISSIONS,
     )
     .await
 }

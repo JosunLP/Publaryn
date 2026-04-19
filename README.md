@@ -275,6 +275,7 @@ PUT    /v1/packages/:ecosystem/:name/releases/:version/deprecate
 GET    /v1/packages/:ecosystem/:name/tags
 PUT    /v1/packages/:ecosystem/:name/tags/:tag
 GET    /v1/packages/:ecosystem/:name/security-findings
+PATCH  /v1/packages/:ecosystem/:name/security-findings/:finding_id
 GET    /v1/packages/:ecosystem/:name/trusted-publishers
 POST   /v1/packages/:ecosystem/:name/trusted-publishers
 ```
@@ -288,6 +289,8 @@ The control-plane publish workflow is now explicit and quarantine-first:
 3. publish the release once artifact metadata and blobs are present consistently
 
 Quarantined and scanning releases are intentionally hidden from public direct reads and artifact downloads. They remain visible only to actors who already have package write access.
+
+Package maintainers (including team-delegated reviewers with the `security_review` package or repository permission) can resolve or reopen individual security findings through `PATCH /v1/packages/:ecosystem/:name/security-findings/:finding_id` with body `{ "is_resolved": bool, "note"?: string }`. Every state transition records a `security_finding_resolve` or `security_finding_reopen` audit event, including any supplied note in the audit metadata. `GET /v1/packages/:ecosystem/:name` returns a `can_manage_security` flag that reflects whether the authenticated caller holds the `security_review` requirement, so dedicated reviewers without release-management permissions can see triage controls without being granted broader publish rights.
 
 Artifact uploads are idempotent by filename and content. Repeating the same upload for the same release and filename returns the existing artifact metadata instead of creating duplicates.
 

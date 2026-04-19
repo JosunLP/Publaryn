@@ -47,11 +47,18 @@ const PYPI_SIMPLE_FILES_PATH: &str = "/pypi/files";
 const PYPI_READABLE_RELEASE_STATUSES: &[&str] = &["published", "deprecated", "yanked"];
 const PYPI_AUTH_REALM: &str = "Basic realm=\"Publaryn PyPI\"";
 const PYPI_UPLOAD_ALLOWED_REPOSITORY_KINDS: &[&str] = &["public", "private", "staging", "release"];
-const PYPI_UPLOAD_ALLOWED_USER_REPOSITORY_VISIBILITIES: &[&str] =
-    &["public", "private", "unlisted", "quarantined"];
+const PYPI_UPLOAD_ALLOWED_REPOSITORY_VISIBILITIES: &[&str] = &[
+    "public",
+    "private",
+    "internal_org",
+    "unlisted",
+    "quarantined",
+];
 const ORG_REPOSITORY_WRITE_ROLES: &[&str] = &["owner", "admin"];
 const PACKAGE_PUBLISH_ROLES: &[&str] = &["owner", "admin", "maintainer", "publisher"];
 const TEAM_PACKAGE_PUBLISH_PERMISSIONS: &[&str] = &["admin", "publish"];
+const TEAM_REPOSITORY_PUBLISH_PERMISSIONS: &[&str] = &["admin", "publish"];
+const TEAM_REPOSITORY_CREATE_PERMISSIONS: &[&str] = &["admin", "publish", "write_metadata"];
 
 pub trait PyPiAppState: Clone + Send + Sync + 'static {
     fn db(&self) -> &PgPool;
@@ -137,6 +144,7 @@ struct UploadedArtifactContext {
 #[derive(Debug, Clone)]
 struct ExistingUploadPackageContext {
     package_id: Uuid,
+    repository_id: Uuid,
     repository_slug: String,
     owner_user_id: Option<Uuid>,
     owner_org_id: Option<Uuid>,
@@ -962,6 +970,7 @@ async fn resolve_or_create_upload_package<S: PyPiAppState>(
             && !actor_can_publish_package(
                 state.db(),
                 package_id,
+                existing_package.repository_id,
                 existing_package.owner_user_id,
                 existing_package.owner_org_id,
                 identity.user_id,
@@ -1094,6 +1103,7 @@ async fn resolve_or_create_upload_package<S: PyPiAppState>(
                 && !actor_can_publish_package(
                     state.db(),
                     package_id,
+                    existing_package.repository_id,
                     existing_package.owner_user_id,
                     existing_package.owner_org_id,
                     identity.user_id,
@@ -1125,7 +1135,7 @@ async fn load_existing_upload_package(
     normalized_name: &str,
 ) -> Result<Option<ExistingUploadPackageContext>, Response> {
     let row = sqlx::query(
-        "SELECT p.id, p.owner_user_id, p.owner_org_id, r.slug AS repository_slug \
+        "SELECT p.id, p.repository_id, p.owner_user_id, p.owner_org_id, r.slug AS repository_slug \
          FROM packages p \
          JOIN repositories r ON r.id = p.repository_id \
          WHERE p.ecosystem = 'pypi' AND p.normalized_name = $1",
@@ -1137,6 +1147,7 @@ async fn load_existing_upload_package(
 
     Ok(row.map(|row| ExistingUploadPackageContext {
         package_id: uuid_column(&row, "id"),
+        repository_id: uuid_column(&row, "repository_id"),
         repository_slug: string_column(&row, "repository_slug"),
         owner_user_id: optional_uuid_column(&row, "owner_user_id"),
         owner_org_id: optional_uuid_column(&row, "owner_org_id"),
@@ -1183,16 +1194,25 @@ async fn load_target_upload_repository(
         ));
     }
 
+    let repository_id = uuid_column(&repository, "id");
     let owner_user_id = optional_uuid_column(&repository, "owner_user_id");
     let owner_org_id = optional_uuid_column(&repository, "owner_org_id");
-    if !actor_can_write_repository(db, owner_user_id, owner_org_id, actor_user_id).await {
+    if !actor_can_write_repository(
+        db,
+        repository_id,
+        owner_user_id,
+        owner_org_id,
+        actor_user_id,
+    )
+    .await
+    {
         return Err(forbidden_response(
             "You do not have permission to create PyPI packages in the selected repository",
         ));
     }
 
     Ok(UploadRepositoryTarget {
-        repository_id: uuid_column(&repository, "id"),
+        repository_id,
         repository_slug: string_column(&repository, "slug"),
         repository_visibility: string_column(&repository, "visibility"),
         owner_user_id,
@@ -1204,30 +1224,69 @@ async fn load_default_upload_repository(
     db: &PgPool,
     actor_user_id: Uuid,
 ) -> Result<UploadRepositoryTarget, Response> {
+    // Resolve the first repository the actor can publish PyPI distributions
+    // into, whether that is a user-owned repository, an org-owned repository
+    // where the actor has an org owner/admin role, or an org-owned repository
+    // delegated to a team the actor belongs to (admin/publish/write_metadata).
     let repository = sqlx::query(
-        "SELECT id, slug, visibility, owner_user_id, owner_org_id \
+        "SELECT id, slug, visibility::text AS visibility, owner_user_id, owner_org_id \
          FROM repositories \
-         WHERE owner_user_id = $1 \
-           AND kind::text = ANY($2) \
-           AND visibility::text = ANY($3) \
-         ORDER BY created_at ASC \
+         WHERE kind::text = ANY($1) \
+           AND visibility::text = ANY($2) \
+           AND (\
+               owner_user_id = $3 \
+               OR EXISTS (\
+                   SELECT 1 \
+                   FROM org_memberships om \
+                   WHERE om.org_id = repositories.owner_org_id \
+                     AND om.user_id = $3 \
+                     AND om.role::text = ANY($4)\
+               ) \
+               OR EXISTS (\
+                   SELECT 1 \
+                   FROM team_repository_access tra \
+                   JOIN team_memberships tm ON tm.team_id = tra.team_id \
+                   JOIN teams t ON t.id = tra.team_id \
+                   WHERE tra.repository_id = repositories.id \
+                     AND tm.user_id = $3 \
+                     AND t.org_id = repositories.owner_org_id \
+                     AND tra.permission::text = ANY($5)\
+               )\
+           ) \
+         ORDER BY (owner_user_id = $3) DESC NULLS LAST, created_at ASC \
          LIMIT 1",
     )
+    .bind(
+        PYPI_UPLOAD_ALLOWED_REPOSITORY_KINDS
+            .iter()
+            .map(|kind| (*kind).to_owned())
+            .collect::<Vec<_>>(),
+    )
+    .bind(
+        PYPI_UPLOAD_ALLOWED_REPOSITORY_VISIBILITIES
+            .iter()
+            .map(|visibility| (*visibility).to_owned())
+            .collect::<Vec<_>>(),
+    )
     .bind(actor_user_id)
-    .bind(PYPI_UPLOAD_ALLOWED_REPOSITORY_KINDS
-        .iter()
-        .map(|kind| (*kind).to_owned())
-        .collect::<Vec<_>>())
-    .bind(PYPI_UPLOAD_ALLOWED_USER_REPOSITORY_VISIBILITIES
-        .iter()
-        .map(|visibility| (*visibility).to_owned())
-        .collect::<Vec<_>>())
+    .bind(
+        ORG_REPOSITORY_WRITE_ROLES
+            .iter()
+            .map(|role| (*role).to_owned())
+            .collect::<Vec<_>>(),
+    )
+    .bind(
+        TEAM_REPOSITORY_CREATE_PERMISSIONS
+            .iter()
+            .map(|permission| (*permission).to_owned())
+            .collect::<Vec<_>>(),
+    )
     .fetch_optional(db)
     .await
     .map_err(|_| internal_error_response("Database error"))?
     .ok_or_else(|| {
         forbidden_response(
-            "You have no user-owned repository suitable for PyPI uploads. Create one via the Publaryn API first.",
+            "You have no repository suitable for PyPI uploads. Create one via the Publaryn API or ask an administrator to delegate access first.",
         )
     })?;
 
@@ -1277,6 +1336,7 @@ async fn update_upload_package_metadata(
 async fn actor_can_publish_package(
     db: &PgPool,
     package_id: Uuid,
+    repository_id: Uuid,
     owner_user_id: Option<Uuid>,
     owner_org_id: Option<Uuid>,
     actor_user_id: Uuid,
@@ -1314,7 +1374,7 @@ async fn actor_can_publish_package(
             .map(|permission| (*permission).to_owned())
             .collect::<Vec<_>>();
 
-        return sqlx::query_scalar::<_, bool>(
+        let team_package_match = sqlx::query_scalar::<_, bool>(
             "SELECT EXISTS (\
                  SELECT 1 \
                  FROM team_package_access tpa \
@@ -1333,6 +1393,35 @@ async fn actor_can_publish_package(
         .fetch_one(db)
         .await
         .unwrap_or(false);
+
+        if team_package_match {
+            return true;
+        }
+
+        let allowed_repository_permissions = TEAM_REPOSITORY_PUBLISH_PERMISSIONS
+            .iter()
+            .map(|permission| (*permission).to_owned())
+            .collect::<Vec<_>>();
+
+        return sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS (\
+                 SELECT 1 \
+                 FROM team_repository_access tra \
+                 JOIN team_memberships tm ON tm.team_id = tra.team_id \
+                 JOIN teams t ON t.id = tra.team_id \
+                 JOIN repositories r ON r.id = tra.repository_id \
+                 WHERE tra.repository_id = $1 \
+                   AND tm.user_id = $2 \
+                   AND t.org_id = r.owner_org_id \
+                   AND tra.permission::text = ANY($3)\
+             )",
+        )
+        .bind(repository_id)
+        .bind(actor_user_id)
+        .bind(&allowed_repository_permissions)
+        .fetch_one(db)
+        .await
+        .unwrap_or(false);
     }
 
     false
@@ -1340,6 +1429,7 @@ async fn actor_can_publish_package(
 
 async fn actor_can_write_repository(
     db: &PgPool,
+    repository_id: Uuid,
     owner_user_id: Option<Uuid>,
     owner_org_id: Option<Uuid>,
     actor_user_id: Uuid,
@@ -1357,7 +1447,7 @@ async fn actor_can_write_repository(
         .map(|role| (*role).to_owned())
         .collect::<Vec<_>>();
 
-    sqlx::query_scalar::<_, bool>(
+    let org_role_match = sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS (\
              SELECT 1 \
              FROM org_memberships \
@@ -1367,6 +1457,35 @@ async fn actor_can_write_repository(
     .bind(owner_org_id)
     .bind(actor_user_id)
     .bind(&allowed_roles)
+    .fetch_one(db)
+    .await
+    .unwrap_or(false);
+
+    if org_role_match {
+        return true;
+    }
+
+    let allowed_repository_permissions = TEAM_REPOSITORY_CREATE_PERMISSIONS
+        .iter()
+        .map(|permission| (*permission).to_owned())
+        .collect::<Vec<_>>();
+
+    sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (\
+             SELECT 1 \
+             FROM team_repository_access tra \
+             JOIN team_memberships tm ON tm.team_id = tra.team_id \
+             JOIN teams t ON t.id = tra.team_id \
+             JOIN repositories r ON r.id = tra.repository_id \
+             WHERE tra.repository_id = $1 \
+               AND tm.user_id = $2 \
+               AND t.org_id = r.owner_org_id \
+               AND tra.permission::text = ANY($3)\
+         )",
+    )
+    .bind(repository_id)
+    .bind(actor_user_id)
+    .bind(&allowed_repository_permissions)
     .fetch_one(db)
     .await
     .unwrap_or(false)
@@ -1595,7 +1714,7 @@ async fn finalize_upload_release(
 
     sqlx::query(
         "UPDATE releases \
-         SET status = $1, updated_at = NOW() \
+         SET status = $1::release_status, updated_at = NOW() \
          WHERE id = $2",
     )
     .bind(desired_status)

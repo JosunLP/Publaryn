@@ -1210,6 +1210,98 @@ async fn get_release_id(
     .expect("release id should be queryable")
 }
 
+/// Build a minimal valid PyPI legacy upload multipart body (with metadata_version 2.4
+/// and sha256 digest validation) and return `(content_type, body)`.
+fn build_pypi_legacy_upload_multipart(
+    package_name: &str,
+    version: &str,
+    artifact_bytes: &[u8],
+) -> (String, Vec<u8>) {
+    use sha2::{Digest, Sha256};
+
+    let boundary = "----publaryn-test-boundary-2f4e";
+    let filename = format!("{package_name}-{version}.tar.gz");
+    let mut digest = Sha256::new();
+    digest.update(artifact_bytes);
+    let sha256_hex = hex::encode(digest.finalize());
+
+    let mut body: Vec<u8> = Vec::new();
+    let text_fields: &[(&str, &str)] = &[
+        (":action", "file_upload"),
+        ("protocol_version", "1"),
+        ("metadata_version", "2.4"),
+        ("name", package_name),
+        ("version", version),
+        ("filetype", "sdist"),
+        ("pyversion", "source"),
+        ("sha256_digest", sha256_hex.as_str()),
+    ];
+
+    for (name, value) in text_fields {
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        body.extend_from_slice(
+            format!("Content-Disposition: form-data; name=\"{name}\"\r\n\r\n").as_bytes(),
+        );
+        body.extend_from_slice(value.as_bytes());
+        body.extend_from_slice(b"\r\n");
+    }
+
+    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    body.extend_from_slice(
+        format!("Content-Disposition: form-data; name=\"content\"; filename=\"{filename}\"\r\n",)
+            .as_bytes(),
+    );
+    body.extend_from_slice(b"Content-Type: application/gzip\r\n\r\n");
+    body.extend_from_slice(artifact_bytes);
+    body.extend_from_slice(b"\r\n");
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+
+    let content_type = format!("multipart/form-data; boundary={boundary}");
+    (content_type, body)
+}
+
+/// Upload a PyPI distribution via the legacy upload endpoint (optionally targeting a
+/// specific repository slug) and return the response.
+async fn upload_pypi_distribution(
+    app: &axum::Router,
+    token: &str,
+    repository_slug: Option<&str>,
+    package_name: &str,
+    version: &str,
+    artifact_bytes: &[u8],
+) -> (StatusCode, Value) {
+    let (content_type, body) =
+        build_pypi_legacy_upload_multipart(package_name, version, artifact_bytes);
+    let uri = match repository_slug {
+        Some(slug) => format!("/pypi/legacy/{slug}/"),
+        None => "/pypi/legacy/".to_owned(),
+    };
+    let auth_header = ["Bearer ", token].concat();
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri(uri)
+        .header(header::AUTHORIZATION, auth_header)
+        .header(header::CONTENT_TYPE, content_type)
+        .body(Body::from(body))
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json_or_empty(resp).await;
+    (status, body)
+}
+
+async fn body_json_or_empty(resp: axum::response::Response) -> Value {
+    let bytes = axum::body::to_bytes(resp.into_body(), TEST_RESPONSE_BODY_LIMIT)
+        .await
+        .expect("read body");
+    if bytes.is_empty() {
+        return Value::Null;
+    }
+    serde_json::from_slice(&bytes)
+        .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned()))
+}
+
 /// Insert a security finding for a release directly into the database.
 async fn insert_security_finding(
     pool: &PgPool,
@@ -6319,6 +6411,532 @@ async fn test_native_npm_repository_publish_permission_allows_existing_package_p
 }
 
 #[sqlx::test(migrations = "../../migrations")]
+async fn test_native_cargo_publish_auto_creates_org_owned_package_from_repository_publish_grant(
+    pool: PgPool,
+) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &alice_jwt, "Source Org", "source-org").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let source_org_id = org_body["id"].as_str().expect("source org id");
+    let source_org_uuid = uuid::Uuid::parse_str(source_org_id).expect("source org id should parse");
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Source Crates",
+        "source-crates",
+        Some(source_org_id),
+        Some("private"),
+        Some("private"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, _) = add_org_member(&app, &alice_jwt, "source-org", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "Crate Release Engineering",
+        "crate-release-engineering",
+        Some("Publishes cargo crates through repository delegation."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = add_team_member_to_team(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "crate-release-engineering",
+        "bob",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, grant_body) = grant_team_repository_access(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "crate-release-engineering",
+        "source-crates",
+        &["publish"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team repository access response: {grant_body}"
+    );
+
+    let (status, token_body) =
+        create_personal_access_token(&app, &bob_jwt, "bob-cargo-publish", &["packages:write"])
+            .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
+    let cargo_token = token_body["token"]
+        .as_str()
+        .expect("cargo token should be returned")
+        .to_owned();
+
+    let crate_bytes = b"native-org-crate-tarball";
+    let payload = build_cargo_publish_payload(
+        json!({
+            "name": "native_org_crate",
+            "vers": "1.0.0",
+            "deps": [],
+            "features": {},
+            "authors": ["Bob <bob@test.dev>"],
+            "description": "Repository-delegated cargo publish",
+            "license": "MIT"
+        }),
+        crate_bytes,
+    );
+
+    let (status, publish_body) = publish_cargo_crate(&app, &cargo_token, payload).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected cargo publish response: {publish_body}"
+    );
+
+    let package_owner = sqlx::query(
+        "SELECT owner_user_id, owner_org_id, visibility::text AS visibility \
+         FROM packages \
+         WHERE ecosystem = 'cargo' AND normalized_name = $1",
+    )
+    .bind("native_org_crate")
+    .fetch_one(&pool)
+    .await
+    .expect("native cargo package should exist");
+    let package_owner_user_id = package_owner
+        .try_get::<Option<uuid::Uuid>, _>("owner_user_id")
+        .expect("package owner user id should be readable");
+    let package_owner_org_id = package_owner
+        .try_get::<Option<uuid::Uuid>, _>("owner_org_id")
+        .expect("package owner org id should be readable");
+    let package_visibility = package_owner
+        .try_get::<String, _>("visibility")
+        .expect("package visibility should be readable");
+    assert_eq!(package_owner_user_id, None);
+    assert_eq!(package_owner_org_id, Some(source_org_uuid));
+    assert_eq!(package_visibility, "private");
+
+    let (status, package_detail) =
+        get_package_detail(&app, Some(&bob_jwt), "cargo", "native_org_crate").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(package_detail["owner_org_slug"], "source-org");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_native_cargo_repository_publish_permission_allows_existing_package_publish(
+    pool: PgPool,
+) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &alice_jwt, "Source Org", "source-org").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let source_org_id = org_body["id"].as_str().expect("source org id");
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Source Crates",
+        "source-crates",
+        Some(source_org_id),
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "cargo",
+        "native_release_crate",
+        "source-crates",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let (status, _) = add_org_member(&app, &alice_jwt, "source-org", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "Crate Release Engineering",
+        "crate-release-engineering",
+        Some("Publishes existing cargo crates via repository delegation."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = add_team_member_to_team(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "crate-release-engineering",
+        "bob",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, grant_body) = grant_team_repository_access(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "crate-release-engineering",
+        "source-crates",
+        &["publish"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team repository access response: {grant_body}"
+    );
+
+    let (status, token_body) =
+        create_personal_access_token(&app, &bob_jwt, "bob-cargo-publish", &["packages:write"])
+            .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
+    let cargo_token = token_body["token"]
+        .as_str()
+        .expect("cargo token should be returned")
+        .to_owned();
+
+    let crate_bytes = b"native-release-crate-tarball";
+    let payload = build_cargo_publish_payload(
+        json!({
+            "name": "native_release_crate",
+            "vers": "1.0.0",
+            "deps": [],
+            "features": {},
+            "authors": ["Bob <bob@test.dev>"],
+            "description": "Repository-delegated cargo publish for existing package",
+            "license": "MIT"
+        }),
+        crate_bytes,
+    );
+
+    let (status, publish_body) = publish_cargo_crate(&app, &cargo_token, payload).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected cargo publish response: {publish_body}"
+    );
+
+    let release_status: String = sqlx::query_scalar(
+        "SELECT r.status::text \
+         FROM releases r \
+         JOIN packages p ON p.id = r.package_id \
+         WHERE p.ecosystem = 'cargo' AND p.normalized_name = $1 AND r.version = $2",
+    )
+    .bind("native_release_crate")
+    .bind("1.0.0")
+    .fetch_one(&pool)
+    .await
+    .expect("cargo release status should be queryable");
+    assert_eq!(release_status, "published");
+
+    let (status, detail_after_publish) =
+        get_package_detail(&app, Some(&bob_jwt), "cargo", "native_release_crate").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail_after_publish["can_manage_releases"], true);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_native_pypi_upload_auto_creates_org_owned_package_from_repository_publish_grant(
+    pool: PgPool,
+) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &alice_jwt, "Source Org", "source-org").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let source_org_id = org_body["id"].as_str().expect("source org id");
+    let source_org_uuid = uuid::Uuid::parse_str(source_org_id).expect("source org id should parse");
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Source Python Packages",
+        "source-py-packages",
+        Some(source_org_id),
+        Some("private"),
+        Some("private"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, _) = add_org_member(&app, &alice_jwt, "source-org", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "PyPI Release Engineering",
+        "pypi-release-engineering",
+        Some("Publishes PyPI distributions through repository delegation."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = add_team_member_to_team(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "pypi-release-engineering",
+        "bob",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, grant_body) = grant_team_repository_access(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "pypi-release-engineering",
+        "source-py-packages",
+        &["publish"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team repository access response: {grant_body}"
+    );
+
+    let (status, token_body) =
+        create_personal_access_token(&app, &bob_jwt, "bob-pypi-publish", &["packages:write"]).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
+    let pypi_token = token_body["token"]
+        .as_str()
+        .expect("pypi token should be returned")
+        .to_owned();
+
+    let artifact_bytes = b"fake-sdist-bytes-for-delegated-org-package";
+    let (status, upload_body) = upload_pypi_distribution(
+        &app,
+        &pypi_token,
+        None,
+        "native-org-widget",
+        "1.0.0",
+        artifact_bytes,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected pypi upload response: {upload_body}"
+    );
+
+    let package_owner = sqlx::query(
+        "SELECT owner_user_id, owner_org_id, visibility::text AS visibility \
+         FROM packages \
+         WHERE ecosystem = 'pypi' AND normalized_name = $1",
+    )
+    .bind("native-org-widget")
+    .fetch_one(&pool)
+    .await
+    .expect("native pypi package should exist");
+    let package_owner_user_id = package_owner
+        .try_get::<Option<uuid::Uuid>, _>("owner_user_id")
+        .expect("package owner user id should be readable");
+    let package_owner_org_id = package_owner
+        .try_get::<Option<uuid::Uuid>, _>("owner_org_id")
+        .expect("package owner org id should be readable");
+    let package_visibility = package_owner
+        .try_get::<String, _>("visibility")
+        .expect("package visibility should be readable");
+    assert_eq!(package_owner_user_id, None);
+    assert_eq!(package_owner_org_id, Some(source_org_uuid));
+    assert_eq!(package_visibility, "private");
+
+    let (status, package_detail) =
+        get_package_detail(&app, Some(&bob_jwt), "pypi", "native-org-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(package_detail["owner_org_slug"], "source-org");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_native_pypi_repository_publish_permission_allows_existing_package_upload(
+    pool: PgPool,
+) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &alice_jwt, "Source Org", "source-org").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let source_org_id = org_body["id"].as_str().expect("source org id");
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Source Python Packages",
+        "source-py-packages",
+        Some(source_org_id),
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "pypi",
+        "native-release-widget",
+        "source-py-packages",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let (status, _) = add_org_member(&app, &alice_jwt, "source-org", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "PyPI Release Engineering",
+        "pypi-release-engineering",
+        Some("Publishes existing PyPI distributions through repository delegation."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = add_team_member_to_team(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "pypi-release-engineering",
+        "bob",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, grant_body) = grant_team_repository_access(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "pypi-release-engineering",
+        "source-py-packages",
+        &["publish"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team repository access response: {grant_body}"
+    );
+
+    let (status, token_body) =
+        create_personal_access_token(&app, &bob_jwt, "bob-pypi-publish", &["packages:write"]).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
+    let pypi_token = token_body["token"]
+        .as_str()
+        .expect("pypi token should be returned")
+        .to_owned();
+
+    let artifact_bytes = b"fake-sdist-bytes-for-delegated-existing-package";
+    let (status, upload_body) = upload_pypi_distribution(
+        &app,
+        &pypi_token,
+        None,
+        "native-release-widget",
+        "1.0.0",
+        artifact_bytes,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected pypi upload response: {upload_body}"
+    );
+
+    let release_status: String = sqlx::query_scalar(
+        "SELECT r.status::text \
+         FROM releases r \
+         JOIN packages p ON p.id = r.package_id \
+         WHERE p.ecosystem = 'pypi' AND p.normalized_name = $1 AND r.version = $2",
+    )
+    .bind("native-release-widget")
+    .bind("1.0.0")
+    .fetch_one(&pool)
+    .await
+    .expect("pypi release status should be queryable");
+    assert_eq!(release_status, "published");
+
+    let (status, detail_after_publish) =
+        get_package_detail(&app, Some(&bob_jwt), "pypi", "native-release-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail_after_publish["can_manage_releases"], true);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
 async fn test_trusted_publisher_management_roundtrip_with_audit(pool: PgPool) {
     let app = app(pool.clone());
     register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
@@ -7142,4 +7760,498 @@ async fn test_unknown_route_returns_404(pool: PgPool) {
     let resp = app.oneshot(req).await.unwrap();
 
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Security finding resolve / reopen
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// Send a PATCH request to the security-finding update endpoint and return
+/// `(status, body)`.
+async fn update_security_finding_request(
+    app: &axum::Router,
+    jwt: &str,
+    ecosystem: &str,
+    package_name: &str,
+    finding_id: uuid::Uuid,
+    payload: Value,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::PATCH)
+        .uri(format!(
+            "/v1/packages/{ecosystem}/{package_name}/security-findings/{finding_id}"
+        ))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::from(payload.to_string()))
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_security_finding_resolve_and_reopen_happy_path(pool: PgPool) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let owner_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, _) = create_repository_with_options(
+        &app,
+        &owner_jwt,
+        "Personal Pkgs",
+        "personal-pkgs",
+        None,
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_package_with_options(
+        &app,
+        &owner_jwt,
+        "npm",
+        "finding-widget",
+        "personal-pkgs",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) =
+        create_release_for_package(&app, &owner_jwt, "npm", "finding-widget", "1.0.0").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let release_id = get_release_id(&pool, "npm", "finding-widget", "1.0.0").await;
+    let finding_id = insert_security_finding(
+        &pool,
+        release_id,
+        "vulnerability",
+        "high",
+        "A high severity finding",
+        false,
+    )
+    .await;
+
+    let (status, resolved_body) = update_security_finding_request(
+        &app,
+        &owner_jwt,
+        "npm",
+        "finding-widget",
+        finding_id,
+        serde_json::json!({ "is_resolved": true, "note": "mitigated upstream" }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected resolve response: {resolved_body}"
+    );
+    assert_eq!(resolved_body["is_resolved"], true);
+    assert!(resolved_body["resolved_at"].is_string());
+    assert!(resolved_body["resolved_by"].is_string());
+    assert_eq!(resolved_body["release_version"], "1.0.0");
+
+    let resolved_audit_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::BIGINT FROM audit_logs \
+         WHERE action = 'security_finding_resolve' \
+           AND target_release_id = $1",
+    )
+    .bind(release_id)
+    .fetch_one(&pool)
+    .await
+    .expect("audit count should be queryable");
+    assert_eq!(resolved_audit_count, 1);
+
+    let (status, reopened_body) = update_security_finding_request(
+        &app,
+        &owner_jwt,
+        "npm",
+        "finding-widget",
+        finding_id,
+        serde_json::json!({ "is_resolved": false }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected reopen response: {reopened_body}"
+    );
+    assert_eq!(reopened_body["is_resolved"], false);
+    assert!(reopened_body["resolved_at"].is_null());
+    assert!(reopened_body["resolved_by"].is_null());
+
+    let reopened_audit_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::BIGINT FROM audit_logs \
+         WHERE action = 'security_finding_reopen' \
+           AND target_release_id = $1",
+    )
+    .bind(release_id)
+    .fetch_one(&pool)
+    .await
+    .expect("audit count should be queryable");
+    assert_eq!(reopened_audit_count, 1);
+
+    // No-op update (already reopened) must not emit another audit event.
+    let (status, _) = update_security_finding_request(
+        &app,
+        &owner_jwt,
+        "npm",
+        "finding-widget",
+        finding_id,
+        serde_json::json!({ "is_resolved": false }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let reopened_audit_count_after_noop: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::BIGINT FROM audit_logs \
+         WHERE action = 'security_finding_reopen' \
+           AND target_release_id = $1",
+    )
+    .bind(release_id)
+    .fetch_one(&pool)
+    .await
+    .expect("audit count should be queryable");
+    assert_eq!(reopened_audit_count_after_noop, 1);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_security_finding_update_forbidden_for_unrelated_user(pool: PgPool) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let owner_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let other_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+
+    let (status, _) = create_repository_with_options(
+        &app,
+        &owner_jwt,
+        "Personal Pkgs",
+        "personal-pkgs",
+        None,
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_package_with_options(
+        &app,
+        &owner_jwt,
+        "npm",
+        "finding-widget",
+        "personal-pkgs",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) =
+        create_release_for_package(&app, &owner_jwt, "npm", "finding-widget", "1.0.0").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let release_id = get_release_id(&pool, "npm", "finding-widget", "1.0.0").await;
+    let finding_id = insert_security_finding(
+        &pool,
+        release_id,
+        "vulnerability",
+        "high",
+        "A high severity finding",
+        false,
+    )
+    .await;
+
+    let (status, body) = update_security_finding_request(
+        &app,
+        &other_jwt,
+        "npm",
+        "finding-widget",
+        finding_id,
+        serde_json::json!({ "is_resolved": true }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "unexpected forbidden response: {body}"
+    );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_security_finding_update_404_when_finding_belongs_to_other_package(pool: PgPool) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let owner_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, _) = create_repository_with_options(
+        &app,
+        &owner_jwt,
+        "Personal Pkgs",
+        "personal-pkgs",
+        None,
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_package_with_options(
+        &app,
+        &owner_jwt,
+        "npm",
+        "target-widget",
+        "personal-pkgs",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = create_package_with_options(
+        &app,
+        &owner_jwt,
+        "npm",
+        "other-widget",
+        "personal-pkgs",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) =
+        create_release_for_package(&app, &owner_jwt, "npm", "target-widget", "1.0.0").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) =
+        create_release_for_package(&app, &owner_jwt, "npm", "other-widget", "1.0.0").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let other_release_id = get_release_id(&pool, "npm", "other-widget", "1.0.0").await;
+    let other_finding_id = insert_security_finding(
+        &pool,
+        other_release_id,
+        "vulnerability",
+        "medium",
+        "Unrelated finding",
+        false,
+    )
+    .await;
+
+    // PATCH against the wrong package path must be 404, not a cross-package mutation.
+    let (status, body) = update_security_finding_request(
+        &app,
+        &owner_jwt,
+        "npm",
+        "target-widget",
+        other_finding_id,
+        serde_json::json!({ "is_resolved": true }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "unexpected response: {body}");
+
+    let still_unresolved: bool =
+        sqlx::query_scalar("SELECT is_resolved FROM security_findings WHERE id = $1")
+            .bind(other_finding_id)
+            .fetch_one(&pool)
+            .await
+            .expect("finding row should be queryable");
+    assert!(!still_unresolved);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_security_finding_update_allowed_via_team_security_review_permission(pool: PgPool) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let owner_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &owner_jwt, "Acme Corp", "acme-corp").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id = org_body["id"].as_str().expect("org id");
+
+    let (status, _) = create_repository_with_options(
+        &app,
+        &owner_jwt,
+        "Acme Public",
+        "acme-public",
+        Some(org_id),
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_package_with_options(
+        &app,
+        &owner_jwt,
+        "npm",
+        "acme-widget",
+        "acme-public",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) =
+        create_release_for_package(&app, &owner_jwt, "npm", "acme-widget", "1.0.0").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let release_id = get_release_id(&pool, "npm", "acme-widget", "1.0.0").await;
+    let finding_id = insert_security_finding(
+        &pool,
+        release_id,
+        "policy_violation",
+        "medium",
+        "License policy violation",
+        false,
+    )
+    .await;
+
+    let (status, _) = add_org_member(&app, &owner_jwt, "acme-corp", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_team(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        "Security Reviewers",
+        "security-reviewers",
+        Some("Triages security findings."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) =
+        add_team_member_to_team(&app, &owner_jwt, "acme-corp", "security-reviewers", "bob").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = grant_team_repository_access(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        "security-reviewers",
+        "acme-public",
+        &["security_review"],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Delegated team-member Bob can resolve the finding via security_review permission.
+    let (status, body) = update_security_finding_request(
+        &app,
+        &bob_jwt,
+        "npm",
+        "acme-widget",
+        finding_id,
+        serde_json::json!({ "is_resolved": true, "note": "policy waiver" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "unexpected response: {body}");
+    assert_eq!(body["is_resolved"], true);
+
+    let audit_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::BIGINT FROM audit_logs \
+         WHERE action = 'security_finding_resolve' \
+           AND target_release_id = $1 \
+           AND metadata->>'note' = $2",
+    )
+    .bind(release_id)
+    .bind("policy waiver")
+    .fetch_one(&pool)
+    .await
+    .expect("audit count should be queryable");
+    assert_eq!(audit_count, 1);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_package_detail_reports_can_manage_security_for_security_reviewer(pool: PgPool) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    register_user(&app, "carol", "carol@test.dev", "super_secret_pw!").await;
+    let owner_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let reviewer_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+    let unrelated_jwt = login_user(&app, "carol", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &owner_jwt, "Acme Corp", "acme-corp").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id = org_body["id"].as_str().expect("org id");
+
+    let (status, _) = create_repository_with_options(
+        &app,
+        &owner_jwt,
+        "Acme Public",
+        "acme-public",
+        Some(org_id),
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_package_with_options(
+        &app,
+        &owner_jwt,
+        "npm",
+        "acme-sec-widget",
+        "acme-public",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // Baseline: owner has can_manage_security = true.
+    let (status, owner_detail) =
+        get_package_detail(&app, Some(&owner_jwt), "npm", "acme-sec-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(owner_detail["can_manage_security"], true);
+
+    // Anonymous readers and unrelated users must see can_manage_security = false.
+    let (status, anon_detail) = get_package_detail(&app, None, "npm", "acme-sec-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(anon_detail["can_manage_security"], false);
+
+    let (status, unrelated_detail) =
+        get_package_detail(&app, Some(&unrelated_jwt), "npm", "acme-sec-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(unrelated_detail["can_manage_security"], false);
+    assert_eq!(unrelated_detail["can_manage_releases"], false);
+
+    // Bob is added to the org and to a team with repository-scoped security_review.
+    let (status, _) = add_org_member(&app, &owner_jwt, "acme-corp", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = create_team(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        "Security Reviewers",
+        "security-reviewers",
+        Some("Triages findings."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) =
+        add_team_member_to_team(&app, &owner_jwt, "acme-corp", "security-reviewers", "bob").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = grant_team_repository_access(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        "security-reviewers",
+        "acme-public",
+        &["security_review"],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Bob now sees can_manage_security = true, but still cannot manage releases or metadata.
+    let (status, reviewer_detail) =
+        get_package_detail(&app, Some(&reviewer_jwt), "npm", "acme-sec-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(reviewer_detail["can_manage_security"], true);
+    assert_eq!(reviewer_detail["can_manage_releases"], false);
+    assert_eq!(reviewer_detail["can_manage_metadata"], false);
+    assert_eq!(reviewer_detail["can_manage_trusted_publishers"], false);
 }
