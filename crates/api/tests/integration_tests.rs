@@ -6319,6 +6319,275 @@ async fn test_native_npm_repository_publish_permission_allows_existing_package_p
 }
 
 #[sqlx::test(migrations = "../../migrations")]
+async fn test_native_cargo_publish_auto_creates_org_owned_package_from_repository_publish_grant(
+    pool: PgPool,
+) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &alice_jwt, "Source Org", "source-org").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let source_org_id = org_body["id"].as_str().expect("source org id");
+    let source_org_uuid = uuid::Uuid::parse_str(source_org_id).expect("source org id should parse");
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Source Crates",
+        "source-crates",
+        Some(source_org_id),
+        Some("private"),
+        Some("private"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, _) = add_org_member(&app, &alice_jwt, "source-org", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "Crate Release Engineering",
+        "crate-release-engineering",
+        Some("Publishes cargo crates through repository delegation."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = add_team_member_to_team(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "crate-release-engineering",
+        "bob",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, grant_body) = grant_team_repository_access(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "crate-release-engineering",
+        "source-crates",
+        &["publish"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team repository access response: {grant_body}"
+    );
+
+    let (status, token_body) =
+        create_personal_access_token(&app, &bob_jwt, "bob-cargo-publish", &["packages:write"])
+            .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
+    let cargo_token = token_body["token"]
+        .as_str()
+        .expect("cargo token should be returned")
+        .to_owned();
+
+    let crate_bytes = b"native-org-crate-tarball";
+    let payload = build_cargo_publish_payload(
+        json!({
+            "name": "native_org_crate",
+            "vers": "1.0.0",
+            "deps": [],
+            "features": {},
+            "authors": ["Bob <bob@test.dev>"],
+            "description": "Repository-delegated cargo publish",
+            "license": "MIT"
+        }),
+        crate_bytes,
+    );
+
+    let (status, publish_body) = publish_cargo_crate(&app, &cargo_token, payload).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected cargo publish response: {publish_body}"
+    );
+
+    let package_owner = sqlx::query(
+        "SELECT owner_user_id, owner_org_id, visibility::text AS visibility \
+         FROM packages \
+         WHERE ecosystem = 'cargo' AND normalized_name = $1",
+    )
+    .bind("native_org_crate")
+    .fetch_one(&pool)
+    .await
+    .expect("native cargo package should exist");
+    let package_owner_user_id = package_owner
+        .try_get::<Option<uuid::Uuid>, _>("owner_user_id")
+        .expect("package owner user id should be readable");
+    let package_owner_org_id = package_owner
+        .try_get::<Option<uuid::Uuid>, _>("owner_org_id")
+        .expect("package owner org id should be readable");
+    let package_visibility = package_owner
+        .try_get::<String, _>("visibility")
+        .expect("package visibility should be readable");
+    assert_eq!(package_owner_user_id, None);
+    assert_eq!(package_owner_org_id, Some(source_org_uuid));
+    assert_eq!(package_visibility, "private");
+
+    let (status, package_detail) =
+        get_package_detail(&app, Some(&bob_jwt), "cargo", "native_org_crate").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(package_detail["owner_org_slug"], "source-org");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_native_cargo_repository_publish_permission_allows_existing_package_publish(
+    pool: PgPool,
+) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &alice_jwt, "Source Org", "source-org").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let source_org_id = org_body["id"].as_str().expect("source org id");
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Source Crates",
+        "source-crates",
+        Some(source_org_id),
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "cargo",
+        "native_release_crate",
+        "source-crates",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let (status, _) = add_org_member(&app, &alice_jwt, "source-org", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "Crate Release Engineering",
+        "crate-release-engineering",
+        Some("Publishes existing cargo crates via repository delegation."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = add_team_member_to_team(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "crate-release-engineering",
+        "bob",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, grant_body) = grant_team_repository_access(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "crate-release-engineering",
+        "source-crates",
+        &["publish"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team repository access response: {grant_body}"
+    );
+
+    let (status, token_body) =
+        create_personal_access_token(&app, &bob_jwt, "bob-cargo-publish", &["packages:write"])
+            .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
+    let cargo_token = token_body["token"]
+        .as_str()
+        .expect("cargo token should be returned")
+        .to_owned();
+
+    let crate_bytes = b"native-release-crate-tarball";
+    let payload = build_cargo_publish_payload(
+        json!({
+            "name": "native_release_crate",
+            "vers": "1.0.0",
+            "deps": [],
+            "features": {},
+            "authors": ["Bob <bob@test.dev>"],
+            "description": "Repository-delegated cargo publish for existing package",
+            "license": "MIT"
+        }),
+        crate_bytes,
+    );
+
+    let (status, publish_body) = publish_cargo_crate(&app, &cargo_token, payload).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected cargo publish response: {publish_body}"
+    );
+
+    let release_status: String = sqlx::query_scalar(
+        "SELECT r.status::text \
+         FROM releases r \
+         JOIN packages p ON p.id = r.package_id \
+         WHERE p.ecosystem = 'cargo' AND p.normalized_name = $1 AND r.version = $2",
+    )
+    .bind("native_release_crate")
+    .bind("1.0.0")
+    .fetch_one(&pool)
+    .await
+    .expect("cargo release status should be queryable");
+    assert_eq!(release_status, "published");
+
+    let (status, detail_after_publish) =
+        get_package_detail(&app, Some(&bob_jwt), "cargo", "native_release_crate").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail_after_publish["can_manage_releases"], true);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
 async fn test_trusted_publisher_management_roundtrip_with_audit(pool: PgPool) {
     let app = app(pool.clone());
     register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
