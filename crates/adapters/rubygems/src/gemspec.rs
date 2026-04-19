@@ -221,9 +221,11 @@ fn get_requirement_string(value: &serde_yaml::Value, key: &str) -> Option<String
         .filter_map(|item| {
             let arr = item.as_sequence()?;
             let op = arr.first()?.as_str()?;
-            let ver = arr
-                .get(1)
-                .and_then(|v| v.get("version").and_then(|x| x.as_str()).or_else(|| v.as_str()))?;
+            let ver = arr.get(1).and_then(|v| {
+                v.get("version")
+                    .and_then(|x| x.as_str())
+                    .or_else(|| v.as_str())
+            })?;
             Some(format!("{op} {ver}"))
         })
         .collect();
@@ -265,13 +267,11 @@ fn extract_dependencies(
                     .filter_map(|item| {
                         let arr = item.as_sequence()?;
                         let op = arr.first()?.as_str()?;
-                        let ver = arr
-                            .get(1)
-                            .and_then(|v| {
-                                v.get("version")
-                                    .and_then(|x| x.as_str())
-                                    .or_else(|| v.as_str())
-                            })?;
+                        let ver = arr.get(1).and_then(|v| {
+                            v.get("version")
+                                .and_then(|x| x.as_str())
+                                .or_else(|| v.as_str())
+                        })?;
                         Some(format!("{op} {ver}"))
                     })
                     .collect();
@@ -283,7 +283,10 @@ fn extract_dependencies(
             })
             .unwrap_or_default();
 
-        let kind = dep.get("type").and_then(|v| v.as_str()).unwrap_or(":runtime");
+        let kind = dep
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or(":runtime");
         let entry = GemspecDependency {
             name: name.to_owned(),
             requirement,

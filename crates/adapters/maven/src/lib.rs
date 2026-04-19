@@ -1,7 +1,8 @@
 //! Maven repository adapter.
 //!
-//! Implements a minimal read-only Maven repository surface.
+//! Implements a Maven read + deploy surface.
 
 pub mod metadata;
 pub mod name;
+pub mod publish;
 pub mod routes;

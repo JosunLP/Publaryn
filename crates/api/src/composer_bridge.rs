@@ -1,15 +1,32 @@
 //! Bridge between the API crate's `AppState` and the Composer adapter's
 //! `ComposerAppState` trait, keeping the adapter free from circular dependencies.
 
+use bytes::Bytes;
 use publaryn_adapter_composer::routes::{ComposerAppState, StoredObject};
 use publaryn_core::error::Error;
 use sqlx::PgPool;
 
 use crate::state::AppState;
+use crate::storage::PutArtifactObject;
 
 impl ComposerAppState for AppState {
     fn db(&self) -> &PgPool {
         &self.db
+    }
+
+    async fn artifact_put(
+        &self,
+        key: String,
+        content_type: String,
+        bytes: Bytes,
+    ) -> Result<(), Error> {
+        self.artifact_store
+            .put_object(PutArtifactObject {
+                storage_key: key,
+                content_type,
+                bytes,
+            })
+            .await
     }
 
     async fn artifact_get(&self, key: &str) -> Result<Option<StoredObject>, Error> {

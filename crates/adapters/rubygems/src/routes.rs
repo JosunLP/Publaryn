@@ -877,11 +877,21 @@ async fn yank_gem<S: RubyGemsAppState>(
         return forbidden_response("API key does not have the packages:write scope");
     }
 
-    let name = match form.gem_name.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    let name = match form
+        .gem_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         Some(name) => name.to_owned(),
         None => return bad_request_response("Missing required form field: gem_name"),
     };
-    let version = match form.version.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    let version = match form
+        .version
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         Some(version) => version.to_owned(),
         None => return bad_request_response("Missing required form field: version"),
     };
@@ -1225,11 +1235,7 @@ fn forbidden_response(message: &str) -> Response {
 }
 
 fn conflict_response(message: &str) -> Response {
-    (
-        StatusCode::CONFLICT,
-        Json(ErrorDocument { error: message }),
-    )
-        .into_response()
+    (StatusCode::CONFLICT, Json(ErrorDocument { error: message })).into_response()
 }
 
 #[cfg(test)]

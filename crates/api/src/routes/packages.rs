@@ -2286,7 +2286,7 @@ async fn validate_namespace_claim_for_package(
     let Some(row) = sqlx::query(
         "SELECT owner_user_id, owner_org_id \
          FROM namespace_claims \
-         WHERE ecosystem = $1 AND namespace = $2",
+            WHERE ecosystem = $1::ecosystem AND namespace = $2",
     )
     .bind(ecosystem.as_str())
     .bind(&namespace)

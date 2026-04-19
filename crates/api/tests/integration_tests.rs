@@ -1571,6 +1571,176 @@ async fn upload_pypi_distribution(
     (status, body)
 }
 
+/// Build a minimal Composer publish multipart body and return `(content_type, body)`.
+fn build_composer_publish_multipart(
+    package_name: &str,
+    version: &str,
+    artifact_bytes: &[u8],
+) -> (String, Vec<u8>) {
+    let boundary = "----publaryn-composer-boundary-9e7f";
+    let filename = format!("{}-{version}.zip", package_name.replace('/', "-"));
+    let manifest = json!({
+        "name": package_name,
+        "version": version,
+        "description": format!("Published {package_name} {version}"),
+        "homepage": format!("https://packages.example.test/{package_name}"),
+        "license": ["MIT"],
+        "keywords": ["publaryn", "composer"],
+        "support": {
+            "source": format!("https://git.example.test/{package_name}"),
+        },
+    });
+    let manifest_bytes =
+        serde_json::to_vec(&manifest).expect("composer publish manifest should serialize");
+
+    let mut body: Vec<u8> = Vec::new();
+    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    body.extend_from_slice(
+        b"Content-Disposition: form-data; name=\"composer.json\"; filename=\"composer.json\"\r\n",
+    );
+    body.extend_from_slice(b"Content-Type: application/json\r\n\r\n");
+    body.extend_from_slice(&manifest_bytes);
+    body.extend_from_slice(b"\r\n");
+
+    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    body.extend_from_slice(
+        format!("Content-Disposition: form-data; name=\"dist.zip\"; filename=\"{filename}\"\r\n")
+            .as_bytes(),
+    );
+    body.extend_from_slice(b"Content-Type: application/zip\r\n\r\n");
+    body.extend_from_slice(artifact_bytes);
+    body.extend_from_slice(b"\r\n");
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+
+    let content_type = format!("multipart/form-data; boundary={boundary}");
+    (content_type, body)
+}
+
+/// Publish a Composer package version and return the JSON response.
+async fn publish_composer_package(
+    app: &axum::Router,
+    token: &str,
+    package_name: &str,
+    version: &str,
+    artifact_bytes: &[u8],
+) -> (StatusCode, Value) {
+    let (vendor, package) = package_name
+        .split_once('/')
+        .expect("composer package name should contain a vendor and package segment");
+    let (content_type, body) =
+        build_composer_publish_multipart(package_name, version, artifact_bytes);
+    let req = Request::builder()
+        .method(Method::PUT)
+        .uri(format!("/composer/packages/{vendor}/{package}"))
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .header(header::CONTENT_TYPE, content_type)
+        .body(Body::from(body))
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// Yank a Composer package version and return the JSON response.
+async fn yank_composer_package_version(
+    app: &axum::Router,
+    token: &str,
+    vendor: &str,
+    package: &str,
+    version: &str,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::DELETE)
+        .uri(format!(
+            "/composer/packages/{vendor}/{package}/versions/{version}"
+        ))
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// Fetch Composer package metadata and return the JSON response.
+async fn get_composer_package_metadata(
+    app: &axum::Router,
+    token: Option<&str>,
+    vendor: &str,
+    package: &str,
+) -> (StatusCode, Value) {
+    let mut request = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/composer/p/{vendor}/{package}.json"));
+    if let Some(token) = token {
+        request = request.header(header::AUTHORIZATION, format!("Bearer {token}"));
+    }
+    let req = request.body(Body::empty()).unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// Build a minimal Maven POM document for integration tests.
+fn build_maven_pom(group_id: &str, artifact_id: &str, version: &str) -> Vec<u8> {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>{group_id}</groupId>
+  <artifactId>{artifact_id}</artifactId>
+  <version>{version}</version>
+  <name>{artifact_id}</name>
+  <description>Published {artifact_id} {version}</description>
+  <url>https://packages.example.test/{group_id}/{artifact_id}</url>
+  <licenses>
+    <license>
+      <name>Apache-2.0</name>
+    </license>
+  </licenses>
+  <scm>
+    <url>https://git.example.test/{group_id}/{artifact_id}</url>
+  </scm>
+</project>"#
+    )
+    .into_bytes()
+}
+
+/// Upload a Maven repository file through the native Maven deploy adapter.
+async fn upload_maven_artifact(
+    app: &axum::Router,
+    token: &str,
+    group_path: &str,
+    artifact_id: &str,
+    version: &str,
+    filename: &str,
+    content_type: &str,
+    bytes: &[u8],
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::PUT)
+        .uri(format!(
+            "/maven/{group_path}/{artifact_id}/{version}/{filename}"
+        ))
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .header(header::CONTENT_TYPE, content_type)
+        .body(Body::from(bytes.to_vec()))
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json_or_empty(resp).await;
+    (status, body)
+}
+
 async fn body_json_or_empty(resp: axum::response::Response) -> Value {
     let bytes = axum::body::to_bytes(resp.into_body(), TEST_RESPONSE_BODY_LIMIT)
         .await
@@ -7880,6 +8050,827 @@ async fn test_native_pypi_repository_publish_permission_allows_existing_package_
         get_package_detail(&app, Some(&bob_jwt), "pypi", "native-release-widget").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(detail_after_publish["can_manage_releases"], true);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_native_composer_publish_auto_creates_org_owned_package_from_repository_publish_grant(
+    pool: PgPool,
+) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &alice_jwt, "Source Org", "source-org").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let source_org_id = org_body["id"].as_str().expect("source org id");
+    let source_org_uuid = uuid::Uuid::parse_str(source_org_id).expect("source org id should parse");
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Source Composer Packages",
+        "source-composer-packages",
+        Some(source_org_id),
+        Some("private"),
+        Some("private"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, _) = add_org_member(&app, &alice_jwt, "source-org", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "Composer Release Engineering",
+        "composer-release-engineering",
+        Some("Publishes Composer packages through repository delegation."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = add_team_member_to_team(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "composer-release-engineering",
+        "bob",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, grant_body) = grant_team_repository_access(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "composer-release-engineering",
+        "source-composer-packages",
+        &["publish"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team repository access response: {grant_body}"
+    );
+
+    let (status, token_body) =
+        create_personal_access_token(&app, &bob_jwt, "bob-composer-publish", &["packages:write"])
+            .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
+    let composer_token = token_body["token"]
+        .as_str()
+        .expect("composer token should be returned")
+        .to_owned();
+
+    let package_name = "acme/native-org-widget";
+    let artifact_bytes = b"fake-composer-zip-for-delegated-org-package";
+    let (status, publish_body) =
+        publish_composer_package(&app, &composer_token, package_name, "1.0.0", artifact_bytes)
+            .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected composer publish response: {publish_body}"
+    );
+    assert_eq!(publish_body["ok"], true);
+    assert_eq!(publish_body["name"], package_name);
+
+    let package_owner = sqlx::query(
+        "SELECT owner_user_id, owner_org_id, visibility::text AS visibility \
+         FROM packages \
+         WHERE ecosystem = 'composer' AND name = $1",
+    )
+    .bind(package_name)
+    .fetch_one(&pool)
+    .await
+    .expect("native composer package should exist");
+    let package_owner_user_id = package_owner
+        .try_get::<Option<uuid::Uuid>, _>("owner_user_id")
+        .expect("package owner user id should be readable");
+    let package_owner_org_id = package_owner
+        .try_get::<Option<uuid::Uuid>, _>("owner_org_id")
+        .expect("package owner org id should be readable");
+    let package_visibility = package_owner
+        .try_get::<String, _>("visibility")
+        .expect("package visibility should be readable");
+    assert_eq!(package_owner_user_id, None);
+    assert_eq!(package_owner_org_id, Some(source_org_uuid));
+    assert_eq!(package_visibility, "private");
+
+    let release_status: String = sqlx::query_scalar(
+        "SELECT r.status::text \
+         FROM releases r \
+         JOIN packages p ON p.id = r.package_id \
+         WHERE p.ecosystem = 'composer' AND p.name = $1 AND r.version = $2",
+    )
+    .bind(package_name)
+    .bind("1.0.0")
+    .fetch_one(&pool)
+    .await
+    .expect("composer release status should be queryable");
+    assert_eq!(release_status, "published");
+
+    let (status, metadata_body) =
+        get_composer_package_metadata(&app, Some(&composer_token), "acme", "native-org-widget")
+            .await;
+    assert_eq!(status, StatusCode::OK);
+    let versions = metadata_body["packages"][package_name]
+        .as_array()
+        .expect("composer metadata versions should be an array");
+    assert_eq!(versions.len(), 1, "response: {metadata_body}");
+    assert_eq!(versions[0]["version"], "1.0.0");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_native_composer_repository_publish_permission_allows_existing_package_publish_and_yank_keeps_exact_downloads(
+    pool: PgPool,
+) {
+    use sha2::{Digest, Sha256};
+
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &alice_jwt, "Source Org", "source-org").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let source_org_id = org_body["id"].as_str().expect("source org id");
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Source Composer Packages",
+        "source-composer-packages",
+        Some(source_org_id),
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let package_name = "acme/native-release-widget";
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "composer",
+        package_name,
+        "source-composer-packages",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let (status, _) = add_org_member(&app, &alice_jwt, "source-org", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "Composer Release Engineering",
+        "composer-release-engineering",
+        Some("Publishes existing Composer packages and yanks releases."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = add_team_member_to_team(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "composer-release-engineering",
+        "bob",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, grant_body) = grant_team_repository_access(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "composer-release-engineering",
+        "source-composer-packages",
+        &["publish"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team repository access response: {grant_body}"
+    );
+
+    let (status, token_body) =
+        create_personal_access_token(&app, &bob_jwt, "bob-composer-publish", &["packages:write"])
+            .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
+    let composer_token = token_body["token"]
+        .as_str()
+        .expect("composer token should be returned")
+        .to_owned();
+
+    let artifact_bytes = b"fake-composer-zip-for-existing-package";
+    let artifact_sha256 = hex::encode(Sha256::digest(artifact_bytes));
+    let (status, publish_body) =
+        publish_composer_package(&app, &composer_token, package_name, "1.0.0", artifact_bytes)
+            .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected composer publish response: {publish_body}"
+    );
+    assert_eq!(publish_body["ok"], true);
+
+    let release_status: String = sqlx::query_scalar(
+        "SELECT r.status::text \
+         FROM releases r \
+         JOIN packages p ON p.id = r.package_id \
+         WHERE p.ecosystem = 'composer' AND p.name = $1 AND r.version = $2",
+    )
+    .bind(package_name)
+    .bind("1.0.0")
+    .fetch_one(&pool)
+    .await
+    .expect("composer release status should be queryable");
+    assert_eq!(release_status, "published");
+
+    let (status, metadata_body) =
+        get_composer_package_metadata(&app, None, "acme", "native-release-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    let versions = metadata_body["packages"][package_name]
+        .as_array()
+        .expect("composer metadata versions should be an array");
+    assert_eq!(versions.len(), 1, "response: {metadata_body}");
+    assert_eq!(versions[0]["version"], "1.0.0");
+
+    let dist_url = versions[0]["dist"]["url"]
+        .as_str()
+        .expect("composer dist url should be present")
+        .to_owned();
+    let download_path = Url::parse(&dist_url)
+        .expect("composer dist url should parse")
+        .path()
+        .to_owned();
+
+    let download_req = Request::builder()
+        .method(Method::GET)
+        .uri(download_path.clone())
+        .body(Body::empty())
+        .unwrap();
+    let download_resp = app.clone().oneshot(download_req).await.unwrap();
+    assert_eq!(download_resp.status(), StatusCode::OK);
+    let download_headers = download_resp.headers().clone();
+    let download_body = body_bytes(download_resp).await;
+    assert_eq!(download_body, artifact_bytes);
+    assert_eq!(
+        download_headers
+            .get("x-checksum-sha256")
+            .expect("download checksum header should exist"),
+        artifact_sha256.as_str()
+    );
+
+    let (status, yank_body) = yank_composer_package_version(
+        &app,
+        &composer_token,
+        "acme",
+        "native-release-widget",
+        "1.0.0",
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected composer yank response: {yank_body}"
+    );
+    assert_eq!(yank_body["ok"], true);
+
+    let release_status_after_yank: String = sqlx::query_scalar(
+        "SELECT r.status::text \
+         FROM releases r \
+         JOIN packages p ON p.id = r.package_id \
+         WHERE p.ecosystem = 'composer' AND p.name = $1 AND r.version = $2",
+    )
+    .bind(package_name)
+    .bind("1.0.0")
+    .fetch_one(&pool)
+    .await
+    .expect("composer release status after yank should be queryable");
+    assert_eq!(release_status_after_yank, "yanked");
+
+    let (status, metadata_after_yank) =
+        get_composer_package_metadata(&app, None, "acme", "native-release-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    let versions_after_yank = metadata_after_yank["packages"][package_name]
+        .as_array()
+        .expect("composer metadata versions should be an array after yank");
+    assert!(
+        versions_after_yank.is_empty(),
+        "yanked releases should be hidden from metadata: {metadata_after_yank}"
+    );
+
+    let download_after_yank_req = Request::builder()
+        .method(Method::GET)
+        .uri(download_path)
+        .body(Body::empty())
+        .unwrap();
+    let download_after_yank_resp = app.clone().oneshot(download_after_yank_req).await.unwrap();
+    assert_eq!(download_after_yank_resp.status(), StatusCode::OK);
+    let download_after_yank_body = body_bytes(download_after_yank_resp).await;
+    assert_eq!(download_after_yank_body, artifact_bytes);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_native_maven_deploy_auto_creates_org_owned_package_from_repository_publish_grant_and_pom_finalizes_release(
+    pool: PgPool,
+) {
+    use sha2::{Digest, Sha256};
+
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &alice_jwt, "Source Org", "source-org").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let source_org_id = org_body["id"].as_str().expect("source org id");
+    let source_org_uuid = uuid::Uuid::parse_str(source_org_id).expect("source org id should parse");
+
+    let (status, namespace_body) =
+        create_namespace_claim(&app, &alice_jwt, "maven", "com.acme", Some(source_org_id)).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected namespace claim response: {namespace_body}"
+    );
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Source Maven Packages",
+        "source-maven-packages",
+        Some(source_org_id),
+        Some("private"),
+        Some("private"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, _) = add_org_member(&app, &alice_jwt, "source-org", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "Maven Release Engineering",
+        "maven-release-engineering",
+        Some("Publishes Maven packages through repository delegation."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = add_team_member_to_team(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "maven-release-engineering",
+        "bob",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, grant_body) = grant_team_repository_access(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "maven-release-engineering",
+        "source-maven-packages",
+        &["publish"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team repository access response: {grant_body}"
+    );
+
+    let (status, token_body) =
+        create_personal_access_token(&app, &bob_jwt, "bob-maven-publish", &["packages:write"])
+            .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
+    let maven_token = token_body["token"]
+        .as_str()
+        .expect("maven token should be returned")
+        .to_owned();
+
+    let jar_bytes = b"fake-maven-jar-for-delegated-org-package";
+    let jar_sha256 = hex::encode(Sha256::digest(jar_bytes));
+    let (status, jar_body) = upload_maven_artifact(
+        &app,
+        &maven_token,
+        "com/acme",
+        "native-org-widget",
+        "1.0.0",
+        "native-org-widget-1.0.0.jar",
+        "application/java-archive",
+        jar_bytes,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected maven jar upload response: {jar_body}"
+    );
+
+    let release_status_before_pom: String = sqlx::query_scalar(
+        "SELECT r.status::text \
+         FROM releases r \
+         JOIN packages p ON p.id = r.package_id \
+         WHERE p.ecosystem = 'maven' AND p.name = $1 AND r.version = $2",
+    )
+    .bind("com.acme:native-org-widget")
+    .bind("1.0.0")
+    .fetch_one(&pool)
+    .await
+    .expect("maven release status before pom should be queryable");
+    assert_eq!(release_status_before_pom, "quarantine");
+
+    let pom_bytes = build_maven_pom("com.acme", "native-org-widget", "1.0.0");
+    let (status, pom_body) = upload_maven_artifact(
+        &app,
+        &maven_token,
+        "com/acme",
+        "native-org-widget",
+        "1.0.0",
+        "native-org-widget-1.0.0.pom",
+        "application/xml",
+        &pom_bytes,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected maven pom upload response: {pom_body}"
+    );
+
+    let package_owner = sqlx::query(
+        "SELECT owner_user_id, owner_org_id, visibility AS visibility \
+         FROM packages \
+         WHERE ecosystem = 'maven' AND name = $1",
+    )
+    .bind("com.acme:native-org-widget")
+    .fetch_one(&pool)
+    .await
+    .expect("native maven package should exist");
+    let package_owner_user_id = package_owner
+        .try_get::<Option<uuid::Uuid>, _>("owner_user_id")
+        .expect("package owner user id should be readable");
+    let package_owner_org_id = package_owner
+        .try_get::<Option<uuid::Uuid>, _>("owner_org_id")
+        .expect("package owner org id should be readable");
+    let package_visibility = package_owner
+        .try_get::<String, _>("visibility")
+        .expect("package visibility should be readable");
+    assert_eq!(package_owner_user_id, None);
+    assert_eq!(package_owner_org_id, Some(source_org_uuid));
+    assert_eq!(package_visibility, "private");
+
+    let release_status_after_pom: String = sqlx::query_scalar(
+        "SELECT r.status::text \
+         FROM releases r \
+         JOIN packages p ON p.id = r.package_id \
+         WHERE p.ecosystem = 'maven' AND p.name = $1 AND r.version = $2",
+    )
+    .bind("com.acme:native-org-widget")
+    .bind("1.0.0")
+    .fetch_one(&pool)
+    .await
+    .expect("maven release status after pom should be queryable");
+    assert_eq!(release_status_after_pom, "published");
+
+    let metadata_req = Request::builder()
+        .method(Method::GET)
+        .uri("/maven/com/acme/native-org-widget/maven-metadata.xml")
+        .header(header::AUTHORIZATION, format!("Bearer {maven_token}"))
+        .body(Body::empty())
+        .unwrap();
+    let metadata_resp = app.clone().oneshot(metadata_req).await.unwrap();
+    assert_eq!(metadata_resp.status(), StatusCode::OK);
+    let metadata_text = body_text(metadata_resp).await;
+    assert!(metadata_text.contains("<version>1.0.0</version>"));
+
+    let checksum_req = Request::builder()
+        .method(Method::GET)
+        .uri("/maven/com/acme/native-org-widget/1.0.0/native-org-widget-1.0.0.jar.sha256")
+        .header(header::AUTHORIZATION, format!("Bearer {maven_token}"))
+        .body(Body::empty())
+        .unwrap();
+    let checksum_resp = app.clone().oneshot(checksum_req).await.unwrap();
+    assert_eq!(checksum_resp.status(), StatusCode::OK);
+    let checksum_text = body_text(checksum_resp).await;
+    assert_eq!(checksum_text.trim(), jar_sha256);
+
+    let download_req = Request::builder()
+        .method(Method::GET)
+        .uri("/maven/com/acme/native-org-widget/1.0.0/native-org-widget-1.0.0.jar")
+        .header(header::AUTHORIZATION, format!("Bearer {maven_token}"))
+        .body(Body::empty())
+        .unwrap();
+    let download_resp = app.clone().oneshot(download_req).await.unwrap();
+    assert_eq!(download_resp.status(), StatusCode::OK);
+    let download_body = body_bytes(download_resp).await;
+    assert_eq!(download_body, jar_bytes);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_native_maven_repository_publish_permission_allows_existing_package_publish_and_follow_up_artifacts_within_grace_window(
+    pool: PgPool,
+) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &alice_jwt, "Source Org", "source-org").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let source_org_id = org_body["id"].as_str().expect("source org id");
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Source Maven Packages",
+        "source-maven-packages",
+        Some(source_org_id),
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "maven",
+        "com.acme:native-release-widget",
+        "source-maven-packages",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let (status, _) = add_org_member(&app, &alice_jwt, "source-org", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "Maven Release Engineering",
+        "maven-release-engineering",
+        Some("Publishes existing Maven packages and attaches follow-up artifacts."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = add_team_member_to_team(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "maven-release-engineering",
+        "bob",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, grant_body) = grant_team_repository_access(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "maven-release-engineering",
+        "source-maven-packages",
+        &["publish"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team repository access response: {grant_body}"
+    );
+
+    let (status, token_body) =
+        create_personal_access_token(&app, &bob_jwt, "bob-maven-publish", &["packages:write"])
+            .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
+    let maven_token = token_body["token"]
+        .as_str()
+        .expect("maven token should be returned")
+        .to_owned();
+
+    let pom_bytes = build_maven_pom("com.acme", "native-release-widget", "1.0.0");
+    let (status, pom_body) = upload_maven_artifact(
+        &app,
+        &maven_token,
+        "com/acme",
+        "native-release-widget",
+        "1.0.0",
+        "native-release-widget-1.0.0.pom",
+        "application/xml",
+        &pom_bytes,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected maven pom upload response: {pom_body}"
+    );
+
+    let release_status: String = sqlx::query_scalar(
+        "SELECT r.status::text \
+         FROM releases r \
+         JOIN packages p ON p.id = r.package_id \
+         WHERE p.ecosystem = 'maven' AND p.name = $1 AND r.version = $2",
+    )
+    .bind("com.acme:native-release-widget")
+    .bind("1.0.0")
+    .fetch_one(&pool)
+    .await
+    .expect("maven release status should be queryable");
+    assert_eq!(release_status, "published");
+
+    let (status, checksum_body) = upload_maven_artifact(
+        &app,
+        &maven_token,
+        "com/acme",
+        "native-release-widget",
+        "1.0.0",
+        "native-release-widget-1.0.0-sources.jar.sha256",
+        "text/plain; charset=utf-8",
+        b"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n",
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "unexpected checksum-before-target response: {checksum_body}"
+    );
+
+    let sources_bytes = b"fake-maven-sources-jar";
+    let (status, sources_body) = upload_maven_artifact(
+        &app,
+        &maven_token,
+        "com/acme",
+        "native-release-widget",
+        "1.0.0",
+        "native-release-widget-1.0.0-sources.jar",
+        "application/java-archive",
+        sources_bytes,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected maven sources upload response: {sources_body}"
+    );
+
+    let (status, signature_body) = upload_maven_artifact(
+        &app,
+        &maven_token,
+        "com/acme",
+        "native-release-widget",
+        "1.0.0",
+        "native-release-widget-1.0.0-sources.jar.asc",
+        "application/pgp-signature",
+        b"fake-maven-signature",
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected maven signature upload response: {signature_body}"
+    );
+
+    let metadata_req = Request::builder()
+        .method(Method::GET)
+        .uri("/maven/com/acme/native-release-widget/maven-metadata.xml")
+        .body(Body::empty())
+        .unwrap();
+    let metadata_resp = app.clone().oneshot(metadata_req).await.unwrap();
+    assert_eq!(metadata_resp.status(), StatusCode::OK);
+    let metadata_text = body_text(metadata_resp).await;
+    assert!(metadata_text.contains("<version>1.0.0</version>"));
+
+    let download_req = Request::builder()
+        .method(Method::GET)
+        .uri("/maven/com/acme/native-release-widget/1.0.0/native-release-widget-1.0.0-sources.jar")
+        .body(Body::empty())
+        .unwrap();
+    let download_resp = app.clone().oneshot(download_req).await.unwrap();
+    assert_eq!(download_resp.status(), StatusCode::OK);
+    let download_body = body_bytes(download_resp).await;
+    assert_eq!(download_body, sources_bytes);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_native_maven_deploy_rejects_snapshots(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, repository_body) = create_repository(
+        &app,
+        &alice_jwt,
+        "Personal Maven Packages",
+        "personal-maven-packages",
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, token_body) =
+        create_personal_access_token(&app, &alice_jwt, "alice-maven-publish", &["packages:write"])
+            .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
+    let maven_token = token_body["token"]
+        .as_str()
+        .expect("maven token should be returned")
+        .to_owned();
+
+    let pom_bytes = build_maven_pom("com.acme", "snapshot-widget", "1.0.0-SNAPSHOT");
+    let (status, snapshot_body) = upload_maven_artifact(
+        &app,
+        &maven_token,
+        "com/acme",
+        "snapshot-widget",
+        "1.0.0-SNAPSHOT",
+        "snapshot-widget-1.0.0-SNAPSHOT.pom",
+        "application/xml",
+        &pom_bytes,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "unexpected snapshot rejection response: {snapshot_body}"
+    );
+    assert!(snapshot_body
+        .as_str()
+        .expect("snapshot rejection should return a plain-text message")
+        .contains("Snapshots are not supported"));
 }
 
 #[sqlx::test(migrations = "../../migrations")]

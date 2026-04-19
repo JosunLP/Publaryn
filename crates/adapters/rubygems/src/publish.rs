@@ -82,7 +82,9 @@ pub async fn select_default_repository(db: &PgPool, user_id: Uuid) -> Result<Rep
 
     Ok(RepoInfo {
         id: row.try_get("id").unwrap_or_default(),
-        visibility: row.try_get("visibility").unwrap_or_else(|_| "public".into()),
+        visibility: row
+            .try_get("visibility")
+            .unwrap_or_else(|_| "public".into()),
     })
 }
 
