@@ -91,6 +91,7 @@
   let trustedPublisherNotice: string | null = null;
   let trustedPublisherError: string | null = null;
   let includeResolvedFindings = false;
+  let activeTab: PackageDetailTab = 'readme';
   let findingsNotice: string | null = null;
   let findingsError: string | null = null;
   let updatingFindingId: string | null = null;
@@ -125,6 +126,7 @@
 
   $: ecosystem = $page.params.ecosystem ?? '';
   $: name = $page.params.name ?? '';
+  $: activeTab = getPackageDetailTabFromQuery($page.url.searchParams);
   $: loadKey = `${ecosystem}|${name}`;
   $: if (ecosystem && name && loadKey !== lastLoadKey) {
     lastLoadKey = loadKey;
@@ -163,7 +165,7 @@
     resetTrustedPublisherForm();
 
     try {
-      pkg = await getPackage(currentEcosystem(), currentName());
+      pkg = await getPackage(ecosystem, name);
       resetPackageSettingsForm(pkg);
     } catch (caughtError: unknown) {
       if (caughtError instanceof ApiError && caughtError.status === 404) {
@@ -185,11 +187,11 @@
       loadedTransferState,
       loadedTrustedPublisherState,
     ] = await Promise.all([
-      listReleases(currentEcosystem(), currentName(), { perPage: 20 }).catch(
+      listReleases(ecosystem, name, { perPage: 20 }).catch(
         () => [] as Release[]
       ),
-      listTags(currentEcosystem(), currentName()).catch(() => [] as Tag[]),
-      listSecurityFindings(currentEcosystem(), currentName()).catch(
+      listTags(ecosystem, name).catch(() => [] as Tag[]),
+      listSecurityFindings(ecosystem, name).catch(
         () => [] as SecurityFinding[]
       ),
       loadTransferState(pkg),
@@ -268,11 +270,7 @@
     packageSettingsNotice = null;
 
     try {
-      const result = await updatePackage(
-        currentEcosystem(),
-        currentName(),
-        input
-      );
+      const result = await updatePackage(ecosystem, name, input);
       await loadPackagePage();
       packageSettingsNotice = result.message || 'Package updated';
     } catch (caughtError: unknown) {
@@ -288,7 +286,7 @@
   async function loadTrustedPublisherState(
     currentPackage: PackageDetail | null
   ): Promise<TrustedPublisherState> {
-    if (!currentPackage || currentEcosystem() !== 'pypi') {
+    if (!currentPackage || ecosystem !== 'pypi') {
       return {
         publishers: [],
         loadError: null,
@@ -298,8 +296,8 @@
     try {
       return {
         publishers: await listTrustedPublishersForPackage(
-          currentEcosystem(),
-          currentName()
+          ecosystem,
+          name
         ),
         loadError: null,
       };
@@ -323,20 +321,20 @@
       pkg.latest_version ??
       (releases.length > 0 ? (releases[0]?.version ?? null) : null);
     const command = latestVersion
-      ? installCommand(currentEcosystem(), pkg.name, latestVersion)
-      : installCommand(currentEcosystem(), pkg.name);
+      ? installCommand(ecosystem, pkg.name, latestVersion)
+      : installCommand(ecosystem, pkg.name);
     await copyToClipboard(command);
   }
 
   async function handlePackageTabChange(tab: PackageDetailTab): Promise<void> {
-    if (tab === activePackageTab()) {
+    if (tab === activeTab) {
       return;
     }
 
     await goto(
       buildPackageDetailPath(
-        currentEcosystem(),
-        currentName(),
+        ecosystem,
+        name,
         { tab },
         $page.url.searchParams
       )
@@ -346,8 +344,8 @@
   async function handleResolvedToggleChange(): Promise<void> {
     try {
       findings = await listSecurityFindings(
-        currentEcosystem(),
-        currentName(),
+        ecosystem,
+        name,
         {
           includeResolved: includeResolvedFindings,
         }
@@ -376,8 +374,8 @@
     }
     try {
       const updated = await updateSecurityFinding(
-        currentEcosystem(),
-        currentName(),
+        ecosystem,
+        name,
         finding.id,
         {
           isResolved: targetIsResolved,
@@ -419,7 +417,7 @@
     releaseNotice = null;
 
     try {
-      await createRelease(currentEcosystem(), currentName(), {
+      await createRelease(ecosystem, name, {
         version: newReleaseVersion.trim(),
         description: optional(newReleaseDescription),
         changelog: optional(newReleaseChangelog),
@@ -431,7 +429,7 @@
         `Release ${newReleaseVersion.trim()} created in quarantine. Upload at least one artifact before publishing.`
       );
       await goto(
-        `/packages/${encodeURIComponent(currentEcosystem())}/${encodeURIComponent(currentName())}/versions/${encodeURIComponent(newReleaseVersion.trim())}?notice=${notice}`
+        `/packages/${encodeURIComponent(ecosystem)}/${encodeURIComponent(name)}/versions/${encodeURIComponent(newReleaseVersion.trim())}?notice=${notice}`
       );
     } catch (caughtError: unknown) {
       releaseError =
@@ -465,8 +463,8 @@
 
     try {
       const result = await transferPackageOwnership(
-        currentEcosystem(),
-        currentName(),
+        ecosystem,
+        name,
         {
           targetOrgSlug: targetOrgSlug.trim(),
         }
@@ -512,8 +510,8 @@
 
     try {
       await createTrustedPublisherForPackage(
-        currentEcosystem(),
-        currentName(),
+        ecosystem,
+        name,
         input
       );
       trustedPublisherState = await loadTrustedPublisherState(pkg);
@@ -549,8 +547,8 @@
 
     try {
       await deleteTrustedPublisherForPackage(
-        currentEcosystem(),
-        currentName(),
+        ecosystem,
+        name,
         publisher.id
       );
       trustedPublisherState = await loadTrustedPublisherState(pkg);
@@ -608,14 +606,6 @@
     return trimmed ? trimmed : undefined;
   }
 
-  function currentEcosystem(): string {
-    return ecosystem;
-  }
-
-  function currentName(): string {
-    return name;
-  }
-
   function latestVersionForPackage(
     currentPackage: PackageDetail
   ): string | null {
@@ -623,10 +613,6 @@
       currentPackage.latest_version ??
       (releases.length > 0 ? (releases[0]?.version ?? null) : null)
     );
-  }
-
-  function activePackageTab(): PackageDetailTab {
-    return getPackageDetailTabFromQuery($page.url.searchParams);
   }
 
   function worstSeverity(openFindings: SecurityFinding[]): string {
@@ -690,14 +676,14 @@
 {:else}
   {@const latestVersion = latestVersionForPackage(pkg)}
   {@const install = latestVersion
-    ? installCommand(currentEcosystem(), pkg.name, latestVersion)
-    : installCommand(currentEcosystem(), pkg.name)}
+    ? installCommand(ecosystem, pkg.name, latestVersion)
+    : installCommand(ecosystem, pkg.name)}
 
   <div class="mt-6">
     <div class="pkg-header">
       <h1 class="pkg-header__name">{pkg.display_name || pkg.name}</h1>
       <span class="badge badge-ecosystem"
-        >{ecosystemIcon(currentEcosystem())} {ecosystemLabel(currentEcosystem())}</span
+        >{ecosystemIcon(ecosystem)} {ecosystemLabel(ecosystem)}</span
       >
       {#if latestVersion}
         <span class="pkg-header__version">v{latestVersion}</span>
@@ -734,20 +720,20 @@
 
         <div class="tabs">
           <button
-            class:active={activePackageTab() === 'readme'}
+            class:active={activeTab === 'readme'}
             class="tab"
             type="button"
             on:click={() => handlePackageTabChange('readme')}>Readme</button
           >
           <button
-            class:active={activePackageTab() === 'versions'}
+            class:active={activeTab === 'versions'}
             class="tab"
             type="button"
             on:click={() => handlePackageTabChange('versions')}
             >Versions ({releases.length})</button
           >
           <button
-            class:active={activePackageTab() === 'security'}
+            class:active={activeTab === 'security'}
             class="tab"
             type="button"
             on:click={() => handlePackageTabChange('security')}
@@ -762,7 +748,7 @@
           </button>
         </div>
 
-        {#if activePackageTab() === 'readme'}
+        {#if activeTab === 'readme'}
           {#if readmeHtml}
             <div class="readme-content">{@html readmeHtml}</div>
           {:else}
@@ -772,7 +758,7 @@
           {/if}
         {/if}
 
-        {#if activePackageTab() === 'versions'}
+        {#if activeTab === 'versions'}
           {#if releases.length === 0}
             <div class="empty-state"><p>No releases yet.</p></div>
           {:else}
@@ -780,7 +766,7 @@
               <div class="release-row">
                 <div>
                   <a
-                    href={`/packages/${encodeURIComponent(currentEcosystem())}/${encodeURIComponent(currentName())}/versions/${encodeURIComponent(release.version)}`}
+                    href={`/packages/${encodeURIComponent(ecosystem)}/${encodeURIComponent(name)}/versions/${encodeURIComponent(release.version)}`}
                     class="release-row__version"
                     data-sveltekit-preload-data="hover"
                   >
@@ -801,7 +787,7 @@
           {/if}
         {/if}
 
-        {#if activePackageTab() === 'security'}
+        {#if activeTab === 'security'}
           <div class="findings-toggle">
             <label>
               <input
@@ -1072,7 +1058,7 @@
           </div>
         {/if}
 
-        {#if currentEcosystem() === 'pypi'}
+        {#if ecosystem === 'pypi'}
           <div class="card">
             <div class="sidebar-section">
               <h3>PyPI trusted publishing</h3>
