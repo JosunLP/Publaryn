@@ -61,6 +61,8 @@ pub fn build_router(state: AppState) -> Result<Router> {
         )
         // NuGet V3 protocol adapter
         .nest("/nuget", publaryn_adapter_nuget::routes::router())
+        // OCI distribution-spec adapter
+        .nest("/oci", publaryn_adapter_oci::routes::router())
         // Swagger UI
         .merge(routes::openapi::router())
         // Platform statistics

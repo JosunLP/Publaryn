@@ -26,9 +26,15 @@
     updatePackage,
     updateSecurityFinding,
   } from '../../../../api/packages';
+  import type { PackageDetailTab } from '../../../../pages/package-detail-tabs';
+  import {
+    buildPackageDetailPath,
+    getPackageDetailTabFromQuery,
+  } from '../../../../pages/package-detail-tabs';
   import {
     ecosystemIcon,
     ecosystemLabel,
+    formatVersionLabel,
     installCommand,
   } from '../../../../utils/ecosystem';
   import {
@@ -42,11 +48,6 @@
     createPackageMetadataFormValues,
     packageMetadataHasChanges,
   } from '../../../../utils/package-metadata';
-  import {
-    buildPackageDetailPath,
-    getPackageDetailTabFromQuery,
-  } from '../../../../pages/package-detail-tabs';
-  import type { PackageDetailTab } from '../../../../pages/package-detail-tabs';
   import { selectPackageTransferTargets } from '../../../../utils/package-transfer';
   import {
     normalizeTrustedPublisherInput,
@@ -295,10 +296,7 @@
 
     try {
       return {
-        publishers: await listTrustedPublishersForPackage(
-          ecosystem,
-          name
-        ),
+        publishers: await listTrustedPublishersForPackage(ecosystem, name),
         loadError: null,
       };
     } catch (caughtError: unknown) {
@@ -332,24 +330,15 @@
     }
 
     await goto(
-      buildPackageDetailPath(
-        ecosystem,
-        name,
-        { tab },
-        $page.url.searchParams
-      )
+      buildPackageDetailPath(ecosystem, name, { tab }, $page.url.searchParams)
     );
   }
 
   async function handleResolvedToggleChange(): Promise<void> {
     try {
-      findings = await listSecurityFindings(
-        ecosystem,
-        name,
-        {
-          includeResolved: includeResolvedFindings,
-        }
-      );
+      findings = await listSecurityFindings(ecosystem, name, {
+        includeResolved: includeResolvedFindings,
+      });
     } catch {
       findings = [];
     }
@@ -373,15 +362,10 @@
       return;
     }
     try {
-      const updated = await updateSecurityFinding(
-        ecosystem,
-        name,
-        finding.id,
-        {
-          isResolved: targetIsResolved,
-          note: trimmedNote.length > 0 ? trimmedNote : undefined,
-        }
-      );
+      const updated = await updateSecurityFinding(ecosystem, name, finding.id, {
+        isResolved: targetIsResolved,
+        note: trimmedNote.length > 0 ? trimmedNote : undefined,
+      });
       findings = findings.map((current) =>
         current.id === updated.id ? { ...current, ...updated } : current
       );
@@ -462,13 +446,9 @@
     transferNotice = null;
 
     try {
-      const result = await transferPackageOwnership(
-        ecosystem,
-        name,
-        {
-          targetOrgSlug: targetOrgSlug.trim(),
-        }
-      );
+      const result = await transferPackageOwnership(ecosystem, name, {
+        targetOrgSlug: targetOrgSlug.trim(),
+      });
       transferNotice = `Package ownership transferred to ${result.owner?.name || result.owner?.slug || targetOrgSlug.trim()}.`;
       await loadPackagePage();
     } catch (caughtError: unknown) {
@@ -509,11 +489,7 @@
     trustedPublisherNotice = null;
 
     try {
-      await createTrustedPublisherForPackage(
-        ecosystem,
-        name,
-        input
-      );
+      await createTrustedPublisherForPackage(ecosystem, name, input);
       trustedPublisherState = await loadTrustedPublisherState(pkg);
       trustedPublisherNotice = 'Trusted publisher added.';
       resetTrustedPublisherForm();
@@ -546,11 +522,7 @@
     trustedPublisherNotice = null;
 
     try {
-      await deleteTrustedPublisherForPackage(
-        ecosystem,
-        name,
-        publisher.id
-      );
+      await deleteTrustedPublisherForPackage(ecosystem, name, publisher.id);
       trustedPublisherState = await loadTrustedPublisherState(pkg);
       trustedPublisherNotice = 'Trusted publisher removed.';
     } catch (caughtError: unknown) {
@@ -686,7 +658,9 @@
         >{ecosystemIcon(ecosystem)} {ecosystemLabel(ecosystem)}</span
       >
       {#if latestVersion}
-        <span class="pkg-header__version">v{latestVersion}</span>
+        <span class="pkg-header__version"
+          >{formatVersionLabel(ecosystem, latestVersion)}</span
+        >
       {/if}
       {#if pkg.is_deprecated}
         <span class="badge badge-deprecated">deprecated</span>
@@ -836,7 +810,10 @@
                 </div>
                 <div class="finding-row__meta">
                   {#if finding.release_version}<span
-                      >v{finding.release_version}</span
+                      >{formatVersionLabel(
+                        ecosystem,
+                        finding.release_version
+                      )}</span
                     >{/if}
                   {#if finding.artifact_filename}<span
                       >{finding.artifact_filename}</span

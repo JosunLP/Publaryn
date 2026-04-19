@@ -1,3 +1,7 @@
-//! Ecosystem adapter implementation.
-//!
-//! See the `npm` adapter for the shared `EcosystemAdapter` trait definition.
+//! OCI distribution protocol adapter.
+
+pub mod auth;
+pub mod manifest;
+pub mod name;
+pub mod routes;
+pub mod upload;

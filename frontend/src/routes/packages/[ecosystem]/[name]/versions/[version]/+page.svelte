@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { goto } from '$app/navigation';
   import { page } from '$app/stores';
 
   import { ApiError } from '../../../../../../api/client';
@@ -16,6 +15,7 @@
   import {
     ecosystemIcon,
     ecosystemLabel,
+    formatVersionLabel,
     installCommand,
   } from '../../../../../../utils/ecosystem';
   import { copyToClipboard, formatDate } from '../../../../../../utils/format';
@@ -289,7 +289,9 @@
         >{ecosystemIcon(eecosystem())} {ename()}</a
       >
       <span>&rsaquo; </span>
-      <span style="color:var(--color-text-secondary);">v{eversion()}</span>
+      <span style="color:var(--color-text-secondary);"
+        >{formatVersionLabel(eecosystem(), eversion())}</span
+      >
     </nav>
 
     <div class="pkg-header">
@@ -297,7 +299,9 @@
       <span class="badge badge-ecosystem"
         >{ecosystemIcon(eecosystem())} {ecosystemLabel(eecosystem())}</span
       >
-      <span class="pkg-header__version">v{eversion()}</span>
+      <span class="pkg-header__version"
+        >{formatVersionLabel(eecosystem(), eversion())}</span
+      >
       {#if release.is_yanked}<span class="badge badge-yanked">yanked</span>{/if}
       {#if release.is_deprecated}<span class="badge badge-deprecated"
           >deprecated</span

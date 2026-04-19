@@ -8,7 +8,6 @@ use aws_sdk_s3::{
 use bytes::Bytes;
 
 use publaryn_core::{Error, Result};
-
 use crate::config::StorageConfig;
 
 #[derive(Debug, Clone)]
@@ -28,6 +27,7 @@ pub struct StoredArtifactObject {
 pub trait ArtifactStore: Send + Sync {
     async fn put_object(&self, object: PutArtifactObject) -> Result<()>;
     async fn get_object(&self, storage_key: &str) -> Result<Option<StoredArtifactObject>>;
+    async fn delete_object(&self, storage_key: &str) -> Result<()>;
 }
 
 /// In-memory artifact store for testing.
@@ -59,6 +59,11 @@ impl ArtifactStore for MemoryArtifactStore {
 
     async fn get_object(&self, storage_key: &str) -> Result<Option<StoredArtifactObject>> {
         Ok(self.objects.read().await.get(storage_key).cloned())
+    }
+
+    async fn delete_object(&self, storage_key: &str) -> Result<()> {
+        self.objects.write().await.remove(storage_key);
+        Ok(())
     }
 }
 
@@ -151,6 +156,18 @@ impl ArtifactStore for S3ArtifactStore {
             bytes,
         }))
     }
+
+    async fn delete_object(&self, storage_key: &str) -> Result<()> {
+        self.client
+            .delete_object()
+            .bucket(&self.bucket)
+            .key(storage_key)
+            .send()
+            .await
+            .map_err(|error| Error::Internal(format!("Artifact storage delete failed: {error}")))?;
+
+        Ok(())
+    }
 }
 
 // ── ArtifactStoreReader bridge ────────────────────────────────────────────────
@@ -205,5 +222,30 @@ mod tests {
 
         assert_eq!(stored.content_type, "application/octet-stream");
         assert_eq!(stored.bytes, Bytes::from_static(b"demo"));
+    }
+
+    #[tokio::test]
+    async fn memory_store_deletes_artifact_bytes() {
+        let store = MemoryArtifactStore::new();
+
+        store
+            .put_object(PutArtifactObject {
+                storage_key: "releases/demo/delete-me".into(),
+                content_type: "application/octet-stream".into(),
+                bytes: Bytes::from_static(b"demo"),
+            })
+            .await
+            .expect("memory upload should succeed");
+
+        store
+            .delete_object("releases/demo/delete-me")
+            .await
+            .expect("memory delete should succeed");
+
+        assert!(store
+            .get_object("releases/demo/delete-me")
+            .await
+            .expect("memory download should succeed")
+            .is_none());
     }
 }

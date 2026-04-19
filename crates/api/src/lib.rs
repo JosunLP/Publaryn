@@ -4,6 +4,7 @@ pub mod config;
 pub mod error;
 pub mod maven_bridge;
 pub mod npm_bridge;
+pub mod oci_bridge;
 pub mod nuget_bridge;
 pub mod pypi_bridge;
 pub mod rate_limit;

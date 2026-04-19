@@ -71,3 +71,6 @@ url = { workspace = true }
 publaryn-test-utils = { workspace = true }
 tower = { workspace = true, features = ["util"] }
 hyper = { workspace = true }
+flate2 = { workspace = true }
+tar = { workspace = true }
+zip = { workspace = true }

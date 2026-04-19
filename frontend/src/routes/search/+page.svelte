@@ -8,6 +8,7 @@
     ECOSYSTEMS,
     ecosystemIcon,
     ecosystemLabel,
+    formatVersionLabel,
   } from '../../utils/ecosystem';
   import { formatDate, formatNumber } from '../../utils/format';
 
@@ -160,7 +161,9 @@
                 {ecosystemLabel(pkg.ecosystem)}</span
               >
               {#if pkg.latest_version}
-                <span class="package-card__version">v{pkg.latest_version}</span>
+                <span class="package-card__version"
+                  >{formatVersionLabel(pkg.ecosystem, pkg.latest_version)}</span
+                >
               {/if}
               {#if pkg.is_deprecated}
                 <span class="badge badge-deprecated">deprecated</span>

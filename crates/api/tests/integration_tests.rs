@@ -1741,6 +1741,360 @@ async fn upload_maven_artifact(
     (status, body)
 }
 
+fn oci_digest(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+
+    format!("sha256:{}", hex::encode(Sha256::digest(bytes)))
+}
+
+fn build_oci_image_manifest(
+    config_digest: &str,
+    config_size: usize,
+    layer_digest: &str,
+    layer_size: usize,
+) -> Vec<u8> {
+    serde_json::to_vec(&json!({
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "config": {
+            "mediaType": "application/vnd.oci.image.config.v1+json",
+            "digest": config_digest,
+            "size": config_size,
+        },
+        "layers": [
+            {
+                "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+                "digest": layer_digest,
+                "size": layer_size,
+            }
+        ]
+    }))
+    .expect("oci manifest should serialize")
+}
+
+async fn send_oci_request(
+    app: &axum::Router,
+    method: Method,
+    uri: String,
+    token: Option<&str>,
+    content_type: Option<&str>,
+    body: Vec<u8>,
+) -> axum::response::Response {
+    let mut request = Request::builder().method(method).uri(uri);
+
+    if let Some(token) = token {
+        request = request.header(header::AUTHORIZATION, format!("Bearer {token}"));
+    }
+
+    if let Some(content_type) = content_type {
+        request = request.header(header::CONTENT_TYPE, content_type);
+    }
+
+    let req = request.body(Body::from(body)).unwrap();
+    app.clone().oneshot(req).await.unwrap()
+}
+
+async fn upload_oci_blob_monolithic(
+    app: &axum::Router,
+    token: &str,
+    package_name: &str,
+    bytes: &[u8],
+) -> (String, axum::response::Response) {
+    let digest = oci_digest(bytes);
+    let response = send_oci_request(
+        app,
+        Method::POST,
+        format!("/oci/v2/{package_name}/blobs/uploads/?digest={digest}"),
+        Some(token),
+        Some("application/octet-stream"),
+        bytes.to_vec(),
+    )
+    .await;
+
+    (digest, response)
+}
+
+fn build_rubygems_package(name: &str, version: &str) -> Vec<u8> {
+    use std::io::{Cursor, Write};
+
+    let gemspec = format!(
+        r#"--- !ruby/object:Gem::Specification
+name: {name}
+version: !ruby/object:Gem::Version
+  version: {version}
+platform: ruby
+authors:
+  - Alice Example
+summary: Published {name} {version}
+description: Published {name} {version} in integration tests.
+licenses:
+  - MIT
+homepage: https://packages.example.test/{name}
+metadata:
+  homepage_uri: https://packages.example.test/{name}
+"#
+    );
+
+    let mut metadata_encoder =
+        flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    metadata_encoder
+        .write_all(gemspec.as_bytes())
+        .expect("gemspec yaml should gzip");
+    let metadata_gz = metadata_encoder
+        .finish()
+        .expect("metadata gzip should finalize");
+
+    let mut data_encoder =
+        flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    data_encoder
+        .write_all(b"placeholder gem payload")
+        .expect("data payload should gzip");
+    let data_gz = data_encoder.finish().expect("data gzip should finalize");
+
+    let mut gem_bytes = Vec::new();
+    {
+        let mut tar_builder = tar::Builder::new(&mut gem_bytes);
+
+        let mut metadata_header = tar::Header::new_gnu();
+        metadata_header.set_size(metadata_gz.len() as u64);
+        metadata_header.set_mode(0o644);
+        metadata_header.set_cksum();
+        tar_builder
+            .append_data(&mut metadata_header, "metadata.gz", Cursor::new(metadata_gz))
+            .expect("metadata.gz should be appended to gem tarball");
+
+        let mut data_header = tar::Header::new_gnu();
+        data_header.set_size(data_gz.len() as u64);
+        data_header.set_mode(0o644);
+        data_header.set_cksum();
+        tar_builder
+            .append_data(&mut data_header, "data.tar.gz", Cursor::new(data_gz))
+            .expect("data.tar.gz should be appended to gem tarball");
+
+        tar_builder.finish().expect("gem tarball should finalize");
+    }
+
+    gem_bytes
+}
+
+async fn push_rubygems_package(
+    app: &axum::Router,
+    token: &str,
+    gem_bytes: &[u8],
+) -> (StatusCode, String) {
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/rubygems/api/v1/gems")
+        .header("x-gem-api-key", token)
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .body(Body::from(gem_bytes.to_vec()))
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_text(resp).await;
+    (status, body)
+}
+
+async fn yank_rubygems_version(
+    app: &axum::Router,
+    token: &str,
+    gem_name: &str,
+    version: &str,
+) -> (StatusCode, String) {
+    let req = Request::builder()
+        .method(Method::DELETE)
+        .uri("/rubygems/api/v1/gems/yank")
+        .header("x-gem-api-key", token)
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .body(Body::from(format!("gem_name={gem_name}&version={version}")))
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_text(resp).await;
+    (status, body)
+}
+
+async fn get_rubygems_metadata(
+    app: &axum::Router,
+    token: Option<&str>,
+    gem_name: &str,
+) -> (StatusCode, Value) {
+    let mut request = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/rubygems/api/v1/gems/{gem_name}"));
+
+    if let Some(token) = token {
+        request = request.header("x-gem-api-key", token);
+    }
+
+    let req = request.body(Body::empty()).unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+async fn get_rubygems_versions(
+    app: &axum::Router,
+    token: Option<&str>,
+    gem_name: &str,
+) -> (StatusCode, Value) {
+    let mut request = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/rubygems/api/v1/versions/{gem_name}"));
+
+    if let Some(token) = token {
+        request = request.header("x-gem-api-key", token);
+    }
+
+    let req = request.body(Body::empty()).unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+fn build_nuget_package(id: &str, version: &str) -> Vec<u8> {
+    use std::io::Write;
+
+    let nuspec = format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd">
+  <metadata>
+    <id>{id}</id>
+    <version>{version}</version>
+    <authors>Alice Example</authors>
+    <description>Published {id} {version} in integration tests.</description>
+    <summary>Published {id} {version}</summary>
+    <projectUrl>https://packages.example.test/{id}</projectUrl>
+    <tags>publaryn integration-test</tags>
+    <license type="expression">MIT</license>
+  </metadata>
+</package>"#
+    );
+
+    let cursor = std::io::Cursor::new(Vec::new());
+    let mut zip_writer = zip::ZipWriter::new(cursor);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Stored);
+    zip_writer
+        .start_file(format!("{id}.nuspec"), options)
+        .expect("nuspec file should be created inside nupkg");
+    zip_writer
+        .write_all(nuspec.as_bytes())
+        .expect("nuspec xml should be written to nupkg");
+
+    zip_writer
+        .finish()
+        .expect("nupkg archive should finalize")
+        .into_inner()
+}
+
+fn build_nuget_push_multipart(id: &str, version: &str, nupkg_bytes: &[u8]) -> (String, Vec<u8>) {
+    let boundary = "----publaryn-nuget-boundary-1a2b";
+    let filename = format!("{id}.{version}.nupkg");
+
+    let mut body = Vec::new();
+    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    body.extend_from_slice(
+        format!(
+            "Content-Disposition: form-data; name=\"package\"; filename=\"{filename}\"\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(b"Content-Type: application/octet-stream\r\n\r\n");
+    body.extend_from_slice(nupkg_bytes);
+    body.extend_from_slice(b"\r\n");
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+
+    (format!("multipart/form-data; boundary={boundary}"), body)
+}
+
+async fn push_nuget_package(
+    app: &axum::Router,
+    token: &str,
+    id: &str,
+    version: &str,
+    nupkg_bytes: &[u8],
+) -> (StatusCode, Value) {
+    let (content_type, body) = build_nuget_push_multipart(id, version, nupkg_bytes);
+    let req = Request::builder()
+        .method(Method::PUT)
+        .uri("/nuget/v2/package")
+        .header("x-nuget-apikey", token)
+        .header(header::CONTENT_TYPE, content_type)
+        .body(Body::from(body))
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json_or_empty(resp).await;
+    (status, body)
+}
+
+async fn get_nuget_version_listing(
+    app: &axum::Router,
+    token: Option<&str>,
+    package_id: &str,
+) -> (StatusCode, Value) {
+    let mut request = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/nuget/v3-flatcontainer/{package_id}/index.json"));
+
+    if let Some(token) = token {
+        request = request.header("x-nuget-apikey", token);
+    }
+
+    let req = request.body(Body::empty()).unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json_or_empty(resp).await;
+    (status, body)
+}
+
+async fn get_nuget_registration_index(
+    app: &axum::Router,
+    token: Option<&str>,
+    package_id: &str,
+) -> (StatusCode, Value) {
+    let mut request = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/nuget/v3/registration/{package_id}/index.json"));
+
+    if let Some(token) = token {
+        request = request.header("x-nuget-apikey", token);
+    }
+
+    let req = request.body(Body::empty()).unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json_or_empty(resp).await;
+    (status, body)
+}
+
+async fn set_nuget_listing_state(
+    app: &axum::Router,
+    token: &str,
+    package_id: &str,
+    version: &str,
+    method: Method,
+) -> StatusCode {
+    let req = Request::builder()
+        .method(method)
+        .uri(format!("/nuget/v2/package/{package_id}/{version}"))
+        .header("x-nuget-apikey", token)
+        .body(Body::empty())
+        .unwrap();
+
+    app.clone().oneshot(req).await.unwrap().status()
+}
+
 async fn body_json_or_empty(resp: axum::response::Response) -> Value {
     let bytes = axum::body::to_bytes(resp.into_body(), TEST_RESPONSE_BODY_LIMIT)
         .await
@@ -8871,6 +9225,853 @@ async fn test_native_maven_deploy_rejects_snapshots(pool: PgPool) {
         .as_str()
         .expect("snapshot rejection should return a plain-text message")
         .contains("Snapshots are not supported"));
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_native_oci_push_auto_creates_org_owned_package_from_repository_publish_grant_and_private_pull_requires_auth(
+    pool: PgPool,
+) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &alice_jwt, "Source Org", "source-org").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let source_org_id = org_body["id"].as_str().expect("source org id");
+    let source_org_uuid = uuid::Uuid::parse_str(source_org_id).expect("source org id should parse");
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Source OCI Packages",
+        "source-oci-packages",
+        Some(source_org_id),
+        Some("private"),
+        Some("private"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, _) = add_org_member(&app, &alice_jwt, "source-org", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "OCI Release Engineering",
+        "oci-release-engineering",
+        Some("Publishes OCI artifacts through repository delegation."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = add_team_member_to_team(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "oci-release-engineering",
+        "bob",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, grant_body) = grant_team_repository_access(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "oci-release-engineering",
+        "source-oci-packages",
+        &["publish"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team repository access response: {grant_body}"
+    );
+
+    let (status, token_body) =
+        create_personal_access_token(&app, &bob_jwt, "bob-oci-publish", &["packages:write"])
+            .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
+    let oci_token = token_body["token"]
+        .as_str()
+        .expect("oci token should be returned")
+        .to_owned();
+
+    let package_name = "acme/native-org-widget";
+    let config_bytes = br#"{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]}}"#;
+    let layer_bytes = b"fake-oci-layer-for-delegated-org-package";
+
+    let (config_digest, config_resp) =
+        upload_oci_blob_monolithic(&app, &oci_token, package_name, config_bytes).await;
+    assert_eq!(config_resp.status(), StatusCode::CREATED);
+
+    let (layer_digest, layer_resp) =
+        upload_oci_blob_monolithic(&app, &oci_token, package_name, layer_bytes).await;
+    assert_eq!(layer_resp.status(), StatusCode::CREATED);
+
+    let manifest_bytes = build_oci_image_manifest(
+        &config_digest,
+        config_bytes.len(),
+        &layer_digest,
+        layer_bytes.len(),
+    );
+    let manifest_digest = oci_digest(&manifest_bytes);
+    let manifest_resp = send_oci_request(
+        &app,
+        Method::PUT,
+        format!("/oci/v2/{package_name}/manifests/latest"),
+        Some(&oci_token),
+        Some("application/vnd.oci.image.manifest.v1+json"),
+        manifest_bytes.clone(),
+    )
+    .await;
+    assert_eq!(manifest_resp.status(), StatusCode::CREATED);
+    assert_eq!(
+        manifest_resp
+            .headers()
+            .get("docker-content-digest")
+            .expect("manifest response should include digest header"),
+        manifest_digest.as_str()
+    );
+
+    let package_owner = sqlx::query(
+        "SELECT owner_user_id, owner_org_id, visibility::text AS visibility \
+         FROM packages \
+         WHERE ecosystem = 'oci' AND name = $1",
+    )
+    .bind(package_name)
+    .fetch_one(&pool)
+    .await
+    .expect("native oci package should exist");
+    let package_owner_user_id = package_owner
+        .try_get::<Option<uuid::Uuid>, _>("owner_user_id")
+        .expect("package owner user id should be readable");
+    let package_owner_org_id = package_owner
+        .try_get::<Option<uuid::Uuid>, _>("owner_org_id")
+        .expect("package owner org id should be readable");
+    let package_visibility = package_owner
+        .try_get::<String, _>("visibility")
+        .expect("package visibility should be readable");
+    assert_eq!(package_owner_user_id, None);
+    assert_eq!(package_owner_org_id, Some(source_org_uuid));
+    assert_eq!(package_visibility, "private");
+
+    let release_status: String = sqlx::query_scalar(
+        "SELECT r.status::text \
+         FROM releases r \
+         JOIN packages p ON p.id = r.package_id \
+         WHERE p.ecosystem = 'oci' AND p.name = $1 AND r.version = $2",
+    )
+    .bind(package_name)
+    .bind(&manifest_digest)
+    .fetch_one(&pool)
+    .await
+    .expect("oci release status should be queryable");
+    assert_eq!(release_status, "published");
+
+    let probe_resp = send_oci_request(
+        &app,
+        Method::GET,
+        "/oci/v2/".to_owned(),
+        None,
+        None,
+        vec![],
+    )
+    .await;
+    assert_eq!(probe_resp.status(), StatusCode::UNAUTHORIZED);
+    assert!(probe_resp
+        .headers()
+        .get(header::WWW_AUTHENTICATE)
+        .expect("probe challenge should exist")
+        .to_str()
+        .expect("probe challenge should be utf-8")
+        .contains("registry:catalog:*"));
+
+    let tags_challenge_resp = send_oci_request(
+        &app,
+        Method::GET,
+        format!("/oci/v2/{package_name}/tags/list"),
+        None,
+        None,
+        vec![],
+    )
+    .await;
+    assert_eq!(tags_challenge_resp.status(), StatusCode::UNAUTHORIZED);
+    assert!(tags_challenge_resp
+        .headers()
+        .get(header::WWW_AUTHENTICATE)
+        .expect("tags challenge should exist")
+        .to_str()
+        .expect("tags challenge should be utf-8")
+        .contains(&format!("repository:{package_name}:pull")));
+
+    let tags_resp = send_oci_request(
+        &app,
+        Method::GET,
+        format!("/oci/v2/{package_name}/tags/list"),
+        Some(&oci_token),
+        None,
+        vec![],
+    )
+    .await;
+    assert_eq!(tags_resp.status(), StatusCode::OK);
+    let tags_body = body_json(tags_resp).await;
+    assert_eq!(tags_body["name"], package_name);
+    assert_eq!(tags_body["tags"], json!(["latest"]));
+
+    let catalog_resp = send_oci_request(
+        &app,
+        Method::GET,
+        "/oci/v2/_catalog".to_owned(),
+        Some(&oci_token),
+        None,
+        vec![],
+    )
+    .await;
+    assert_eq!(catalog_resp.status(), StatusCode::OK);
+    let catalog_body = body_json(catalog_resp).await;
+    assert_eq!(catalog_body["repositories"], json!([package_name]));
+
+    let manifest_get_resp = send_oci_request(
+        &app,
+        Method::GET,
+        format!("/oci/v2/{package_name}/manifests/latest"),
+        Some(&oci_token),
+        None,
+        vec![],
+    )
+    .await;
+    assert_eq!(manifest_get_resp.status(), StatusCode::OK);
+    assert_eq!(
+        manifest_get_resp
+            .headers()
+            .get("docker-content-digest")
+            .expect("manifest get should include digest header"),
+        manifest_digest.as_str()
+    );
+    let manifest_download = body_bytes(manifest_get_resp).await;
+    assert_eq!(manifest_download, manifest_bytes);
+
+    let blob_get_resp = send_oci_request(
+        &app,
+        Method::GET,
+        format!("/oci/v2/{package_name}/blobs/{layer_digest}"),
+        Some(&oci_token),
+        None,
+        vec![],
+    )
+    .await;
+    assert_eq!(blob_get_resp.status(), StatusCode::OK);
+    let blob_download = body_bytes(blob_get_resp).await;
+    assert_eq!(blob_download, layer_bytes);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_native_oci_public_repository_supports_chunked_upload_anonymous_pull_and_manifest_blob_cleanup(
+    pool: PgPool,
+) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Public OCI Packages",
+        "public-oci-packages",
+        None,
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let package_name = "acme/public-widget";
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "oci",
+        package_name,
+        "public-oci-packages",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let (status, token_body) =
+        create_personal_access_token(&app, &alice_jwt, "alice-oci-publish", &["packages:write"])
+            .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
+    let oci_token = token_body["token"]
+        .as_str()
+        .expect("oci token should be returned")
+        .to_owned();
+
+    let config_bytes = br#"{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]}}"#;
+    let (config_digest, config_resp) =
+        upload_oci_blob_monolithic(&app, &oci_token, package_name, config_bytes).await;
+    assert_eq!(config_resp.status(), StatusCode::CREATED);
+
+    let layer_bytes = b"fake-oci-layer-from-chunked-upload";
+    let layer_digest = oci_digest(layer_bytes);
+    let start_resp = send_oci_request(
+        &app,
+        Method::POST,
+        format!("/oci/v2/{package_name}/blobs/uploads/"),
+        Some(&oci_token),
+        None,
+        vec![],
+    )
+    .await;
+    assert_eq!(start_resp.status(), StatusCode::ACCEPTED);
+    let upload_location = start_resp
+        .headers()
+        .get(header::LOCATION)
+        .expect("upload start should return a location header")
+        .to_str()
+        .expect("upload location should be utf-8")
+        .to_owned();
+    let upload_path = Url::parse(&upload_location)
+        .expect("upload location should parse as a URL")
+        .path()
+        .to_owned();
+
+    let split_at = 10;
+    let patch_resp = send_oci_request(
+        &app,
+        Method::PATCH,
+        upload_path.clone(),
+        Some(&oci_token),
+        Some("application/octet-stream"),
+        layer_bytes[..split_at].to_vec(),
+    )
+    .await;
+    assert_eq!(patch_resp.status(), StatusCode::ACCEPTED);
+    assert_eq!(
+        patch_resp
+            .headers()
+            .get("range")
+            .expect("upload patch should expose a range header"),
+        format!("0-{}", split_at - 1).as_str()
+    );
+
+    let finalize_resp = send_oci_request(
+        &app,
+        Method::PUT,
+        format!("{upload_path}?digest={layer_digest}"),
+        Some(&oci_token),
+        Some("application/octet-stream"),
+        layer_bytes[split_at..].to_vec(),
+    )
+    .await;
+    assert_eq!(finalize_resp.status(), StatusCode::CREATED);
+    assert_eq!(
+        finalize_resp
+            .headers()
+            .get("docker-content-digest")
+            .expect("blob finalize should include digest header"),
+        layer_digest.as_str()
+    );
+
+    let manifest_bytes = build_oci_image_manifest(
+        &config_digest,
+        config_bytes.len(),
+        &layer_digest,
+        layer_bytes.len(),
+    );
+    let manifest_digest = oci_digest(&manifest_bytes);
+    let manifest_put_resp = send_oci_request(
+        &app,
+        Method::PUT,
+        format!("/oci/v2/{package_name}/manifests/latest"),
+        Some(&oci_token),
+        Some("application/vnd.oci.image.manifest.v1+json"),
+        manifest_bytes.clone(),
+    )
+    .await;
+    assert_eq!(manifest_put_resp.status(), StatusCode::CREATED);
+
+    let anonymous_catalog_resp = send_oci_request(
+        &app,
+        Method::GET,
+        "/oci/v2/_catalog".to_owned(),
+        None,
+        None,
+        vec![],
+    )
+    .await;
+    assert_eq!(anonymous_catalog_resp.status(), StatusCode::OK);
+    let anonymous_catalog_body = body_json(anonymous_catalog_resp).await;
+    assert_eq!(anonymous_catalog_body["repositories"], json!([package_name]));
+
+    let anonymous_tags_resp = send_oci_request(
+        &app,
+        Method::GET,
+        format!("/oci/v2/{package_name}/tags/list"),
+        None,
+        None,
+        vec![],
+    )
+    .await;
+    assert_eq!(anonymous_tags_resp.status(), StatusCode::OK);
+    let anonymous_tags_body = body_json(anonymous_tags_resp).await;
+    assert_eq!(anonymous_tags_body["tags"], json!(["latest"]));
+
+    let anonymous_manifest_resp = send_oci_request(
+        &app,
+        Method::GET,
+        format!("/oci/v2/{package_name}/manifests/latest"),
+        None,
+        None,
+        vec![],
+    )
+    .await;
+    assert_eq!(anonymous_manifest_resp.status(), StatusCode::OK);
+    assert_eq!(body_bytes(anonymous_manifest_resp).await, manifest_bytes);
+
+    let anonymous_blob_resp = send_oci_request(
+        &app,
+        Method::GET,
+        format!("/oci/v2/{package_name}/blobs/{layer_digest}"),
+        None,
+        None,
+        vec![],
+    )
+    .await;
+    assert_eq!(anonymous_blob_resp.status(), StatusCode::OK);
+    assert_eq!(body_bytes(anonymous_blob_resp).await, layer_bytes);
+
+    let delete_blob_while_referenced_resp = send_oci_request(
+        &app,
+        Method::DELETE,
+        format!("/oci/v2/{package_name}/blobs/{layer_digest}"),
+        Some(&oci_token),
+        None,
+        vec![],
+    )
+    .await;
+    assert_eq!(delete_blob_while_referenced_resp.status(), StatusCode::CONFLICT);
+    let delete_blob_while_referenced_body = body_json(delete_blob_while_referenced_resp).await;
+    assert_eq!(
+        delete_blob_while_referenced_body["errors"][0]["code"],
+        "DENIED"
+    );
+
+    let delete_tag_resp = send_oci_request(
+        &app,
+        Method::DELETE,
+        format!("/oci/v2/{package_name}/manifests/latest"),
+        Some(&oci_token),
+        None,
+        vec![],
+    )
+    .await;
+    assert_eq!(delete_tag_resp.status(), StatusCode::ACCEPTED);
+
+    let tags_after_tag_delete_resp = send_oci_request(
+        &app,
+        Method::GET,
+        format!("/oci/v2/{package_name}/tags/list"),
+        None,
+        None,
+        vec![],
+    )
+    .await;
+    assert_eq!(tags_after_tag_delete_resp.status(), StatusCode::OK);
+    let tags_after_tag_delete_body = body_json(tags_after_tag_delete_resp).await;
+    assert_eq!(tags_after_tag_delete_body["tags"], json!([]));
+
+    let delete_manifest_resp = send_oci_request(
+        &app,
+        Method::DELETE,
+        format!("/oci/v2/{package_name}/manifests/{manifest_digest}"),
+        Some(&oci_token),
+        None,
+        vec![],
+    )
+    .await;
+    assert_eq!(delete_manifest_resp.status(), StatusCode::ACCEPTED);
+
+    let release_status_after_delete: String = sqlx::query_scalar(
+        "SELECT r.status::text \
+         FROM releases r \
+         JOIN packages p ON p.id = r.package_id \
+         WHERE p.ecosystem = 'oci' AND p.name = $1 AND r.version = $2",
+    )
+    .bind(package_name)
+    .bind(&manifest_digest)
+    .fetch_one(&pool)
+    .await
+    .expect("oci release status after delete should be queryable");
+    assert_eq!(release_status_after_delete, "deleted");
+
+    let delete_blob_after_manifest_delete_resp = send_oci_request(
+        &app,
+        Method::DELETE,
+        format!("/oci/v2/{package_name}/blobs/{layer_digest}"),
+        Some(&oci_token),
+        None,
+        vec![],
+    )
+    .await;
+    assert_eq!(delete_blob_after_manifest_delete_resp.status(), StatusCode::ACCEPTED);
+
+    let blob_after_delete_resp = send_oci_request(
+        &app,
+        Method::GET,
+        format!("/oci/v2/{package_name}/blobs/{layer_digest}"),
+        None,
+        None,
+        vec![],
+    )
+    .await;
+    assert_eq!(blob_after_delete_resp.status(), StatusCode::NOT_FOUND);
+
+    let manifest_after_delete_resp = send_oci_request(
+        &app,
+        Method::GET,
+        format!("/oci/v2/{package_name}/manifests/{manifest_digest}"),
+        None,
+        None,
+        vec![],
+    )
+    .await;
+    assert_eq!(manifest_after_delete_resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_native_rubygems_push_and_yank_keep_exact_downloads(pool: PgPool) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, repository_body) = create_repository(
+        &app,
+        &alice_jwt,
+        "Personal RubyGems Packages",
+        "personal-rubygems-packages",
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    sqlx::query(
+        "UPDATE repositories \
+         SET visibility = 'public', updated_at = NOW() \
+         WHERE owner_user_id = (SELECT id FROM users WHERE username = $1 LIMIT 1)",
+    )
+    .bind("alice")
+    .execute(&pool)
+    .await
+    .expect("alice personal repositories should be made public for RubyGems read checks");
+
+    let (status, token_body) = create_personal_access_token(
+        &app,
+        &alice_jwt,
+        "alice-rubygems-publish",
+        &["packages:write"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
+    let rubygems_token = token_body["token"]
+        .as_str()
+        .expect("rubygems token should be returned")
+        .to_owned();
+
+    let gem_name = "native-rubygems-widget";
+    let gem_bytes = build_rubygems_package(gem_name, "1.0.0");
+    let gem_sha256 = {
+        use sha2::Digest;
+        hex::encode(sha2::Sha256::digest(&gem_bytes))
+    };
+
+    let (status, push_body) = push_rubygems_package(&app, &rubygems_token, &gem_bytes).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected RubyGems push response: {push_body}"
+    );
+    assert!(push_body.contains("Successfully registered gem"));
+
+    let release_status: String = sqlx::query_scalar(
+        "SELECT r.status::text \
+         FROM releases r \
+         JOIN packages p ON p.id = r.package_id \
+         WHERE p.ecosystem = 'rubygems' AND p.name = $1 AND r.version = $2",
+    )
+    .bind(gem_name)
+    .bind("1.0.0")
+    .fetch_one(&pool)
+    .await
+    .expect("rubygems release status should be queryable");
+    assert_eq!(release_status, "published");
+
+    let (status, metadata_body) = get_rubygems_metadata(&app, Some(&rubygems_token), gem_name).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(metadata_body["name"], gem_name);
+    assert_eq!(metadata_body["version"], "1.0.0");
+
+    let (status, versions_body) = get_rubygems_versions(&app, Some(&rubygems_token), gem_name).await;
+    assert_eq!(status, StatusCode::OK);
+    let versions = versions_body
+        .as_array()
+        .expect("versions response should be an array");
+    assert_eq!(versions.len(), 1, "response: {versions_body}");
+    assert_eq!(versions[0]["number"], "1.0.0");
+
+    let download_req = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/rubygems/gems/{gem_name}-1.0.0.gem"))
+        .header("x-gem-api-key", &rubygems_token)
+        .body(Body::empty())
+        .unwrap();
+    let download_resp = app.clone().oneshot(download_req).await.unwrap();
+    assert_eq!(download_resp.status(), StatusCode::OK);
+    let download_headers = download_resp.headers().clone();
+    let download_body = body_bytes(download_resp).await;
+    assert_eq!(download_body, gem_bytes);
+    assert_eq!(
+        download_headers
+            .get("x-checksum-sha256")
+            .expect("gem download should expose sha256 header"),
+        gem_sha256.as_str()
+    );
+
+    let (status, yank_body) = yank_rubygems_version(&app, &rubygems_token, gem_name, "1.0.0").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected RubyGems yank response: {yank_body}"
+    );
+    assert!(yank_body.contains("Successfully yanked gem"));
+
+    let release_status_after_yank: String = sqlx::query_scalar(
+        "SELECT r.status::text \
+         FROM releases r \
+         JOIN packages p ON p.id = r.package_id \
+         WHERE p.ecosystem = 'rubygems' AND p.name = $1 AND r.version = $2",
+    )
+    .bind(gem_name)
+    .bind("1.0.0")
+    .fetch_one(&pool)
+    .await
+    .expect("rubygems release status after yank should be queryable");
+    assert_eq!(release_status_after_yank, "yanked");
+
+    let download_after_yank_req = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/rubygems/gems/{gem_name}-1.0.0.gem"))
+        .header("x-gem-api-key", &rubygems_token)
+        .body(Body::empty())
+        .unwrap();
+    let download_after_yank_resp = app.clone().oneshot(download_after_yank_req).await.unwrap();
+    assert_eq!(download_after_yank_resp.status(), StatusCode::OK);
+    let download_after_yank_body = body_bytes(download_after_yank_resp).await;
+    assert_eq!(download_after_yank_body, gem_bytes);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_native_nuget_push_unlist_and_relist_roundtrip(pool: PgPool) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, repository_body) = create_repository(
+        &app,
+        &alice_jwt,
+        "Personal NuGet Packages",
+        "personal-nuget-packages",
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    sqlx::query(
+        "UPDATE repositories \
+         SET visibility = 'public', updated_at = NOW() \
+         WHERE owner_user_id = (SELECT id FROM users WHERE username = $1 LIMIT 1)",
+    )
+    .bind("alice")
+    .execute(&pool)
+    .await
+    .expect("alice personal repositories should be made public for NuGet read checks");
+
+    let (status, token_body) = create_personal_access_token(
+        &app,
+        &alice_jwt,
+        "alice-nuget-publish",
+        &["packages:write"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
+    let nuget_token = token_body["token"]
+        .as_str()
+        .expect("nuget token should be returned")
+        .to_owned();
+
+    let package_id = "Native.NuGet.Widget";
+    let normalized_id = package_id.to_ascii_lowercase();
+    let nupkg_bytes = build_nuget_package(package_id, "1.0.0");
+
+    let (status, push_body) =
+        push_nuget_package(&app, &nuget_token, package_id, "1.0.0", &nupkg_bytes).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected NuGet push response: {push_body}"
+    );
+    assert_eq!(push_body, Value::Null);
+
+    let release_status: String = sqlx::query_scalar(
+        "SELECT r.status::text \
+         FROM releases r \
+         JOIN packages p ON p.id = r.package_id \
+         WHERE p.ecosystem = 'nuget' AND p.name = $1 AND r.version = $2",
+    )
+    .bind(package_id)
+    .bind("1.0.0")
+    .fetch_one(&pool)
+    .await
+    .expect("nuget release status should be queryable");
+    assert_eq!(release_status, "published");
+
+    let service_index_req = Request::builder()
+        .method(Method::GET)
+        .uri("/nuget/v3/index.json")
+        .body(Body::empty())
+        .unwrap();
+    let service_index_resp = app.clone().oneshot(service_index_req).await.unwrap();
+    assert_eq!(service_index_resp.status(), StatusCode::OK);
+    let service_index_body = body_json(service_index_resp).await;
+    assert_eq!(service_index_body["version"], "3.0.0");
+
+    let (status, version_listing_body) =
+        get_nuget_version_listing(&app, Some(&nuget_token), &normalized_id).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(version_listing_body["versions"], json!(["1.0.0"]));
+
+    let download_req = Request::builder()
+        .method(Method::GET)
+        .uri(format!(
+            "/nuget/v3-flatcontainer/{normalized_id}/1.0.0/{normalized_id}.1.0.0.nupkg"
+        ))
+        .header("x-nuget-apikey", &nuget_token)
+        .body(Body::empty())
+        .unwrap();
+    let download_resp = app.clone().oneshot(download_req).await.unwrap();
+    assert_eq!(download_resp.status(), StatusCode::OK);
+    let download_body = body_bytes(download_resp).await;
+    assert_eq!(download_body, nupkg_bytes);
+
+    let nuspec_req = Request::builder()
+        .method(Method::GET)
+        .uri(format!(
+            "/nuget/v3-flatcontainer/{normalized_id}/1.0.0/{normalized_id}.nuspec"
+        ))
+        .header("x-nuget-apikey", &nuget_token)
+        .body(Body::empty())
+        .unwrap();
+    let nuspec_resp = app.clone().oneshot(nuspec_req).await.unwrap();
+    assert_eq!(nuspec_resp.status(), StatusCode::OK);
+    let nuspec_body = body_text(nuspec_resp).await;
+    assert!(nuspec_body.contains("<id>Native.NuGet.Widget</id>"));
+
+    let (status, registration_body) =
+        get_nuget_registration_index(&app, Some(&nuget_token), &normalized_id).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        registration_body["items"][0]["items"][0]["catalogEntry"]["listed"],
+        true
+    );
+
+    let unlist_status =
+        set_nuget_listing_state(&app, &nuget_token, package_id, "1.0.0", Method::DELETE).await;
+    assert_eq!(unlist_status, StatusCode::NO_CONTENT);
+
+    let release_status_after_unlist: String = sqlx::query_scalar(
+        "SELECT r.status::text \
+         FROM releases r \
+         JOIN packages p ON p.id = r.package_id \
+         WHERE p.ecosystem = 'nuget' AND p.name = $1 AND r.version = $2",
+    )
+    .bind(package_id)
+    .bind("1.0.0")
+    .fetch_one(&pool)
+    .await
+    .expect("nuget release status after unlist should be queryable");
+    assert_eq!(release_status_after_unlist, "yanked");
+
+    let (_, registration_after_unlist_body) =
+        get_nuget_registration_index(&app, Some(&nuget_token), &normalized_id).await;
+    assert_eq!(
+        registration_after_unlist_body["items"][0]["items"][0]["catalogEntry"]["listed"],
+        false
+    );
+
+    let relist_status =
+        set_nuget_listing_state(&app, &nuget_token, package_id, "1.0.0", Method::POST).await;
+    assert_eq!(relist_status, StatusCode::OK);
+
+    let release_status_after_relist: String = sqlx::query_scalar(
+        "SELECT r.status::text \
+         FROM releases r \
+         JOIN packages p ON p.id = r.package_id \
+         WHERE p.ecosystem = 'nuget' AND p.name = $1 AND r.version = $2",
+    )
+    .bind(package_id)
+    .bind("1.0.0")
+    .fetch_one(&pool)
+    .await
+    .expect("nuget release status after relist should be queryable");
+    assert_eq!(release_status_after_relist, "published");
+
+    let (_, registration_after_relist_body) =
+        get_nuget_registration_index(&app, Some(&nuget_token), &normalized_id).await;
+    assert_eq!(
+        registration_after_relist_body["items"][0]["items"][0]["catalogEntry"]["listed"],
+        true
+    );
 }
 
 #[sqlx::test(migrations = "../../migrations")]
