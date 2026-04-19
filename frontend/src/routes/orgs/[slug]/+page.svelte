@@ -97,6 +97,11 @@
     nextAuditActorInputState,
   } from '../../../pages/org-audit-actors';
   import type { OrgAuditActorOption } from '../../../pages/org-audit-actors';
+  import type { OrgMemberPickerOption } from '../../../pages/org-member-picker';
+  import {
+    buildOrgMemberPickerOptions,
+    resolveOrgMemberPickerInput,
+  } from '../../../pages/org-member-picker';
   import { ECOSYSTEMS, ecosystemLabel } from '../../../utils/ecosystem';
   import { formatDate, formatNumber } from '../../../utils/format';
   import {
@@ -246,6 +251,7 @@
     label: string;
   }> = [];
   let repositoryDefaultPackageVisibility = '';
+  let ownershipMemberOptions: OrgMemberPickerOption[] = [];
 
   let newPackageRepositorySlug = '';
   let newPackageEcosystem = DEFAULT_PACKAGE_ECOSYSTEM;
@@ -256,6 +262,15 @@
   let creatingPackage = false;
 
   $: slug = $page.params.slug ?? '';
+  $: transferCandidates = members.filter(
+    (member) =>
+      member.role !== 'owner' &&
+      typeof member.user_id === 'string' &&
+      member.user_id.trim().length > 0 &&
+      typeof member.username === 'string' &&
+      member.username.trim().length > 0
+  );
+  $: ownershipMemberOptions = buildOrgMemberPickerOptions(transferCandidates);
   $: auditView = getAuditViewFromQuery($page.url.searchParams);
   $: loadKey = `${slug}|${$page.url.search}`;
   $: if (slug && loadKey !== lastLoadKey) {
@@ -940,6 +955,10 @@
   async function handleTransferOwnership(event: SubmitEvent): Promise<void> {
     event.preventDefault();
     const formData = new FormData(event.currentTarget as HTMLFormElement);
+    const username = resolveOrgMemberPickerInput(
+      formData.get('username')?.toString() || '',
+      ownershipMemberOptions
+    );
 
     if (!formData.get('confirm')) {
       await loadOrganizationPage({
@@ -950,7 +969,7 @@
 
     try {
       const result: TransferOwnershipResult = await transferOwnership(slug, {
-        username: formData.get('username')?.toString().trim() || '',
+        username,
       });
 
       await loadOrganizationPage({
@@ -1077,10 +1096,14 @@
   ): Promise<void> {
     event.preventDefault();
     const formData = new FormData(event.currentTarget as HTMLFormElement);
+    const username = resolveOrgMemberPickerInput(
+      formData.get('username')?.toString() || '',
+      getEligibleTeamMemberOptions(teamSlug)
+    );
 
     try {
       await addTeamMember(slug, teamSlug, {
-        username: formData.get('username')?.toString().trim() || '',
+        username,
       });
 
       (event.currentTarget as HTMLFormElement).reset();
@@ -1442,6 +1465,16 @@
 
   function hasTeamSlug(team: Team): team is Team & { slug: string } {
     return typeof team.slug === 'string' && team.slug.trim().length > 0;
+  }
+
+  function getEligibleTeamMemberOptions(teamSlug: string): OrgMemberPickerOption[] {
+    const teamMembers = teamMembersBySlug[teamSlug]?.members || [];
+    return buildOrgMemberPickerOptions(
+      members,
+      teamMembers
+        .map((member) => member.username?.trim() || '')
+        .filter(Boolean)
+    );
   }
 
   function hasRepositorySlug(
@@ -2144,29 +2177,43 @@
           <div class="alert alert-warning">
             <strong>This action is immediate.</strong> You will be demoted to Admin.
           </div>
-          <form on:submit={handleTransferOwnership}>
-            <div class="form-group">
-              <label for="org-transfer-owner">New owner username</label>
-              <input
-                id="org-transfer-owner"
-                name="username"
-                class="form-input"
-                placeholder="alice"
-                required
-              />
-            </div>
-            <div class="form-group">
-              <label class="flex items-start gap-2">
-                <input type="checkbox" name="confirm" required />
-                <span
-                  >I understand this transfer is immediate and irreversible.</span
-                >
-              </label>
-            </div>
-            <button type="submit" class="btn btn-danger"
-              >Transfer ownership</button
-            >
-          </form>
+          {#if ownershipMemberOptions.length === 0}
+            <p class="settings-copy">
+              Add another organization member before transferring ownership.
+            </p>
+          {:else}
+            <form on:submit={handleTransferOwnership}>
+              <div class="form-group">
+                <label for="org-transfer-owner">New owner username</label>
+                <input
+                  id="org-transfer-owner"
+                  name="username"
+                  class="form-input"
+                  list="org-transfer-owner-options"
+                  placeholder="Search member username or paste user id"
+                  autocomplete="off"
+                  required
+                />
+                <datalist id="org-transfer-owner-options">
+                  {#each ownershipMemberOptions as option}
+                    <option value={option.username}>{option.label}</option>
+                    <option value={option.userId}>{option.label}</option>
+                  {/each}
+                </datalist>
+              </div>
+              <div class="form-group">
+                <label class="flex items-start gap-2">
+                  <input type="checkbox" name="confirm" required />
+                  <span
+                    >I understand this transfer is immediate and irreversible.</span
+                  >
+                </label>
+              </div>
+              <button type="submit" class="btn btn-danger"
+                >Transfer ownership</button
+              >
+            </form>
+          {/if}
         </section>
       {/if}
 
@@ -2347,6 +2394,8 @@
                 teamPackageAccessBySlug[teamSlug]?.grants || []}
               {@const teamGrantsError =
                 teamPackageAccessBySlug[teamSlug]?.load_error || null}
+              {@const eligibleTeamMemberOptions =
+                getEligibleTeamMemberOptions(teamSlug)}
               <div class="settings-subsection">
                 <div class="org-section-header">
                   <div>
@@ -2446,26 +2495,45 @@
                         </div>
                       {/if}
 
-                      <form
-                        on:submit={(event) =>
-                          handleAddTeamMember(event, teamSlug)}
-                      >
-                        <div class="form-group">
-                          <label for={`team-member-${teamSlug}`}
-                            >Add organization member</label
-                          >
-                          <input
-                            id={`team-member-${teamSlug}`}
-                            name="username"
-                            class="form-input"
-                            placeholder="alice"
-                            required
-                          />
-                        </div>
-                        <button type="submit" class="btn btn-primary"
-                          >Add member</button
+                      {#if eligibleTeamMemberOptions.length === 0}
+                        <p class="settings-copy">
+                          Every current organization member is already part of
+                          this team.
+                        </p>
+                      {:else}
+                        <form
+                          on:submit={(event) =>
+                            handleAddTeamMember(event, teamSlug)}
                         >
-                      </form>
+                          <div class="form-group">
+                            <label for={`team-member-${teamSlug}`}
+                              >Add organization member</label
+                            >
+                            <input
+                              id={`team-member-${teamSlug}`}
+                              name="username"
+                              class="form-input"
+                              list={`team-member-options-${teamSlug}`}
+                              placeholder="Search username or paste user id"
+                              autocomplete="off"
+                              required
+                            />
+                            <datalist id={`team-member-options-${teamSlug}`}>
+                              {#each eligibleTeamMemberOptions as option}
+                                <option value={option.username}
+                                  >{option.label}</option
+                                >
+                                <option value={option.userId}
+                                  >{option.label}</option
+                                >
+                              {/each}
+                            </datalist>
+                          </div>
+                          <button type="submit" class="btn btn-primary"
+                            >Add member</button
+                          >
+                        </form>
+                      {/if}
                     </div>
                   </div>
 
