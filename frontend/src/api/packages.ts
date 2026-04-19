@@ -142,6 +142,7 @@ export interface SearchPackage {
   display_name?: NullableString;
   latest_version?: NullableString;
   is_deprecated?: boolean;
+  visibility?: NullableString;
   owner_name?: NullableString;
   download_count?: number | null;
   updated_at?: NullableString;

@@ -11,6 +11,7 @@
     formatVersionLabel,
   } from '../../utils/ecosystem';
   import { formatDate, formatNumber } from '../../utils/format';
+  import { formatRepositoryVisibilityLabel } from '../../utils/repositories';
 
   const PER_PAGE = 20;
 
@@ -167,6 +168,11 @@
               {/if}
               {#if pkg.is_deprecated}
                 <span class="badge badge-deprecated">deprecated</span>
+              {/if}
+              {#if pkg.visibility && pkg.visibility !== 'public'}
+                <span class="badge"
+                  >{formatRepositoryVisibilityLabel(pkg.visibility)}</span
+                >
               {/if}
             </div>
             <div class="package-card__description">{pkg.description || ''}</div>
