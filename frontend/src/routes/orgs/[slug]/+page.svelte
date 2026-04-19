@@ -251,7 +251,6 @@
     label: string;
   }> = [];
   let repositoryDefaultPackageVisibility = '';
-  let ownershipMemberInput = '';
   let ownershipMemberOptions: OrgMemberPickerOption[] = [];
 
   let newPackageRepositorySlug = '';
@@ -263,7 +262,14 @@
   let creatingPackage = false;
 
   $: slug = $page.params.slug ?? '';
-  $: transferCandidates = members.filter((member) => member.role !== 'owner');
+  $: transferCandidates = members.filter(
+    (member) =>
+      member.role !== 'owner' &&
+      typeof member.user_id === 'string' &&
+      member.user_id.trim().length > 0 &&
+      typeof member.username === 'string' &&
+      member.username.trim().length > 0
+  );
   $: ownershipMemberOptions = buildOrgMemberPickerOptions(transferCandidates);
   $: auditView = getAuditViewFromQuery($page.url.searchParams);
   $: loadKey = `${slug}|${$page.url.search}`;
@@ -2184,7 +2190,6 @@
                   name="username"
                   class="form-input"
                   list="org-transfer-owner-options"
-                  bind:value={ownershipMemberInput}
                   placeholder="Search member username or paste user id"
                   autocomplete="off"
                   required
