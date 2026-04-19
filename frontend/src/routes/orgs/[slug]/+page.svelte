@@ -88,6 +88,11 @@
     nextAuditActorInputState,
   } from '../../../pages/org-audit-actors';
   import {
+    formatAuditActionLabel,
+    formatAuditSummary,
+    formatAuditTarget,
+  } from '../../../pages/org-audit-format';
+  import {
     ORG_AUDIT_ACTION_VALUES,
     buildOrgAuditExportFilename,
     buildOrgAuditPath,
@@ -97,6 +102,13 @@
     normalizeAuditActorUserId,
     normalizeAuditActorUsername,
   } from '../../../pages/org-audit-query';
+  import {
+    countOrgInvitationStatuses,
+    describeOrgInvitationEvent,
+    formatOrgInvitationInvitee,
+    formatOrgInvitationStatusLabel,
+    partitionOrgInvitations,
+  } from '../../../pages/org-invitation-history';
   import type { OrgMemberPickerOption } from '../../../pages/org-member-picker';
   import {
     buildOrgMemberPickerOptions,
@@ -219,6 +231,9 @@
   let membersError: string | null = null;
   let invitations: OrgInvitation[] = [];
   let invitationsError: string | null = null;
+  let activeInvitations: OrgInvitation[] = [];
+  let historicalInvitations: OrgInvitation[] = [];
+  let showInvitationHistory = false;
   let teams: Team[] = [];
   let teamsError: string | null = null;
   let teamMembersBySlug: Record<string, TeamMemberState> = {};
@@ -255,6 +270,7 @@
   }> = [];
   let repositoryDefaultPackageVisibility = '';
   let ownershipMemberOptions: OrgMemberPickerOption[] = [];
+  let invitationStatusCounts = countOrgInvitationStatuses([]);
 
   let newPackageRepositorySlug = '';
   let newPackageEcosystem = DEFAULT_PACKAGE_ECOSYSTEM;
@@ -319,6 +335,16 @@
   }
 
   $: transferablePackages = selectTransferablePackages(packages);
+  $: {
+    const { active, history } = partitionOrgInvitations(invitations);
+    activeInvitations = active;
+    historicalInvitations = history;
+    invitationStatusCounts = countOrgInvitationStatuses(invitations);
+
+    if (historicalInvitations.length === 0 && showInvitationHistory) {
+      showInvitationHistory = false;
+    }
+  }
   $: creatableRepositories = selectCreatableRepositories(repositories);
   $: if (creatableRepositories.length === 0) {
     if (newPackageRepositorySlug !== '') {
@@ -491,7 +517,7 @@
         repositoryPackageData,
       ] = await Promise.all([
         canAdminister
-          ? listOrgInvitations(slug).catch(
+          ? listOrgInvitations(slug, { includeInactive: true }).catch(
               (caughtError: unknown): OrgInvitationListResponse => ({
                 invitations: [],
                 load_error: toErrorMessage(
@@ -1534,14 +1560,6 @@
       .join(' ');
   }
 
-  function formatPermission(permission: string): string {
-    return permission
-      .split('_')
-      .filter(Boolean)
-      .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
-      .join(' ');
-  }
-
   function formatIdentifierLabel(value: string): string {
     return value
       .split('_')
@@ -1550,41 +1568,8 @@
       .join(' ');
   }
 
-  function formatAuditActionLabel(action: string): string {
-    const labels: Record<string, string> = {
-      org_create: 'Organization created',
-      org_update: 'Organization updated',
-      package_update: 'Package updated',
-      package_create: 'Package created',
-      package_delete: 'Package archived',
-      package_transfer: 'Package transferred',
-      release_publish: 'Release published',
-      release_yank: 'Release yanked',
-      release_unyank: 'Release restored',
-      release_deprecate: 'Release deprecated',
-      trusted_publisher_create: 'Trusted publisher added',
-      trusted_publisher_delete: 'Trusted publisher removed',
-      security_finding_resolve: 'Security finding resolved',
-      security_finding_reopen: 'Security finding reopened',
-      namespace_claim_create: 'Namespace claim created',
-      org_member_add: 'Member added',
-      org_role_change: 'Member role updated',
-      org_member_remove: 'Member removed',
-      org_ownership_transfer: 'Ownership transferred',
-      org_invitation_create: 'Invitation sent',
-      org_invitation_revoke: 'Invitation revoked',
-      org_invitation_accept: 'Invitation accepted',
-      org_invitation_decline: 'Invitation declined',
-      team_create: 'Team created',
-      team_update: 'Team updated',
-      team_delete: 'Team deleted',
-      team_member_add: 'Team member added',
-      team_member_remove: 'Team member removed',
-      team_package_access_update: 'Package access updated',
-      team_repository_access_update: 'Repository access updated',
-    };
-
-    return labels[action] || formatIdentifierLabel(action || 'activity');
+  function formatPermission(permission: string): string {
+    return formatIdentifierLabel(permission);
   }
 
   function formatAuditActor(log: OrgAuditLog): string | null {
@@ -1602,219 +1587,6 @@
     }
 
     return null;
-  }
-
-  function formatAuditTarget(log: OrgAuditLog): string | null {
-    const metadata = log.metadata || {};
-    const username =
-      stringField(metadata.username) ||
-      stringField(metadata.invited_username) ||
-      stringField(metadata.new_owner_username) ||
-      log.target_username?.trim();
-
-    if (username) {
-      return `target @${username}`;
-    }
-
-    const teamName =
-      stringField(metadata.team_name) || stringField(metadata.team_slug);
-    if (teamName) {
-      return `team ${teamName}`;
-    }
-
-    const repositoryName =
-      stringField(metadata.repository_name) ||
-      stringField(metadata.repository_slug);
-    if (repositoryName) {
-      return `repository ${repositoryName}`;
-    }
-
-    const packageName = stringField(metadata.package_name);
-    const ecosystem = stringField(metadata.ecosystem);
-    if (packageName && ecosystem) {
-      return `package ${ecosystem} · ${packageName}`;
-    }
-
-    const namespace = stringField(metadata.namespace);
-    if (namespace && ecosystem) {
-      return `namespace ${ecosystem} · ${namespace}`;
-    }
-
-    return null;
-  }
-
-  function formatAuditSummary(log: OrgAuditLog): string | null {
-    const metadata = log.metadata || {};
-
-    switch (log.action) {
-      case 'org_update':
-        return 'Updated organization profile settings.';
-      case 'package_update': {
-        const changedFields = Array.isArray(metadata.changed_fields)
-          ? metadata.changed_fields.filter(
-              (item): item is string => typeof item === 'string'
-            )
-          : [];
-        const packageName =
-          stringField(metadata.package_name) || 'selected package';
-
-        return changedFields.length > 0
-          ? `Updated package settings for ${packageName}: ${changedFields.map((field) => formatIdentifierLabel(field)).join(', ')}.`
-          : `Updated package settings for ${packageName}.`;
-      }
-      case 'release_publish':
-      case 'release_yank':
-      case 'release_unyank':
-      case 'release_deprecate': {
-        const packageName =
-          stringField(metadata.package_name) ||
-          stringField(metadata.name) ||
-          'selected package';
-        const version = stringField(metadata.version);
-        const releaseLabel = version
-          ? `${packageName} ${version}`
-          : packageName;
-        const reason = stringField(metadata.reason);
-        const note = stringField(metadata.message);
-
-        switch (log.action) {
-          case 'release_publish':
-            return `Published release ${releaseLabel}.`;
-          case 'release_yank':
-            return reason
-              ? `Yanked release ${releaseLabel} (${reason}).`
-              : `Yanked release ${releaseLabel}.`;
-          case 'release_unyank':
-            return `Restored release ${releaseLabel}.`;
-          case 'release_deprecate':
-            return note
-              ? `Deprecated release ${releaseLabel} (${note}).`
-              : `Deprecated release ${releaseLabel}.`;
-          default:
-            return null;
-        }
-      }
-      case 'package_create': {
-        const packageName =
-          stringField(metadata.name) ||
-          stringField(metadata.package_name) ||
-          'selected package';
-        const repositorySlug = stringField(metadata.repository_slug);
-        return repositorySlug
-          ? `Created package ${packageName} in repository ${repositorySlug}.`
-          : `Created package ${packageName}.`;
-      }
-      case 'package_delete': {
-        const packageName =
-          stringField(metadata.name) ||
-          stringField(metadata.package_name) ||
-          'selected package';
-        return `Archived package ${packageName}.`;
-      }
-      case 'package_transfer': {
-        const packageName =
-          stringField(metadata.name) ||
-          stringField(metadata.package_name) ||
-          'selected package';
-        const newOwnerSlug = stringField(metadata.new_owner_org_slug);
-        const newOwnerName = stringField(metadata.new_owner_org_name);
-        const targetLabel = newOwnerName || newOwnerSlug;
-        return targetLabel
-          ? `Transferred package ${packageName} to organization ${targetLabel}.`
-          : `Transferred package ${packageName}.`;
-      }
-      case 'trusted_publisher_create':
-      case 'trusted_publisher_delete': {
-        const issuer = stringField(metadata.issuer);
-        const subject = stringField(metadata.subject);
-        const repository = stringField(metadata.repository);
-        const descriptor = issuer
-          ? subject
-            ? `${issuer} (${subject})`
-            : issuer
-          : 'trusted publisher';
-        const repoSuffix = repository ? ` for ${repository}` : '';
-        return log.action === 'trusted_publisher_create'
-          ? `Added ${descriptor}${repoSuffix}.`
-          : `Removed ${descriptor}${repoSuffix}.`;
-      }
-      case 'security_finding_resolve':
-      case 'security_finding_reopen': {
-        const packageName =
-          stringField(metadata.package_name) || 'selected package';
-        const releaseVersion = stringField(metadata.release_version);
-        const note = stringField(metadata.note);
-        const actionLabel =
-          log.action === 'security_finding_resolve' ? 'Resolved' : 'Reopened';
-        const packageLabel = releaseVersion
-          ? `${packageName} ${releaseVersion}`
-          : packageName;
-
-        return note
-          ? `${actionLabel} a security finding for ${packageLabel} (${note}).`
-          : `${actionLabel} a security finding for ${packageLabel}.`;
-      }
-      case 'org_member_add':
-        return stringField(metadata.username)
-          ? `Granted ${formatRole(stringField(metadata.role) || 'viewer')} to @${stringField(metadata.username) || ''}.`
-          : null;
-      case 'org_role_change':
-        return stringField(metadata.username)
-          ? `Changed @${stringField(metadata.username) || ''} to ${formatRole(stringField(metadata.role) || 'viewer')}.`
-          : null;
-      case 'org_member_remove':
-        return stringField(metadata.username)
-          ? `Removed @${stringField(metadata.username) || ''} from the organization.`
-          : null;
-      case 'org_ownership_transfer':
-        return stringField(metadata.new_owner_username)
-          ? `Transferred ownership to @${stringField(metadata.new_owner_username) || ''}.`
-          : 'Transferred organization ownership.';
-      case 'namespace_claim_create':
-        return stringField(metadata.namespace)
-          ? `Created namespace ${stringField(metadata.namespace) || ''}.`
-          : 'Created a namespace claim.';
-      case 'org_invitation_create':
-        return stringField(metadata.invited_username)
-          ? `Sent an invitation to @${stringField(metadata.invited_username) || ''}.`
-          : stringField(metadata.invited_email)
-            ? `Sent an invitation to ${stringField(metadata.invited_email) || ''}.`
-            : 'Sent an invitation.';
-      case 'team_package_access_update': {
-        const permissions = Array.isArray(metadata.permissions)
-          ? metadata.permissions.filter(
-              (item): item is string => typeof item === 'string'
-            )
-          : [];
-        const packageName =
-          stringField(metadata.package_name) || 'selected package';
-        return permissions.length > 0
-          ? `Updated delegated access for ${packageName}: ${permissions.map((permission) => formatPermission(permission)).join(', ')}.`
-          : `Removed delegated access for ${packageName}.`;
-      }
-      case 'team_repository_access_update': {
-        const permissions = Array.isArray(metadata.permissions)
-          ? metadata.permissions.filter(
-              (item): item is string => typeof item === 'string'
-            )
-          : [];
-        const repositoryName =
-          stringField(metadata.repository_name) ||
-          stringField(metadata.repository_slug) ||
-          'selected repository';
-        return permissions.length > 0
-          ? `Updated repository-wide access for ${repositoryName}: ${permissions.map((permission) => formatPermission(permission)).join(', ')}.`
-          : `Removed repository-wide access for ${repositoryName}.`;
-      }
-      default:
-        return null;
-    }
-  }
-
-  function stringField(value: unknown): string | null {
-    return typeof value === 'string' && value.trim().length > 0
-      ? value.trim()
-      : null;
   }
 
   function formatAuditFilterSummary(): string {
@@ -2349,44 +2121,150 @@
       {/if}
 
       <section class="card settings-section">
-        <h2>Pending invitations</h2>
-        {#if invitationsError}
-          <div class="alert alert-error">{invitationsError}</div>
-        {:else if invitations.length === 0}
-          <div class="empty-state">
-            <h3>No active invitations</h3>
-            <p>
-              New invitations will appear here until they are accepted,
-              declined, revoked, or expire.
+        <div class="org-section-header">
+          <div>
+            <h2>Invitations</h2>
+            <p class="settings-copy">
+              Track active invitations and recent outcomes from one place.
             </p>
           </div>
-        {:else}
-          <div class="token-list">
-            {#each invitations as invitation}
-              <div class="token-row">
-                <div class="token-row__main">
-                  <div class="token-row__title">
-                    @{invitation.invited_user?.username || 'unknown'}
+          {#if historicalInvitations.length > 0}
+            <button
+              type="button"
+              class="btn btn-secondary btn-sm"
+              on:click={() => (showInvitationHistory = !showInvitationHistory)}
+            >
+              {showInvitationHistory
+                ? 'Hide history'
+                : `Show history (${historicalInvitations.length})`}
+            </button>
+          {/if}
+        </div>
+
+        <div class="token-row__scopes" style="margin-bottom:1rem;">
+          <span class="badge badge-ecosystem"
+            >{activeInvitations.length} active</span
+          >
+          {#if invitationStatusCounts.accepted > 0}<span
+              class="badge badge-ecosystem"
+              >{invitationStatusCounts.accepted} accepted</span
+            >{/if}
+          {#if invitationStatusCounts.declined > 0}<span
+              class="badge badge-ecosystem"
+              >{invitationStatusCounts.declined} declined</span
+            >{/if}
+          {#if invitationStatusCounts.revoked > 0}<span
+              class="badge badge-ecosystem"
+              >{invitationStatusCounts.revoked} revoked</span
+            >{/if}
+          {#if invitationStatusCounts.expired > 0}<span
+              class="badge badge-ecosystem"
+              >{invitationStatusCounts.expired} expired</span
+            >{/if}
+        </div>
+
+        <div class="settings-subsection">
+          <h3>Active invitations</h3>
+          {#if invitationsError}
+            <div class="alert alert-error">{invitationsError}</div>
+          {:else if activeInvitations.length === 0}
+            <div class="empty-state">
+              <h3>No active invitations</h3>
+              <p>
+                New invitations will appear here until they are accepted,
+                declined, revoked, or expire.
+              </p>
+            </div>
+          {:else}
+            <div class="token-list">
+              {#each activeInvitations as invitation}
+                {@const inviteeLabel = formatOrgInvitationInvitee(invitation)}
+                {@const invitationEvent =
+                  describeOrgInvitationEvent(invitation)}
+                <div class="token-row">
+                  <div class="token-row__main">
+                    <div class="token-row__title">{inviteeLabel}</div>
+                    <div class="token-row__meta">
+                      {#if invitation.invited_user?.email}<span
+                          >{invitation.invited_user?.email}</span
+                        >{/if}
+                      <span>{formatRole(invitation.role || 'viewer')}</span>
+                      <span
+                        >sent by @{invitation.invited_by?.username ||
+                          'unknown'}</span
+                      >
+                      <span>sent {formatDate(invitation.created_at)}</span>
+                      {#if invitationEvent?.occurredAt}<span
+                          >{invitationEvent.label.toLowerCase()}
+                          {formatDate(invitationEvent.occurredAt)}</span
+                        >{/if}
+                    </div>
+                    <div class="token-row__scopes">
+                      <span class="badge badge-ecosystem"
+                        >{formatOrgInvitationStatusLabel(
+                          invitation.status
+                        )}</span
+                      >
+                    </div>
                   </div>
-                  <div class="token-row__meta">
-                    <span>{invitation.invited_user?.email || 'No email'}</span>
-                    <span>{formatRole(invitation.role || 'viewer')}</span>
-                    <span>expires {formatDate(invitation.expires_at)}</span>
-                  </div>
+                  {#if invitation.id}
+                    <div class="token-row__actions">
+                      <button
+                        class="btn btn-secondary btn-sm"
+                        type="button"
+                        on:click={() =>
+                          handleRevokeInvitation(invitation.id || '')}
+                        >Revoke</button
+                      >
+                    </div>
+                  {/if}
                 </div>
-                {#if invitation.id}
+              {/each}
+            </div>
+          {/if}
+        </div>
+
+        {#if showInvitationHistory && historicalInvitations.length > 0}
+          <div class="settings-subsection">
+            <h3>Recent invitation history</h3>
+            <p class="settings-copy">
+              Accepted, declined, revoked, and expired invitations stay visible
+              here for admin follow-up.
+            </p>
+
+            <div class="token-list">
+              {#each historicalInvitations as invitation}
+                {@const inviteeLabel = formatOrgInvitationInvitee(invitation)}
+                {@const invitationEvent =
+                  describeOrgInvitationEvent(invitation)}
+                <div class="token-row">
+                  <div class="token-row__main">
+                    <div class="token-row__title">{inviteeLabel}</div>
+                    <div class="token-row__meta">
+                      {#if invitation.invited_user?.email}<span
+                          >{invitation.invited_user?.email}</span
+                        >{/if}
+                      <span>{formatRole(invitation.role || 'viewer')}</span>
+                      <span
+                        >sent by @{invitation.invited_by?.username ||
+                          'unknown'}</span
+                      >
+                      <span>sent {formatDate(invitation.created_at)}</span>
+                      <span>expires {formatDate(invitation.expires_at)}</span>
+                    </div>
+                    {#if invitationEvent}<p class="settings-copy">
+                        {invitationEvent.label}{#if invitationEvent.occurredAt}
+                          {' '}{formatDate(invitationEvent.occurredAt)}{/if}.
+                      </p>{/if}
+                  </div>
                   <div class="token-row__actions">
-                    <button
-                      class="btn btn-secondary btn-sm"
-                      type="button"
-                      on:click={() =>
-                        handleRevokeInvitation(invitation.id || '')}
-                      >Revoke</button
+                    <span class="badge badge-ecosystem"
+                      >{formatOrgInvitationStatusLabel(invitation.status)}</span
                     >
                   </div>
-                {/if}
-              </div>
-            {/each}
+                </div>
+              {/each}
+            </div>
           </div>
         {/if}
       </section>

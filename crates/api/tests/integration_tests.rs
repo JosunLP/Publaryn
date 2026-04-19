@@ -235,6 +235,48 @@ async fn create_team(
     (status, body)
 }
 
+/// Update a team for an organization and return the response.
+async fn update_team_for_org(
+    app: &axum::Router,
+    jwt: &str,
+    org_slug: &str,
+    team_slug: &str,
+    payload: Value,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::PATCH)
+        .uri(format!("/v1/orgs/{org_slug}/teams/{team_slug}"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::from(payload.to_string()))
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// Delete a team for an organization and return the response.
+async fn delete_team_for_org(
+    app: &axum::Router,
+    jwt: &str,
+    org_slug: &str,
+    team_slug: &str,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::DELETE)
+        .uri(format!("/v1/orgs/{org_slug}/teams/{team_slug}"))
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
 /// Add a user as an organization member and return the response.
 async fn add_org_member(
     app: &axum::Router,
@@ -273,6 +315,120 @@ async fn remove_org_member(
     let req = Request::builder()
         .method(Method::DELETE)
         .uri(format!("/v1/orgs/{org_slug}/members/{username}"))
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// Send an organization invitation and return the response.
+async fn send_org_invitation(
+    app: &axum::Router,
+    jwt: &str,
+    org_slug: &str,
+    username_or_email: &str,
+    role: &str,
+    expires_in_days: u32,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri(format!("/v1/orgs/{org_slug}/invitations"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::from(
+            json!({
+                "username_or_email": username_or_email,
+                "role": role,
+                "expires_in_days": expires_in_days,
+            })
+            .to_string(),
+        ))
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// Revoke an organization invitation and return the response.
+async fn revoke_org_invitation_for_org(
+    app: &axum::Router,
+    jwt: &str,
+    org_slug: &str,
+    invitation_id: &str,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::DELETE)
+        .uri(format!("/v1/orgs/{org_slug}/invitations/{invitation_id}"))
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// Accept an invitation as the current user and return the response.
+async fn accept_org_invitation_for_current_user(
+    app: &axum::Router,
+    jwt: &str,
+    invitation_id: &str,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri(format!("/v1/org-invitations/{invitation_id}/accept"))
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// Decline an invitation as the current user and return the response.
+async fn decline_org_invitation_for_current_user(
+    app: &axum::Router,
+    jwt: &str,
+    invitation_id: &str,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri(format!("/v1/org-invitations/{invitation_id}/decline"))
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// List organization invitations and return the response.
+async fn list_org_invitations_for_org(
+    app: &axum::Router,
+    jwt: &str,
+    org_slug: &str,
+    include_inactive: bool,
+) -> (StatusCode, Value) {
+    let uri = if include_inactive {
+        format!("/v1/orgs/{org_slug}/invitations?include_inactive=true")
+    } else {
+        format!("/v1/orgs/{org_slug}/invitations")
+    };
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri(uri)
         .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
         .body(Body::empty())
         .unwrap();
@@ -754,6 +910,29 @@ async fn add_team_member_to_team(
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
         .body(Body::from(json!({ "username": username }).to_string()))
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// Remove a team member and return the response.
+async fn remove_team_member_from_team(
+    app: &axum::Router,
+    jwt: &str,
+    org_slug: &str,
+    team_slug: &str,
+    username: &str,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::DELETE)
+        .uri(format!(
+            "/v1/orgs/{org_slug}/teams/{team_slug}/members/{username}"
+        ))
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::empty())
         .unwrap();
 
     let resp = app.clone().oneshot(req).await.unwrap();
@@ -3591,6 +3770,567 @@ async fn test_org_audit_includes_org_updates(pool: PgPool) {
         logs[0]["metadata"]["changes"]["website"]["after"],
         "https://packages.acme.test"
     );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_org_audit_includes_team_governance_events(pool: PgPool) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let owner_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &owner_jwt, "Acme Corp", "acme-corp").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id = org_body["id"].as_str().expect("org id should be returned");
+
+    let (status, _) = add_org_member(&app, &owner_jwt, "acme-corp", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, create_body) = create_team(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        "Release Engineering",
+        "release-engineering",
+        Some("Owns package publication workflows"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected team create response: {create_body}"
+    );
+
+    let (status, update_body) = update_team_for_org(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        "release-engineering",
+        json!({
+            "name": "Release Operations",
+            "description": "Coordinates releases and publication",
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team update response: {update_body}"
+    );
+
+    let (status, add_member_body) =
+        add_team_member_to_team(&app, &owner_jwt, "acme-corp", "release-engineering", "bob").await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected team member add response: {add_member_body}"
+    );
+
+    let (status, remove_member_body) =
+        remove_team_member_from_team(&app, &owner_jwt, "acme-corp", "release-engineering", "bob")
+            .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team member removal response: {remove_member_body}"
+    );
+
+    let (status, delete_body) =
+        delete_team_for_org(&app, &owner_jwt, "acme-corp", "release-engineering").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team delete response: {delete_body}"
+    );
+
+    let (status, team_create_audit) = list_org_audit(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        Some("action=team_create&per_page=10"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let create_logs = team_create_audit["logs"]
+        .as_array()
+        .expect("team_create audit logs should be an array");
+    assert_eq!(create_logs.len(), 1, "response: {team_create_audit}");
+    assert_eq!(create_logs[0]["target_org_id"].as_str(), Some(org_id));
+    assert_eq!(
+        create_logs[0]["metadata"]["team_slug"],
+        "release-engineering"
+    );
+    assert_eq!(
+        create_logs[0]["metadata"]["team_name"],
+        "Release Engineering"
+    );
+    assert_eq!(
+        create_logs[0]["metadata"]["description"],
+        "Owns package publication workflows"
+    );
+
+    let (status, team_update_audit) = list_org_audit(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        Some("action=team_update&per_page=10"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let update_logs = team_update_audit["logs"]
+        .as_array()
+        .expect("team_update audit logs should be an array");
+    assert_eq!(update_logs.len(), 1, "response: {team_update_audit}");
+    assert_eq!(update_logs[0]["target_org_id"].as_str(), Some(org_id));
+    assert_eq!(
+        update_logs[0]["metadata"]["team_slug"],
+        "release-engineering"
+    );
+    assert_eq!(
+        update_logs[0]["metadata"]["previous_name"],
+        "Release Engineering"
+    );
+    assert_eq!(update_logs[0]["metadata"]["name"], "Release Operations");
+    assert_eq!(
+        update_logs[0]["metadata"]["description"],
+        "Coordinates releases and publication"
+    );
+
+    let (status, team_member_add_audit) = list_org_audit(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        Some("action=team_member_add&per_page=10"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let add_logs = team_member_add_audit["logs"]
+        .as_array()
+        .expect("team_member_add audit logs should be an array");
+    assert_eq!(add_logs.len(), 1, "response: {team_member_add_audit}");
+    assert_eq!(add_logs[0]["target_org_id"].as_str(), Some(org_id));
+    assert_eq!(add_logs[0]["target_username"], "bob");
+    assert_eq!(add_logs[0]["metadata"]["username"], "bob");
+    assert_eq!(add_logs[0]["metadata"]["team_name"], "Release Operations");
+
+    let (status, team_member_remove_audit) = list_org_audit(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        Some("action=team_member_remove&per_page=10"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let remove_logs = team_member_remove_audit["logs"]
+        .as_array()
+        .expect("team_member_remove audit logs should be an array");
+    assert_eq!(remove_logs.len(), 1, "response: {team_member_remove_audit}");
+    assert_eq!(remove_logs[0]["target_org_id"].as_str(), Some(org_id));
+    assert_eq!(remove_logs[0]["target_username"], "bob");
+    assert_eq!(remove_logs[0]["metadata"]["username"], "bob");
+    assert_eq!(
+        remove_logs[0]["metadata"]["team_name"],
+        "Release Operations"
+    );
+
+    let (status, team_delete_audit) = list_org_audit(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        Some("action=team_delete&per_page=10"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let delete_logs = team_delete_audit["logs"]
+        .as_array()
+        .expect("team_delete audit logs should be an array");
+    assert_eq!(delete_logs.len(), 1, "response: {team_delete_audit}");
+    assert_eq!(delete_logs[0]["target_org_id"].as_str(), Some(org_id));
+    assert_eq!(
+        delete_logs[0]["metadata"]["team_name"],
+        "Release Operations"
+    );
+    assert_eq!(delete_logs[0]["metadata"]["removed_member_count"], 0);
+
+    let export_resp = export_org_audit_csv(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        Some("action=team_member_add"),
+    )
+    .await;
+    assert_eq!(export_resp.status(), StatusCode::OK);
+    let export_body = body_text(export_resp).await;
+    assert!(export_body.contains(",team_member_add,"));
+    assert!(export_body.contains("bob"));
+    assert!(!export_body.contains(",team_member_remove,"));
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_org_audit_includes_invitation_lifecycle_events(pool: PgPool) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    register_user(&app, "charlie", "charlie@test.dev", "super_secret_pw!").await;
+    register_user(&app, "dana", "dana@test.dev", "super_secret_pw!").await;
+
+    let owner_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+    let charlie_jwt = login_user(&app, "charlie", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &owner_jwt, "Acme Corp", "acme-corp").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id = org_body["id"].as_str().expect("org id should be returned");
+
+    let (status, bob_invite_body) =
+        send_org_invitation(&app, &owner_jwt, "acme-corp", "bob", "viewer", 7).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected bob invitation response: {bob_invite_body}"
+    );
+    let bob_invitation_id = bob_invite_body["id"]
+        .as_str()
+        .expect("bob invitation id should be returned")
+        .to_owned();
+
+    let (status, charlie_invite_body) =
+        send_org_invitation(&app, &owner_jwt, "acme-corp", "charlie", "maintainer", 7).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected charlie invitation response: {charlie_invite_body}"
+    );
+    let charlie_invitation_id = charlie_invite_body["id"]
+        .as_str()
+        .expect("charlie invitation id should be returned")
+        .to_owned();
+
+    let (status, dana_invite_body) =
+        send_org_invitation(&app, &owner_jwt, "acme-corp", "dana", "auditor", 7).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected dana invitation response: {dana_invite_body}"
+    );
+    let dana_invitation_id = dana_invite_body["id"]
+        .as_str()
+        .expect("dana invitation id should be returned")
+        .to_owned();
+
+    let (status, revoke_body) =
+        revoke_org_invitation_for_org(&app, &owner_jwt, "acme-corp", &dana_invitation_id).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected revoke response: {revoke_body}"
+    );
+    assert_eq!(revoke_body["message"], "Invitation revoked");
+
+    let (status, accept_body) =
+        accept_org_invitation_for_current_user(&app, &bob_jwt, &bob_invitation_id).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected accept response: {accept_body}"
+    );
+    assert_eq!(accept_body["message"], "Invitation accepted");
+
+    let (status, decline_body) =
+        decline_org_invitation_for_current_user(&app, &charlie_jwt, &charlie_invitation_id).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected decline response: {decline_body}"
+    );
+    assert_eq!(decline_body["message"], "Invitation declined");
+
+    let (status, invite_create_audit) = list_org_audit(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        Some("action=org_invitation_create&per_page=10"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let create_logs = invite_create_audit["logs"]
+        .as_array()
+        .expect("org_invitation_create audit logs should be an array");
+    assert_eq!(create_logs.len(), 3, "response: {invite_create_audit}");
+    assert!(create_logs
+        .iter()
+        .all(|log| log["target_org_id"].as_str() == Some(org_id)));
+    let mut created_targets = create_logs
+        .iter()
+        .map(|log| {
+            format!(
+                "{}:{}",
+                log["target_username"]
+                    .as_str()
+                    .expect("target username should be present"),
+                log["metadata"]["role"]
+                    .as_str()
+                    .expect("role metadata should be present")
+            )
+        })
+        .collect::<Vec<_>>();
+    created_targets.sort();
+    assert_eq!(
+        created_targets,
+        vec![
+            "bob:viewer".to_owned(),
+            "charlie:maintainer".to_owned(),
+            "dana:auditor".to_owned(),
+        ]
+    );
+
+    let (status, revoke_audit) = list_org_audit(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        Some("action=org_invitation_revoke&per_page=10"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let revoke_logs = revoke_audit["logs"]
+        .as_array()
+        .expect("org_invitation_revoke audit logs should be an array");
+    assert_eq!(revoke_logs.len(), 1, "response: {revoke_audit}");
+    assert_eq!(revoke_logs[0]["target_org_id"].as_str(), Some(org_id));
+    assert_eq!(revoke_logs[0]["target_username"], "dana");
+    assert_eq!(revoke_logs[0]["metadata"]["role"], "auditor");
+    assert_eq!(
+        revoke_logs[0]["metadata"]["invitation_id"],
+        dana_invitation_id
+    );
+
+    let (status, accept_audit) = list_org_audit(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        Some("action=org_invitation_accept&per_page=10"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let accept_logs = accept_audit["logs"]
+        .as_array()
+        .expect("org_invitation_accept audit logs should be an array");
+    assert_eq!(accept_logs.len(), 1, "response: {accept_audit}");
+    assert_eq!(accept_logs[0]["target_org_id"].as_str(), Some(org_id));
+    assert_eq!(accept_logs[0]["target_username"], "bob");
+    assert_eq!(accept_logs[0]["metadata"]["role"], "viewer");
+    assert_eq!(accept_logs[0]["metadata"]["org_name"], "Acme Corp");
+    assert_eq!(
+        accept_logs[0]["metadata"]["invitation_id"],
+        bob_invitation_id
+    );
+
+    let (status, decline_audit) = list_org_audit(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        Some("action=org_invitation_decline&per_page=10"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let decline_logs = decline_audit["logs"]
+        .as_array()
+        .expect("org_invitation_decline audit logs should be an array");
+    assert_eq!(decline_logs.len(), 1, "response: {decline_audit}");
+    assert_eq!(decline_logs[0]["target_org_id"].as_str(), Some(org_id));
+    assert_eq!(decline_logs[0]["target_username"], "charlie");
+    assert_eq!(decline_logs[0]["metadata"]["role"], "maintainer");
+    assert_eq!(
+        decline_logs[0]["metadata"]["invitation_id"],
+        charlie_invitation_id
+    );
+
+    let export_resp = export_org_audit_csv(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        Some("action=org_invitation_create"),
+    )
+    .await;
+    assert_eq!(export_resp.status(), StatusCode::OK);
+    let export_body = body_text(export_resp).await;
+    assert!(export_body.contains(",org_invitation_create,"));
+    assert!(export_body.contains("bob"));
+    assert!(export_body.contains("charlie"));
+    assert!(export_body.contains("dana"));
+    assert!(!export_body.contains(",org_invitation_decline,"));
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_org_admin_can_list_active_and_inactive_invitations(pool: PgPool) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    register_user(&app, "charlie", "charlie@test.dev", "super_secret_pw!").await;
+    register_user(&app, "dana", "dana@test.dev", "super_secret_pw!").await;
+    register_user(&app, "erin", "erin@test.dev", "super_secret_pw!").await;
+
+    let owner_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+    let charlie_jwt = login_user(&app, "charlie", "super_secret_pw!").await;
+
+    let (status, _) = create_org(&app, &owner_jwt, "Acme Corp", "acme-corp").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, bob_invite_body) =
+        send_org_invitation(&app, &owner_jwt, "acme-corp", "bob", "viewer", 7).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected bob invitation response: {bob_invite_body}"
+    );
+    let bob_invitation_id = bob_invite_body["id"]
+        .as_str()
+        .expect("bob invitation id should be returned")
+        .to_owned();
+
+    let (status, charlie_invite_body) =
+        send_org_invitation(&app, &owner_jwt, "acme-corp", "charlie", "maintainer", 7).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected charlie invitation response: {charlie_invite_body}"
+    );
+    let charlie_invitation_id = charlie_invite_body["id"]
+        .as_str()
+        .expect("charlie invitation id should be returned")
+        .to_owned();
+
+    let (status, dana_invite_body) =
+        send_org_invitation(&app, &owner_jwt, "acme-corp", "dana", "auditor", 7).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected dana invitation response: {dana_invite_body}"
+    );
+    let dana_invitation_id = dana_invite_body["id"]
+        .as_str()
+        .expect("dana invitation id should be returned")
+        .to_owned();
+
+    let (status, erin_invite_body) =
+        send_org_invitation(&app, &owner_jwt, "acme-corp", "erin", "billing_manager", 7).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected erin invitation response: {erin_invite_body}"
+    );
+    let erin_invitation_id = erin_invite_body["id"]
+        .as_str()
+        .expect("erin invitation id should be returned")
+        .to_owned();
+
+    let (status, accept_body) =
+        accept_org_invitation_for_current_user(&app, &bob_jwt, &bob_invitation_id).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected accept response: {accept_body}"
+    );
+
+    let (status, decline_body) =
+        decline_org_invitation_for_current_user(&app, &charlie_jwt, &charlie_invitation_id).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected decline response: {decline_body}"
+    );
+
+    let (status, revoke_body) =
+        revoke_org_invitation_for_org(&app, &owner_jwt, "acme-corp", &dana_invitation_id).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected revoke response: {revoke_body}"
+    );
+
+    let (status, active_body) =
+        list_org_invitations_for_org(&app, &owner_jwt, "acme-corp", false).await;
+    assert_eq!(status, StatusCode::OK);
+    let active_invitations = active_body["invitations"]
+        .as_array()
+        .expect("active invitation list should be an array");
+    assert_eq!(active_invitations.len(), 1, "response: {active_body}");
+    assert_eq!(active_invitations[0]["id"], erin_invitation_id);
+    assert_eq!(active_invitations[0]["invited_user"]["username"], "erin");
+    assert_eq!(active_invitations[0]["invited_by"]["username"], "alice");
+    assert_eq!(active_invitations[0]["role"], "billing_manager");
+    assert_eq!(active_invitations[0]["status"], "pending");
+    assert_eq!(active_invitations[0]["accepted_at"], Value::Null);
+    assert_eq!(active_invitations[0]["declined_at"], Value::Null);
+    assert_eq!(active_invitations[0]["revoked_at"], Value::Null);
+
+    let (status, all_body) =
+        list_org_invitations_for_org(&app, &owner_jwt, "acme-corp", true).await;
+    assert_eq!(status, StatusCode::OK);
+    let all_invitations = all_body["invitations"]
+        .as_array()
+        .expect("full invitation list should be an array");
+    assert_eq!(all_invitations.len(), 4, "response: {all_body}");
+
+    let mut invitation_states = all_invitations
+        .iter()
+        .map(|invitation| {
+            (
+                invitation["invited_user"]["username"]
+                    .as_str()
+                    .expect("invited username should be present")
+                    .to_owned(),
+                invitation["status"]
+                    .as_str()
+                    .expect("status should be present")
+                    .to_owned(),
+            )
+        })
+        .collect::<Vec<_>>();
+    invitation_states.sort();
+    assert_eq!(
+        invitation_states,
+        vec![
+            ("bob".to_owned(), "accepted".to_owned()),
+            ("charlie".to_owned(), "declined".to_owned()),
+            ("dana".to_owned(), "revoked".to_owned()),
+            ("erin".to_owned(), "pending".to_owned()),
+        ]
+    );
+
+    let accepted_invitation = all_invitations
+        .iter()
+        .find(|invitation| invitation["invited_user"]["username"] == "bob")
+        .expect("accepted invitation should be present");
+    assert_ne!(accepted_invitation["accepted_at"], Value::Null);
+    assert_eq!(accepted_invitation["declined_at"], Value::Null);
+    assert_eq!(accepted_invitation["revoked_at"], Value::Null);
+
+    let declined_invitation = all_invitations
+        .iter()
+        .find(|invitation| invitation["invited_user"]["username"] == "charlie")
+        .expect("declined invitation should be present");
+    assert_eq!(declined_invitation["accepted_at"], Value::Null);
+    assert_ne!(declined_invitation["declined_at"], Value::Null);
+    assert_eq!(declined_invitation["revoked_at"], Value::Null);
+
+    let revoked_invitation = all_invitations
+        .iter()
+        .find(|invitation| invitation["invited_user"]["username"] == "dana")
+        .expect("revoked invitation should be present");
+    assert_eq!(revoked_invitation["accepted_at"], Value::Null);
+    assert_eq!(revoked_invitation["declined_at"], Value::Null);
+    assert_ne!(revoked_invitation["revoked_at"], Value::Null);
+
+    let pending_invitation = all_invitations
+        .iter()
+        .find(|invitation| invitation["invited_user"]["username"] == "erin")
+        .expect("pending invitation should be present");
+    assert_eq!(pending_invitation["id"], erin_invitation_id);
+    assert_eq!(pending_invitation["accepted_at"], Value::Null);
+    assert_eq!(pending_invitation["declined_at"], Value::Null);
+    assert_eq!(pending_invitation["revoked_at"], Value::Null);
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

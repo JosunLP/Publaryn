@@ -220,16 +220,30 @@ export interface OrgAuditQuery {
 }
 
 export interface UserReference {
+  id?: NullableString;
   username?: NullableString;
   email?: NullableString;
+}
+
+export interface InvitationActorReference {
+  id?: NullableString;
+  username?: NullableString;
 }
 
 export interface OrgInvitation {
   id?: NullableString;
   invited_user?: UserReference | null;
+  invited_by?: InvitationActorReference | null;
   role?: NullableString;
+  status?: NullableString;
+  accepted_by?: NullableString;
   created_at?: NullableString;
+  accepted_at?: NullableString;
+  declined_by?: NullableString;
+  declined_at?: NullableString;
   expires_at?: NullableString;
+  revoked_by?: NullableString;
+  revoked_at?: NullableString;
 }
 
 export interface OrgInvitationListResponse {

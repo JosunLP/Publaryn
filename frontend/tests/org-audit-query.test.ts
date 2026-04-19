@@ -238,6 +238,59 @@ describe('org audit query helpers', () => {
     }
   });
 
+  test('keeps invitation lifecycle audit actions when building and parsing filters', () => {
+    for (const action of [
+      'org_invitation_create',
+      'org_invitation_revoke',
+      'org_invitation_accept',
+      'org_invitation_decline',
+    ] as const) {
+      const path = buildOrgAuditPath(
+        'acme-corp',
+        {
+          action,
+          actorUserId: '',
+          actorUsername: '',
+          page: 1,
+        },
+        '?tab=activity'
+      );
+
+      const url = new URL(path, 'https://example.test');
+      const view = getAuditViewFromQuery(url.searchParams);
+
+      expect(url.searchParams.get('action')).toBe(action);
+      expect(view.action).toBe(action);
+    }
+  });
+
+  test('keeps team lifecycle audit actions when building and parsing filters', () => {
+    for (const action of [
+      'team_create',
+      'team_update',
+      'team_delete',
+      'team_member_add',
+      'team_member_remove',
+    ] as const) {
+      const path = buildOrgAuditPath(
+        'acme-corp',
+        {
+          action,
+          actorUserId: '',
+          actorUsername: '',
+          page: 1,
+        },
+        '?tab=activity'
+      );
+
+      const url = new URL(path, 'https://example.test');
+      const view = getAuditViewFromQuery(url.searchParams);
+
+      expect(url.searchParams.get('action')).toBe(action);
+      expect(view.action).toBe(action);
+    }
+  });
+
   test('keeps team repository access audit actions when building and parsing filters', () => {
     const path = buildOrgAuditPath(
       'acme-corp',

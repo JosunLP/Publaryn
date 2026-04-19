@@ -164,7 +164,7 @@ async fn create_org_invitation(
 
     sqlx::query(
         "INSERT INTO org_invitations (id, org_id, invited_user_id, role, invited_by, expires_at, created_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            VALUES ($1, $2, $3, $4::org_role, $5, $6, $7)",
     )
     .bind(invitation.id)
     .bind(invitation.org_id)
@@ -422,7 +422,7 @@ async fn accept_org_invitation(
 
     let membership_insert = sqlx::query(
         "INSERT INTO org_memberships (id, org_id, user_id, role, invited_by, joined_at) \
-         VALUES ($1, $2, $3, $4, $5, NOW()) \
+            VALUES ($1, $2, $3, $4::org_role, $5, NOW()) \
          ON CONFLICT (org_id, user_id) DO NOTHING",
     )
     .bind(Uuid::new_v4())
