@@ -544,6 +544,29 @@ export async function listSecurityFindings(
   return data.findings || [];
 }
 
+export interface UpdateSecurityFindingInput {
+  isResolved: boolean;
+  note?: string;
+}
+
+export async function updateSecurityFinding(
+  ecosystem: string,
+  name: string,
+  findingId: string,
+  { isResolved, note }: UpdateSecurityFindingInput
+): Promise<SecurityFinding> {
+  const body: Record<string, unknown> = { is_resolved: isResolved };
+  if (note !== undefined && note.trim().length > 0) {
+    body.note = note.trim();
+  }
+  const { data } = await api.patch<SecurityFinding>(
+    `/v1/packages/${enc(ecosystem)}/${enc(name)}/security-findings/${enc(findingId)}`,
+    { body }
+  );
+
+  return data;
+}
+
 const SEVERITY_LEVELS: Record<string, number> = {
   critical: 4,
   high: 3,

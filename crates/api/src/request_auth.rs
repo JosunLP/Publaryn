@@ -24,6 +24,7 @@ const TEAM_PACKAGE_METADATA_PERMISSIONS: &[&str] = &["admin", "write_metadata"];
 const TEAM_PACKAGE_PUBLISH_PERMISSIONS: &[&str] = &["admin", "publish"];
 const TEAM_PACKAGE_ADMIN_PERMISSIONS: &[&str] = &["admin"];
 const TEAM_PACKAGE_TRANSFER_PERMISSIONS: &[&str] = &["admin", "transfer_ownership"];
+const TEAM_PACKAGE_SECURITY_REVIEW_PERMISSIONS: &[&str] = &["admin", "security_review"];
 const TEAM_PACKAGE_MANAGEMENT_VISIBILITY_PERMISSIONS: &[&str] = &[
     "admin",
     "publish",
@@ -37,6 +38,7 @@ const TEAM_REPOSITORY_PACKAGE_METADATA_PERMISSIONS: &[&str] = &["admin", "write_
 const TEAM_REPOSITORY_PACKAGE_PUBLISH_PERMISSIONS: &[&str] = &["admin", "publish"];
 const TEAM_REPOSITORY_ADMIN_PERMISSIONS: &[&str] = &["admin"];
 const TEAM_REPOSITORY_PACKAGE_TRANSFER_PERMISSIONS: &[&str] = &["admin", "transfer_ownership"];
+const TEAM_REPOSITORY_PACKAGE_SECURITY_REVIEW_PERMISSIONS: &[&str] = &["admin", "security_review"];
 const TEAM_REPOSITORY_PACKAGE_MANAGEMENT_VISIBILITY_PERMISSIONS: &[&str] = &[
     "admin",
     "publish",
@@ -51,6 +53,7 @@ enum PackageAccessRequirement {
     Publish,
     Admin,
     TransferOwnership,
+    SecurityReview,
 }
 
 impl PackageAccessRequirement {
@@ -60,6 +63,7 @@ impl PackageAccessRequirement {
             Self::Publish => PACKAGE_PUBLISH_ROLES,
             Self::Admin => PACKAGE_ADMIN_ROLES,
             Self::TransferOwnership => PACKAGE_ADMIN_ROLES,
+            Self::SecurityReview => PACKAGE_ADMIN_ROLES,
         }
     }
 
@@ -69,6 +73,7 @@ impl PackageAccessRequirement {
             Self::Publish => TEAM_PACKAGE_PUBLISH_PERMISSIONS,
             Self::Admin => TEAM_PACKAGE_ADMIN_PERMISSIONS,
             Self::TransferOwnership => TEAM_PACKAGE_TRANSFER_PERMISSIONS,
+            Self::SecurityReview => TEAM_PACKAGE_SECURITY_REVIEW_PERMISSIONS,
         }
     }
 
@@ -78,6 +83,7 @@ impl PackageAccessRequirement {
             Self::Publish => TEAM_REPOSITORY_PACKAGE_PUBLISH_PERMISSIONS,
             Self::Admin => TEAM_REPOSITORY_ADMIN_PERMISSIONS,
             Self::TransferOwnership => TEAM_REPOSITORY_PACKAGE_TRANSFER_PERMISSIONS,
+            Self::SecurityReview => TEAM_REPOSITORY_PACKAGE_SECURITY_REVIEW_PERMISSIONS,
         }
     }
 
@@ -90,6 +96,9 @@ impl PackageAccessRequirement {
             Self::Admin => "You do not have package administration permission",
             Self::TransferOwnership => {
                 "You do not have permission to transfer ownership of this package"
+            }
+            Self::SecurityReview => {
+                "You do not have permission to manage security findings for this package"
             }
         }
     }
@@ -936,6 +945,22 @@ pub async fn ensure_package_transfer_access(
         normalized_name,
         actor_user_id,
         PackageAccessRequirement::TransferOwnership,
+    )
+    .await
+}
+
+pub async fn ensure_package_security_review_access(
+    db: &PgPool,
+    ecosystem: &str,
+    normalized_name: &str,
+    actor_user_id: Uuid,
+) -> ApiResult<Uuid> {
+    ensure_package_access_by_requirement(
+        db,
+        ecosystem,
+        normalized_name,
+        actor_user_id,
+        PackageAccessRequirement::SecurityReview,
     )
     .await
 }

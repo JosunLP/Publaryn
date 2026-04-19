@@ -7761,3 +7761,406 @@ async fn test_unknown_route_returns_404(pool: PgPool) {
 
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Security finding resolve / reopen
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// Send a PATCH request to the security-finding update endpoint and return
+/// `(status, body)`.
+async fn update_security_finding_request(
+    app: &axum::Router,
+    jwt: &str,
+    ecosystem: &str,
+    package_name: &str,
+    finding_id: uuid::Uuid,
+    payload: Value,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::PATCH)
+        .uri(format!(
+            "/v1/packages/{ecosystem}/{package_name}/security-findings/{finding_id}"
+        ))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::from(payload.to_string()))
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_security_finding_resolve_and_reopen_happy_path(pool: PgPool) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let owner_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, _) = create_repository_with_options(
+        &app,
+        &owner_jwt,
+        "Personal Pkgs",
+        "personal-pkgs",
+        None,
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_package_with_options(
+        &app,
+        &owner_jwt,
+        "npm",
+        "finding-widget",
+        "personal-pkgs",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) =
+        create_release_for_package(&app, &owner_jwt, "npm", "finding-widget", "1.0.0").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let release_id = get_release_id(&pool, "npm", "finding-widget", "1.0.0").await;
+    let finding_id = insert_security_finding(
+        &pool,
+        release_id,
+        "vulnerability",
+        "high",
+        "A high severity finding",
+        false,
+    )
+    .await;
+
+    let (status, resolved_body) = update_security_finding_request(
+        &app,
+        &owner_jwt,
+        "npm",
+        "finding-widget",
+        finding_id,
+        serde_json::json!({ "is_resolved": true, "note": "mitigated upstream" }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected resolve response: {resolved_body}"
+    );
+    assert_eq!(resolved_body["is_resolved"], true);
+    assert!(resolved_body["resolved_at"].is_string());
+    assert!(resolved_body["resolved_by"].is_string());
+    assert_eq!(resolved_body["release_version"], "1.0.0");
+
+    let resolved_audit_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::BIGINT FROM audit_logs \
+         WHERE action = 'security_finding_resolve' \
+           AND target_release_id = $1",
+    )
+    .bind(release_id)
+    .fetch_one(&pool)
+    .await
+    .expect("audit count should be queryable");
+    assert_eq!(resolved_audit_count, 1);
+
+    let (status, reopened_body) = update_security_finding_request(
+        &app,
+        &owner_jwt,
+        "npm",
+        "finding-widget",
+        finding_id,
+        serde_json::json!({ "is_resolved": false }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected reopen response: {reopened_body}"
+    );
+    assert_eq!(reopened_body["is_resolved"], false);
+    assert!(reopened_body["resolved_at"].is_null());
+    assert!(reopened_body["resolved_by"].is_null());
+
+    let reopened_audit_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::BIGINT FROM audit_logs \
+         WHERE action = 'security_finding_reopen' \
+           AND target_release_id = $1",
+    )
+    .bind(release_id)
+    .fetch_one(&pool)
+    .await
+    .expect("audit count should be queryable");
+    assert_eq!(reopened_audit_count, 1);
+
+    // No-op update (already reopened) must not emit another audit event.
+    let (status, _) = update_security_finding_request(
+        &app,
+        &owner_jwt,
+        "npm",
+        "finding-widget",
+        finding_id,
+        serde_json::json!({ "is_resolved": false }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let reopened_audit_count_after_noop: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::BIGINT FROM audit_logs \
+         WHERE action = 'security_finding_reopen' \
+           AND target_release_id = $1",
+    )
+    .bind(release_id)
+    .fetch_one(&pool)
+    .await
+    .expect("audit count should be queryable");
+    assert_eq!(reopened_audit_count_after_noop, 1);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_security_finding_update_forbidden_for_unrelated_user(pool: PgPool) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let owner_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let other_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+
+    let (status, _) = create_repository_with_options(
+        &app,
+        &owner_jwt,
+        "Personal Pkgs",
+        "personal-pkgs",
+        None,
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_package_with_options(
+        &app,
+        &owner_jwt,
+        "npm",
+        "finding-widget",
+        "personal-pkgs",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) =
+        create_release_for_package(&app, &owner_jwt, "npm", "finding-widget", "1.0.0").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let release_id = get_release_id(&pool, "npm", "finding-widget", "1.0.0").await;
+    let finding_id = insert_security_finding(
+        &pool,
+        release_id,
+        "vulnerability",
+        "high",
+        "A high severity finding",
+        false,
+    )
+    .await;
+
+    let (status, body) = update_security_finding_request(
+        &app,
+        &other_jwt,
+        "npm",
+        "finding-widget",
+        finding_id,
+        serde_json::json!({ "is_resolved": true }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "unexpected forbidden response: {body}"
+    );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_security_finding_update_404_when_finding_belongs_to_other_package(pool: PgPool) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let owner_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, _) = create_repository_with_options(
+        &app,
+        &owner_jwt,
+        "Personal Pkgs",
+        "personal-pkgs",
+        None,
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_package_with_options(
+        &app,
+        &owner_jwt,
+        "npm",
+        "target-widget",
+        "personal-pkgs",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = create_package_with_options(
+        &app,
+        &owner_jwt,
+        "npm",
+        "other-widget",
+        "personal-pkgs",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) =
+        create_release_for_package(&app, &owner_jwt, "npm", "target-widget", "1.0.0").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) =
+        create_release_for_package(&app, &owner_jwt, "npm", "other-widget", "1.0.0").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let other_release_id = get_release_id(&pool, "npm", "other-widget", "1.0.0").await;
+    let other_finding_id = insert_security_finding(
+        &pool,
+        other_release_id,
+        "vulnerability",
+        "medium",
+        "Unrelated finding",
+        false,
+    )
+    .await;
+
+    // PATCH against the wrong package path must be 404, not a cross-package mutation.
+    let (status, body) = update_security_finding_request(
+        &app,
+        &owner_jwt,
+        "npm",
+        "target-widget",
+        other_finding_id,
+        serde_json::json!({ "is_resolved": true }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "unexpected response: {body}");
+
+    let still_unresolved: bool =
+        sqlx::query_scalar("SELECT is_resolved FROM security_findings WHERE id = $1")
+            .bind(other_finding_id)
+            .fetch_one(&pool)
+            .await
+            .expect("finding row should be queryable");
+    assert!(!still_unresolved);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_security_finding_update_allowed_via_team_security_review_permission(pool: PgPool) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let owner_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &owner_jwt, "Acme Corp", "acme-corp").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id = org_body["id"].as_str().expect("org id");
+
+    let (status, _) = create_repository_with_options(
+        &app,
+        &owner_jwt,
+        "Acme Public",
+        "acme-public",
+        Some(org_id),
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_package_with_options(
+        &app,
+        &owner_jwt,
+        "npm",
+        "acme-widget",
+        "acme-public",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) =
+        create_release_for_package(&app, &owner_jwt, "npm", "acme-widget", "1.0.0").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let release_id = get_release_id(&pool, "npm", "acme-widget", "1.0.0").await;
+    let finding_id = insert_security_finding(
+        &pool,
+        release_id,
+        "policy_violation",
+        "medium",
+        "License policy violation",
+        false,
+    )
+    .await;
+
+    let (status, _) = add_org_member(&app, &owner_jwt, "acme-corp", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_team(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        "Security Reviewers",
+        "security-reviewers",
+        Some("Triages security findings."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) =
+        add_team_member_to_team(&app, &owner_jwt, "acme-corp", "security-reviewers", "bob").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = grant_team_repository_access(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        "security-reviewers",
+        "acme-public",
+        &["security_review"],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Delegated team-member Bob can resolve the finding via security_review permission.
+    let (status, body) = update_security_finding_request(
+        &app,
+        &bob_jwt,
+        "npm",
+        "acme-widget",
+        finding_id,
+        serde_json::json!({ "is_resolved": true, "note": "policy waiver" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "unexpected response: {body}");
+    assert_eq!(body["is_resolved"], true);
+
+    let audit_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::BIGINT FROM audit_logs \
+         WHERE action = 'security_finding_resolve' \
+           AND target_release_id = $1 \
+           AND metadata->>'note' = $2",
+    )
+    .bind(release_id)
+    .bind("policy waiver")
+    .fetch_one(&pool)
+    .await
+    .expect("audit count should be queryable");
+    assert_eq!(audit_count, 1);
+}

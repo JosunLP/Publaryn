@@ -24,6 +24,7 @@
     severityLevel,
     transferPackageOwnership,
     updatePackage,
+    updateSecurityFinding,
   } from '../../../../api/packages';
   import {
     ecosystemIcon,
@@ -86,6 +87,10 @@
   let trustedPublisherError: string | null = null;
   let includeResolvedFindings = false;
   let activeTab: 'readme' | 'versions' | 'security' = 'readme';
+
+  let findingsNotice: string | null = null;
+  let findingsError: string | null = null;
+  let updatingFindingId: string | null = null;
 
   let newReleaseVersion = '';
   let newReleaseDescription = '';
@@ -323,6 +328,43 @@
       });
     } catch {
       findings = [];
+    }
+  }
+
+  async function handleToggleFindingResolution(
+    finding: SecurityFinding
+  ): Promise<void> {
+    if (updatingFindingId) {
+      return;
+    }
+    const targetIsResolved = !finding.is_resolved;
+    updatingFindingId = finding.id;
+    findingsError = null;
+    findingsNotice = null;
+    try {
+      const updated = await updateSecurityFinding(
+        eecosystem(),
+        ename(),
+        finding.id,
+        { isResolved: targetIsResolved }
+      );
+      findings = findings.map((current) =>
+        current.id === updated.id ? { ...current, ...updated } : current
+      );
+      if (!includeResolvedFindings && updated.is_resolved) {
+        // Remove newly-resolved finding when resolved findings are hidden.
+        findings = findings.filter((current) => !current.is_resolved);
+      }
+      findingsNotice = targetIsResolved
+        ? 'Finding marked as resolved.'
+        : 'Finding reopened.';
+    } catch (err) {
+      findingsError =
+        err instanceof ApiError
+          ? err.message
+          : 'Failed to update the security finding.';
+    } finally {
+      updatingFindingId = null;
     }
   }
 
@@ -722,6 +764,13 @@
             </label>
           </div>
 
+          {#if findingsNotice}
+            <div class="notice notice--success">{findingsNotice}</div>
+          {/if}
+          {#if findingsError}
+            <div class="notice notice--error">{findingsError}</div>
+          {/if}
+
           {#if findings.length === 0}
             <div class="empty-state"><p>No security findings.</p></div>
           {:else}
@@ -769,6 +818,24 @@
                 {#if finding.description}
                   <div class="finding-row__description">
                     {finding.description}
+                  </div>
+                {/if}
+                {#if pkg.can_manage_releases}
+                  <div class="finding-row__actions">
+                    <button
+                      type="button"
+                      class="btn btn-sm btn-secondary"
+                      disabled={updatingFindingId !== null}
+                      on:click={() => handleToggleFindingResolution(finding)}
+                    >
+                      {#if updatingFindingId === finding.id}
+                        {finding.is_resolved ? 'Reopening…' : 'Resolving…'}
+                      {:else}
+                        {finding.is_resolved
+                          ? 'Reopen finding'
+                          : 'Mark resolved'}
+                      {/if}
+                    </button>
                   </div>
                 {/if}
               </div>
