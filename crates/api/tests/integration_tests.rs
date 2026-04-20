@@ -8759,6 +8759,13 @@ async fn test_management_search_can_scope_results_to_one_repository(pool: PgPool
         "repository-scoped search did not converge.\nmember: {latest_member_body}\nanonymous: {latest_anonymous_body}"
     );
 
+    let member_packages = latest_member_body["packages"]
+        .as_array()
+        .expect("member packages should be an array");
+    assert_eq!(member_packages.len(), 1);
+    assert_eq!(member_packages[0]["repository_slug"], "private-packages");
+    assert_eq!(member_packages[0]["repository_name"], "Private Packages");
+
     let (release_status, release_body) = search_packages_with_options(
         &app,
         None,
@@ -8786,6 +8793,12 @@ async fn test_management_search_can_scope_results_to_one_repository(pool: PgPool
         release_names,
         std::collections::BTreeSet::from(["release-repository-search-widget".to_owned()])
     );
+    let release_packages = release_body["packages"]
+        .as_array()
+        .expect("release packages should be an array");
+    assert_eq!(release_packages.len(), 1);
+    assert_eq!(release_packages[0]["repository_slug"], "release-packages");
+    assert_eq!(release_packages[0]["repository_name"], "Release Packages");
 }
 
 #[sqlx::test(migrations = "../../migrations")]

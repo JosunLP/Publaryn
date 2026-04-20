@@ -146,6 +146,8 @@ export interface SearchPackage {
   is_deprecated?: boolean;
   visibility?: NullableString;
   owner_name?: NullableString;
+  repository_name?: NullableString;
+  repository_slug?: NullableString;
   download_count?: number | null;
   updated_at?: NullableString;
   description?: NullableString;

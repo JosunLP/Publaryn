@@ -15,6 +15,7 @@
     buildSearchPath,
     getSearchViewFromQuery,
   } from '../../pages/search-query';
+  import { formatSearchResultRepository } from '../../pages/search-results';
   import {
     ECOSYSTEMS,
     ecosystemIcon,
@@ -101,9 +102,10 @@
 
   async function loadRepositories(orgSlug: string): Promise<void> {
     repositoryLoadError = null;
+    let data;
 
     try {
-      const data = await listOrgRepositories(orgSlug);
+      data = await listOrgRepositories(orgSlug);
     } catch (caughtError: unknown) {
       if (org !== orgSlug) {
         return;
@@ -192,6 +194,16 @@
     visibility: string | null | undefined
   ): boolean {
     return Boolean(visibility && visibility !== 'public');
+  }
+
+  function repositoryLabel(
+    repositoryName: string | null | undefined,
+    repositorySlug: string | null | undefined
+  ): string {
+    return formatSearchResultRepository({
+      repository_name: repositoryName,
+      repository_slug: repositorySlug,
+    });
   }
 
   $: totalPages = Math.max(1, Math.ceil((results.total || 0) / PER_PAGE));
@@ -340,6 +352,9 @@
             <div class="package-card__description">{pkg.description || ''}</div>
             <div class="package-card__meta">
               {#if pkg.owner_name}<span>by {pkg.owner_name}</span>{/if}
+              {#if repositoryLabel(pkg.repository_name, pkg.repository_slug)}<span
+                  >in {repositoryLabel(pkg.repository_name, pkg.repository_slug)}</span
+                >{/if}
               {#if pkg.download_count != null}<span
                   >{formatNumber(pkg.download_count)} downloads</span
                 >{/if}

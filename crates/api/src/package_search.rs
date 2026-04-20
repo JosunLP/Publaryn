@@ -15,11 +15,13 @@ pub async fn reindex_package_document(
         "SELECT p.id, p.name, p.normalized_name, p.display_name, p.description, p.ecosystem, \
                 p.keywords, p.download_count, p.is_deprecated, p.visibility, p.updated_at, \
                 u.username AS owner_username, o.slug AS owner_org_slug, \
+                r.name AS repository_name, r.slug AS repository_slug, \
                 latest_release.version AS latest_version \
-         FROM packages p \
-         LEFT JOIN users u ON u.id = p.owner_user_id \
-         LEFT JOIN organizations o ON o.id = p.owner_org_id \
-         LEFT JOIN LATERAL ( \
+          FROM packages p \
+          JOIN repositories r ON r.id = p.repository_id \
+          LEFT JOIN users u ON u.id = p.owner_user_id \
+          LEFT JOIN organizations o ON o.id = p.owner_org_id \
+          LEFT JOIN LATERAL ( \
              SELECT version \
              FROM releases \
              WHERE package_id = p.id AND status::text = ANY($2) \
@@ -80,6 +82,12 @@ pub async fn reindex_package_document(
             .try_get::<String, _>("visibility")
             .map_err(|e| Error::Internal(e.to_string()))?,
         owner_name,
+        repository_name: row
+            .try_get::<Option<String>, _>("repository_name")
+            .map_err(|e| Error::Internal(e.to_string()))?,
+        repository_slug: row
+            .try_get::<Option<String>, _>("repository_slug")
+            .map_err(|e| Error::Internal(e.to_string()))?,
         updated_at: row
             .try_get::<chrono::DateTime<chrono::Utc>, _>("updated_at")
             .map_err(|e| Error::Internal(e.to_string()))?

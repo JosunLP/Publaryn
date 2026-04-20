@@ -350,7 +350,13 @@ mod tests {
         }
     }
 
-    fn package_doc(id: Uuid, name: &str, visibility: &str) -> PackageDocument {
+    fn package_doc(
+        id: Uuid,
+        name: &str,
+        visibility: &str,
+        repository_name: &str,
+        repository_slug: &str,
+    ) -> PackageDocument {
         PackageDocument {
             id: id.to_string(),
             name: name.to_owned(),
@@ -364,6 +370,8 @@ mod tests {
             is_deprecated: false,
             visibility: visibility.to_owned(),
             owner_name: Some("owner".to_owned()),
+            repository_name: Some(repository_name.to_owned()),
+            repository_slug: Some(repository_slug.to_owned()),
             updated_at: "2026-01-01T00:00:00Z".to_owned(),
         }
     }
@@ -445,9 +453,27 @@ mod tests {
         .expect("packages should insert");
 
         let hits = vec![
-            package_doc(public_package_id, "public-widget", "public"),
-            package_doc(private_package_id, "private-widget", "private"),
-            package_doc(unlisted_package_id, "unlisted-widget", "unlisted"),
+            package_doc(
+                public_package_id,
+                "public-widget",
+                "public",
+                "Public",
+                "public",
+            ),
+            package_doc(
+                private_package_id,
+                "private-widget",
+                "private",
+                "Private",
+                "private",
+            ),
+            package_doc(
+                unlisted_package_id,
+                "unlisted-widget",
+                "unlisted",
+                "Public",
+                "public",
+            ),
         ];
 
         let anonymous =
@@ -529,9 +555,9 @@ mod tests {
 
         let search = StaticSearchIndex {
             hits: vec![
-                package_doc(public_a_id, "public-a", "public"),
-                package_doc(private_id, "private-a", "private"),
-                package_doc(public_b_id, "public-b", "public"),
+                package_doc(public_a_id, "public-a", "public", "Public", "public"),
+                package_doc(private_id, "private-a", "private", "Private", "private"),
+                package_doc(public_b_id, "public-b", "public", "Public", "public"),
             ],
         };
         let query = SearchQuery {
@@ -555,6 +581,14 @@ mod tests {
         assert_eq!(anonymous_page.total, 2);
         assert_eq!(anonymous_page.packages.len(), 1);
         assert_eq!(anonymous_page.packages[0].name, "public-b");
+        assert_eq!(
+            anonymous_page.packages[0].repository_name.as_deref(),
+            Some("Public")
+        );
+        assert_eq!(
+            anonymous_page.packages[0].repository_slug.as_deref(),
+            Some("public")
+        );
 
         let owner_page = load_visible_search_page(
             &state,
@@ -570,6 +604,14 @@ mod tests {
         assert_eq!(owner_page.total, 3);
         assert_eq!(owner_page.packages.len(), 1);
         assert_eq!(owner_page.packages[0].name, "private-a");
+        assert_eq!(
+            owner_page.packages[0].repository_name.as_deref(),
+            Some("Private")
+        );
+        assert_eq!(
+            owner_page.packages[0].repository_slug.as_deref(),
+            Some("private")
+        );
     }
 
     #[sqlx::test(migrations = "../../migrations")]
@@ -650,9 +692,27 @@ mod tests {
         .expect("packages should insert");
 
         let hits = vec![
-            package_doc(acme_public_package_id, "acme-public-widget", "public"),
-            package_doc(acme_private_package_id, "acme-private-widget", "private"),
-            package_doc(beta_public_package_id, "beta-public-widget", "public"),
+            package_doc(
+                acme_public_package_id,
+                "acme-public-widget",
+                "public",
+                "Acme Public",
+                "acme-public",
+            ),
+            package_doc(
+                acme_private_package_id,
+                "acme-private-widget",
+                "private",
+                "Acme Private",
+                "acme-private",
+            ),
+            package_doc(
+                beta_public_package_id,
+                "beta-public-widget",
+                "public",
+                "Beta Public",
+                "beta-public",
+            ),
         ];
 
         let anonymous = load_visible_search_package_ids(
@@ -771,9 +831,27 @@ mod tests {
         .expect("packages should insert");
 
         let hits = vec![
-            package_doc(public_package_id, "release-widget", "public"),
-            package_doc(private_package_id, "private-widget", "private"),
-            package_doc(other_public_package_id, "public-widget", "public"),
+            package_doc(
+                public_package_id,
+                "release-widget",
+                "public",
+                "Release",
+                "release-packages",
+            ),
+            package_doc(
+                private_package_id,
+                "private-widget",
+                "private",
+                "Private",
+                "private-packages",
+            ),
+            package_doc(
+                other_public_package_id,
+                "public-widget",
+                "public",
+                "Public",
+                "public-packages",
+            ),
         ];
 
         let anonymous = load_visible_search_package_ids(
