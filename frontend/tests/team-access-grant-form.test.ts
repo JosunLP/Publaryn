@@ -38,9 +38,9 @@ function collectFormValues(form: HTMLFormElement): Record<string, string[]> {
 }
 
 describe('team access grant form', () => {
-  test('submits selected repository grants from the rendered form', () => {
+  test('submits selected repository grants from the rendered form', async () => {
     const submissions: Record<string, string[]>[] = [];
-    const { target, unmount } = renderSvelte(TeamAccessGrantForm, {
+    const { target, unmount } = await renderSvelte(TeamAccessGrantForm, {
       fieldId: 'team-repository-core',
       selectLabel: 'Organization repository',
       selectName: 'repository_slug',
@@ -91,10 +91,10 @@ describe('team access grant form', () => {
     unmount();
   });
 
-  test('submits selected package grants from the rendered form', () => {
+  test('submits selected package grants from the rendered form', async () => {
     const submissions: Record<string, string[]>[] = [];
     const packageKey = renderPackageSelectionValue('npm', '@scope/widget');
-    const { target, unmount } = renderSvelte(TeamAccessGrantForm, {
+    const { target, unmount } = await renderSvelte(TeamAccessGrantForm, {
       fieldId: 'team-package-core',
       selectLabel: 'Organization package',
       selectName: 'package_key',
@@ -142,8 +142,8 @@ describe('team access grant form', () => {
     unmount();
   });
 
-  test('shows the empty state and disables submission when no targets are available', () => {
-    const { target, unmount } = renderSvelte(TeamAccessGrantForm, {
+  test('shows the empty state and disables submission when no targets are available', async () => {
+    const { target, unmount } = await renderSvelte(TeamAccessGrantForm, {
       fieldId: 'team-package-empty',
       selectLabel: 'Organization package',
       selectName: 'package_key',

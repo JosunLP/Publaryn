@@ -1,10 +1,10 @@
 <script lang="ts">
-  export interface TeamAccessGrantTargetOption {
+  interface TeamAccessGrantTargetOption {
     value: string;
     label: string;
   }
 
-  export interface TeamAccessPermissionOption {
+  interface TeamAccessPermissionOption {
     value: string;
     label: string;
     description: string;
@@ -17,8 +17,8 @@
   export let emptyMessage: string;
   export let submitLabel: string;
   export let error: string | null = null;
-  export let options: TeamAccessGrantTargetOption[] = [];
-  export let permissionOptions: TeamAccessPermissionOption[] = [];
+  export let options: readonly TeamAccessGrantTargetOption[] = [];
+  export let permissionOptions: readonly TeamAccessPermissionOption[] = [];
   export let handleSubmit: (event: SubmitEvent) => void | Promise<void> = () => {};
 
   $: isDisabled = Boolean(error) || options.length === 0;

@@ -9,5 +9,9 @@ declare module 'bun:test' {
     callback: () => void | Promise<void>
   ): void;
 
+  export function afterEach(
+    callback: () => void | Promise<void>
+  ): void;
+
   export function expect<T = unknown>(actual: T): any;
 }
