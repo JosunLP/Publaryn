@@ -31,11 +31,25 @@
 
 <svelte:head>
   <title>Publaryn — Secure multi-ecosystem package registry</title>
+  <meta
+    name="description"
+    content="A secure, multi-ecosystem package registry for modern software teams."
+  />
 </svelte:head>
 
 <section class="hero">
-  <h1>Publaryn</h1>
-  <p>A secure, multi-ecosystem package registry for modern software teams.</p>
+  <span class="hero__eyebrow">
+    <span class="hero__eyebrow-dot" aria-hidden="true"></span>
+    One registry. Every ecosystem.
+  </span>
+  <h1>
+    <span class="hero__headline-line">The package registry</span>
+    <span class="hero__headline-line">built for serious teams.</span>
+  </h1>
+  <p>
+    Publish, discover, and secure software across npm, PyPI, Cargo, NuGet,
+    Maven, RubyGems, Composer, Bun and OCI — from a single, unified platform.
+  </p>
   <div class="search-bar">
     <form id="hero-search-form" on:submit={handleSearchSubmit}>
       <input
@@ -49,9 +63,13 @@
       />
     </form>
   </div>
+  <div class="hero__cta">
+    <a href="/register" class="btn btn-primary btn-lg">Get started — it's free</a>
+    <a href="/search" class="btn btn-secondary btn-lg">Browse packages</a>
+  </div>
 </section>
 
-<section class="stats-bar">
+<section class="stats-bar" aria-label="Registry statistics">
   <div class="stat">
     <div class="stat__value">{formatNumber(stats.packages)}</div>
     <div class="stat__label">Packages</div>
@@ -67,7 +85,10 @@
 </section>
 
 <section>
-  <h2 style="text-align:center; margin-bottom:16px;">Supported Ecosystems</h2>
+  <h2 class="section-title">Supported ecosystems</h2>
+  <p class="section-subtitle">
+    Native protocols, authentic client tooling, zero lock-in.
+  </p>
   <div class="ecosystem-grid">
     {#each ECOSYSTEMS as ecosystem}
       <a
@@ -75,7 +96,9 @@
         class="ecosystem-tile"
         data-sveltekit-preload-data="hover"
       >
-        <span style="font-size:1.5rem">{ecosystem.icon}</span>
+        <span class="ecosystem-tile__icon" aria-hidden="true"
+          >{ecosystem.icon}</span
+        >
         <span>{ecosystem.label}</span>
       </a>
     {/each}
