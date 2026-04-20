@@ -89,6 +89,7 @@
     updateRepository,
   } from '../../../api/repositories';
   import OrgAuditFilterControls from '../../../lib/components/OrgAuditFilterControls.svelte';
+  import OrgSecurityFindingTriageControls from '../../../lib/components/OrgSecurityFindingTriageControls.svelte';
   import OrgSecurityFilterControls from '../../../lib/components/OrgSecurityFilterControls.svelte';
   import TeamAccessGrantForm from '../../../lib/components/TeamAccessGrantForm.svelte';
   import type { OrgAuditActorOption } from '../../../pages/org-audit-actors';
@@ -3295,96 +3296,21 @@
                             <p>No findings available for inline triage.</p>
                           </div>
                         {:else}
-                          <div class="token-list">
-                            {#each packageFindingState.findings as finding}
-                              {@const severity = normalizeSecuritySeverity(
-                                finding.severity
+                          <OrgSecurityFindingTriageControls
+                            findings={packageFindingState.findings}
+                            findingNotes={packageFindingState.findingNotes}
+                            updatingFindingId={packageFindingState.updatingFindingId}
+                            notePlaceholder={SECURITY_FINDING_NOTE_PLACEHOLDER}
+                            formatKindLabel={formatIdentifierLabel}
+                            handleNoteInput={(findingId, value) =>
+                              updateOrgSecurityFindingNote(
+                                packageKey,
+                                findingId,
+                                value
                               )}
-                              <div class="token-row">
-                                <div class="token-row__main">
-                                  <div class="token-row__title">
-                                    {finding.title}
-                                  </div>
-                                  <div class="token-row__meta">
-                                    <span class={`badge badge-severity-${severity}`}
-                                      >{severity}</span
-                                    >
-                                    <span class="badge badge-ecosystem"
-                                      >{formatIdentifierLabel(finding.kind)}</span
-                                    >
-                                    {#if finding.release_version}
-                                      <span>{finding.release_version}</span>
-                                    {/if}
-                                    <span>{formatDate(finding.detected_at)}</span>
-                                    {#if finding.is_resolved}
-                                      <span
-                                        >Resolved{finding.resolved_at
-                                          ? ` ${formatDate(finding.resolved_at)}`
-                                          : ''}</span
-                                      >
-                                    {/if}
-                                  </div>
-                                  {#if finding.description}
-                                    <p
-                                      class="settings-copy"
-                                      style="margin-top:0.5rem; margin-bottom:0;"
-                                    >
-                                      {finding.description}
-                                    </p>
-                                  {/if}
-                                  <label
-                                    class="form-group"
-                                    style="margin-top:0.75rem; margin-bottom:0;"
-                                  >
-                                    <span class="sr-only"
-                                      >Security finding note for {finding.title}</span
-                                    >
-                                    <textarea
-                                      class="form-input"
-                                      rows="2"
-                                      maxlength="2000"
-                                      placeholder={SECURITY_FINDING_NOTE_PLACEHOLDER}
-                                      value={packageFindingState.findingNotes[
-                                        finding.id
-                                      ] || ''}
-                                      on:input={(event) =>
-                                        updateOrgSecurityFindingNote(
-                                          packageKey,
-                                          finding.id,
-                                          (
-                                            event.currentTarget as HTMLTextAreaElement
-                                          ).value
-                                        )}
-                                    ></textarea>
-                                  </label>
-                                </div>
-                                <div class="token-row__actions">
-                                  <button
-                                    type="button"
-                                    class="btn btn-secondary btn-sm"
-                                    disabled={packageFindingState.updatingFindingId !==
-                                      null}
-                                    on:click={() =>
-                                      handleToggleOrgFindingResolution(
-                                        pkg,
-                                        finding
-                                      )}
-                                  >
-                                    {#if packageFindingState.updatingFindingId ===
-                                      finding.id}
-                                      {finding.is_resolved
-                                        ? 'Reopening…'
-                                        : 'Resolving…'}
-                                    {:else}
-                                      {finding.is_resolved
-                                        ? 'Reopen finding'
-                                        : 'Mark resolved'}
-                                    {/if}
-                                  </button>
-                                </div>
-                              </div>
-                            {/each}
-                          </div>
+                            handleToggleResolution={(finding) =>
+                              handleToggleOrgFindingResolution(pkg, finding)}
+                          />
                         {/if}
                       </div>
                     </div>

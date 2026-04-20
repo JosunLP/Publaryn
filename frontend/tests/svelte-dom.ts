@@ -52,7 +52,7 @@ export async function renderSvelte(
 }
 
 export function changeValue(
-  element: HTMLInputElement | HTMLSelectElement,
+  element: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement,
   value: string
 ): void {
   element.value = value;
@@ -152,6 +152,7 @@ function installDomGlobals(window: Window): void {
     'HTMLElement',
     'HTMLInputElement',
     'HTMLSelectElement',
+    'HTMLTextAreaElement',
     'HTMLFormElement',
     'HTMLButtonElement',
     'HTMLMediaElement',
