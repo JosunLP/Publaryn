@@ -1704,6 +1704,29 @@ async fn publish_npm_package(
     (status, body)
 }
 
+/// Download a native npm tarball and return the response body.
+async fn download_npm_tarball(
+    app: &axum::Router,
+    jwt: Option<&str>,
+    package_name: &str,
+    filename: &str,
+) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+    let mut request = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/npm/{package_name}/-/{filename}"));
+
+    if let Some(jwt) = jwt {
+        request = request.header(header::AUTHORIZATION, format!("Bearer {jwt}"));
+    }
+
+    let req = request.body(Body::empty()).unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let headers = resp.headers().clone();
+    let body = body_bytes(resp).await;
+    (status, headers, body)
+}
+
 /// Resolve a release id for a package version directly from the database.
 async fn get_release_id(
     pool: &PgPool,
@@ -10738,6 +10761,191 @@ async fn test_native_npm_repository_publish_permission_allows_existing_package_p
         list_npm_dist_tags(&app, Some(&bob_jwt), "native-release-widget").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(dist_tags["beta"], "1.0.0");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_native_npm_private_reads_allow_team_package_and_repository_grants(pool: PgPool) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    register_user(&app, "carol", "carol@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+    let carol_jwt = login_user(&app, "carol", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &alice_jwt, "Acme Org", "acme-org").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id = org_body["id"].as_str().expect("org id should be present");
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Private npm Packages",
+        "private-npm-packages",
+        Some(org_id),
+        Some("private"),
+        Some("private"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "npm",
+        "secret-team-widget",
+        "private-npm-packages",
+        Some("private"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let (status, publish_body) = publish_npm_package(
+        &app,
+        &alice_jwt,
+        "secret-team-widget",
+        "1.0.0",
+        b"secret-team-widget-tarball",
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected npm publish response: {publish_body}"
+    );
+
+    let (status, _) = add_org_member(&app, &alice_jwt, "acme-org", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = add_org_member(&app, &alice_jwt, "acme-org", "carol", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "acme-org",
+        "Package Security",
+        "package-security",
+        Some("Reads specific private npm packages through package delegation."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "acme-org",
+        "Repository Publishers",
+        "repository-publishers",
+        Some("Reads private npm packages through repository delegation."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) =
+        add_team_member_to_team(&app, &alice_jwt, "acme-org", "package-security", "bob").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = add_team_member_to_team(
+        &app,
+        &alice_jwt,
+        "acme-org",
+        "repository-publishers",
+        "carol",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, grant_body) = grant_team_package_access(
+        &app,
+        &alice_jwt,
+        "acme-org",
+        "package-security",
+        "npm",
+        "secret-team-widget",
+        &["security_review"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected package access response: {grant_body}"
+    );
+
+    let (status, grant_body) = grant_team_repository_access(
+        &app,
+        &alice_jwt,
+        "acme-org",
+        "repository-publishers",
+        "private-npm-packages",
+        &["publish"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected repository access response: {grant_body}"
+    );
+
+    let tarball_filename = "secret-team-widget-1.0.0.tgz";
+
+    let (status, anonymous_packument) = get_npm_packument(&app, None, "secret-team-widget").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(anonymous_packument["error"], "Package not found");
+
+    let (status, anonymous_headers, anonymous_tarball) =
+        download_npm_tarball(&app, None, "secret-team-widget", tarball_filename).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(anonymous_headers.get(header::CONTENT_TYPE).is_none());
+    assert_eq!(anonymous_tarball, b"{\"error\":\"Package not found\"}");
+
+    let (status, bob_packument) =
+        get_npm_packument(&app, Some(&bob_jwt), "secret-team-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(bob_packument["name"], "secret-team-widget");
+    assert_eq!(bob_packument["versions"]["1.0.0"]["version"], "1.0.0");
+
+    let (status, bob_dist_tags) =
+        list_npm_dist_tags(&app, Some(&bob_jwt), "secret-team-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(bob_dist_tags["latest"], "1.0.0");
+
+    let (status, bob_headers, bob_tarball) =
+        download_npm_tarball(&app, Some(&bob_jwt), "secret-team-widget", tarball_filename).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        bob_headers
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("application/gzip")
+    );
+    assert_eq!(bob_tarball, b"secret-team-widget-tarball");
+
+    let (status, carol_packument) =
+        get_npm_packument(&app, Some(&carol_jwt), "secret-team-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(carol_packument["dist-tags"]["latest"], "1.0.0");
+
+    let (status, carol_headers, carol_tarball) = download_npm_tarball(
+        &app,
+        Some(&carol_jwt),
+        "secret-team-widget",
+        tarball_filename,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        carol_headers
+            .get(header::CONTENT_DISPOSITION)
+            .and_then(|value| value.to_str().ok()),
+        Some("attachment; filename=\"secret-team-widget-1.0.0.tgz\"")
+    );
+    assert_eq!(carol_tarball, b"secret-team-widget-tarball");
 }
 
 #[sqlx::test(migrations = "../../migrations")]
