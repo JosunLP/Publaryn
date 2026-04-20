@@ -1704,6 +1704,29 @@ async fn publish_npm_package(
     (status, body)
 }
 
+/// Download a native npm tarball and return the response body.
+async fn download_npm_tarball(
+    app: &axum::Router,
+    jwt: Option<&str>,
+    package_name: &str,
+    filename: &str,
+) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+    let mut request = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/npm/{package_name}/-/{filename}"));
+
+    if let Some(jwt) = jwt {
+        request = request.header(header::AUTHORIZATION, format!("Bearer {jwt}"));
+    }
+
+    let req = request.body(Body::empty()).unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let headers = resp.headers().clone();
+    let body = body_bytes(resp).await;
+    (status, headers, body)
+}
+
 /// Resolve a release id for a package version directly from the database.
 async fn get_release_id(
     pool: &PgPool,
@@ -8788,6 +8811,363 @@ async fn test_npm_search_respects_authenticated_visibility_and_filtered_offsets(
 }
 
 #[sqlx::test(migrations = "../../migrations")]
+async fn test_search_surfaces_include_private_packages_visible_through_team_grants(pool: PgPool) {
+    if !is_search_backend_available() {
+        eprintln!(
+            "Skipping delegated search visibility verification because the search backend is unavailable."
+        );
+        return;
+    }
+
+    let app = app(pool);
+    register_user(
+        &app,
+        "alice",
+        "alice-delegated-search@test.dev",
+        "super_secret_pw!",
+    )
+    .await;
+    register_user(
+        &app,
+        "bob",
+        "bob-delegated-search@test.dev",
+        "super_secret_pw!",
+    )
+    .await;
+    register_user(
+        &app,
+        "carol",
+        "carol-delegated-search@test.dev",
+        "super_secret_pw!",
+    )
+    .await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+    let carol_jwt = login_user(&app, "carol", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(
+        &app,
+        &alice_jwt,
+        "Delegated Search Org",
+        "delegated-search-org",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id = org_body["id"].as_str().expect("org id should be present");
+
+    let (status, _) =
+        add_org_member(&app, &alice_jwt, "delegated-search-org", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) =
+        add_org_member(&app, &alice_jwt, "delegated-search-org", "carol", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    for (name, slug, visibility) in [
+        ("Delegated Public", "delegated-public-search", "public"),
+        (
+            "Delegated Package Private",
+            "delegated-package-private",
+            "private",
+        ),
+        (
+            "Delegated Repository Private",
+            "delegated-repository-private",
+            "private",
+        ),
+    ] {
+        let (status, body) = create_repository_with_options(
+            &app,
+            &alice_jwt,
+            name,
+            slug,
+            Some(org_id),
+            Some("public"),
+            Some(visibility),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected repository response: {body}"
+        );
+    }
+
+    for (name, repository_slug, visibility, descriptor) in [
+        (
+            "delegated-public-search-widget",
+            "delegated-public-search",
+            Some("public"),
+            "public",
+        ),
+        (
+            "delegated-package-search-widget",
+            "delegated-package-private",
+            Some("private"),
+            "package-granted",
+        ),
+        (
+            "delegated-repository-search-widget",
+            "delegated-repository-private",
+            Some("private"),
+            "repository-granted",
+        ),
+    ] {
+        let (status, body) =
+            create_package_with_options(&app, &alice_jwt, "npm", name, repository_slug, visibility)
+                .await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected package response: {body}"
+        );
+
+        let (status, body) = update_package_metadata(
+            &app,
+            &alice_jwt,
+            "npm",
+            name,
+            json!({
+                "description": format!("delegatedsearchomega {descriptor}"),
+            }),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "unexpected package update response: {body}"
+        );
+    }
+
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "delegated-search-org",
+        "Package Readers",
+        "package-readers",
+        Some("Can search private packages granted directly."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "delegated-search-org",
+        "Repository Readers",
+        "repository-readers",
+        Some("Can search private packages granted via repository read access."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = add_team_member_to_team(
+        &app,
+        &alice_jwt,
+        "delegated-search-org",
+        "package-readers",
+        "bob",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = add_team_member_to_team(
+        &app,
+        &alice_jwt,
+        "delegated-search-org",
+        "repository-readers",
+        "carol",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, grant_body) = grant_team_package_access(
+        &app,
+        &alice_jwt,
+        "delegated-search-org",
+        "package-readers",
+        "npm",
+        "delegated-package-search-widget",
+        &["read_private"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team package access response: {grant_body}"
+    );
+
+    let (status, grant_body) = grant_team_repository_access(
+        &app,
+        &alice_jwt,
+        "delegated-search-org",
+        "repository-readers",
+        "delegated-repository-private",
+        &["read_private"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team repository access response: {grant_body}"
+    );
+
+    let expected_anonymous_names =
+        std::collections::BTreeSet::from(["delegated-public-search-widget".to_owned()]);
+    let expected_bob_names = std::collections::BTreeSet::from([
+        "delegated-public-search-widget".to_owned(),
+        "delegated-package-search-widget".to_owned(),
+    ]);
+    let expected_carol_names = std::collections::BTreeSet::from([
+        "delegated-public-search-widget".to_owned(),
+        "delegated-repository-search-widget".to_owned(),
+    ]);
+
+    let mut latest_management_bob = Value::Null;
+    let mut latest_management_carol = Value::Null;
+    let mut latest_management_anonymous = Value::Null;
+    let mut latest_npm_bob = Value::Null;
+    let mut latest_npm_carol = Value::Null;
+    let mut latest_npm_anonymous = Value::Null;
+    let mut found = false;
+
+    for _ in 0..30 {
+        let (management_bob_status, management_bob_body) = search_packages_with_options(
+            &app,
+            Some(&bob_jwt),
+            "delegatedsearchomega",
+            SearchPackagesRequestOptions {
+                ecosystem: Some("npm"),
+                ..SearchPackagesRequestOptions::default()
+            },
+        )
+        .await;
+        assert_eq!(
+            management_bob_status,
+            StatusCode::OK,
+            "unexpected bob management search response: {management_bob_body}"
+        );
+
+        let (management_carol_status, management_carol_body) = search_packages_with_options(
+            &app,
+            Some(&carol_jwt),
+            "delegatedsearchomega",
+            SearchPackagesRequestOptions {
+                ecosystem: Some("npm"),
+                ..SearchPackagesRequestOptions::default()
+            },
+        )
+        .await;
+        assert_eq!(
+            management_carol_status,
+            StatusCode::OK,
+            "unexpected carol management search response: {management_carol_body}"
+        );
+
+        let (management_anonymous_status, management_anonymous_body) =
+            search_packages_with_options(
+                &app,
+                None,
+                "delegatedsearchomega",
+                SearchPackagesRequestOptions {
+                    ecosystem: Some("npm"),
+                    ..SearchPackagesRequestOptions::default()
+                },
+            )
+            .await;
+        assert_eq!(
+            management_anonymous_status,
+            StatusCode::OK,
+            "unexpected anonymous management search response: {management_anonymous_body}"
+        );
+
+        let (npm_bob_status, npm_bob_body) =
+            search_npm_packages(&app, Some(&bob_jwt), "delegatedsearchomega", 10, 0).await;
+        assert_eq!(
+            npm_bob_status,
+            StatusCode::OK,
+            "unexpected bob npm search response: {npm_bob_body}"
+        );
+
+        let (npm_carol_status, npm_carol_body) =
+            search_npm_packages(&app, Some(&carol_jwt), "delegatedsearchomega", 10, 0).await;
+        assert_eq!(
+            npm_carol_status,
+            StatusCode::OK,
+            "unexpected carol npm search response: {npm_carol_body}"
+        );
+
+        let (npm_anonymous_status, npm_anonymous_body) =
+            search_npm_packages(&app, None, "delegatedsearchomega", 10, 0).await;
+        assert_eq!(
+            npm_anonymous_status,
+            StatusCode::OK,
+            "unexpected anonymous npm search response: {npm_anonymous_body}"
+        );
+
+        let management_bob_names = management_bob_body["packages"]
+            .as_array()
+            .expect("bob management packages should be an array")
+            .iter()
+            .filter_map(|item| item["name"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+        let management_carol_names = management_carol_body["packages"]
+            .as_array()
+            .expect("carol management packages should be an array")
+            .iter()
+            .filter_map(|item| item["name"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+        let management_anonymous_names = management_anonymous_body["packages"]
+            .as_array()
+            .expect("anonymous management packages should be an array")
+            .iter()
+            .filter_map(|item| item["name"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+
+        let npm_bob_names = npm_bob_body["objects"]
+            .as_array()
+            .expect("bob npm search objects should be an array")
+            .iter()
+            .filter_map(|item| item["package"]["name"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+        let npm_carol_names = npm_carol_body["objects"]
+            .as_array()
+            .expect("carol npm search objects should be an array")
+            .iter()
+            .filter_map(|item| item["package"]["name"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+        let npm_anonymous_names = npm_anonymous_body["objects"]
+            .as_array()
+            .expect("anonymous npm search objects should be an array")
+            .iter()
+            .filter_map(|item| item["package"]["name"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+
+        latest_management_bob = management_bob_body;
+        latest_management_carol = management_carol_body;
+        latest_management_anonymous = management_anonymous_body;
+        latest_npm_bob = npm_bob_body;
+        latest_npm_carol = npm_carol_body;
+        latest_npm_anonymous = npm_anonymous_body;
+
+        if management_bob_names == expected_bob_names
+            && management_carol_names == expected_carol_names
+            && management_anonymous_names == expected_anonymous_names
+            && npm_bob_names == expected_bob_names
+            && npm_carol_names == expected_carol_names
+            && npm_anonymous_names == expected_anonymous_names
+        {
+            found = true;
+            break;
+        }
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    assert!(
+        found,
+        "delegated search visibility did not converge.\nmanagement bob: {latest_management_bob}\nmanagement carol: {latest_management_carol}\nmanagement anonymous: {latest_management_anonymous}\nnpm bob: {latest_npm_bob}\nnpm carol: {latest_npm_carol}\nnpm anonymous: {latest_npm_anonymous}"
+    );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
 async fn test_management_search_can_scope_results_to_one_org(pool: PgPool) {
     if !is_search_backend_available() {
         eprintln!("Skipping management search org filter verification because the search backend is unavailable.");
@@ -10738,6 +11118,191 @@ async fn test_native_npm_repository_publish_permission_allows_existing_package_p
         list_npm_dist_tags(&app, Some(&bob_jwt), "native-release-widget").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(dist_tags["beta"], "1.0.0");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_native_npm_private_reads_allow_team_package_and_repository_grants(pool: PgPool) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    register_user(&app, "carol", "carol@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+    let carol_jwt = login_user(&app, "carol", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &alice_jwt, "Acme Org", "acme-org").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id = org_body["id"].as_str().expect("org id should be present");
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Private npm Packages",
+        "private-npm-packages",
+        Some(org_id),
+        Some("private"),
+        Some("private"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "npm",
+        "secret-team-widget",
+        "private-npm-packages",
+        Some("private"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let (status, publish_body) = publish_npm_package(
+        &app,
+        &alice_jwt,
+        "secret-team-widget",
+        "1.0.0",
+        b"secret-team-widget-tarball",
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected npm publish response: {publish_body}"
+    );
+
+    let (status, _) = add_org_member(&app, &alice_jwt, "acme-org", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = add_org_member(&app, &alice_jwt, "acme-org", "carol", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "acme-org",
+        "Package Security",
+        "package-security",
+        Some("Reads specific private npm packages through package delegation."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "acme-org",
+        "Repository Publishers",
+        "repository-publishers",
+        Some("Reads private npm packages through repository delegation."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) =
+        add_team_member_to_team(&app, &alice_jwt, "acme-org", "package-security", "bob").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = add_team_member_to_team(
+        &app,
+        &alice_jwt,
+        "acme-org",
+        "repository-publishers",
+        "carol",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, grant_body) = grant_team_package_access(
+        &app,
+        &alice_jwt,
+        "acme-org",
+        "package-security",
+        "npm",
+        "secret-team-widget",
+        &["security_review"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected package access response: {grant_body}"
+    );
+
+    let (status, grant_body) = grant_team_repository_access(
+        &app,
+        &alice_jwt,
+        "acme-org",
+        "repository-publishers",
+        "private-npm-packages",
+        &["publish"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected repository access response: {grant_body}"
+    );
+
+    let tarball_filename = "secret-team-widget-1.0.0.tgz";
+
+    let (status, anonymous_packument) = get_npm_packument(&app, None, "secret-team-widget").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(anonymous_packument["error"], "Package not found");
+
+    let (status, anonymous_headers, anonymous_tarball) =
+        download_npm_tarball(&app, None, "secret-team-widget", tarball_filename).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(anonymous_headers.get(header::CONTENT_TYPE).is_none());
+    assert_eq!(anonymous_tarball, b"{\"error\":\"Package not found\"}");
+
+    let (status, bob_packument) =
+        get_npm_packument(&app, Some(&bob_jwt), "secret-team-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(bob_packument["name"], "secret-team-widget");
+    assert_eq!(bob_packument["versions"]["1.0.0"]["version"], "1.0.0");
+
+    let (status, bob_dist_tags) =
+        list_npm_dist_tags(&app, Some(&bob_jwt), "secret-team-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(bob_dist_tags["latest"], "1.0.0");
+
+    let (status, bob_headers, bob_tarball) =
+        download_npm_tarball(&app, Some(&bob_jwt), "secret-team-widget", tarball_filename).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        bob_headers
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("application/gzip")
+    );
+    assert_eq!(bob_tarball, b"secret-team-widget-tarball");
+
+    let (status, carol_packument) =
+        get_npm_packument(&app, Some(&carol_jwt), "secret-team-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(carol_packument["dist-tags"]["latest"], "1.0.0");
+
+    let (status, carol_headers, carol_tarball) = download_npm_tarball(
+        &app,
+        Some(&carol_jwt),
+        "secret-team-widget",
+        tarball_filename,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        carol_headers
+            .get(header::CONTENT_DISPOSITION)
+            .and_then(|value| value.to_str().ok()),
+        Some("attachment; filename=\"secret-team-widget-1.0.0.tgz\"")
+    );
+    assert_eq!(carol_tarball, b"secret-team-widget-tarball");
 }
 
 #[sqlx::test(migrations = "../../migrations")]

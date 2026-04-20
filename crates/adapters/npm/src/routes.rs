@@ -295,7 +295,7 @@ async fn get_packument_inner<S: NpmAppState>(
 
     // Load package
     let package_row = match sqlx::query(
-        "SELECT p.id, p.name, p.description, p.license, p.homepage, p.repository_url, \
+        "SELECT p.id, p.repository_id, p.name, p.description, p.license, p.homepage, p.repository_url, \
                 p.keywords, p.readme, p.is_deprecated, p.deprecation_message, \
                 p.visibility::text AS visibility, p.owner_user_id, p.owner_org_id, \
                 p.created_at, p.updated_at, \
@@ -316,10 +316,20 @@ async fn get_packument_inner<S: NpmAppState>(
     };
 
     // Visibility check
+    let package_id: Uuid = match package_row.try_get("id") {
+        Ok(id) => id,
+        Err(_) => return npm_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error"),
+    };
+    let repository_id: Uuid = match package_row.try_get("repository_id") {
+        Ok(id) => id,
+        Err(_) => return npm_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error"),
+    };
     let pkg_visibility: String = package_row.try_get("visibility").unwrap_or_default();
     let repo_visibility: String = package_row.try_get("repo_visibility").unwrap_or_default();
     if !can_read_package(
         state.db(),
+        package_id,
+        repository_id,
         &pkg_visibility,
         &repo_visibility,
         package_row.try_get("owner_user_id").unwrap_or(None),
@@ -333,10 +343,6 @@ async fn get_packument_inner<S: NpmAppState>(
         return npm_error_response(StatusCode::NOT_FOUND, "Package not found");
     }
 
-    let package_id: Uuid = match package_row.try_get("id") {
-        Ok(id) => id,
-        Err(_) => return npm_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error"),
-    };
     let db_name: String = package_row.try_get("name").unwrap_or_default();
 
     // Load published releases (exclude quarantine/scanning/deleted; include yanked for metadata)
@@ -967,7 +973,7 @@ async fn download_tarball_inner<S: NpmAppState>(
 
     // Find the package
     let package_row = match sqlx::query(
-        "SELECT p.id, p.visibility::text AS visibility, p.owner_user_id, p.owner_org_id, \
+        "SELECT p.id, p.repository_id, p.visibility::text AS visibility, p.owner_user_id, p.owner_org_id, \
                 r.visibility::text AS repo_visibility, \
                 r.owner_user_id AS repo_owner_user_id, \
                 r.owner_org_id AS repo_owner_org_id \
@@ -985,8 +991,18 @@ async fn download_tarball_inner<S: NpmAppState>(
     };
 
     // Visibility check
+    let package_id: Uuid = match package_row.try_get("id") {
+        Ok(id) => id,
+        Err(_) => return npm_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error"),
+    };
+    let repository_id: Uuid = match package_row.try_get("repository_id") {
+        Ok(id) => id,
+        Err(_) => return npm_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error"),
+    };
     if !can_read_package(
         state.db(),
+        package_id,
+        repository_id,
         &package_row
             .try_get::<String, _>("visibility")
             .unwrap_or_default(),
@@ -1003,11 +1019,6 @@ async fn download_tarball_inner<S: NpmAppState>(
     {
         return npm_error_response(StatusCode::NOT_FOUND, "Package not found");
     }
-
-    let package_id: Uuid = match package_row.try_get("id") {
-        Ok(id) => id,
-        Err(_) => return npm_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error"),
-    };
 
     // Find artifact by filename across published releases
     let artifact_row = match sqlx::query(
@@ -1327,7 +1338,7 @@ async fn resolve_npm_package_id(
     actor_user_id: Option<Uuid>,
 ) -> Result<Uuid, Response> {
     let row = sqlx::query(
-        "SELECT p.id, p.visibility::text AS visibility, p.owner_user_id, p.owner_org_id, \
+        "SELECT p.id, p.repository_id, p.visibility::text AS visibility, p.owner_user_id, p.owner_org_id, \
                 r.visibility::text AS repo_visibility, \
                 r.owner_user_id AS repo_owner_user_id, \
                 r.owner_org_id AS repo_owner_org_id \
@@ -1341,8 +1352,17 @@ async fn resolve_npm_package_id(
     .map_err(|_| npm_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error"))?
     .ok_or_else(|| npm_error_response(StatusCode::NOT_FOUND, "Package not found"))?;
 
+    let package_id: Uuid = row
+        .try_get("id")
+        .map_err(|_| npm_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error"))?;
+    let repository_id: Uuid = row
+        .try_get("repository_id")
+        .map_err(|_| npm_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error"))?;
+
     if !can_read_package(
         db,
+        package_id,
+        repository_id,
         &row.try_get::<String, _>("visibility").unwrap_or_default(),
         &row.try_get::<String, _>("repo_visibility")
             .unwrap_or_default(),
@@ -1360,8 +1380,7 @@ async fn resolve_npm_package_id(
         ));
     }
 
-    row.try_get("id")
-        .map_err(|_| npm_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error"))
+    Ok(package_id)
 }
 
 async fn resolve_npm_package_id_for_write(
@@ -1491,9 +1510,59 @@ async fn has_package_write_access(
     false
 }
 
+async fn actor_has_any_team_package_access(
+    db: &PgPool,
+    package_id: Uuid,
+    actor_user_id: Uuid,
+) -> bool {
+    sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (\
+             SELECT 1 \
+             FROM team_package_access tpa \
+             JOIN team_memberships tm ON tm.team_id = tpa.team_id \
+             JOIN teams t ON t.id = tpa.team_id \
+             JOIN packages p ON p.id = tpa.package_id \
+             WHERE tpa.package_id = $1 \
+               AND tm.user_id = $2 \
+               AND t.org_id = p.owner_org_id \
+         )",
+    )
+    .bind(package_id)
+    .bind(actor_user_id)
+    .fetch_one(db)
+    .await
+    .unwrap_or(false)
+}
+
+async fn actor_has_any_team_repository_access(
+    db: &PgPool,
+    repository_id: Uuid,
+    actor_user_id: Uuid,
+) -> bool {
+    sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (\
+             SELECT 1 \
+             FROM team_repository_access tra \
+             JOIN team_memberships tm ON tm.team_id = tra.team_id \
+             JOIN teams t ON t.id = tra.team_id \
+             JOIN repositories r ON r.id = tra.repository_id \
+             WHERE tra.repository_id = $1 \
+               AND tm.user_id = $2 \
+               AND t.org_id = r.owner_org_id \
+         )",
+    )
+    .bind(repository_id)
+    .bind(actor_user_id)
+    .fetch_one(db)
+    .await
+    .unwrap_or(false)
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn can_read_package(
     db: &PgPool,
+    package_id: Uuid,
+    repository_id: Uuid,
     pkg_visibility: &str,
     repo_visibility: &str,
     pkg_owner_user_id: Option<Uuid>,
@@ -1513,11 +1582,15 @@ async fn can_read_package(
         return false;
     };
 
-    // Check if actor owns or is a member of the owning org
     let pkg_access = is_owner_or_member(db, pkg_owner_user_id, pkg_owner_org_id, actor).await;
     let repo_access = is_owner_or_member(db, repo_owner_user_id, repo_owner_org_id, actor).await;
+    let team_package_access = actor_has_any_team_package_access(db, package_id, actor).await;
+    let team_repository_access =
+        actor_has_any_team_repository_access(db, repository_id, actor).await;
+    let delegated_read_access = team_package_access || team_repository_access;
 
-    (pkg_anonymous || pkg_access) && (repo_anonymous || repo_access)
+    (pkg_anonymous || pkg_access || delegated_read_access)
+        && (repo_anonymous || repo_access || delegated_read_access)
 }
 
 async fn is_owner_or_member(
