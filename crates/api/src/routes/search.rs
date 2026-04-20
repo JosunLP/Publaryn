@@ -618,16 +618,18 @@ mod tests {
             HashSet::from([acme_public_package_id, acme_private_package_id])
         );
 
-        let beta = load_visible_search_package_ids(&state, &hits, Some(member_id), Some("beta-search"))
-            .await
-            .expect("beta ids should load");
+        let beta =
+            load_visible_search_package_ids(&state, &hits, Some(member_id), Some("beta-search"))
+                .await
+                .expect("beta ids should load");
         assert_eq!(beta, HashSet::from([beta_public_package_id]));
     }
 
     #[test]
     fn normalize_search_org_slug_validates_optional_values() {
         assert_eq!(
-            normalize_search_org_slug(Some("acme-search".to_owned())).expect("slug should normalize"),
+            normalize_search_org_slug(Some("acme-search".to_owned()))
+                .expect("slug should normalize"),
             Some("acme-search".to_owned())
         );
         assert_eq!(

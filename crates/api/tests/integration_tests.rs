@@ -8320,18 +8320,32 @@ async fn test_management_search_can_scope_results_to_one_org(pool: PgPool) {
     }
 
     let app = app(pool);
-    register_user(&app, "alice", "alice-org-search@test.dev", "super_secret_pw!").await;
+    register_user(
+        &app,
+        "alice",
+        "alice-org-search@test.dev",
+        "super_secret_pw!",
+    )
+    .await;
     register_user(&app, "bob", "bob-org-search@test.dev", "super_secret_pw!").await;
-    register_user(&app, "carol", "carol-org-search@test.dev", "super_secret_pw!").await;
+    register_user(
+        &app,
+        "carol",
+        "carol-org-search@test.dev",
+        "super_secret_pw!",
+    )
+    .await;
     let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
     let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
     let carol_jwt = login_user(&app, "carol", "super_secret_pw!").await;
 
-    let (status, acme_body) = create_org(&app, &alice_jwt, "Acme Org Search", "acme-org-search").await;
+    let (status, acme_body) =
+        create_org(&app, &alice_jwt, "Acme Org Search", "acme-org-search").await;
     assert_eq!(status, StatusCode::CREATED);
     let acme_org_id = acme_body["id"].as_str().expect("acme org id");
 
-    let (status, beta_body) = create_org(&app, &carol_jwt, "Beta Org Search", "beta-org-search").await;
+    let (status, beta_body) =
+        create_org(&app, &carol_jwt, "Beta Org Search", "beta-org-search").await;
     assert_eq!(status, StatusCode::CREATED);
     let beta_org_id = beta_body["id"].as_str().expect("beta org id");
 
@@ -8343,9 +8357,24 @@ async fn test_management_search_can_scope_results_to_one_org(pool: PgPool) {
     );
 
     for (name, slug, owner_org_id, visibility) in [
-        ("Acme Public Search", "acme-public-org-search", acme_org_id, "public"),
-        ("Acme Private Search", "acme-private-org-search", acme_org_id, "private"),
-        ("Beta Public Search", "beta-public-org-search", beta_org_id, "public"),
+        (
+            "Acme Public Search",
+            "acme-public-org-search",
+            acme_org_id,
+            "public",
+        ),
+        (
+            "Acme Private Search",
+            "acme-private-org-search",
+            acme_org_id,
+            "private",
+        ),
+        (
+            "Beta Public Search",
+            "beta-public-org-search",
+            beta_org_id,
+            "public",
+        ),
     ] {
         let (status, body) = create_repository_with_options(
             &app,
@@ -8391,9 +8420,15 @@ async fn test_management_search_can_scope_results_to_one_org(pool: PgPool) {
             "beta public",
         ),
     ] {
-        let (status, body) =
-            create_package_with_options(&app, jwt, "npm", package_name, repository_slug, visibility)
-                .await;
+        let (status, body) = create_package_with_options(
+            &app,
+            jwt,
+            "npm",
+            package_name,
+            repository_slug,
+            visibility,
+        )
+        .await;
         assert_eq!(
             status,
             StatusCode::CREATED,
