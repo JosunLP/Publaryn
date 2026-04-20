@@ -178,6 +178,14 @@ export interface OrgSecurityPackageSummary {
   worst_severity?: NullableString;
   latest_detected_at?: NullableString;
   severities?: OrgSecuritySeverityCounts | null;
+  reviewer_teams?:
+    | Array<{
+        id?: NullableString;
+        slug?: NullableString;
+        name?: NullableString;
+      }>
+    | null;
+  can_manage_security?: boolean | null;
 }
 
 export interface OrgSecurityFindingsResponse {

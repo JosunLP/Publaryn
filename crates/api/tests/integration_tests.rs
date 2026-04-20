@@ -4205,6 +4205,228 @@ async fn test_org_security_findings_support_filters_validation_and_csv_export(po
 }
 
 #[sqlx::test(migrations = "../../migrations")]
+async fn test_org_security_findings_surface_review_teams_and_actor_triage_access(pool: PgPool) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    register_user(&app, "carol", "carol@test.dev", "super_secret_pw!").await;
+    register_user(&app, "dana", "dana@test.dev", "super_secret_pw!").await;
+
+    let owner_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let package_reviewer_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+    let plain_member_jwt = login_user(&app, "dana", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &owner_jwt, "Acme Corp", "acme-corp").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id = org_body["id"].as_str().expect("org id should be returned");
+
+    for username in ["bob", "carol", "dana"] {
+        let (status, body) =
+            add_org_member(&app, &owner_jwt, "acme-corp", username, "viewer").await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected org member response for {username}: {body}"
+        );
+    }
+
+    let (status, body) = create_repository_with_options(
+        &app,
+        &owner_jwt,
+        "Acme Public",
+        "acme-public",
+        Some(org_id),
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {body}"
+    );
+
+    let (status, body) = create_package_with_options(
+        &app,
+        &owner_jwt,
+        "npm",
+        "acme-widget",
+        "acme-public",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {body}"
+    );
+
+    let (status, body) =
+        create_release_for_package(&app, &owner_jwt, "npm", "acme-widget", "1.0.0").await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected release response: {body}"
+    );
+
+    let release_id = get_release_id(&pool, "npm", "acme-widget", "1.0.0").await;
+    insert_security_finding(
+        &pool,
+        release_id,
+        "vulnerability",
+        "critical",
+        "Critical package issue",
+        false,
+    )
+    .await;
+
+    let (status, body) = create_team(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        "Security Reviewers",
+        "security-reviewers",
+        Some("Handles package-level security review"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package reviewer team response: {body}"
+    );
+
+    let (status, body) = create_team(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        "Repository Security",
+        "repository-security",
+        Some("Handles repository-wide security review"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository reviewer team response: {body}"
+    );
+
+    let (status, body) =
+        add_team_member_to_team(&app, &owner_jwt, "acme-corp", "security-reviewers", "bob").await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected security team member response: {body}"
+    );
+
+    let (status, body) = add_team_member_to_team(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        "repository-security",
+        "carol",
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository team member response: {body}"
+    );
+
+    let (status, body) = grant_team_package_access(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        "security-reviewers",
+        "npm",
+        "acme-widget",
+        &["security_review"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected package access response: {body}"
+    );
+
+    let (status, body) = grant_team_repository_access(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        "repository-security",
+        "acme-public",
+        &["security_review"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected repository access response: {body}"
+    );
+
+    let (status, anonymous_body) = list_org_security_findings(&app, None, "acme-corp").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected anonymous org security response: {anonymous_body}"
+    );
+    let anonymous_packages = anonymous_body["packages"]
+        .as_array()
+        .expect("anonymous packages response should be an array");
+    assert_eq!(anonymous_packages.len(), 1, "response: {anonymous_body}");
+    assert_eq!(anonymous_packages[0]["reviewer_teams"], json!([]));
+    assert_eq!(anonymous_packages[0]["can_manage_security"], false);
+
+    let (status, plain_member_body) =
+        list_org_security_findings(&app, Some(&plain_member_jwt), "acme-corp").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected plain-member org security response: {plain_member_body}"
+    );
+    let plain_member_packages = plain_member_body["packages"]
+        .as_array()
+        .expect("plain-member packages response should be an array");
+    assert_eq!(
+        plain_member_packages.len(),
+        1,
+        "response: {plain_member_body}"
+    );
+    assert_eq!(plain_member_packages[0]["can_manage_security"], false);
+    assert_eq!(
+        plain_member_packages[0]["reviewer_teams"],
+        json!([
+            {
+                "id": plain_member_packages[0]["reviewer_teams"][0]["id"],
+                "slug": "repository-security",
+                "name": "Repository Security",
+            },
+            {
+                "id": plain_member_packages[0]["reviewer_teams"][1]["id"],
+                "slug": "security-reviewers",
+                "name": "Security Reviewers",
+            },
+        ])
+    );
+
+    let (status, reviewer_body) =
+        list_org_security_findings(&app, Some(&package_reviewer_jwt), "acme-corp").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected reviewer org security response: {reviewer_body}"
+    );
+    let reviewer_packages = reviewer_body["packages"]
+        .as_array()
+        .expect("reviewer packages response should be an array");
+    assert_eq!(reviewer_packages.len(), 1, "response: {reviewer_body}");
+    assert_eq!(reviewer_packages[0]["can_manage_security"], true);
+    assert_eq!(
+        reviewer_packages[0]["reviewer_teams"],
+        plain_member_packages[0]["reviewer_teams"]
+    );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
 async fn test_org_admin_can_read_org_audit_logs(pool: PgPool) {
     let app = app(pool);
     register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;

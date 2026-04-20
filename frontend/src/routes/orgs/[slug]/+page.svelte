@@ -3239,6 +3239,7 @@
                 {@const pkgWorstSeverity = pkg.worst_severity
                   ? normalizeSecuritySeverity(pkg.worst_severity)
                   : worstSecuritySeverityFromCounts(pkg.severities)}
+                {@const reviewerTeams = pkg.reviewer_teams || []}
                 <div class="token-row">
                   <div class="token-row__main">
                     <div class="token-row__title">
@@ -3269,7 +3270,25 @@
                           >{formatNumber(pkgCounts[severity])} {severity}</span
                         >
                       {/each}
+                      {#if pkg.can_manage_security}
+                        <span class="badge badge-verified"
+                          >You can triage findings</span
+                        >
+                      {/if}
                     </div>
+                    {#if reviewerTeams.length > 0}
+                      <div
+                        class="token-row__meta"
+                        style="margin-top:0.5rem; flex-wrap:wrap;"
+                      >
+                        <span>Review teams</span>
+                        {#each reviewerTeams as team}
+                          <span class="badge badge-ecosystem"
+                            >{team.name || team.slug || 'Unnamed team'}</span
+                          >
+                        {/each}
+                      </div>
+                    {/if}
                   </div>
                   {#if pkg.ecosystem && pkg.name}
                     <div class="token-row__actions">
@@ -3278,7 +3297,8 @@
                         href={buildPackageDetailPath(pkg.ecosystem, pkg.name, {
                           tab: 'security',
                         })}
-                        data-sveltekit-preload-data="hover">Open findings</a
+                        data-sveltekit-preload-data="hover"
+                        >{pkg.can_manage_security ? 'Review findings' : 'Open findings'}</a
                       >
                     </div>
                   {/if}
