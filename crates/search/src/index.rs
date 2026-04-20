@@ -4,6 +4,8 @@ use publaryn_core::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+const PACKAGE_FILTERABLE_ATTRIBUTES: &[&str] = &["ecosystem"];
+
 /// A package document indexed in Meilisearch.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PackageDocument {
@@ -49,6 +51,28 @@ impl MeilisearchIndex {
         let client = Client::new(url, api_key).expect("Failed to create Meilisearch client");
         Self { client }
     }
+
+    async fn ensure_package_search_settings(&self) -> Result<()> {
+        let index = self.client.index(PackageDocument::index_name());
+        let existing = index.get_filterable_attributes().await.unwrap_or_default();
+        let missing = PACKAGE_FILTERABLE_ATTRIBUTES
+            .iter()
+            .any(|attribute| !existing.iter().any(|current| current == attribute));
+
+        if !missing {
+            return Ok(());
+        }
+
+        index
+            .set_filterable_attributes(PACKAGE_FILTERABLE_ATTRIBUTES)
+            .await
+            .map_err(|e| Error::Internal(format!("Meilisearch settings error: {e}")))?
+            .wait_for_completion(&self.client, None, None)
+            .await
+            .map_err(|e| Error::Internal(format!("Meilisearch settings error: {e}")))?;
+
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -58,7 +82,11 @@ impl SearchIndex for MeilisearchIndex {
             .index(PackageDocument::index_name())
             .add_or_replace(&[doc], Some("id"))
             .await
+            .map_err(|e| Error::Internal(format!("Meilisearch index error: {e}")))?
+            .wait_for_completion(&self.client, None, None)
+            .await
             .map_err(|e| Error::Internal(format!("Meilisearch index error: {e}")))?;
+        self.ensure_package_search_settings().await?;
         Ok(())
     }
 
@@ -66,6 +94,9 @@ impl SearchIndex for MeilisearchIndex {
         self.client
             .index(PackageDocument::index_name())
             .delete_document(package_id.to_string())
+            .await
+            .map_err(|e| Error::Internal(format!("Meilisearch delete error: {e}")))?
+            .wait_for_completion(&self.client, None, None)
             .await
             .map_err(|e| Error::Internal(format!("Meilisearch delete error: {e}")))?;
         Ok(())
@@ -76,6 +107,7 @@ impl SearchIndex for MeilisearchIndex {
         query: &super::query::SearchQuery,
     ) -> Result<super::query::SearchResults> {
         let index = self.client.index(PackageDocument::index_name());
+        self.ensure_package_search_settings().await?;
         let per_page = query.limit.unwrap_or(20) as usize;
         let offset = query.offset.unwrap_or(0) as usize;
 

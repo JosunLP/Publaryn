@@ -18,10 +18,10 @@ use crate::{
     state::AppState,
 };
 
-const DEFAULT_SEARCH_PER_PAGE: u32 = 20;
-const MAX_SEARCH_PER_PAGE: u32 = 100;
-const MIN_SEARCH_BATCH_SIZE: u32 = 50;
-const MAX_SEARCH_BATCH_SIZE: u32 = 100;
+pub(crate) const DEFAULT_SEARCH_PER_PAGE: u32 = 20;
+pub(crate) const MAX_SEARCH_PER_PAGE: u32 = 100;
+pub(crate) const MIN_SEARCH_BATCH_SIZE: u32 = 50;
+pub(crate) const MAX_SEARCH_BATCH_SIZE: u32 = 100;
 
 pub fn router() -> Router<AppState> {
     Router::new().route("/v1/search", get(search_packages))
@@ -76,12 +76,12 @@ async fn search_packages(
     })))
 }
 
-struct VisibleSearchPage {
-    total: u64,
-    packages: Vec<PackageDocument>,
+pub(crate) struct VisibleSearchPage {
+    pub(crate) total: u64,
+    pub(crate) packages: Vec<PackageDocument>,
 }
 
-async fn load_visible_search_page(
+pub(crate) async fn load_visible_search_page(
     state: &AppState,
     search: &(dyn publaryn_search::SearchIndex + Send + Sync),
     query: &SearchQuery,
@@ -89,8 +89,25 @@ async fn load_visible_search_page(
     page: u32,
     per_page: u32,
 ) -> ApiResult<VisibleSearchPage> {
-    let visible_offset = page.saturating_sub(1).saturating_mul(per_page) as usize;
-    let page_size = per_page as usize;
+    load_visible_search_window(
+        state,
+        search,
+        query,
+        actor_user_id,
+        page.saturating_sub(1).saturating_mul(per_page) as usize,
+        per_page as usize,
+    )
+    .await
+}
+
+pub(crate) async fn load_visible_search_window(
+    state: &AppState,
+    search: &(dyn publaryn_search::SearchIndex + Send + Sync),
+    query: &SearchQuery,
+    actor_user_id: Option<Uuid>,
+    visible_offset: usize,
+    page_size: usize,
+) -> ApiResult<VisibleSearchPage> {
     let batch_size = query.limit.unwrap_or(20);
     let mut search_offset = query.offset.unwrap_or(0);
     let mut visible_total = 0_u64;
@@ -140,7 +157,7 @@ async fn load_visible_search_page(
     })
 }
 
-fn search_batch_size(per_page: u32) -> u32 {
+pub(crate) fn search_batch_size(per_page: u32) -> u32 {
     per_page.clamp(MIN_SEARCH_BATCH_SIZE, MAX_SEARCH_BATCH_SIZE)
 }
 

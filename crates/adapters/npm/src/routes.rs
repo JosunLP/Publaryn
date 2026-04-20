@@ -70,7 +70,8 @@ pub trait NpmAppState: Clone + Send + Sync + 'static {
         query: &str,
         limit: u32,
         offset: u32,
-    ) -> impl std::future::Future<Output = Result<Vec<NpmSearchHit>, Error>> + Send;
+        actor_user_id: Option<Uuid>,
+    ) -> impl std::future::Future<Output = Result<NpmSearchResults, Error>> + Send;
 }
 
 /// A retrieved object from artifact storage.
@@ -88,6 +89,13 @@ pub struct NpmSearchHit {
     pub keywords: Vec<String>,
     pub version: Option<String>,
     pub date: Option<String>,
+}
+
+/// Search results projected for npm search response format.
+#[derive(Debug, Clone)]
+pub struct NpmSearchResults {
+    pub total: u64,
+    pub hits: Vec<NpmSearchHit>,
 }
 
 /// Identity extracted from a Bearer token.
@@ -1066,15 +1074,24 @@ struct NpmSearchQuery {
 async fn search_handler<S: NpmAppState>(
     State(state): State<S>,
     Query(params): Query<NpmSearchQuery>,
+    headers: HeaderMap,
 ) -> Response {
     let text = params.text.unwrap_or_default();
     let size = params.size.unwrap_or(20).min(250);
     let from = params.from.unwrap_or(0);
-
-    let hits: Vec<NpmSearchHit> = state
-        .search_packages(&text, size, from)
+    let actor_user_id = authenticate(&state, &headers)
         .await
-        .unwrap_or_default();
+        .ok()
+        .map(|id| id.user_id);
+
+    let results = state
+        .search_packages(&text, size, from, actor_user_id)
+        .await
+        .unwrap_or_else(|_| NpmSearchResults {
+            total: 0,
+            hits: Vec::new(),
+        });
+    let NpmSearchResults { total, hits } = results;
 
     let objects: Vec<serde_json::Value> = hits
         .into_iter()
@@ -1090,8 +1107,6 @@ async fn search_handler<S: NpmAppState>(
             })
         })
         .collect();
-
-    let total = objects.len();
 
     (
         StatusCode::OK,
