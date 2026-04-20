@@ -88,6 +88,10 @@
     transferRepositoryOwnership,
     updateRepository,
   } from '../../../api/repositories';
+  import OrgAuditFilterControls from '../../../lib/components/OrgAuditFilterControls.svelte';
+  import OrgSecurityFindingTriageControls from '../../../lib/components/OrgSecurityFindingTriageControls.svelte';
+  import OrgSecurityFilterControls from '../../../lib/components/OrgSecurityFilterControls.svelte';
+  import TeamAccessGrantForm from '../../../lib/components/TeamAccessGrantForm.svelte';
   import type { OrgAuditActorOption } from '../../../pages/org-audit-actors';
   import {
     buildAuditActorOptions,
@@ -126,6 +130,16 @@
     buildOrgSecurityPath,
     getOrgSecurityViewFromQuery,
   } from '../../../pages/org-security-query';
+  import {
+    buildAuditExportQuery,
+    buildSecurityExportQuery,
+    decodePackageSelection,
+    renderPackageSelectionValue,
+    resolveAuditFilterSubmission,
+    resolveSecurityFilterSubmission,
+    resolveTeamPackageAccessSubmission,
+    resolveTeamRepositoryAccessSubmission,
+  } from '../../../pages/org-workspace-actions';
   import {
     buildOrgSecurityPackageKey,
     mergeUpdatedOrgSecurityFinding,
@@ -221,6 +235,47 @@
     { value: 'composer', label: 'Composer' },
     { value: 'oci', label: 'OCI / Docker' },
   ] as const;
+  const ORG_AUDIT_ACTION_OPTIONS = ORG_AUDIT_ACTION_VALUES.map((action) => ({
+    value: action,
+    label: formatAuditActionLabel(action),
+  }));
+  const SECURITY_FILTER_SEVERITY_OPTIONS = SECURITY_SEVERITIES.map((severity) => ({
+    value: severity,
+    label: formatIdentifierLabel(severity),
+  }));
+  let securityPackageOptions: Array<{ value: string; label: string }> = [];
+
+  $: repositoryGrantOptions = [...repositories]
+    .sort((left, right) =>
+      `${left.name || left.slug || ''}`.localeCompare(
+        `${right.name || right.slug || ''}`
+      )
+    )
+    .map((repository) => ({
+      value: repository.slug || '',
+      label: `${repository.name || repository.slug || ''} · ${formatRepositoryKindLabel(repository.kind)} · ${formatRepositoryVisibilityLabel(repository.visibility)}`,
+    }));
+
+  $: packageGrantOptions = [...packages]
+    .sort((left, right) =>
+      `${left.ecosystem || ''}:${left.name || ''}`.localeCompare(
+        `${right.ecosystem || ''}:${right.name || ''}`
+      )
+    )
+    .map((pkg) => ({
+      value: renderPackageSelectionValue(pkg.ecosystem, pkg.name),
+      label: `${pkg.ecosystem || ''} · ${pkg.name || ''}`,
+    }));
+  $: securityPackageOptions = [...packages]
+    .sort((left, right) =>
+      `${left.ecosystem || ''}:${left.name || ''}`.localeCompare(
+        `${right.ecosystem || ''}:${right.name || ''}`
+      )
+    )
+    .map((pkg) => ({
+      value: pkg.name || '',
+      label: `${pkg.ecosystem || ''} · ${pkg.name || ''}`,
+    }));
 
   interface TeamMemberState {
     members: TeamMember[];
@@ -919,45 +974,20 @@
 
   async function handleAuditFilterSubmit(event: SubmitEvent): Promise<void> {
     event.preventDefault();
-    const formData = new FormData(event.currentTarget as HTMLFormElement);
-    const occurredFrom = formData.get('occurred_from')?.toString().trim() || '';
-    const occurredUntil =
-      formData.get('occurred_until')?.toString().trim() || '';
-    const actorQuery = formData.get('actor_query')?.toString().trim() || '';
-    const normalizedActorUserId = normalizeAuditActorUserId(actorQuery) || '';
-    const actorFromSelect =
-      auditActorOptions.find(
-        (option) =>
-          option.userId === normalizedActorUserId ||
-          option.username.toLowerCase() === actorQuery.toLowerCase()
-      ) || null;
-    const resolvedActorUserId = actorFromSelect
-      ? actorFromSelect.userId
-      : normalizedActorUserId;
-    const resolvedActorUsername = actorFromSelect
-      ? actorFromSelect.username
-      : actorQuery;
+    const resolution = resolveAuditFilterSubmission(
+      new FormData(event.currentTarget as HTMLFormElement),
+      auditActorOptions
+    );
 
-    if (occurredFrom && occurredUntil && occurredFrom > occurredUntil) {
+    if (!resolution.ok) {
       await loadOrganizationPage({
-        error: 'End date must be on or after the start date.',
+        error: resolution.error,
       });
       return;
     }
 
     await goto(
-      buildOrgAuditPath(
-        slug,
-        {
-          action: formData.get('action')?.toString() || '',
-          actorUserId: resolvedActorUserId,
-          actorUsername: resolvedActorUsername,
-          occurredFrom,
-          occurredUntil,
-          page: 1,
-        },
-        $page.url.searchParams
-      )
+      buildOrgAuditPath(slug, resolution.value, $page.url.searchParams)
     );
   }
 
@@ -1057,12 +1087,10 @@
     exportingAudit = true;
 
     try {
-      const csv = await exportOrgAuditLogsCsv(slug, {
-        action: auditView.action || undefined,
-        actorUserId: auditView.actorUserId || undefined,
-        occurredFrom: auditView.occurredFrom || undefined,
-        occurredUntil: auditView.occurredUntil || undefined,
-      });
+      const csv = await exportOrgAuditLogsCsv(
+        slug,
+        buildAuditExportQuery(auditView)
+      );
 
       downloadTextFile(
         buildOrgAuditExportFilename(
@@ -1089,22 +1117,12 @@
 
   async function handleSecurityFilterSubmit(event: SubmitEvent): Promise<void> {
     event.preventDefault();
-    const formData = new FormData(event.currentTarget as HTMLFormElement);
-    const severities = formData
-      .getAll('security_severity')
-      .map((value) => value.toString().trim())
-      .filter(Boolean);
+    const nextView = resolveSecurityFilterSubmission(
+      new FormData(event.currentTarget as HTMLFormElement)
+    );
 
     await goto(
-      buildOrgSecurityPath(
-        slug,
-        {
-          severities,
-          ecosystem: formData.get('security_ecosystem')?.toString() || '',
-          packageQuery: formData.get('security_package')?.toString() || '',
-        },
-        $page.url.searchParams
-      )
+      buildOrgSecurityPath(slug, nextView, $page.url.searchParams)
     );
   }
 
@@ -1154,14 +1172,10 @@
     exportingSecurity = true;
 
     try {
-      const csv = await exportOrgSecurityFindingsCsv(slug, {
-        severities:
-          securityView.severities.length > 0
-            ? securityView.severities
-            : undefined,
-        ecosystem: securityView.ecosystem || undefined,
-        package: securityView.packageQuery || undefined,
-      });
+      const csv = await exportOrgSecurityFindingsCsv(
+        slug,
+        buildSecurityExportQuery(securityView)
+      );
 
       downloadTextFile(
         buildOrgSecurityExportFilename(
@@ -1438,26 +1452,13 @@
     teamSlug: string
   ): Promise<void> {
     event.preventDefault();
-    const formData = new FormData(event.currentTarget as HTMLFormElement);
-    const packageTarget = decodePackageSelection(
-      formData.get('package_key')?.toString().trim() || ''
+    const resolution = resolveTeamPackageAccessSubmission(
+      new FormData(event.currentTarget as HTMLFormElement)
     );
 
-    if (!packageTarget) {
+    if (!resolution.ok) {
       await loadOrganizationPage({
-        error: 'Select a package to manage access.',
-      });
-      return;
-    }
-
-    const permissions = formData
-      .getAll('permissions')
-      .map((value) => value.toString().trim())
-      .filter(Boolean);
-
-    if (permissions.length === 0) {
-      await loadOrganizationPage({
-        error: 'Select at least one delegated package permission.',
+        error: resolution.error,
       });
       return;
     }
@@ -1466,15 +1467,15 @@
       await replaceTeamPackageAccess(
         slug,
         teamSlug,
-        packageTarget.ecosystem,
-        packageTarget.name,
+        resolution.value.ecosystem,
+        resolution.value.name,
         {
-          permissions,
+          permissions: resolution.value.permissions,
         }
       );
 
       await loadOrganizationPage({
-        notice: `Saved package access for ${packageTarget.name}.`,
+        notice: `Saved package access for ${resolution.value.name}.`,
       });
     } catch (caughtError: unknown) {
       await loadOrganizationPage({
@@ -1505,36 +1506,29 @@
     teamSlug: string
   ): Promise<void> {
     event.preventDefault();
-    const formData = new FormData(event.currentTarget as HTMLFormElement);
-    const repositorySlug =
-      formData.get('repository_slug')?.toString().trim() || '';
+    const resolution = resolveTeamRepositoryAccessSubmission(
+      new FormData(event.currentTarget as HTMLFormElement)
+    );
 
-    if (!repositorySlug) {
+    if (!resolution.ok) {
       await loadOrganizationPage({
-        error: 'Select a repository to manage access.',
-      });
-      return;
-    }
-
-    const permissions = formData
-      .getAll('permissions')
-      .map((value) => value.toString().trim())
-      .filter(Boolean);
-
-    if (permissions.length === 0) {
-      await loadOrganizationPage({
-        error: 'Select at least one delegated repository permission.',
+        error: resolution.error,
       });
       return;
     }
 
     try {
-      await replaceTeamRepositoryAccess(slug, teamSlug, repositorySlug, {
-        permissions,
-      });
+      await replaceTeamRepositoryAccess(
+        slug,
+        teamSlug,
+        resolution.value.repositorySlug,
+        {
+          permissions: resolution.value.permissions,
+        }
+      );
 
       await loadOrganizationPage({
-        notice: `Saved repository access for ${repositorySlug}.`,
+        notice: `Saved repository access for ${resolution.value.repositorySlug}.`,
       });
     } catch (caughtError: unknown) {
       await loadOrganizationPage({
@@ -1940,27 +1934,6 @@
       : `${base}.`;
   }
 
-  function renderPackageSelectionValue(
-    ecosystem: string | null | undefined,
-    name: string | null | undefined
-  ): string {
-    return `${encodeURIComponent((ecosystem || '').trim())}:${encodeURIComponent((name || '').trim())}`;
-  }
-
-  function decodePackageSelection(
-    value: string
-  ): { ecosystem: string; name: string } | null {
-    const separatorIndex = value.indexOf(':');
-    if (separatorIndex <= 0 || separatorIndex === value.length - 1) {
-      return null;
-    }
-
-    return {
-      ecosystem: decodeURIComponent(value.slice(0, separatorIndex)),
-      name: decodeURIComponent(value.slice(separatorIndex + 1)),
-    };
-  }
-
   function downloadTextFile(
     filename: string,
     contents: string,
@@ -2254,91 +2227,24 @@
           </div>
         </div>
 
-        <form on:submit={handleAuditFilterSubmit}>
-          <div class="flex flex-wrap items-end gap-4">
-            <div class="form-group" style="margin-bottom:0; min-width:240px;">
-              <label for="org-audit-action">Action</label>
-              <select
-                id="org-audit-action"
-                name="action"
-                class="form-input"
-                value={auditView.action}
-              >
-                <option value="">All events</option>
-                {#each ORG_AUDIT_ACTION_VALUES as action}
-                  <option value={action} selected={action === auditView.action}
-                    >{formatAuditActionLabel(action)}</option
-                  >
-                {/each}
-              </select>
-            </div>
-            <div class="form-group" style="margin-bottom:0; min-width:260px;">
-              <label for="org-audit-actor">Actor</label>
-              <input
-                id="org-audit-actor"
-                name="actor_query"
-                class="form-input"
-                list="org-audit-actor-options"
-                bind:value={auditActorInput}
-                placeholder="Search username or paste user id"
-                autocomplete="off"
-              />
-              <datalist id="org-audit-actor-options">
-                {#each auditActorOptions as actor}
-                  <option value={actor.username}>{actor.label}</option>
-                  <option value={actor.userId}>{actor.label}</option>
-                {/each}
-              </datalist>
-            </div>
-            <div class="form-group" style="margin-bottom:0; min-width:180px;">
-              <label for="org-audit-from">From (UTC)</label>
-              <input
-                id="org-audit-from"
-                name="occurred_from"
-                type="date"
-                class="form-input"
-                value={auditView.occurredFrom}
-              />
-            </div>
-            <div class="form-group" style="margin-bottom:0; min-width:180px;">
-              <label for="org-audit-until">Until (UTC)</label>
-              <input
-                id="org-audit-until"
-                name="occurred_until"
-                type="date"
-                class="form-input"
-                value={auditView.occurredUntil}
-              />
-            </div>
-            <button type="submit" class="btn btn-secondary">Apply</button>
-            <button
-              type="button"
-              class="btn btn-secondary"
-              disabled={exportingAudit}
-              on:click={handleExportAudit}
-            >
-              {exportingAudit ? 'Exporting…' : 'Export CSV'}
-            </button>
-            {#if auditView.action}<button
-                type="button"
-                class="btn btn-secondary"
-                on:click={clearAuditActionFilter}>Clear action</button
-              >{/if}
-            {#if auditView.actorUserId}<button
-                type="button"
-                class="btn btn-secondary"
-                on:click={clearAuditActorFilter}>Clear actor</button
-              >{/if}
-            {#if auditView.occurredFrom || auditView.occurredUntil}<button
-                type="button"
-                class="btn btn-secondary"
-                on:click={clearAuditDateFilter}>Clear dates</button
-              >{/if}
-          </div>
-          <p class="settings-copy" style="margin-top:0.75rem; margin-bottom:0;">
-            {formatAuditFilterSummary()}
-          </p>
-        </form>
+        <OrgAuditFilterControls
+          actionOptions={ORG_AUDIT_ACTION_OPTIONS}
+          actionValue={auditView.action}
+          bind:actorInput={auditActorInput}
+          actorOptions={auditActorOptions}
+          occurredFrom={auditView.occurredFrom}
+          occurredUntil={auditView.occurredUntil}
+          exporting={exportingAudit}
+          summary={formatAuditFilterSummary()}
+          showActionClear={Boolean(auditView.action)}
+          showActorClear={Boolean(auditView.actorUserId)}
+          showDateClear={Boolean(auditView.occurredFrom || auditView.occurredUntil)}
+          handleSubmit={handleAuditFilterSubmit}
+          handleExport={handleExportAudit}
+          clearAction={clearAuditActionFilter}
+          clearActor={clearAuditActorFilter}
+          clearDates={clearAuditDateFilter}
+        />
 
         {#if auditError}
           <div class="alert alert-error">{auditError}</div>
@@ -3094,76 +3000,19 @@
                         </div>
                       {/if}
 
-                      <form
-                        class="settings-subsection"
-                        on:submit={(event) =>
+                      <TeamAccessGrantForm
+                        fieldId={`team-repository-${teamSlug}`}
+                        selectLabel="Organization repository"
+                        selectName="repository_slug"
+                        placeholderLabel="Select a repository"
+                        emptyMessage="Create a repository before delegating repository-wide access."
+                        submitLabel="Save repository access"
+                        error={repositoriesError}
+                        options={repositoryGrantOptions}
+                        permissionOptions={TEAM_PERMISSION_OPTIONS}
+                        handleSubmit={(event) =>
                           handleReplaceTeamRepositoryAccess(event, teamSlug)}
-                      >
-                        <div class="form-group">
-                          <label for={`team-repository-${teamSlug}`}
-                            >Organization repository</label
-                          >
-                          {#if repositoriesError}
-                            <div class="alert alert-error">
-                              {repositoriesError}
-                            </div>
-                          {:else if repositories.length === 0}
-                            <p class="settings-copy">
-                              Create a repository before delegating
-                              repository-wide access.
-                            </p>
-                          {:else}
-                            <select
-                              id={`team-repository-${teamSlug}`}
-                              name="repository_slug"
-                              class="form-input"
-                              required
-                            >
-                              <option value="">Select a repository</option>
-                              {#each [...repositories].sort( (left, right) => `${left.name || left.slug || ''}`.localeCompare(`${right.name || right.slug || ''}`) ) as repository}
-                                <option value={repository.slug || ''}
-                                  >{`${repository.name || repository.slug || ''} · ${formatRepositoryKindLabel(repository.kind)} · ${formatRepositoryVisibilityLabel(repository.visibility)}`}</option
-                                >
-                              {/each}
-                            </select>
-                          {/if}
-                        </div>
-                        <fieldset class="form-group">
-                          <legend>Permissions</legend>
-                          <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                            {#each TEAM_PERMISSION_OPTIONS as permission}
-                              <label
-                                class="rounded-lg border border-neutral-200 p-3 text-sm"
-                              >
-                                <span class="flex items-start gap-3">
-                                  <input
-                                    type="checkbox"
-                                    name="permissions"
-                                    value={permission.value}
-                                    disabled={Boolean(repositoriesError) ||
-                                      repositories.length === 0}
-                                  />
-                                  <span>
-                                    <span class="block font-medium"
-                                      >{permission.label}</span
-                                    >
-                                    <span class="mt-1 block text-muted"
-                                      >{permission.description}</span
-                                    >
-                                  </span>
-                                </span>
-                              </label>
-                            {/each}
-                          </div>
-                        </fieldset>
-                        <button
-                          type="submit"
-                          class="btn btn-primary"
-                          disabled={Boolean(repositoriesError) ||
-                            repositories.length === 0}
-                          >Save repository access</button
-                        >
-                      </form>
+                      />
                     </div>
 
                     <div class="mt-6">
@@ -3221,77 +3070,19 @@
                         </div>
                       {/if}
 
-                      <form
-                        class="settings-subsection"
-                        on:submit={(event) =>
+                      <TeamAccessGrantForm
+                        fieldId={`team-package-${teamSlug}`}
+                        selectLabel="Organization package"
+                        selectName="package_key"
+                        placeholderLabel="Select a package"
+                        emptyMessage="Create or transfer a package before delegating access."
+                        submitLabel="Save package access"
+                        error={packagesError}
+                        options={packageGrantOptions}
+                        permissionOptions={TEAM_PERMISSION_OPTIONS}
+                        handleSubmit={(event) =>
                           handleReplaceTeamPackageAccess(event, teamSlug)}
-                      >
-                        <div class="form-group">
-                          <label for={`team-package-${teamSlug}`}
-                            >Organization package</label
-                          >
-                          {#if packagesError}
-                            <div class="alert alert-error">{packagesError}</div>
-                          {:else if packages.length === 0}
-                            <p class="settings-copy">
-                              Create or transfer a package before delegating
-                              access.
-                            </p>
-                          {:else}
-                            <select
-                              id={`team-package-${teamSlug}`}
-                              name="package_key"
-                              class="form-input"
-                              required
-                            >
-                              <option value="">Select a package</option>
-                              {#each [...packages].sort( (left, right) => `${left.ecosystem || ''}:${left.name || ''}`.localeCompare(`${right.ecosystem || ''}:${right.name || ''}`) ) as pkg}
-                                <option
-                                  value={renderPackageSelectionValue(
-                                    pkg.ecosystem,
-                                    pkg.name
-                                  )}
-                                  >{`${pkg.ecosystem || ''} · ${pkg.name || ''}`}</option
-                                >
-                              {/each}
-                            </select>
-                          {/if}
-                        </div>
-                        <fieldset class="form-group">
-                          <legend>Permissions</legend>
-                          <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                            {#each TEAM_PERMISSION_OPTIONS as permission}
-                              <label
-                                class="rounded-lg border border-neutral-200 p-3 text-sm"
-                              >
-                                <span class="flex items-start gap-3">
-                                  <input
-                                    type="checkbox"
-                                    name="permissions"
-                                    value={permission.value}
-                                    disabled={Boolean(packagesError) ||
-                                      packages.length === 0}
-                                  />
-                                  <span>
-                                    <span class="block font-medium"
-                                      >{permission.label}</span
-                                    >
-                                    <span class="mt-1 block text-muted"
-                                      >{permission.description}</span
-                                    >
-                                  </span>
-                                </span>
-                              </label>
-                            {/each}
-                          </div>
-                        </fieldset>
-                        <button
-                          type="submit"
-                          class="btn btn-primary"
-                          disabled={Boolean(packagesError) ||
-                            packages.length === 0}>Save package access</button
-                        >
-                      </form>
+                      />
                     </div>
                   {/if}
                 </div>
@@ -3310,101 +3101,25 @@
               </p>
             </div>
           </div>
-          <form
-            class="settings-subsection"
-            on:submit={handleSecurityFilterSubmit}
-          >
-            <div class="flex flex-wrap items-end gap-4">
-              <fieldset
-                class="form-group"
-                style="margin-bottom:0; min-width:320px;"
-              >
-                <legend>Severity</legend>
-                <div class="token-row__scopes">
-                  {#each SECURITY_SEVERITIES as severity}
-                    <label class="badge badge-ecosystem">
-                      <input
-                        type="checkbox"
-                        name="security_severity"
-                        value={severity}
-                        checked={securityView.severities.includes(severity)}
-                        style="margin-right:0.35rem;"
-                      />
-                      {formatIdentifierLabel(severity)}
-                    </label>
-                  {/each}
-                </div>
-              </fieldset>
-              <div class="form-group" style="margin-bottom:0; min-width:220px;">
-                <label for="org-security-ecosystem">Ecosystem</label>
-                <select
-                  id="org-security-ecosystem"
-                  name="security_ecosystem"
-                  class="form-input"
-                  value={securityView.ecosystem}
-                >
-                  <option value="">All ecosystems</option>
-                  {#each SECURITY_FILTER_ECOSYSTEM_OPTIONS as ecosystem}
-                    <option
-                      value={ecosystem.value}
-                      selected={ecosystem.value === securityView.ecosystem}
-                      >{ecosystem.label}</option
-                    >
-                  {/each}
-                </select>
-              </div>
-              <div class="form-group" style="margin-bottom:0; min-width:260px;">
-                <label for="org-security-package">Package name</label>
-                <input
-                  id="org-security-package"
-                  name="security_package"
-                  class="form-input"
-                  list="org-security-package-options"
-                  value={securityView.packageQuery}
-                  placeholder="Match package name"
-                  autocomplete="off"
-                />
-                <datalist id="org-security-package-options">
-                  {#each [...packages].sort( (left, right) => `${left.ecosystem || ''}:${left.name || ''}`.localeCompare(`${right.ecosystem || ''}:${right.name || ''}`) ) as pkg}
-                    <option value={pkg.name || ''}
-                      >{`${pkg.ecosystem || ''} · ${pkg.name || ''}`}</option
-                    >
-                  {/each}
-                </datalist>
-              </div>
-              <button type="submit" class="btn btn-secondary">Apply</button>
-              <button
-                type="button"
-                class="btn btn-secondary"
-                disabled={exportingSecurity}
-                on:click={handleExportSecurity}
-              >
-                {exportingSecurity ? 'Exporting…' : 'Export CSV'}
-              </button>
-              {#if securityView.severities.length > 0}<button
-                  type="button"
-                  class="btn btn-secondary"
-                  on:click={clearSecuritySeverityFilter}>Clear severity</button
-                >{/if}
-              {#if securityView.ecosystem}<button
-                  type="button"
-                  class="btn btn-secondary"
-                  on:click={clearSecurityEcosystemFilter}
-                  >Clear ecosystem</button
-                >{/if}
-              {#if securityView.packageQuery}<button
-                  type="button"
-                  class="btn btn-secondary"
-                  on:click={clearSecurityPackageFilter}>Clear package</button
-                >{/if}
-            </div>
-            <p
-              class="settings-copy"
-              style="margin-top:0.75rem; margin-bottom:0;"
-            >
-              {formatSecurityFilterSummary()}
-            </p>
-          </form>
+          <OrgSecurityFilterControls
+            formClass="settings-subsection"
+            severityOptions={SECURITY_FILTER_SEVERITY_OPTIONS}
+            selectedSeverities={securityView.severities}
+            ecosystemOptions={SECURITY_FILTER_ECOSYSTEM_OPTIONS}
+            ecosystemValue={securityView.ecosystem}
+            packageValue={securityView.packageQuery}
+            packageOptions={securityPackageOptions}
+            exporting={exportingSecurity}
+            summary={formatSecurityFilterSummary()}
+            showSeverityClear={securityView.severities.length > 0}
+            showEcosystemClear={Boolean(securityView.ecosystem)}
+            showPackageClear={Boolean(securityView.packageQuery)}
+            handleSubmit={handleSecurityFilterSubmit}
+            handleExport={handleExportSecurity}
+            clearSeverity={clearSecuritySeverityFilter}
+            clearEcosystem={clearSecurityEcosystemFilter}
+            clearPackage={clearSecurityPackageFilter}
+          />
           {#if securityError}
             <div class="alert alert-error">{securityError}</div>
           {:else if openFindingCount === 0 || securityPackages.length === 0}
@@ -3581,96 +3296,23 @@
                             <p>No findings available for inline triage.</p>
                           </div>
                         {:else}
-                          <div class="token-list">
-                            {#each packageFindingState.findings as finding}
-                              {@const severity = normalizeSecuritySeverity(
-                                finding.severity
+                          <OrgSecurityFindingTriageControls
+                            findings={packageFindingState.findings}
+                            findingNotes={packageFindingState.findingNotes}
+                            updatingFindingId={packageFindingState.updatingFindingId}
+                            notePlaceholder={SECURITY_FINDING_NOTE_PLACEHOLDER}
+                            formatDateValue={formatDate}
+                            normalizeSeverity={normalizeSecuritySeverity}
+                            formatKindLabel={formatIdentifierLabel}
+                            handleNoteInput={(findingId, value) =>
+                              updateOrgSecurityFindingNote(
+                                packageKey,
+                                findingId,
+                                value
                               )}
-                              <div class="token-row">
-                                <div class="token-row__main">
-                                  <div class="token-row__title">
-                                    {finding.title}
-                                  </div>
-                                  <div class="token-row__meta">
-                                    <span class={`badge badge-severity-${severity}`}
-                                      >{severity}</span
-                                    >
-                                    <span class="badge badge-ecosystem"
-                                      >{formatIdentifierLabel(finding.kind)}</span
-                                    >
-                                    {#if finding.release_version}
-                                      <span>{finding.release_version}</span>
-                                    {/if}
-                                    <span>{formatDate(finding.detected_at)}</span>
-                                    {#if finding.is_resolved}
-                                      <span
-                                        >Resolved{finding.resolved_at
-                                          ? ` ${formatDate(finding.resolved_at)}`
-                                          : ''}</span
-                                      >
-                                    {/if}
-                                  </div>
-                                  {#if finding.description}
-                                    <p
-                                      class="settings-copy"
-                                      style="margin-top:0.5rem; margin-bottom:0;"
-                                    >
-                                      {finding.description}
-                                    </p>
-                                  {/if}
-                                  <label
-                                    class="form-group"
-                                    style="margin-top:0.75rem; margin-bottom:0;"
-                                  >
-                                    <span class="sr-only"
-                                      >Security finding note for {finding.title}</span
-                                    >
-                                    <textarea
-                                      class="form-input"
-                                      rows="2"
-                                      maxlength="2000"
-                                      placeholder={SECURITY_FINDING_NOTE_PLACEHOLDER}
-                                      value={packageFindingState.findingNotes[
-                                        finding.id
-                                      ] || ''}
-                                      on:input={(event) =>
-                                        updateOrgSecurityFindingNote(
-                                          packageKey,
-                                          finding.id,
-                                          (
-                                            event.currentTarget as HTMLTextAreaElement
-                                          ).value
-                                        )}
-                                    ></textarea>
-                                  </label>
-                                </div>
-                                <div class="token-row__actions">
-                                  <button
-                                    type="button"
-                                    class="btn btn-secondary btn-sm"
-                                    disabled={packageFindingState.updatingFindingId !==
-                                      null}
-                                    on:click={() =>
-                                      handleToggleOrgFindingResolution(
-                                        pkg,
-                                        finding
-                                      )}
-                                  >
-                                    {#if packageFindingState.updatingFindingId ===
-                                      finding.id}
-                                      {finding.is_resolved
-                                        ? 'Reopening…'
-                                        : 'Resolving…'}
-                                    {:else}
-                                      {finding.is_resolved
-                                        ? 'Reopen finding'
-                                        : 'Mark resolved'}
-                                    {/if}
-                                  </button>
-                                </div>
-                              </div>
-                            {/each}
-                          </div>
+                            handleToggleResolution={(finding) =>
+                              handleToggleOrgFindingResolution(pkg, finding)}
+                          />
                         {/if}
                       </div>
                     </div>

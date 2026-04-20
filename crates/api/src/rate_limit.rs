@@ -20,6 +20,17 @@ use std::net::SocketAddr;
 
 use crate::config::RateLimitConfig;
 
+const PROTOCOL_READ_PREFIXES: &[&str] = &[
+    "/npm/",
+    "/pypi/",
+    "/composer/",
+    "/rubygems/",
+    "/maven/",
+    "/cargo/",
+    "/nuget/",
+    "/oci/",
+];
+
 /// Rate-limit tier applied to different endpoint groups.
 #[derive(Debug, Clone, Copy)]
 pub enum RateLimitTier {
@@ -64,13 +75,9 @@ pub fn classify_request(method: &axum::http::Method, path: &str) -> RateLimitTie
 
     // Protocol adapter reads
     if matches!(method, &Method::GET | &Method::HEAD)
-        && (path.starts_with("/npm/")
-            || path.starts_with("/pypi/")
-            || path.starts_with("/composer/")
-            || path.starts_with("/rubygems/")
-            || path.starts_with("/maven/")
-            || path.starts_with("/cargo/")
-            || path.starts_with("/nuget/"))
+        && PROTOCOL_READ_PREFIXES
+            .iter()
+            .any(|prefix| path.starts_with(prefix))
     {
         return RateLimitTier::Protocol;
     }
@@ -258,6 +265,22 @@ mod tests {
             classify_request(&Method::GET, "/nuget/v3/index.json"),
             RateLimitTier::Protocol
         ));
+        assert!(matches!(
+            classify_request(&Method::GET, "/composer/packages.json"),
+            RateLimitTier::Protocol
+        ));
+        assert!(matches!(
+            classify_request(&Method::GET, "/rubygems/info/rails"),
+            RateLimitTier::Protocol
+        ));
+        assert!(matches!(
+            classify_request(&Method::GET, "/maven/com/example/app/maven-metadata.xml"),
+            RateLimitTier::Protocol
+        ));
+        assert!(matches!(
+            classify_request(&Method::HEAD, "/oci/v2/example/app/manifests/latest"),
+            RateLimitTier::Protocol
+        ));
     }
 
     #[test]
@@ -272,6 +295,10 @@ mod tests {
         ));
         assert!(matches!(
             classify_request(&Method::DELETE, "/v1/tokens/some-id"),
+            RateLimitTier::Write
+        ));
+        assert!(matches!(
+            classify_request(&Method::PUT, "/oci/v2/example/app/manifests/latest"),
             RateLimitTier::Write
         ));
     }
