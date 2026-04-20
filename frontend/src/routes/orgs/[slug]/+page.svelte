@@ -1491,7 +1491,17 @@
     }
   }
 
-  async function handleDeleteNamespace(claimId: string, namespace: string): Promise<void> {
+  async function handleDeleteNamespace(
+    claimId: string | null | undefined,
+    namespace: string
+  ): Promise<void> {
+    if (!claimId) {
+      await loadOrganizationPage({
+        error: 'Failed to delete namespace claim because the claim id is unavailable.',
+      });
+      return;
+    }
+
     try {
       await deleteNamespaceClaim(claimId);
       await loadOrganizationPage({
@@ -3813,7 +3823,7 @@
                       type="button"
                       on:click={() =>
                         handleDeleteNamespace(
-                          claim.id!,
+                          claim.id,
                           claim.namespace || 'this claim'
                         )}>Delete</button
                     >

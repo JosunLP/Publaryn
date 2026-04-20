@@ -121,6 +121,10 @@
 
     try {
       const loadedUser = await getCurrentUser();
+      const currentUserId =
+        typeof loadedUser.id === 'string' && loadedUser.id.trim()
+          ? loadedUser.id
+          : '';
       const [tokenData, organizationData, invitationData, namespaceData] =
         await Promise.all([
           listTokens(),
@@ -142,8 +146,8 @@
               ),
             })
           ),
-          loadedUser.id
-            ? listUserNamespaces(loadedUser.id).catch(
+          currentUserId
+            ? listUserNamespaces(currentUserId).catch(
                 (caughtError: unknown): NamespaceListResponse => ({
                   namespaces: [],
                   load_error: toErrorMessage(
@@ -264,9 +268,17 @@
   }
 
   async function handleDeleteNamespaceClaim(
-    claimId: string,
+    claimId: string | null | undefined,
     namespace: string
   ): Promise<void> {
+    if (!claimId) {
+      await loadSettings({
+        error: 'Failed to delete namespace claim because the claim id is unavailable.',
+        mfaSetupState,
+      });
+      return;
+    }
+
     try {
       await deleteNamespaceClaim(claimId);
       await loadSettings({
@@ -850,7 +862,7 @@
                       type="button"
                       on:click={() =>
                         handleDeleteNamespaceClaim(
-                          claim.id!,
+                          claim.id,
                           claim.namespace || 'this claim'
                         )}>Delete</button
                     >
