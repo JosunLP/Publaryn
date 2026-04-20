@@ -7703,16 +7703,24 @@ async fn test_package_detail_surfaces_team_access_only_to_org_members(pool: PgPo
         "unexpected team package access response: {grant_body}"
     );
 
-    let (status, owner_detail) = get_package_detail(&app, Some(&alice_jwt), "npm", "acme-widget").await;
+    let (status, owner_detail) =
+        get_package_detail(&app, Some(&alice_jwt), "npm", "acme-widget").await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(owner_detail["team_access"][0]["team_slug"], "release-engineering");
-    assert_eq!(owner_detail["team_access"][0]["team_name"], "Release Engineering");
+    assert_eq!(
+        owner_detail["team_access"][0]["team_slug"],
+        "release-engineering"
+    );
+    assert_eq!(
+        owner_detail["team_access"][0]["team_name"],
+        "Release Engineering"
+    );
     assert_eq!(
         owner_detail["team_access"][0]["permissions"],
         json!(["publish", "transfer_ownership"])
     );
 
-    let (status, member_detail) = get_package_detail(&app, Some(&bob_jwt), "npm", "acme-widget").await;
+    let (status, member_detail) =
+        get_package_detail(&app, Some(&bob_jwt), "npm", "acme-widget").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(member_detail["team_access"], owner_detail["team_access"]);
 

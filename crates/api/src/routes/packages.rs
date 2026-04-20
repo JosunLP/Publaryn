@@ -32,15 +32,15 @@ use crate::{
     job_handlers::{
         enqueue_package_reindex_job, enqueue_release_scan_jobs, enqueue_scan_artifact_job,
     },
-     request_auth::{
-         actor_can_admin_package_by_id, actor_can_publish_package_by_id,
-         actor_can_security_review_package_by_id, actor_can_transfer_package_by_id,
-         actor_can_write_package_by_id, actor_can_write_package_metadata_by_id,
-         ensure_package_admin_access, ensure_package_metadata_write_access,
-         ensure_package_publish_access, ensure_package_read_access, ensure_package_transfer_access,
-         ensure_repository_package_creation_access, is_org_member, AuthenticatedIdentity,
-         OptionalAuthenticatedIdentity,
-     },
+    request_auth::{
+        actor_can_admin_package_by_id, actor_can_publish_package_by_id,
+        actor_can_security_review_package_by_id, actor_can_transfer_package_by_id,
+        actor_can_write_package_by_id, actor_can_write_package_metadata_by_id,
+        ensure_package_admin_access, ensure_package_metadata_write_access,
+        ensure_package_publish_access, ensure_package_read_access, ensure_package_transfer_access,
+        ensure_repository_package_creation_access, is_org_member, AuthenticatedIdentity,
+        OptionalAuthenticatedIdentity,
+    },
     routes::parse_ecosystem,
     scopes::{ensure_scope, SCOPE_PACKAGES_TRANSFER, SCOPE_PACKAGES_WRITE},
     state::AppState,
@@ -506,9 +506,14 @@ async fn get_package(
         .try_get::<String, _>("name")
         .unwrap_or_else(|_| name.clone());
     let ecosystem_metadata = build_package_ecosystem_metadata(&eco, &package_name);
-    let owner_org_id = row.try_get::<Option<Uuid>, _>("owner_org_id").ok().flatten();
+    let owner_org_id = row
+        .try_get::<Option<Uuid>, _>("owner_org_id")
+        .ok()
+        .flatten();
     let team_access = match (owner_org_id, identity.user_id()) {
-        (Some(owner_org_id), Some(actor_user_id)) if is_org_member(&state.db, owner_org_id, actor_user_id).await? => {
+        (Some(owner_org_id), Some(actor_user_id))
+            if is_org_member(&state.db, owner_org_id, actor_user_id).await? =>
+        {
             let rows = sqlx::query(
                 "SELECT t.id, t.slug, t.name, \
                         ARRAY_AGG(tpa.permission::text ORDER BY tpa.permission::text) AS permissions, \
