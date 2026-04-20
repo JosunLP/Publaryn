@@ -70,7 +70,8 @@ pub fn classify_request(method: &axum::http::Method, path: &str) -> RateLimitTie
             || path.starts_with("/rubygems/")
             || path.starts_with("/maven/")
             || path.starts_with("/cargo/")
-            || path.starts_with("/nuget/"))
+            || path.starts_with("/nuget/")
+            || path.starts_with("/oci/"))
     {
         return RateLimitTier::Protocol;
     }
@@ -258,6 +259,22 @@ mod tests {
             classify_request(&Method::GET, "/nuget/v3/index.json"),
             RateLimitTier::Protocol
         ));
+        assert!(matches!(
+            classify_request(&Method::GET, "/composer/packages.json"),
+            RateLimitTier::Protocol
+        ));
+        assert!(matches!(
+            classify_request(&Method::GET, "/rubygems/info/rails"),
+            RateLimitTier::Protocol
+        ));
+        assert!(matches!(
+            classify_request(&Method::GET, "/maven/com/example/app/maven-metadata.xml"),
+            RateLimitTier::Protocol
+        ));
+        assert!(matches!(
+            classify_request(&Method::HEAD, "/oci/v2/example/app/manifests/latest"),
+            RateLimitTier::Protocol
+        ));
     }
 
     #[test]
@@ -272,6 +289,10 @@ mod tests {
         ));
         assert!(matches!(
             classify_request(&Method::DELETE, "/v1/tokens/some-id"),
+            RateLimitTier::Write
+        ));
+        assert!(matches!(
+            classify_request(&Method::PUT, "/oci/v2/example/app/manifests/latest"),
             RateLimitTier::Write
         ));
     }

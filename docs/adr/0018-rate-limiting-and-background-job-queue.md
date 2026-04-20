@@ -45,7 +45,7 @@ fixed-window per-minute rate limiting. Requests are classified into four tiers:
 | Auth     | `/v1/auth/*` (register, login)                      | 10 req/min    |
 | Write    | POST, PUT, PATCH, DELETE mutations                  | 60 req/min    |
 | Read     | GET/HEAD control-plane reads                        | 300 req/min   |
-| Protocol | GET/HEAD on `/npm/`, `/pypi/`, `/cargo/`, `/nuget/` | 1000 req/min  |
+| Protocol | GET/HEAD on native adapter reads such as `/npm/`, `/pypi/`, `/cargo/`, `/nuget/`, `/oci/`, `/rubygems/`, `/maven/`, and `/composer/` | 1000 req/min  |
 
 Keys are derived from:
 
