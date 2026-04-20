@@ -75,6 +75,10 @@ export function submitForm(form: HTMLFormElement): void {
   );
 }
 
+export function click(element: HTMLElement): void {
+  element.click();
+}
+
 async function getClientRuntime(): Promise<{
   flushSync: (fn?: (() => void) | undefined) => void;
   mount: (component: any, options: { target: Element; props?: Record<string, unknown> }) => any;

@@ -88,6 +88,7 @@
     transferRepositoryOwnership,
     updateRepository,
   } from '../../../api/repositories';
+  import OrgAuditFilterControls from '../../../lib/components/OrgAuditFilterControls.svelte';
   import TeamAccessGrantForm from '../../../lib/components/TeamAccessGrantForm.svelte';
   import type { OrgAuditActorOption } from '../../../pages/org-audit-actors';
   import {
@@ -232,6 +233,10 @@
     { value: 'composer', label: 'Composer' },
     { value: 'oci', label: 'OCI / Docker' },
   ] as const;
+  const ORG_AUDIT_ACTION_OPTIONS = ORG_AUDIT_ACTION_VALUES.map((action) => ({
+    value: action,
+    label: formatAuditActionLabel(action),
+  }));
 
   $: repositoryGrantOptions = [...repositories]
     .sort((left, right) =>
@@ -2205,91 +2210,24 @@
           </div>
         </div>
 
-        <form on:submit={handleAuditFilterSubmit}>
-          <div class="flex flex-wrap items-end gap-4">
-            <div class="form-group" style="margin-bottom:0; min-width:240px;">
-              <label for="org-audit-action">Action</label>
-              <select
-                id="org-audit-action"
-                name="action"
-                class="form-input"
-                value={auditView.action}
-              >
-                <option value="">All events</option>
-                {#each ORG_AUDIT_ACTION_VALUES as action}
-                  <option value={action} selected={action === auditView.action}
-                    >{formatAuditActionLabel(action)}</option
-                  >
-                {/each}
-              </select>
-            </div>
-            <div class="form-group" style="margin-bottom:0; min-width:260px;">
-              <label for="org-audit-actor">Actor</label>
-              <input
-                id="org-audit-actor"
-                name="actor_query"
-                class="form-input"
-                list="org-audit-actor-options"
-                bind:value={auditActorInput}
-                placeholder="Search username or paste user id"
-                autocomplete="off"
-              />
-              <datalist id="org-audit-actor-options">
-                {#each auditActorOptions as actor}
-                  <option value={actor.username}>{actor.label}</option>
-                  <option value={actor.userId}>{actor.label}</option>
-                {/each}
-              </datalist>
-            </div>
-            <div class="form-group" style="margin-bottom:0; min-width:180px;">
-              <label for="org-audit-from">From (UTC)</label>
-              <input
-                id="org-audit-from"
-                name="occurred_from"
-                type="date"
-                class="form-input"
-                value={auditView.occurredFrom}
-              />
-            </div>
-            <div class="form-group" style="margin-bottom:0; min-width:180px;">
-              <label for="org-audit-until">Until (UTC)</label>
-              <input
-                id="org-audit-until"
-                name="occurred_until"
-                type="date"
-                class="form-input"
-                value={auditView.occurredUntil}
-              />
-            </div>
-            <button type="submit" class="btn btn-secondary">Apply</button>
-            <button
-              type="button"
-              class="btn btn-secondary"
-              disabled={exportingAudit}
-              on:click={handleExportAudit}
-            >
-              {exportingAudit ? 'Exporting…' : 'Export CSV'}
-            </button>
-            {#if auditView.action}<button
-                type="button"
-                class="btn btn-secondary"
-                on:click={clearAuditActionFilter}>Clear action</button
-              >{/if}
-            {#if auditView.actorUserId}<button
-                type="button"
-                class="btn btn-secondary"
-                on:click={clearAuditActorFilter}>Clear actor</button
-              >{/if}
-            {#if auditView.occurredFrom || auditView.occurredUntil}<button
-                type="button"
-                class="btn btn-secondary"
-                on:click={clearAuditDateFilter}>Clear dates</button
-              >{/if}
-          </div>
-          <p class="settings-copy" style="margin-top:0.75rem; margin-bottom:0;">
-            {formatAuditFilterSummary()}
-          </p>
-        </form>
+        <OrgAuditFilterControls
+          actionOptions={ORG_AUDIT_ACTION_OPTIONS}
+          actionValue={auditView.action}
+          bind:actorInput={auditActorInput}
+          actorOptions={auditActorOptions}
+          occurredFrom={auditView.occurredFrom}
+          occurredUntil={auditView.occurredUntil}
+          exporting={exportingAudit}
+          summary={formatAuditFilterSummary()}
+          showActionClear={Boolean(auditView.action)}
+          showActorClear={Boolean(auditView.actorUserId)}
+          showDateClear={Boolean(auditView.occurredFrom || auditView.occurredUntil)}
+          handleSubmit={handleAuditFilterSubmit}
+          handleExport={handleExportAudit}
+          clearAction={clearAuditActionFilter}
+          clearActor={clearAuditActorFilter}
+          clearDates={clearAuditDateFilter}
+        />
 
         {#if auditError}
           <div class="alert alert-error">{auditError}</div>
