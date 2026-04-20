@@ -73,8 +73,11 @@
   } from '../../../api/orgs';
   import {
     createPackage,
+    listSecurityFindings,
     transferPackageOwnership,
+    updateSecurityFinding,
   } from '../../../api/packages';
+  import type { SecurityFinding } from '../../../api/packages';
   import type {
     RepositoryPackageListResponse,
     RepositoryPackageSummary,
@@ -123,6 +126,11 @@
     buildOrgSecurityPath,
     getOrgSecurityViewFromQuery,
   } from '../../../pages/org-security-query';
+  import {
+    buildOrgSecurityPackageKey,
+    mergeUpdatedOrgSecurityFinding,
+    sortOrgSecurityFindings,
+  } from '../../../pages/org-security-triage';
   import { canViewOrgPeopleWorkspace } from '../../../pages/org-workspace-access';
   import { buildPackageDetailPath } from '../../../pages/package-detail-tabs';
   import { ECOSYSTEMS, ecosystemLabel } from '../../../utils/ecosystem';
@@ -231,6 +239,17 @@
     load_error: string | null;
   }
 
+  interface OrgSecurityFindingState {
+    findings: SecurityFinding[];
+    load_error: string | null;
+    loading: boolean;
+    expanded: boolean;
+    updatingFindingId: string | null;
+    notice: string | null;
+    error: string | null;
+    findingNotes: Record<string, string>;
+  }
+
   type CreatableRepository = OrgRepositorySummary & { slug: string };
 
   let lastLoadKey = '';
@@ -273,6 +292,7 @@
   let securitySummary: OrgSecuritySummary | null = null;
   let securityPackages: OrgSecurityPackageSummary[] = [];
   let securityError: string | null = null;
+  let securityFindingsByPackageKey: Record<string, OrgSecurityFindingState> = {};
   let exportingSecurity = false;
   let auditLogs: OrgAuditLog[] = [];
   let auditError: string | null = null;
@@ -458,6 +478,69 @@
     );
   });
 
+  function createOrgSecurityFindingState(
+    overrides: Partial<OrgSecurityFindingState> = {}
+  ): OrgSecurityFindingState {
+    return {
+      findings: [],
+      load_error: null,
+      loading: false,
+      expanded: false,
+      updatingFindingId: null,
+      notice: null,
+      error: null,
+      findingNotes: {},
+      ...overrides,
+    };
+  }
+
+  function getSecurityPackageKey(
+    securityPackage: Pick<OrgSecurityPackageSummary, 'ecosystem' | 'name'>
+  ): string {
+    return buildOrgSecurityPackageKey(
+      securityPackage.ecosystem,
+      securityPackage.name
+    );
+  }
+
+  function getOrgSecurityFindingState(
+    securityPackage: Pick<OrgSecurityPackageSummary, 'ecosystem' | 'name'>
+  ): OrgSecurityFindingState {
+    return (
+      securityFindingsByPackageKey[getSecurityPackageKey(securityPackage)] ||
+      createOrgSecurityFindingState()
+    );
+  }
+
+  function updateOrgSecurityFindingState(
+    packageKey: string,
+    updates: Partial<OrgSecurityFindingState>
+  ): void {
+    securityFindingsByPackageKey = {
+      ...securityFindingsByPackageKey,
+      [packageKey]: {
+        ...(securityFindingsByPackageKey[packageKey] ||
+          createOrgSecurityFindingState()),
+        ...updates,
+      },
+    };
+  }
+
+  function updateOrgSecurityFindingNote(
+    packageKey: string,
+    findingId: string,
+    value: string
+  ): void {
+    const currentState =
+      securityFindingsByPackageKey[packageKey] || createOrgSecurityFindingState();
+    updateOrgSecurityFindingState(packageKey, {
+      findingNotes: {
+        ...currentState.findingNotes,
+        [findingId]: value,
+      },
+    });
+  }
+
   async function loadOrganizationPage(
     options: { notice?: string | null; error?: string | null } = {}
   ): Promise<void> {
@@ -467,6 +550,7 @@
     notice = options.notice ?? null;
     error = options.error ?? null;
     canViewPeopleWorkspace = false;
+    securityFindingsByPackageKey = {};
 
     isAuthenticated = Boolean(getAuthToken());
 
@@ -679,6 +763,29 @@
       }
     } finally {
       loading = false;
+    }
+  }
+
+  async function reloadSecurityOverview(): Promise<void> {
+    const securityQuery: OrgSecurityQuery = {
+      severities:
+        securityView.severities.length > 0 ? securityView.severities : undefined,
+      ecosystem: securityView.ecosystem || undefined,
+      package: securityView.packageQuery || undefined,
+    };
+
+    try {
+      const securityData = await listOrgSecurityFindings(slug, securityQuery);
+      securitySummary = securityData.summary || null;
+      securityPackages = securityData.packages || [];
+      securityError = securityData.load_error || null;
+    } catch (caughtError: unknown) {
+      securitySummary = null;
+      securityPackages = [];
+      securityError = toErrorMessage(
+        caughtError,
+        'Failed to load security overview.'
+      );
     }
   }
 
@@ -1913,6 +2020,128 @@
       if (requestId === auditActorSearchRequest) {
         auditActorSearchInFlight = false;
       }
+    }
+  }
+
+  async function handleToggleOrgSecurityFindings(
+    securityPackage: OrgSecurityPackageSummary
+  ): Promise<void> {
+    const packageKey = getSecurityPackageKey(securityPackage);
+    const currentState = getOrgSecurityFindingState(securityPackage);
+
+    if (currentState.expanded) {
+      updateOrgSecurityFindingState(packageKey, { expanded: false });
+      return;
+    }
+
+    updateOrgSecurityFindingState(packageKey, {
+      expanded: true,
+      loading: true,
+      load_error: null,
+      error: null,
+      notice: null,
+    });
+
+    if (!securityPackage.ecosystem || !securityPackage.name) {
+      updateOrgSecurityFindingState(packageKey, {
+        loading: false,
+        load_error:
+          'Failed to load findings because the package identity is unavailable.',
+      });
+      return;
+    }
+
+    try {
+      const findings = await listSecurityFindings(
+        securityPackage.ecosystem,
+        securityPackage.name,
+        {
+          includeResolved: true,
+        }
+      );
+      updateOrgSecurityFindingState(packageKey, {
+        findings: sortOrgSecurityFindings(findings),
+        loading: false,
+        load_error: null,
+      });
+    } catch (caughtError: unknown) {
+      updateOrgSecurityFindingState(packageKey, {
+        findings: [],
+        loading: false,
+        load_error: toErrorMessage(
+          caughtError,
+          'Failed to load package findings.'
+        ),
+      });
+    }
+  }
+
+  async function handleToggleOrgFindingResolution(
+    securityPackage: OrgSecurityPackageSummary,
+    finding: SecurityFinding
+  ): Promise<void> {
+    const packageKey = getSecurityPackageKey(securityPackage);
+    const currentState = getOrgSecurityFindingState(securityPackage);
+    if (currentState.updatingFindingId) {
+      return;
+    }
+    if (!securityPackage.ecosystem || !securityPackage.name) {
+      updateOrgSecurityFindingState(packageKey, {
+        error:
+          'Failed to update the security finding because the package identity is unavailable.',
+      });
+      return;
+    }
+
+    const targetIsResolved = !finding.is_resolved;
+    const rawNote = currentState.findingNotes[finding.id] ?? '';
+    const trimmedNote = rawNote.trim();
+    if (trimmedNote.length > 2000) {
+      updateOrgSecurityFindingState(packageKey, {
+        error: 'Security finding note must be 2000 characters or fewer.',
+      });
+      return;
+    }
+
+    updateOrgSecurityFindingState(packageKey, {
+      updatingFindingId: finding.id,
+      error: null,
+      notice: null,
+    });
+
+    try {
+      const updated = await updateSecurityFinding(
+        securityPackage.ecosystem,
+        securityPackage.name,
+        finding.id,
+        {
+          isResolved: targetIsResolved,
+          note: trimmedNote.length > 0 ? trimmedNote : undefined,
+        }
+      );
+      const latestState = getOrgSecurityFindingState(securityPackage);
+      updateOrgSecurityFindingState(packageKey, {
+        findings: mergeUpdatedOrgSecurityFinding(latestState.findings, updated, {
+          includeResolved: true,
+        }),
+        updatingFindingId: null,
+        notice: targetIsResolved
+          ? 'Finding marked as resolved.'
+          : 'Finding reopened.',
+        findingNotes: {
+          ...latestState.findingNotes,
+          [finding.id]: '',
+        },
+      });
+      await reloadSecurityOverview();
+    } catch (caughtError: unknown) {
+      updateOrgSecurityFindingState(packageKey, {
+        updatingFindingId: null,
+        error:
+          caughtError instanceof ApiError
+            ? caughtError.message
+            : 'Failed to update the security finding.',
+      });
     }
   }
 </script>
@@ -3240,6 +3469,8 @@
                   ? normalizeSecuritySeverity(pkg.worst_severity)
                   : worstSecuritySeverityFromCounts(pkg.severities)}
                 {@const reviewerTeams = pkg.reviewer_teams || []}
+                {@const packageKey = getSecurityPackageKey(pkg)}
+                {@const packageFindingState = getOrgSecurityFindingState(pkg)}
                 <div class="token-row">
                   <div class="token-row__main">
                     <div class="token-row__title">
@@ -3292,6 +3523,17 @@
                   </div>
                   {#if pkg.ecosystem && pkg.name}
                     <div class="token-row__actions">
+                      {#if pkg.can_manage_security}
+                        <button
+                          type="button"
+                          class="btn btn-secondary btn-sm"
+                          on:click={() => handleToggleOrgSecurityFindings(pkg)}
+                        >
+                          {packageFindingState.expanded
+                            ? 'Hide findings'
+                            : 'Show findings'}
+                        </button>
+                      {/if}
                       <a
                         class="btn btn-secondary btn-sm"
                         href={buildPackageDetailPath(pkg.ecosystem, pkg.name, {
@@ -3300,6 +3542,134 @@
                         data-sveltekit-preload-data="hover"
                         >{pkg.can_manage_security ? 'Review findings' : 'Open findings'}</a
                       >
+                    </div>
+                  {/if}
+                  {#if pkg.can_manage_security && packageFindingState.expanded}
+                    <div
+                      class="card"
+                      style="margin-top:1rem; width:100%;"
+                    >
+                      <div class="settings-subsection" style="margin-bottom:0;">
+                        <h3 style="margin-bottom:0.5rem;">Inline findings</h3>
+                        <p class="settings-copy" style="margin-top:0;">
+                          Resolve or reopen findings here without leaving the
+                          organization workspace.
+                        </p>
+                        {#if packageFindingState.notice}
+                          <div class="alert alert-success">
+                            {packageFindingState.notice}
+                          </div>
+                        {/if}
+                        {#if packageFindingState.error}
+                          <div class="alert alert-error">
+                            {packageFindingState.error}
+                          </div>
+                        {/if}
+                        {#if packageFindingState.load_error}
+                          <div class="alert alert-error">
+                            {packageFindingState.load_error}
+                          </div>
+                        {:else if packageFindingState.loading}
+                          <div class="loading">
+                            <span class="spinner"></span> Loading findings…
+                          </div>
+                        {:else if packageFindingState.findings.length === 0}
+                          <div class="empty-state">
+                            <p>No findings available for inline triage.</p>
+                          </div>
+                        {:else}
+                          <div class="token-list">
+                            {#each packageFindingState.findings as finding}
+                              {@const severity = normalizeSecuritySeverity(
+                                finding.severity
+                              )}
+                              <div class="token-row">
+                                <div class="token-row__main">
+                                  <div class="token-row__title">
+                                    {finding.title}
+                                  </div>
+                                  <div class="token-row__meta">
+                                    <span class={`badge badge-severity-${severity}`}
+                                      >{severity}</span
+                                    >
+                                    <span class="badge badge-ecosystem"
+                                      >{formatIdentifierLabel(finding.kind)}</span
+                                    >
+                                    {#if finding.release_version}
+                                      <span>{finding.release_version}</span>
+                                    {/if}
+                                    <span>{formatDate(finding.detected_at)}</span>
+                                    {#if finding.is_resolved}
+                                      <span
+                                        >Resolved{finding.resolved_at
+                                          ? ` ${formatDate(finding.resolved_at)}`
+                                          : ''}</span
+                                      >
+                                    {/if}
+                                  </div>
+                                  {#if finding.description}
+                                    <p
+                                      class="settings-copy"
+                                      style="margin-top:0.5rem; margin-bottom:0;"
+                                    >
+                                      {finding.description}
+                                    </p>
+                                  {/if}
+                                  <label
+                                    class="form-group"
+                                    style="margin-top:0.75rem; margin-bottom:0;"
+                                  >
+                                    <span class="sr-only"
+                                      >Security finding note for {finding.title}</span
+                                    >
+                                    <textarea
+                                      class="form-input"
+                                      rows="2"
+                                      maxlength="2000"
+                                      placeholder="Optional note (recorded in audit log)"
+                                      value={packageFindingState.findingNotes[
+                                        finding.id
+                                      ] || ''}
+                                      on:input={(event) =>
+                                        updateOrgSecurityFindingNote(
+                                          packageKey,
+                                          finding.id,
+                                          (
+                                            event.currentTarget as HTMLTextAreaElement
+                                          ).value
+                                        )}
+                                    ></textarea>
+                                  </label>
+                                </div>
+                                <div class="token-row__actions">
+                                  <button
+                                    type="button"
+                                    class="btn btn-secondary btn-sm"
+                                    disabled={packageFindingState.updatingFindingId !==
+                                      null}
+                                    on:click={() =>
+                                      handleToggleOrgFindingResolution(
+                                        pkg,
+                                        finding
+                                      )}
+                                  >
+                                    {#if packageFindingState.updatingFindingId ===
+                                      finding.id}
+                                      {finding.is_resolved
+                                        ? 'Reopening…'
+                                        : 'Resolving…'}
+                                    {:else}
+                                      {finding.is_resolved
+                                        ? 'Reopen finding'
+                                        : 'Mark resolved'}
+                                    {/if}
+                                  </button>
+                                </div>
+                              </div>
+                            {/each}
+                          </div>
+                        {/if}
+                      </div>
                     </div>
                   {/if}
                 </div>
