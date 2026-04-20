@@ -1510,7 +1510,11 @@ async fn has_package_write_access(
     false
 }
 
-async fn actor_has_any_team_package_access(db: &PgPool, package_id: Uuid, actor_user_id: Uuid) -> bool {
+async fn actor_has_any_team_package_access(
+    db: &PgPool,
+    package_id: Uuid,
+    actor_user_id: Uuid,
+) -> bool {
     sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS (\
              SELECT 1 \
