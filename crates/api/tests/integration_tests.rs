@@ -8954,7 +8954,7 @@ async fn test_search_surfaces_include_private_packages_visible_through_team_gran
         "delegated-search-org",
         "Repository Readers",
         "repository-readers",
-        Some("Can search private packages granted via repository access."),
+        Some("Can search private packages granted via repository read access."),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
@@ -9000,7 +9000,7 @@ async fn test_search_surfaces_include_private_packages_visible_through_team_gran
         "delegated-search-org",
         "repository-readers",
         "delegated-repository-private",
-        &["publish"],
+        &["read_private"],
     )
     .await;
     assert_eq!(
