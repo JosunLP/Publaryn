@@ -55,6 +55,12 @@ export async function listOrgNamespaces(
   return listNamespaces({ ownerOrgId });
 }
 
+export async function listUserNamespaces(
+  ownerUserId: string
+): Promise<NamespaceListResponse> {
+  return listNamespaces({ ownerUserId });
+}
+
 export async function createNamespaceClaim(
   input: CreateNamespaceClaimInput
 ): Promise<NamespaceClaim> {

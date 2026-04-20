@@ -24,9 +24,22 @@
     listMyInvitations,
     listMyOrganizations,
   } from '../../api/orgs';
+  import type {
+    NamespaceClaim,
+    NamespaceListResponse,
+  } from '../../api/namespaces';
+  import {
+    deleteNamespaceClaim,
+    listUserNamespaces,
+  } from '../../api/namespaces';
+  import {
+    formatNamespaceClaimStatusLabel,
+    sortNamespaceClaims,
+  } from '../../pages/personal-namespaces';
   import type { TokenRecord } from '../../api/tokens';
   import { createToken, listTokens, revokeToken } from '../../api/tokens';
   import { copyToClipboard, formatDate } from '../../utils/format';
+  import { ecosystemLabel } from '../../utils/ecosystem';
 
   const TOKEN_SCOPE_OPTIONS = [
     'profile:write',
@@ -51,6 +64,8 @@
   let tokens: TokenRecord[] = [];
   let organizations: OrganizationMembership[] = [];
   let organizationsError: string | null = null;
+  let namespaceClaims: NamespaceClaim[] = [];
+  let namespaceClaimsError: string | null = null;
   let invitations: MyInvitation[] = [];
   let invitationsError: string | null = null;
   let createdToken: string | null = null;
@@ -105,9 +120,9 @@
     mfaSetupState = options.mfaSetupState ?? null;
 
     try {
-      const [loadedUser, tokenData, organizationData, invitationData] =
+      const loadedUser = await getCurrentUser();
+      const [tokenData, organizationData, invitationData, namespaceData] =
         await Promise.all([
-          getCurrentUser(),
           listTokens(),
           listMyOrganizations().catch(
             (caughtError: unknown): OrganizationListResponse => ({
@@ -127,12 +142,29 @@
               ),
             })
           ),
+          loadedUser.id
+            ? listUserNamespaces(loadedUser.id).catch(
+                (caughtError: unknown): NamespaceListResponse => ({
+                  namespaces: [],
+                  load_error: toErrorMessage(
+                    caughtError,
+                    'Failed to load namespace claims.'
+                  ),
+                })
+              )
+            : Promise.resolve<NamespaceListResponse>({
+                namespaces: [],
+                load_error:
+                  'Failed to load namespace claims because the user id is unavailable.',
+              }),
         ]);
 
       user = loadedUser;
       tokens = tokenData.tokens || [];
       organizations = organizationData.organizations || [];
       organizationsError = organizationData.load_error || null;
+      namespaceClaims = namespaceData.namespaces || [];
+      namespaceClaimsError = namespaceData.load_error || null;
       invitations = invitationData.invitations || [];
       invitationsError = invitationData.load_error || null;
 
@@ -226,6 +258,24 @@
     } catch (caughtError: unknown) {
       await loadSettings({
         error: toErrorMessage(caughtError, 'Failed to revoke token.'),
+        mfaSetupState,
+      });
+    }
+  }
+
+  async function handleDeleteNamespaceClaim(
+    claimId: string,
+    namespace: string
+  ): Promise<void> {
+    try {
+      await deleteNamespaceClaim(claimId);
+      await loadSettings({
+        notice: `Namespace claim ${namespace} deleted.`,
+        mfaSetupState,
+      });
+    } catch (caughtError: unknown) {
+      await loadSettings({
+        error: toErrorMessage(caughtError, 'Failed to delete namespace claim.'),
         mfaSetupState,
       });
     }
@@ -749,6 +799,63 @@
                     >
                   </div>
                 {/if}
+              </div>
+            {/each}
+          </div>
+        {/if}
+      </section>
+
+      <section class="card settings-section">
+        <h2>Your namespace claims</h2>
+        <p class="text-muted settings-copy">
+          Personal namespace reservations you can revoke when they are no longer
+          needed.
+        </p>
+
+        {#if namespaceClaimsError}
+          <div class="alert alert-error">{namespaceClaimsError}</div>
+        {:else if namespaceClaims.length === 0}
+          <div class="empty-state">
+            <h3>No personal namespace claims</h3>
+            <p>
+              Namespace claims you own directly will appear here for follow-up
+              management.
+            </p>
+          </div>
+        {:else}
+          <div class="token-list">
+            {#each sortNamespaceClaims(namespaceClaims) as claim}
+              <div class="token-row">
+                <div class="token-row__main">
+                  <div class="token-row__title">
+                    {claim.namespace || 'Unnamed claim'}
+                  </div>
+                  <div class="token-row__meta">
+                    <span>{ecosystemLabel(claim.ecosystem)}</span>
+                    {#if claim.created_at}<span
+                        >created {formatDate(claim.created_at)}</span
+                      >{/if}
+                  </div>
+                </div>
+                <div class="token-row__actions">
+                  <span
+                    class={claim.is_verified
+                      ? 'badge badge-verified'
+                      : 'badge badge-ecosystem'}
+                    >{formatNamespaceClaimStatusLabel(claim)}</span
+                  >
+                  {#if claim.id}
+                    <button
+                      class="btn btn-danger btn-sm"
+                      type="button"
+                      on:click={() =>
+                        handleDeleteNamespaceClaim(
+                          claim.id!,
+                          claim.namespace || 'this claim'
+                        )}>Delete</button
+                    >
+                  {/if}
+                </div>
               </div>
             {/each}
           </div>
