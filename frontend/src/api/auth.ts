@@ -23,6 +23,7 @@ export interface MfaChallengeInput {
 }
 
 export interface UserProfile {
+  id?: string | null;
   username?: string | null;
   email?: string | null;
   display_name?: string | null;

@@ -44,6 +44,7 @@ pub enum AuditAction {
     TeamMemberRemove,
     // Namespace
     NamespaceClaimCreate,
+    NamespaceClaimDelete,
     NamespaceClaimTransfer,
     // Security
     SecurityFindingCreate,

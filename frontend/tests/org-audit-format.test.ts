@@ -37,6 +37,9 @@ describe('org audit formatting helpers', () => {
     expect(formatAuditActionLabel('org_invitation_decline')).toBe(
       'Invitation declined'
     );
+    expect(formatAuditActionLabel('namespace_claim_delete')).toBe(
+      'Namespace claim deleted'
+    );
   });
 
   test('formats team creation summaries', () => {
@@ -154,5 +157,15 @@ describe('org audit formatting helpers', () => {
         })
       )
     ).toBe('Transferred package acme-widget to organization Acme Platform.');
+  });
+
+  test('formats namespace deletion summaries and targets', () => {
+    const log = makeLog('namespace_claim_delete', {
+      ecosystem: 'npm',
+      namespace: '@acme',
+    });
+
+    expect(formatAuditTarget(log)).toBe('namespace npm · @acme');
+    expect(formatAuditSummary(log)).toBe('Deleted namespace @acme.');
   });
 });

@@ -9,6 +9,7 @@
   } from '../../../api/namespaces';
   import {
     createNamespaceClaim,
+    deleteNamespaceClaim,
     listOrgNamespaces,
   } from '../../../api/namespaces';
   import type {
@@ -1486,6 +1487,29 @@
     } catch (caughtError: unknown) {
       await loadOrganizationPage({
         error: toErrorMessage(caughtError, 'Failed to create namespace claim.'),
+      });
+    }
+  }
+
+  async function handleDeleteNamespace(
+    claimId: string | null | undefined,
+    namespace: string
+  ): Promise<void> {
+    if (!claimId) {
+      await loadOrganizationPage({
+        error: 'Failed to delete namespace claim because the claim id is unavailable.',
+      });
+      return;
+    }
+
+    try {
+      await deleteNamespaceClaim(claimId);
+      await loadOrganizationPage({
+        notice: `Deleted namespace claim ${namespace}.`,
+      });
+    } catch (caughtError: unknown) {
+      await loadOrganizationPage({
+        error: toErrorMessage(caughtError, 'Failed to delete namespace claim.'),
       });
     }
   }
@@ -3791,6 +3815,17 @@
                   {:else}
                     <span class="badge badge-ecosystem"
                       >Pending verification</span
+                    >
+                  {/if}
+                  {#if canAdminister && claim.id}
+                    <button
+                      class="btn btn-secondary btn-sm"
+                      type="button"
+                      on:click={() =>
+                        handleDeleteNamespace(
+                          claim.id,
+                          claim.namespace || 'this claim'
+                        )}>Delete</button
                     >
                   {/if}
                 </div>

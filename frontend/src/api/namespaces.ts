@@ -55,6 +55,12 @@ export async function listOrgNamespaces(
   return listNamespaces({ ownerOrgId });
 }
 
+export async function listUserNamespaces(
+  ownerUserId: string
+): Promise<NamespaceListResponse> {
+  return listNamespaces({ ownerUserId });
+}
+
 export async function createNamespaceClaim(
   input: CreateNamespaceClaimInput
 ): Promise<NamespaceClaim> {
@@ -68,4 +74,8 @@ export async function createNamespaceClaim(
   });
 
   return data;
+}
+
+export async function deleteNamespaceClaim(claimId: string): Promise<void> {
+  await api.delete<null>(`/v1/namespaces/${encodeURIComponent(claimId)}`);
 }
