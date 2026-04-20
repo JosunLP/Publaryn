@@ -1111,7 +1111,7 @@
                             <span>{grant.team_slug}</span>
                           {/if}
                           {#if grant.granted_at}
-                            <span>updated {formatDate(grant.granted_at)}</span>
+                            <span>latest grant {formatDate(grant.granted_at)}</span>
                           {/if}
                         </div>
                         <div class="token-row__scopes">
