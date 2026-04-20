@@ -7636,6 +7636,97 @@ async fn test_team_publish_permission_allows_release_creation_but_not_metadata_u
 }
 
 #[sqlx::test(migrations = "../../migrations")]
+async fn test_package_detail_surfaces_team_access_only_to_org_members(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    register_user(&app, "charlie", "charlie@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+    let charlie_jwt = login_user(&app, "charlie", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &alice_jwt, "Acme Org", "acme-org").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id = org_body["id"].as_str().expect("org id");
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Acme Packages",
+        "acme-packages",
+        Some(org_id),
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, package_body) =
+        create_package(&app, &alice_jwt, "npm", "acme-widget", "acme-packages").await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let (status, _) = add_org_member(&app, &alice_jwt, "acme-org", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "acme-org",
+        "Release Engineering",
+        "release-engineering",
+        Some("Publishes and transfers package releases."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, grant_body) = grant_team_package_access(
+        &app,
+        &alice_jwt,
+        "acme-org",
+        "release-engineering",
+        "npm",
+        "acme-widget",
+        &["publish", "transfer_ownership"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team package access response: {grant_body}"
+    );
+
+    let (status, owner_detail) = get_package_detail(&app, Some(&alice_jwt), "npm", "acme-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(owner_detail["team_access"][0]["team_slug"], "release-engineering");
+    assert_eq!(owner_detail["team_access"][0]["team_name"], "Release Engineering");
+    assert_eq!(
+        owner_detail["team_access"][0]["permissions"],
+        json!(["publish", "transfer_ownership"])
+    );
+
+    let (status, member_detail) = get_package_detail(&app, Some(&bob_jwt), "npm", "acme-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(member_detail["team_access"], owner_detail["team_access"]);
+
+    let (status, anonymous_detail) = get_package_detail(&app, None, "npm", "acme-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(anonymous_detail["team_access"], Value::Null);
+
+    let (status, unrelated_detail) =
+        get_package_detail(&app, Some(&charlie_jwt), "npm", "acme-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(unrelated_detail["team_access"], Value::Null);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
 async fn test_team_write_metadata_permission_allows_package_updates_but_not_release_creation(
     pool: PgPool,
 ) {

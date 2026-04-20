@@ -611,6 +611,18 @@
       .replace(/\b\w/g, (char) => char.toUpperCase());
   }
 
+  function formatIdentifierLabel(value: string): string {
+    return value
+      .split('_')
+      .filter(Boolean)
+      .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+      .join(' ');
+  }
+
+  function formatPermission(permission: string): string {
+    return formatIdentifierLabel(permission);
+  }
+
   $: packageMetadata = pkg?.ecosystem_metadata ?? null;
   $: canonicalPackageEcosystem = pkg?.ecosystem ?? ecosystem;
   $: showsRegistryFamily = Boolean(
@@ -1072,6 +1084,47 @@
                   href={`/search?q=${encodeURIComponent(pkg.owner_username)}`}
                   data-sveltekit-preload-data="hover">{pkg.owner_username}</a
                 >
+              {/if}
+            </div>
+          </div>
+        {/if}
+
+        {#if pkg.owner_org_slug && pkg.team_access}
+          <div class="card">
+            <div class="sidebar-section">
+              <h3>Delegated team access</h3>
+              <p class="settings-copy" style="margin-bottom:12px;">
+                Team grants for this organization-owned package.
+              </p>
+              {#if pkg.team_access.length === 0}
+                <p class="settings-copy">No team grants assigned yet.</p>
+              {:else}
+                <div class="token-list">
+                  {#each pkg.team_access as grant}
+                    <div class="token-row">
+                      <div class="token-row__main">
+                        <div class="token-row__title">
+                          {grant.team_name || grant.team_slug || 'Unnamed team'}
+                        </div>
+                        <div class="token-row__meta">
+                          {#if grant.team_slug}
+                            <span>{grant.team_slug}</span>
+                          {/if}
+                          {#if grant.granted_at}
+                            <span>updated {formatDate(grant.granted_at)}</span>
+                          {/if}
+                        </div>
+                        <div class="token-row__scopes">
+                          {#each grant.permissions || [] as permission}
+                            <span class="badge badge-ecosystem"
+                              >{formatPermission(permission)}</span
+                            >
+                          {/each}
+                        </div>
+                      </div>
+                    </div>
+                  {/each}
+                </div>
               {/if}
             </div>
           </div>
