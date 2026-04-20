@@ -4,8 +4,11 @@
   import { onMount } from 'svelte';
 
   import { getAuthToken } from '../../api/client';
-  import type { OrganizationMembership } from '../../api/orgs';
-  import { listMyOrganizations } from '../../api/orgs';
+  import type {
+    OrganizationMembership,
+    OrgRepositorySummary,
+  } from '../../api/orgs';
+  import { listMyOrganizations, listOrgRepositories } from '../../api/orgs';
   import type { SearchPackagesResponse } from '../../api/packages';
   import { searchPackages } from '../../api/packages';
   import {
@@ -28,8 +31,13 @@
   let error: string | null = null;
   let organizationLoadError: string | null = null;
   let organizations: OrganizationMembership[] = [];
+  let repositoryLoadError: string | null = null;
+  let repositories: OrgRepositorySummary[] = [];
+  let lastLoadedRepositoryOrg = '';
   let currentOrgInOptions = false;
   let hasOrganizationOptions = false;
+  let currentRepositoryInOptions = false;
+  let hasRepositoryOptions = false;
   let results: SearchPackagesResponse = {
     total: 0,
     packages: [],
@@ -39,6 +47,7 @@
   let q = '';
   let ecosystem = '';
   let org = '';
+  let repository = '';
 
   onMount(() => {
     if (!getAuthToken()) {
@@ -54,11 +63,21 @@
   $: q = searchView.q;
   $: ecosystem = searchView.ecosystem;
   $: org = searchView.org;
+  $: repository = searchView.repository;
   $: currentPage = searchView.page;
-  $: loadKey = `${q}|${ecosystem}|${org}|${currentPage}`;
+  $: loadKey = `${q}|${ecosystem}|${org}|${repository}|${currentPage}`;
   $: if (loadKey !== lastLoadKey) {
     lastLoadKey = loadKey;
     void loadResults();
+  }
+  $: if (org !== lastLoadedRepositoryOrg) {
+    lastLoadedRepositoryOrg = org;
+    if (!org) {
+      repositories = [];
+      repositoryLoadError = null;
+    } else {
+      void loadRepositories(org);
+    }
   }
 
   async function loadOrganizations(): Promise<void> {
@@ -80,6 +99,35 @@
     }
   }
 
+  async function loadRepositories(orgSlug: string): Promise<void> {
+    repositoryLoadError = null;
+
+    try {
+      const data = await listOrgRepositories(orgSlug);
+      if (org !== orgSlug) {
+        return;
+      }
+
+      repositories = [...(data.repositories || [])]
+        .filter((repositoryOption) => Boolean(repositoryOption.slug?.trim()))
+        .sort((left, right) =>
+          `${left.name || left.slug || ''}`.localeCompare(
+            `${right.name || right.slug || ''}`
+          )
+        );
+    } catch (caughtError: unknown) {
+      if (org !== orgSlug) {
+        return;
+      }
+
+      repositoryLoadError =
+        caughtError instanceof Error
+          ? caughtError.message
+          : 'Failed to load repositories.';
+      repositories = [];
+    }
+  }
+
   async function loadResults(): Promise<void> {
     loading = true;
     error = null;
@@ -89,6 +137,7 @@
         q: q || undefined,
         ecosystem: ecosystem || undefined,
         org: org || undefined,
+        repository: repository || undefined,
         page: currentPage,
         perPage: PER_PAGE,
       });
@@ -114,6 +163,7 @@
           q,
           ecosystem,
           org,
+          repository,
           page: 1,
         },
         $page.url.searchParams
@@ -128,6 +178,7 @@
           q,
           ecosystem,
           org,
+          repository,
           page: nextPage,
         },
         $page.url.searchParams
@@ -144,6 +195,10 @@
   $: totalPages = Math.max(1, Math.ceil((results.total || 0) / PER_PAGE));
   $: currentOrgInOptions = organizations.some((membership) => membership.slug === org);
   $: hasOrganizationOptions = organizations.length > 0 || Boolean(org);
+  $: currentRepositoryInOptions = repositories.some(
+    (repositoryOption) => repositoryOption.slug === repository
+  );
+  $: hasRepositoryOptions = repositories.length > 0 || Boolean(repository) || Boolean(org);
 </script>
 
 <svelte:head>
@@ -183,6 +238,9 @@
         class="form-input"
         aria-label="Organization scope"
         style="width:auto; min-width:180px;"
+        on:change={() => {
+          repository = '';
+        }}
       >
         <option value="">All owners</option>
         {#if org && !currentOrgInOptions}
@@ -191,6 +249,25 @@
         {#each organizations as membership}
           <option value={membership.slug || ''}>
             {membership.name || membership.slug || 'Unnamed organization'}
+          </option>
+        {/each}
+      </select>
+    {/if}
+    {#if hasRepositoryOptions}
+      <select
+        bind:value={repository}
+        name="repository"
+        class="form-input"
+        aria-label="Repository scope"
+        style="width:auto; min-width:180px;"
+      >
+        <option value="">All repositories</option>
+        {#if repository && !currentRepositoryInOptions}
+          <option value={repository}>{repository}</option>
+        {/if}
+        {#each repositories as repositoryOption}
+          <option value={repositoryOption.slug || ''}>
+            {repositoryOption.name || repositoryOption.slug || 'Unnamed repository'}
           </option>
         {/each}
       </select>
@@ -204,6 +281,15 @@
   {:else if org}
     <div class="text-muted mb-4" style="font-size:0.875rem;">
       Scoped to packages owned by {org}.
+    </div>
+  {/if}
+  {#if repositoryLoadError}
+    <div class="text-muted mb-4" style="font-size:0.875rem;">
+      Repository filters are unavailable: {repositoryLoadError}
+    </div>
+  {:else if repository}
+    <div class="text-muted mb-4" style="font-size:0.875rem;">
+      Scoped to repository {repository}.
     </div>
   {/if}
 

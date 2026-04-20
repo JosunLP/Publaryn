@@ -9,13 +9,16 @@ import {
 describe('search query helpers', () => {
   test('parses query, ecosystem, org, and page filters from the URL', () => {
     const view = getSearchViewFromQuery(
-      new URLSearchParams('q=widget&ecosystem=npm&org=acme-org-search&page=3')
+      new URLSearchParams(
+        'q=widget&ecosystem=npm&org=acme-org-search&repository=release-packages&page=3'
+      )
     );
 
     expect(view).toEqual({
       q: 'widget',
       ecosystem: 'npm',
       org: 'acme-org-search',
+      repository: 'release-packages',
       page: 3,
     });
   });
@@ -24,12 +27,15 @@ describe('search query helpers', () => {
     expect(normalizeSearchEcosystem('bun')).toBe('npm');
     expect(
       getSearchViewFromQuery(
-        new URLSearchParams('q=widget&ecosystem=invalid&org=%20&page=-2')
+        new URLSearchParams(
+          'q=widget&ecosystem=invalid&org=%20&repository=%20&page=-2'
+        )
       )
     ).toEqual({
       q: 'widget',
       ecosystem: '',
       org: '',
+      repository: '',
       page: 1,
     });
   });
@@ -41,12 +47,13 @@ describe('search query helpers', () => {
           q: 'private widget',
           ecosystem: 'npm',
           org: 'acme-org-search',
+          repository: 'release-packages',
           page: 2,
         },
         'tab=packages&theme=dark'
       )
     ).toBe(
-      '/search?tab=packages&theme=dark&q=private+widget&ecosystem=npm&org=acme-org-search&page=2'
+      '/search?tab=packages&theme=dark&q=private+widget&ecosystem=npm&org=acme-org-search&repository=release-packages&page=2'
     );
   });
 
@@ -57,9 +64,10 @@ describe('search query helpers', () => {
           q: '',
           ecosystem: '',
           org: '',
+          repository: '',
           page: 1,
         },
-        'q=widget&ecosystem=npm&org=acme-org-search&page=4'
+        'q=widget&ecosystem=npm&org=acme-org-search&repository=release-packages&page=4'
       )
     ).toBe('/search');
   });

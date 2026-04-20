@@ -70,6 +70,7 @@ impl NpmAppState for AppState {
             &search_query,
             actor_user_id,
             None,
+            None,
             offset as usize,
             limit as usize,
         )

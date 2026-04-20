@@ -2,6 +2,7 @@ const SEARCH_QUERY_KEYS = {
   q: 'q',
   ecosystem: 'ecosystem',
   org: 'org',
+  repository: 'repository',
   page: 'page',
 } as const;
 
@@ -22,6 +23,7 @@ export interface SearchView {
   q: string;
   ecosystem: string;
   org: string;
+  repository: string;
   page: number;
 }
 
@@ -46,6 +48,10 @@ export function normalizeSearchOrg(value: string | null | undefined): string {
   return normalizeSearchQuery(value);
 }
 
+export function normalizeSearchRepository(value: string | null | undefined): string {
+  return normalizeSearchQuery(value);
+}
+
 export function normalizeSearchPage(value: string | number | null | undefined): number {
   const parsedValue =
     typeof value === 'number' ? value : Number.parseInt(normalizeSearchQuery(value), 10);
@@ -57,6 +63,7 @@ export function getSearchViewFromQuery(query: URLSearchParams): SearchView {
     q: normalizeSearchQuery(query.get(SEARCH_QUERY_KEYS.q)),
     ecosystem: normalizeSearchEcosystem(query.get(SEARCH_QUERY_KEYS.ecosystem)),
     org: normalizeSearchOrg(query.get(SEARCH_QUERY_KEYS.org)),
+    repository: normalizeSearchRepository(query.get(SEARCH_QUERY_KEYS.repository)),
     page: normalizeSearchPage(query.get(SEARCH_QUERY_KEYS.page)),
   };
 }
@@ -66,11 +73,13 @@ export function buildSearchPath(
     q,
     ecosystem,
     org,
+    repository,
     page,
   }: {
     q?: string | null | undefined;
     ecosystem?: string | null | undefined;
     org?: string | null | undefined;
+    repository?: string | null | undefined;
     page?: string | number | null | undefined;
   },
   currentSearch: string | URLSearchParams = ''
@@ -82,6 +91,7 @@ export function buildSearchPath(
   const normalizedQuery = normalizeSearchQuery(q);
   const normalizedEcosystem = normalizeSearchEcosystem(ecosystem);
   const normalizedOrg = normalizeSearchOrg(org);
+  const normalizedRepository = normalizeSearchRepository(repository);
   const normalizedPage = normalizeSearchPage(page);
 
   if (normalizedQuery) {
@@ -100,6 +110,12 @@ export function buildSearchPath(
     params.set(SEARCH_QUERY_KEYS.org, normalizedOrg);
   } else {
     params.delete(SEARCH_QUERY_KEYS.org);
+  }
+
+  if (normalizedRepository) {
+    params.set(SEARCH_QUERY_KEYS.repository, normalizedRepository);
+  } else {
+    params.delete(SEARCH_QUERY_KEYS.repository);
   }
 
   if (normalizedPage > 1) {

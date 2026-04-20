@@ -133,6 +133,7 @@ export interface SearchPackagesOptions {
   q?: string;
   ecosystem?: string;
   org?: string;
+  repository?: string;
   page?: number;
   perPage?: number;
 }
@@ -348,11 +349,12 @@ export async function searchPackages({
   q,
   ecosystem,
   org,
+  repository,
   page,
   perPage,
 }: SearchPackagesOptions = {}): Promise<SearchPackagesResponse> {
   const { data } = await api.get<SearchPackagesResponse>('/v1/search', {
-    query: { q, ecosystem, org, page, per_page: perPage },
+    query: { q, ecosystem, org, repository, page, per_page: perPage },
   });
 
   return data;

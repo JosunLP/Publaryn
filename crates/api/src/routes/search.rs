@@ -32,6 +32,7 @@ struct SearchQueryParams {
     q: Option<String>,
     ecosystem: Option<String>,
     org: Option<String>,
+    repository: Option<String>,
     page: Option<u32>,
     per_page: Option<u32>,
 }
@@ -59,6 +60,7 @@ async fn search_packages(
         offset: Some(0),
     };
     let owner_org_slug = normalize_search_org_slug(params.org)?;
+    let repository_slug = normalize_search_repository_slug(params.repository)?;
 
     let results = load_visible_search_page(
         &state,
@@ -66,6 +68,7 @@ async fn search_packages(
         &query,
         identity.user_id(),
         owner_org_slug.as_deref(),
+        repository_slug.as_deref(),
         page,
         per_page,
     )
@@ -90,6 +93,7 @@ pub(crate) async fn load_visible_search_page(
     query: &SearchQuery,
     actor_user_id: Option<Uuid>,
     owner_org_slug: Option<&str>,
+    repository_slug: Option<&str>,
     page: u32,
     per_page: u32,
 ) -> ApiResult<VisibleSearchPage> {
@@ -99,6 +103,7 @@ pub(crate) async fn load_visible_search_page(
         query,
         actor_user_id,
         owner_org_slug,
+        repository_slug,
         page.saturating_sub(1).saturating_mul(per_page) as usize,
         per_page as usize,
     )
@@ -111,6 +116,7 @@ pub(crate) async fn load_visible_search_window(
     query: &SearchQuery,
     actor_user_id: Option<Uuid>,
     owner_org_slug: Option<&str>,
+    repository_slug: Option<&str>,
     visible_offset: usize,
     page_size: usize,
 ) -> ApiResult<VisibleSearchPage> {
@@ -136,8 +142,14 @@ pub(crate) async fn load_visible_search_window(
             break;
         }
 
-        let visible_hits =
-            filter_visible_search_hits(state, results.hits, actor_user_id, owner_org_slug).await?;
+        let visible_hits = filter_visible_search_hits(
+            state,
+            results.hits,
+            actor_user_id,
+            owner_org_slug,
+            repository_slug,
+        )
+        .await?;
         let batch_visible_count = visible_hits.len() as u64;
         let previous_visible_total = visible_total;
         visible_total += batch_visible_count;
@@ -182,9 +194,16 @@ async fn filter_visible_search_hits(
     hits: Vec<PackageDocument>,
     actor_user_id: Option<Uuid>,
     owner_org_slug: Option<&str>,
+    repository_slug: Option<&str>,
 ) -> ApiResult<Vec<PackageDocument>> {
-    let visible_package_ids =
-        load_visible_search_package_ids(state, &hits, actor_user_id, owner_org_slug).await?;
+    let visible_package_ids = load_visible_search_package_ids(
+        state,
+        &hits,
+        actor_user_id,
+        owner_org_slug,
+        repository_slug,
+    )
+    .await?;
 
     Ok(hits
         .into_iter()
@@ -201,6 +220,7 @@ async fn load_visible_search_package_ids(
     hits: &[PackageDocument],
     actor_user_id: Option<Uuid>,
     owner_org_slug: Option<&str>,
+    repository_slug: Option<&str>,
 ) -> ApiResult<HashSet<Uuid>> {
     let package_ids = hits
         .iter()
@@ -215,13 +235,14 @@ async fn load_visible_search_package_ids(
         "SELECT p.id \
          FROM packages p \
          JOIN repositories r ON r.id = p.repository_id \
-         WHERE p.id = ANY($1) \
-            AND ($3 IS NULL OR EXISTS (\
+          WHERE p.id = ANY($1) \
+             AND ($3 IS NULL OR EXISTS (\
                 SELECT 1 \
                 FROM organizations o \
                 WHERE o.id = p.owner_org_id AND o.slug = $3\
-            )) \
-            AND p.visibility <> 'unlisted' \
+             )) \
+             AND ($4 IS NULL OR r.slug = $4) \
+             AND p.visibility <> 'unlisted' \
             AND p.visibility <> 'quarantined' \
             AND r.visibility <> 'unlisted' \
            AND r.visibility <> 'quarantined' \
@@ -255,6 +276,7 @@ async fn load_visible_search_package_ids(
     .bind(&package_ids)
     .bind(actor_user_id)
     .bind(owner_org_slug)
+    .bind(repository_slug)
     .fetch_all(&state.db)
     .await
     .map_err(|e| ApiError(Error::Database(e)))?;
@@ -266,22 +288,31 @@ async fn load_visible_search_package_ids(
 }
 
 fn normalize_search_org_slug(org: Option<String>) -> ApiResult<Option<String>> {
-    let Some(org) = org.map(|value| value.trim().to_owned()) else {
+    normalize_search_slug(org)
+}
+
+fn normalize_search_repository_slug(repository: Option<String>) -> ApiResult<Option<String>> {
+    normalize_search_slug(repository)
+}
+
+fn normalize_search_slug(slug: Option<String>) -> ApiResult<Option<String>> {
+    let Some(slug) = slug.map(|value| value.trim().to_owned()) else {
         return Ok(None);
     };
 
-    if org.is_empty() {
+    if slug.is_empty() {
         return Ok(None);
     }
 
-    validation::validate_slug(&org).map_err(ApiError::from)?;
-    Ok(Some(org))
+    validation::validate_slug(&slug).map_err(ApiError::from)?;
+    Ok(Some(slug))
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         load_visible_search_package_ids, load_visible_search_page, normalize_search_org_slug,
+        normalize_search_repository_slug,
     };
     use crate::{config::Config, state::AppState};
     use publaryn_search::{
@@ -428,12 +459,13 @@ mod tests {
             package_doc(unlisted_package_id, "unlisted-widget", "unlisted"),
         ];
 
-        let anonymous = load_visible_search_package_ids(&state, &hits, None, None)
+        let anonymous = load_visible_search_package_ids(&state, &hits, None, None, None)
             .await
             .expect("anonymous ids should load");
         assert_eq!(anonymous, HashSet::from([public_package_id]));
 
-        let org_member = load_visible_search_package_ids(&state, &hits, Some(owner_id), None)
+        let org_member =
+            load_visible_search_package_ids(&state, &hits, Some(owner_id), None, None)
             .await
             .expect("member ids should load");
         assert_eq!(
@@ -441,7 +473,8 @@ mod tests {
             HashSet::from([public_package_id, private_package_id])
         );
 
-        let outsider = load_visible_search_package_ids(&state, &hits, Some(outsider_id), None)
+        let outsider =
+            load_visible_search_package_ids(&state, &hits, Some(outsider_id), None, None)
             .await
             .expect("outsider ids should load");
         assert_eq!(outsider, HashSet::from([public_package_id]));
@@ -508,7 +541,8 @@ mod tests {
             offset: Some(0),
         };
 
-        let anonymous_page = load_visible_search_page(&state, &search, &query, None, None, 2, 1)
+        let anonymous_page =
+            load_visible_search_page(&state, &search, &query, None, None, None, 2, 1)
             .await
             .expect("anonymous page should load");
         assert_eq!(anonymous_page.total, 2);
@@ -516,7 +550,7 @@ mod tests {
         assert_eq!(anonymous_page.packages[0].name, "public-b");
 
         let owner_page =
-            load_visible_search_page(&state, &search, &query, Some(user_id), None, 2, 1)
+            load_visible_search_page(&state, &search, &query, Some(user_id), None, None, 2, 1)
                 .await
                 .expect("owner page should load");
         assert_eq!(owner_page.total, 3);
@@ -607,25 +641,148 @@ mod tests {
             package_doc(beta_public_package_id, "beta-public-widget", "public"),
         ];
 
-        let anonymous = load_visible_search_package_ids(&state, &hits, None, Some("acme-search"))
-            .await
-            .expect("anonymous ids should load");
+        let anonymous =
+            load_visible_search_package_ids(&state, &hits, None, Some("acme-search"), None)
+                .await
+                .expect("anonymous ids should load");
         assert_eq!(anonymous, HashSet::from([acme_public_package_id]));
 
-        let member =
-            load_visible_search_package_ids(&state, &hits, Some(member_id), Some("acme-search"))
-                .await
-                .expect("member ids should load");
+        let member = load_visible_search_package_ids(
+            &state,
+            &hits,
+            Some(member_id),
+            Some("acme-search"),
+            None,
+        )
+        .await
+        .expect("member ids should load");
         assert_eq!(
             member,
             HashSet::from([acme_public_package_id, acme_private_package_id])
         );
 
-        let beta =
-            load_visible_search_package_ids(&state, &hits, Some(member_id), Some("beta-search"))
-                .await
-                .expect("beta ids should load");
+        let beta = load_visible_search_package_ids(
+            &state,
+            &hits,
+            Some(member_id),
+            Some("beta-search"),
+            None,
+        )
+        .await
+        .expect("beta ids should load");
         assert_eq!(beta, HashSet::from([beta_public_package_id]));
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn visible_search_package_ids_can_filter_to_one_repository(pool: PgPool) {
+        let state = test_state(pool.clone());
+        let member_id = Uuid::new_v4();
+        let org_id = Uuid::new_v4();
+        let public_repo_id = Uuid::new_v4();
+        let private_repo_id = Uuid::new_v4();
+        let other_public_repo_id = Uuid::new_v4();
+        let public_package_id = Uuid::new_v4();
+        let private_package_id = Uuid::new_v4();
+        let other_public_package_id = Uuid::new_v4();
+
+        sqlx::query(
+            "INSERT INTO users (id, username, email, password_hash, created_at, updated_at) \
+             VALUES ($1, 'member', 'member-repo@test.dev', 'hash', NOW(), NOW())",
+        )
+        .bind(member_id)
+        .execute(&pool)
+        .await
+        .expect("user should insert");
+
+        sqlx::query(
+            "INSERT INTO organizations (id, name, slug, is_verified, mfa_required, created_at, updated_at) \
+             VALUES ($1, 'Acme', 'acme-repo-search', false, false, NOW(), NOW())",
+        )
+        .bind(org_id)
+        .execute(&pool)
+        .await
+        .expect("org should insert");
+
+        sqlx::query(
+            "INSERT INTO org_memberships (id, org_id, user_id, role, invited_by, joined_at) \
+             VALUES ($1, $2, $3, 'viewer', NULL, NOW())",
+        )
+        .bind(Uuid::new_v4())
+        .bind(org_id)
+        .bind(member_id)
+        .execute(&pool)
+        .await
+        .expect("membership should insert");
+
+        sqlx::query(
+            "INSERT INTO repositories (id, name, slug, kind, visibility, owner_org_id, created_at, updated_at) \
+             VALUES ($1, 'Release', 'release-packages', 'release', 'public', $4, NOW(), NOW()), \
+                    ($2, 'Private', 'private-packages', 'release', 'private', $4, NOW(), NOW()), \
+                    ($3, 'Public', 'public-packages', 'public', 'public', $4, NOW(), NOW())",
+        )
+        .bind(public_repo_id)
+        .bind(private_repo_id)
+        .bind(other_public_repo_id)
+        .bind(org_id)
+        .execute(&pool)
+        .await
+        .expect("repositories should insert");
+
+        sqlx::query(
+            "INSERT INTO packages (id, ecosystem, name, normalized_name, visibility, repository_id, owner_org_id, created_at, updated_at) \
+             VALUES ($1, 'npm', 'release-widget', 'release-widget', 'public', $4, $7, NOW(), NOW()), \
+                    ($2, 'npm', 'private-widget', 'private-widget', 'private', $5, $7, NOW(), NOW()), \
+                    ($3, 'npm', 'public-widget', 'public-widget', 'public', $6, $7, NOW(), NOW())",
+        )
+        .bind(public_package_id)
+        .bind(private_package_id)
+        .bind(other_public_package_id)
+        .bind(public_repo_id)
+        .bind(private_repo_id)
+        .bind(other_public_repo_id)
+        .bind(org_id)
+        .execute(&pool)
+        .await
+        .expect("packages should insert");
+
+        let hits = vec![
+            package_doc(public_package_id, "release-widget", "public"),
+            package_doc(private_package_id, "private-widget", "private"),
+            package_doc(other_public_package_id, "public-widget", "public"),
+        ];
+
+        let anonymous = load_visible_search_package_ids(
+            &state,
+            &hits,
+            None,
+            Some("acme-repo-search"),
+            Some("release-packages"),
+        )
+        .await
+        .expect("anonymous ids should load");
+        assert_eq!(anonymous, HashSet::from([public_package_id]));
+
+        let member = load_visible_search_package_ids(
+            &state,
+            &hits,
+            Some(member_id),
+            Some("acme-repo-search"),
+            Some("private-packages"),
+        )
+        .await
+        .expect("member ids should load");
+        assert_eq!(member, HashSet::from([private_package_id]));
+
+        let missing = load_visible_search_package_ids(
+            &state,
+            &hits,
+            Some(member_id),
+            Some("acme-repo-search"),
+            Some("missing-packages"),
+        )
+        .await
+        .expect("missing repository should return empty");
+        assert!(missing.is_empty());
     }
 
     #[test]
@@ -640,5 +797,22 @@ mod tests {
             None
         );
         assert!(normalize_search_org_slug(Some("Acme Search".to_owned())).is_err());
+    }
+
+    #[test]
+    fn normalize_search_repository_slug_validates_optional_values() {
+        assert_eq!(
+            normalize_search_repository_slug(Some("release-packages".to_owned()))
+                .expect("slug should normalize"),
+            Some("release-packages".to_owned())
+        );
+        assert_eq!(
+            normalize_search_repository_slug(Some("  ".to_owned()))
+                .expect("blank slug should clear"),
+            None
+        );
+        assert!(
+            normalize_search_repository_slug(Some("Release Packages".to_owned())).is_err()
+        );
     }
 }
