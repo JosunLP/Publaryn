@@ -215,9 +215,12 @@ async fn load_visible_search_package_ids(
         "SELECT p.id \
          FROM packages p \
          JOIN repositories r ON r.id = p.repository_id \
-         LEFT JOIN organizations o ON o.id = p.owner_org_id \
          WHERE p.id = ANY($1) \
-            AND ($3 IS NULL OR o.slug = $3) \
+            AND ($3 IS NULL OR EXISTS (\
+                SELECT 1 \
+                FROM organizations o \
+                WHERE o.id = p.owner_org_id AND o.slug = $3\
+            )) \
             AND p.visibility <> 'unlisted' \
             AND p.visibility <> 'quarantined' \
             AND r.visibility <> 'unlisted' \

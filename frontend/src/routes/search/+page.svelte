@@ -28,6 +28,8 @@
   let error: string | null = null;
   let organizationLoadError: string | null = null;
   let organizations: OrganizationMembership[] = [];
+  let currentOrgInOptions = false;
+  let hasOrganizationOptions = false;
   let results: SearchPackagesResponse = {
     total: 0,
     packages: [],
@@ -64,9 +66,11 @@
 
     try {
       const data = await listMyOrganizations();
-      organizations = (data.organizations || []).filter(
-        (membership) => Boolean(membership.slug?.trim())
-      );
+      organizations = [...(data.organizations || [])]
+        .filter((membership) => Boolean(membership.slug?.trim()))
+        .sort((left, right) =>
+          `${left.name || left.slug || ''}`.localeCompare(`${right.name || right.slug || ''}`)
+        );
     } catch (caughtError: unknown) {
       organizationLoadError =
         caughtError instanceof Error
@@ -138,10 +142,8 @@
   }
 
   $: totalPages = Math.max(1, Math.ceil((results.total || 0) / PER_PAGE));
-  $: organizationOptions = [...organizations].sort((left, right) =>
-    `${left.name || left.slug || ''}`.localeCompare(`${right.name || right.slug || ''}`)
-  );
-  $: hasOrganizationOptions = organizationOptions.length > 0 || Boolean(org);
+  $: currentOrgInOptions = organizations.some((membership) => membership.slug === org);
+  $: hasOrganizationOptions = organizations.length > 0 || Boolean(org);
 </script>
 
 <svelte:head>
@@ -183,10 +185,10 @@
         style="width:auto; min-width:180px;"
       >
         <option value="">All owners</option>
-        {#if org && !organizationOptions.some((membership) => membership.slug === org)}
+        {#if org && !currentOrgInOptions}
           <option value={org}>{org}</option>
         {/if}
-        {#each organizationOptions as membership}
+        {#each organizations as membership}
           <option value={membership.slug || ''}>
             {membership.name || membership.slug || 'Unnamed organization'}
           </option>
