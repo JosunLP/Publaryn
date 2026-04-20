@@ -132,6 +132,7 @@ export type ReleaseEcosystemMetadata =
 export interface SearchPackagesOptions {
   q?: string;
   ecosystem?: string;
+  org?: string;
   page?: number;
   perPage?: number;
 }
@@ -346,11 +347,12 @@ export interface StatsResponse {
 export async function searchPackages({
   q,
   ecosystem,
+  org,
   page,
   perPage,
 }: SearchPackagesOptions = {}): Promise<SearchPackagesResponse> {
   const { data } = await api.get<SearchPackagesResponse>('/v1/search', {
-    query: { q, ecosystem, page, per_page: perPage },
+    query: { q, ecosystem, org, page, per_page: perPage },
   });
 
   return data;

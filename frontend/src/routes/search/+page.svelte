@@ -1,9 +1,17 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
   import { page } from '$app/stores';
+  import { onMount } from 'svelte';
 
+  import { getAuthToken } from '../../api/client';
+  import type { OrganizationMembership } from '../../api/orgs';
+  import { listMyOrganizations } from '../../api/orgs';
   import type { SearchPackagesResponse } from '../../api/packages';
   import { searchPackages } from '../../api/packages';
+  import {
+    buildSearchPath,
+    getSearchViewFromQuery,
+  } from '../../pages/search-query';
   import {
     ECOSYSTEMS,
     ecosystemIcon,
@@ -18,6 +26,8 @@
   let lastLoadKey = '';
   let loading = true;
   let error: string | null = null;
+  let organizationLoadError: string | null = null;
+  let organizations: OrganizationMembership[] = [];
   let results: SearchPackagesResponse = {
     total: 0,
     packages: [],
@@ -26,19 +36,44 @@
   };
   let q = '';
   let ecosystem = '';
+  let org = '';
 
-  $: q = $page.url.searchParams.get('q') ?? '';
-  $: ecosystem = $page.url.searchParams.get('ecosystem') ?? '';
-  $: parsedPage = Number.parseInt(
-    $page.url.searchParams.get('page') ?? '1',
-    10
-  );
-  $: currentPage =
-    Number.isFinite(parsedPage) && parsedPage > 0 ? parsedPage : 1;
-  $: loadKey = `${q}|${ecosystem}|${currentPage}`;
+  onMount(() => {
+    if (!getAuthToken()) {
+      organizations = [];
+      organizationLoadError = null;
+      return;
+    }
+
+    void loadOrganizations();
+  });
+
+  $: searchView = getSearchViewFromQuery($page.url.searchParams);
+  $: q = searchView.q;
+  $: ecosystem = searchView.ecosystem;
+  $: org = searchView.org;
+  $: currentPage = searchView.page;
+  $: loadKey = `${q}|${ecosystem}|${org}|${currentPage}`;
   $: if (loadKey !== lastLoadKey) {
     lastLoadKey = loadKey;
     void loadResults();
+  }
+
+  async function loadOrganizations(): Promise<void> {
+    organizationLoadError = null;
+
+    try {
+      const data = await listMyOrganizations();
+      organizations = (data.organizations || []).filter(
+        (membership) => Boolean(membership.slug?.trim())
+      );
+    } catch (caughtError: unknown) {
+      organizationLoadError =
+        caughtError instanceof Error
+          ? caughtError.message
+          : 'Failed to load organizations.';
+      organizations = [];
+    }
   }
 
   async function loadResults(): Promise<void> {
@@ -49,6 +84,7 @@
       results = await searchPackages({
         q: q || undefined,
         ecosystem: ecosystem || undefined,
+        org: org || undefined,
         page: currentPage,
         perPage: PER_PAGE,
       });
@@ -68,31 +104,31 @@
 
   async function handleSearchSubmit(event: SubmitEvent): Promise<void> {
     event.preventDefault();
-
-    const params = new URLSearchParams();
-    if (q.trim()) {
-      params.set('q', q.trim());
-    }
-    if (ecosystem.trim()) {
-      params.set('ecosystem', ecosystem.trim());
-    }
-
-    await goto(params.toString() ? `/search?${params.toString()}` : '/search');
+    await goto(
+      buildSearchPath(
+        {
+          q,
+          ecosystem,
+          org,
+          page: 1,
+        },
+        $page.url.searchParams
+      )
+    );
   }
 
   async function goToPage(nextPage: number): Promise<void> {
-    const params = new URLSearchParams();
-    if (q.trim()) {
-      params.set('q', q.trim());
-    }
-    if (ecosystem.trim()) {
-      params.set('ecosystem', ecosystem.trim());
-    }
-    if (nextPage > 1) {
-      params.set('page', String(nextPage));
-    }
-
-    await goto(`/search?${params.toString()}`);
+    await goto(
+      buildSearchPath(
+        {
+          q,
+          ecosystem,
+          org,
+          page: nextPage,
+        },
+        $page.url.searchParams
+      )
+    );
   }
 
   function shouldShowVisibilityBadge(
@@ -102,6 +138,10 @@
   }
 
   $: totalPages = Math.max(1, Math.ceil((results.total || 0) / PER_PAGE));
+  $: organizationOptions = [...organizations].sort((left, right) =>
+    `${left.name || left.slug || ''}`.localeCompare(`${right.name || right.slug || ''}`)
+  );
+  $: hasOrganizationOptions = organizationOptions.length > 0 || Boolean(org);
 </script>
 
 <svelte:head>
@@ -134,8 +174,36 @@
         <option value={option.id}>{option.label}</option>
       {/each}
     </select>
+    {#if hasOrganizationOptions}
+      <select
+        bind:value={org}
+        name="org"
+        class="form-input"
+        aria-label="Organization scope"
+        style="width:auto; min-width:180px;"
+      >
+        <option value="">All owners</option>
+        {#if org && !organizationOptions.some((membership) => membership.slug === org)}
+          <option value={org}>{org}</option>
+        {/if}
+        {#each organizationOptions as membership}
+          <option value={membership.slug || ''}>
+            {membership.name || membership.slug || 'Unnamed organization'}
+          </option>
+        {/each}
+      </select>
+    {/if}
     <button type="submit" class="btn btn-primary">Search</button>
   </form>
+  {#if organizationLoadError}
+    <div class="text-muted mb-4" style="font-size:0.875rem;">
+      Organization filters are unavailable: {organizationLoadError}
+    </div>
+  {:else if org}
+    <div class="text-muted mb-4" style="font-size:0.875rem;">
+      Scoped to packages owned by {org}.
+    </div>
+  {/if}
 
   {#if error}
     <div class="alert alert-error">Search failed: {error}</div>
