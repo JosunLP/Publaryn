@@ -56,13 +56,45 @@
   <title>Sign up — Publaryn</title>
 </svelte:head>
 
-<div class="mt-6" style="max-width:400px; margin-left:auto; margin-right:auto;">
-  <h1 style="text-align:center; margin-bottom:24px;">Create an account</h1>
-  {#if error}
-    <div class="alert alert-error">{error}</div>
-  {/if}
+<div class="auth-shell">
+  <section class="auth-hero">
+    <span class="auth-hero__eyebrow">
+      <span class="page-hero__eyebrow-dot" aria-hidden="true"></span>
+      Get started
+    </span>
+    <h1 class="auth-hero__title">Create one account for every package workflow.</h1>
+    <p class="auth-hero__copy">
+      Register once to publish releases, manage organizations, create tokens,
+      configure MFA, and work across every supported ecosystem.
+    </p>
+    <div class="auth-benefits">
+      <div class="auth-benefit">
+        <div class="auth-benefit__title">Enterprise-ready identity</div>
+        <p class="auth-benefit__copy">
+          Strong auth, MFA, and scope-based access built into every write surface.
+        </p>
+      </div>
+      <div class="auth-benefit">
+        <div class="auth-benefit__title">One control plane</div>
+        <p class="auth-benefit__copy">
+          Packages, repositories, organizations, releases, and trusted publishing in one UI.
+        </p>
+      </div>
+    </div>
+  </section>
 
-  <div class="card">
+  <section class="auth-card">
+    <div class="auth-card__header">
+      <h2 class="auth-card__title">Create your account</h2>
+      <p class="auth-card__copy">
+        Your password must be at least 12 characters.
+      </p>
+    </div>
+
+    {#if error}
+      <div class="alert alert-error">{error}</div>
+    {/if}
+
     <form id="register-form" on:submit={handleSubmit}>
       <div class="form-group">
         <label for="reg-username">Username</label>
@@ -106,28 +138,23 @@
           minlength="12"
           autocomplete="new-password"
         />
-        <div
-          class="form-error"
-          id="password-hint"
-          style="color:var(--color-text-muted);"
-        >
+        <div class="form-error text-muted" id="password-hint">
           Minimum 12 characters.
         </div>
       </div>
-      <button
-        type="submit"
-        class="btn btn-primary"
-        style="width:100%; justify-content:center;"
-        disabled={submitting}
-      >
-        {submitting ? 'Creating account…' : 'Create account'}
-      </button>
+      <div class="auth-form-actions">
+        <button
+          type="submit"
+          class="btn btn-primary"
+          disabled={submitting}
+        >
+          {submitting ? 'Creating account…' : 'Create account'}
+        </button>
+      </div>
     </form>
-    <p style="text-align:center; margin-top:16px; font-size:0.875rem;">
-      Already have an account? <a
-        href="/login"
-        data-sveltekit-preload-data="hover">Sign in</a
-      >
+    <p class="auth-card__footer">
+      Already have an account?
+      <a href="/login" data-sveltekit-preload-data="hover">Sign in</a>
     </p>
-  </div>
+  </section>
 </div>

@@ -195,6 +195,12 @@
     top: 8px;
     left: 8px;
     z-index: 200;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
     padding: 8px 14px;
     background: var(--color-primary);
     color: #fff;
@@ -214,4 +220,3 @@
     padding: 0;
   }
 </style>
-

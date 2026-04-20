@@ -279,56 +279,81 @@
   {@const repositoryName =
     repository.name?.trim() || repositorySlug || 'Repository'}
 
-  <div class="mt-6">
+  <div class="page-shell">
     {#if notice}<div class="alert alert-success mb-4">{notice}</div>{/if}
     {#if error}<div class="alert alert-error mb-4">{error}</div>{/if}
 
-    <nav style="font-size:0.875rem; margin-bottom:16px;">
+    <nav class="page-breadcrumbs">
       {#if ownerSummary.href}
         <a href={ownerSummary.href} data-sveltekit-preload-data="hover"
           >{ownerSummary.label}</a
         >
         <span>&rsaquo; </span>
       {/if}
-      <span style="color:var(--color-text-secondary);">{repositoryName}</span>
+      <span>{repositoryName}</span>
     </nav>
 
-    <div class="pkg-header">
-      <h1 class="pkg-header__name">{repositoryName}</h1>
-      <span class="badge badge-ecosystem">Repository</span>
-      <span class="badge badge-ecosystem"
-        >{formatRepositoryKindLabel(repository.kind)}</span
-      >
-      <span class="badge badge-ecosystem"
-        >{formatRepositoryVisibilityLabel(repository.visibility)}</span
-      >
+    <section class="page-hero">
+      <div class="page-hero__header">
+        <div class="page-hero__copy">
+          <span class="page-hero__eyebrow">
+            <span class="page-hero__eyebrow-dot" aria-hidden="true"></span>
+            Repository
+          </span>
+          <h1 class="page-hero__title">{repositoryName}</h1>
+          <p class="page-hero__subtitle">
+            {repository.description ||
+              'A repository-backed package surface with enterprise visibility, ownership, and creation controls.'}
+          </p>
+          <div class="page-hero__meta">
+            <span class="badge badge-ecosystem">@{repositorySlug}</span>
+            <span class="badge badge-ecosystem"
+              >{formatRepositoryKindLabel(repository.kind)}</span
+            >
+            <span class="badge badge-ecosystem"
+              >{formatRepositoryVisibilityLabel(repository.visibility)}</span
+            >
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div class="page-stats">
+      <div class="page-stat">
+        <div class="page-stat__label">Visible packages</div>
+        <div class="page-stat__value">{formatNumber(packages.length)}</div>
+      </div>
+      <div class="page-stat">
+        <div class="page-stat__label">Owner</div>
+        <div class="page-stat__value">{ownerSummary.label}</div>
+      </div>
+      <div class="page-stat">
+        <div class="page-stat__label">Kind</div>
+        <div class="page-stat__value">{formatRepositoryKindLabel(repository.kind)}</div>
+      </div>
+      <div class="page-stat">
+        <div class="page-stat__label">Visibility</div>
+        <div class="page-stat__value">
+          {formatRepositoryVisibilityLabel(repository.visibility)}
+        </div>
+      </div>
     </div>
 
-    <p class="text-muted mt-4" style="font-size:1.05rem;">@{repositorySlug}</p>
-    {#if repository.description}
-      <p class="text-muted mt-4" style="font-size:1.05rem;">
-        {repository.description}
-      </p>
-    {/if}
-
-    <div class="pkg-detail">
-      <div class="pkg-detail__main">
-        <div class="card mb-4" style="padding:0;">
-          <div style="padding:16px 20px 8px;">
-            <h3 style="font-size:0.875rem; font-weight:600;">
-              Visible packages
-            </h3>
-            <p class="settings-copy">
+    <div class="detail-grid">
+      <div class="detail-main">
+        <section class="surface-card">
+          <div class="surface-card__header">
+            <div class="surface-card__title">Visible packages</div>
+            <p class="surface-card__copy">
               {formatVisiblePackageSummary(packages.length)}
             </p>
           </div>
 
+          <div class="surface-card__body" style="padding-top:0;">
           {#if packageError}
-            <div class="alert alert-error" style="margin:0 20px 20px;">
-              {packageError}
-            </div>
+            <div class="alert alert-error">{packageError}</div>
           {:else if packages.length === 0}
-            <div class="empty-state" style="margin:0 20px 20px;">
+            <div class="empty-state">
               <p>No visible packages belong to this repository yet.</p>
             </div>
           {:else}
@@ -343,19 +368,16 @@
                     {ecosystemIcon(pkg.ecosystem)}
                     {pkg.name || 'Unnamed package'}
                   </a>
-                  <span
-                    class="text-muted"
-                    style="font-size:0.8125rem; margin-left:8px;"
-                  >
+                  <span class="text-muted">
                     {ecosystemLabel(pkg.ecosystem)}
                   </span>
                   {#if pkg.visibility}
-                    <span class="badge badge-ecosystem" style="margin-left:8px;"
+                    <span class="badge badge-ecosystem"
                       >{formatRepositoryVisibilityLabel(pkg.visibility)}</span
                     >
                   {/if}
                   {#if pkg.description}
-                    <div class="settings-copy" style="margin-top:6px;">
+                    <div class="settings-copy mt-4">
                       {pkg.description}
                     </div>
                   {/if}
@@ -373,17 +395,19 @@
               </div>
             {/each}
           {/if}
-        </div>
+          </div>
+        </section>
 
         {#if repositoryCapabilities.canManage}
-          <section class="card settings-section mb-4">
-            <h2>Repository settings</h2>
-            <p class="settings-copy">
-              Update the repository description, visibility, and upstream
-              metadata.
-            </p>
+          <section class="surface-card settings-section">
+            <div class="surface-card__header">
+              <h2 class="surface-card__title">Repository settings</h2>
+              <p class="surface-card__copy">
+                Update the repository description, visibility, and upstream metadata.
+              </p>
+            </div>
 
-            <form on:submit={handleRepositoryUpdate}>
+            <form class="surface-card__body" on:submit={handleRepositoryUpdate}>
               <div class="grid gap-4 xl:grid-cols-2">
                 <div class="form-group">
                   <label for="repository-kind">Repository kind</label>
@@ -445,23 +469,25 @@
         {/if}
 
         {#if repositoryCapabilities.showPackageCreationSection}
-          <section class="card settings-section mb-4">
-            <h2>Create a package</h2>
-            <p class="settings-copy">
-              Package ownership is derived from this repository. Visibility
-              cannot be broader than the repository visibility, and matching
-              namespace claims currently constrain npm/Bun scopes, Composer
-              vendors, and Maven group IDs.
-            </p>
+          <section class="surface-card settings-section">
+            <div class="surface-card__header">
+              <h2 class="surface-card__title">Create a package</h2>
+              <p class="surface-card__copy">
+                Package ownership is derived from this repository. Visibility
+                cannot be broader than the repository visibility, and matching
+                namespace claims currently constrain npm/Bun scopes, Composer
+                vendors, and Maven group IDs.
+              </p>
+            </div>
 
             {#if repositoryCapabilities.packageCreationMessage}
-              <div class="alert alert-warning" style="margin-bottom:1rem;">
+              <div class="alert alert-warning surface-card__body" style="padding-top:0;">
                 {repositoryCapabilities.packageCreationMessage}
               </div>
             {/if}
 
             {#if repositoryCapabilities.canCreatePackages && repositoryCapabilities.packageCreationEligible && repositoryCapabilities.packageVisibilityOptions.length > 0}
-              <form on:submit={handleCreatePackage}>
+              <form class="surface-card__body" on:submit={handleCreatePackage}>
                 <div class="grid gap-4 xl:grid-cols-2">
                   <div class="form-group">
                     <label for="package-create-ecosystem">Ecosystem</label>
@@ -545,7 +571,7 @@
                   ></textarea>
                 </div>
 
-                <p class="settings-copy" style="margin-bottom:12px;">
+                <p class="settings-copy">
                   New packages created here will inherit ownership from
                   <strong>{repositoryName}</strong> and stay within
                   <strong
@@ -569,7 +595,7 @@
         {/if}
       </div>
 
-      <div class="pkg-detail__sidebar">
+      <div class="detail-sidebar">
         <div class="card">
           <div class="sidebar-section">
             <h3>Repository info</h3>

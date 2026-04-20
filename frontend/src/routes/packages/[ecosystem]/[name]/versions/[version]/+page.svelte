@@ -372,63 +372,78 @@
     Failed to load version: {loadError || 'Unknown error.'}
   </div>
 {:else}
-  <div class="mt-6">
-    <nav style="font-size:0.875rem; margin-bottom:16px;">
+  <div class="page-shell">
+    <nav class="page-breadcrumbs">
       <a
         href={`/packages/${encodeURIComponent(eecosystem())}/${encodeURIComponent(ename())}`}
         data-sveltekit-preload-data="hover"
         >{ecosystemIcon(eecosystem())} {ename()}</a
       >
       <span>&rsaquo; </span>
-      <span style="color:var(--color-text-secondary);"
-        >{formatVersionLabel(eecosystem(), eversion())}</span
-      >
+      <span>{formatVersionLabel(eecosystem(), eversion())}</span>
     </nav>
 
-    <div class="pkg-header">
-      <h1 class="pkg-header__name">{ename()}</h1>
-      <span class="badge badge-ecosystem"
-        >{ecosystemIcon(eecosystem())} {ecosystemLabel(eecosystem())}</span
-      >
-      <span class="pkg-header__version"
-        >{formatVersionLabel(eecosystem(), eversion())}</span
-      >
-      {#if release.is_yanked}<span class="badge badge-yanked">yanked</span>{/if}
-      {#if release.is_deprecated}<span class="badge badge-deprecated"
-          >deprecated</span
-        >{/if}
-      {#if release.status}<span class="badge badge-ecosystem"
-          >{formatReleaseStatusLabel(release.status)}</span
-        >{/if}
-    </div>
+    <section class="page-hero">
+      <div class="page-hero__header">
+        <div class="page-hero__copy">
+          <span class="page-hero__eyebrow">
+            <span class="page-hero__eyebrow-dot" aria-hidden="true"></span>
+            Release
+          </span>
+          <h1 class="page-hero__title">{ename()}</h1>
+          <p class="page-hero__subtitle">
+            Release details, artifacts, provenance, and publication controls for
+            {formatVersionLabel(eecosystem(), eversion())}.
+          </p>
+          <div class="page-hero__meta">
+            <span class="badge badge-ecosystem"
+              >{ecosystemIcon(eecosystem())} {ecosystemLabel(eecosystem())}</span
+            >
+            <span class="badge badge-ecosystem"
+              >{formatVersionLabel(eecosystem(), eversion())}</span
+            >
+            {#if release.is_yanked}<span class="badge badge-yanked">yanked</span>{/if}
+            {#if release.is_deprecated}<span class="badge badge-deprecated"
+                >deprecated</span
+              >{/if}
+            {#if release.status}<span class="badge badge-ecosystem"
+                >{formatReleaseStatusLabel(release.status)}</span
+              >{/if}
+          </div>
+        </div>
+      </div>
+    </section>
 
     {#if notice}<div class="alert alert-success mt-4">{notice}</div>{/if}
     {#if error}<div class="alert alert-error mt-4">{error}</div>{/if}
 
-    <div class="card mt-4 mb-4">
-      <h3
-        style="font-size:0.8125rem; font-weight:600; color:var(--color-text-muted); text-transform:uppercase; letter-spacing:0.05em; margin-bottom:8px;"
-      >
-        Install
-      </h3>
+    <section class="detail-summary">
+      <div class="detail-summary__header">
+        <div>
+          <div class="detail-summary__title">Install</div>
+          <p class="detail-summary__copy">
+            Copy the exact client command for this release.
+          </p>
+        </div>
+      </div>
       <div class="code-block">
         <code>{installCommand(eecosystem(), ename(), eversion())}</code>
         <button class="copy-btn" type="button" on:click={handleCopyInstall}
           >Copy</button
         >
       </div>
-    </div>
+    </section>
 
-    <div class="pkg-detail">
-      <div class="pkg-detail__main">
+    <div class="detail-grid">
+      <div class="detail-main">
         <div class="card mb-4">
-          <h3 style="margin-bottom:8px;">Lifecycle state</h3>
+          <h3 class="metadata-block__title">Lifecycle state</h3>
           <p
             class={`alert alert-${readiness.tone === 'warning' ? 'warning' : readiness.tone === 'success' ? 'success' : 'info'}`}
           >
             {readiness.message}
           </p>
-          <div class="token-row__meta" style="margin-top:12px;">
+          <div class="token-row__meta mt-4">
             <span
               >{getReleaseTimestampLabel(release.status)}
               {formatDate(release.published_at || release.created_at)}</span
@@ -446,21 +461,21 @@
 
         {#if release.description}
           <div class="card mb-4">
-            <h3 style="margin-bottom:8px;">Description</h3>
+            <h3 class="metadata-block__title">Description</h3>
             <p>{release.description}</p>
           </div>
         {/if}
 
         {#if release.changelog}
           <div class="card mb-4">
-            <h3 style="margin-bottom:8px;">Changelog</h3>
-            <pre style="white-space:pre-wrap;">{release.changelog}</pre>
+            <h3 class="metadata-block__title">Changelog</h3>
+            <pre>{release.changelog}</pre>
           </div>
         {/if}
 
         {#if cargoMetadata}
           <div class="card mb-4">
-            <h3 style="margin-bottom:8px;">Cargo metadata</h3>
+            <h3 class="metadata-block__title">Cargo metadata</h3>
             {#if cargoMetadata.rust_version}
               <div class="sidebar-row">
                 <span class="sidebar-row__label">Rust version</span>
@@ -991,7 +1006,7 @@
         </div>
       </div>
 
-      <div class="pkg-detail__sidebar">
+      <div class="detail-sidebar">
         <div class="card">
           <div class="sidebar-section">
             <h3>Version info</h3>

@@ -916,46 +916,57 @@
     ? installCommand(ecosystem, pkg.name, latestVersion)
     : installCommand(ecosystem, pkg.name)}
 
-  <div class="mt-6">
-    <div class="pkg-header">
-      <h1 class="pkg-header__name">{pkg.display_name || pkg.name}</h1>
-      <span class="badge badge-ecosystem"
-        >{ecosystemIcon(ecosystem)} {ecosystemLabel(ecosystem)}</span
-      >
-      {#if latestVersion}
-        <span class="pkg-header__version"
-          >{formatVersionLabel(ecosystem, latestVersion)}</span
-        >
-      {/if}
-      {#if pkg.is_deprecated}
-        <span class="badge badge-deprecated">deprecated</span>
-      {/if}
-      {#if pkg.is_archived}
-        <span class="badge badge-yanked">archived</span>
-      {/if}
-    </div>
+  <div class="page-shell">
+    <section class="page-hero">
+      <div class="page-hero__header">
+        <div class="page-hero__copy">
+          <span class="page-hero__eyebrow">
+            <span class="page-hero__eyebrow-dot" aria-hidden="true"></span>
+            Package
+          </span>
+          <h1 class="page-hero__title">{pkg.display_name || pkg.name}</h1>
+          <p class="page-hero__subtitle">
+            {pkg.description ||
+              'Unified package details, release history, security posture, and delegated access.'}
+          </p>
+          <div class="page-hero__meta">
+            <span class="badge badge-ecosystem"
+              >{ecosystemIcon(ecosystem)} {ecosystemLabel(ecosystem)}</span
+            >
+            {#if latestVersion}
+              <span class="badge badge-ecosystem"
+                >{formatVersionLabel(ecosystem, latestVersion)}</span
+              >
+            {/if}
+            {#if pkg.is_deprecated}
+              <span class="badge badge-deprecated">deprecated</span>
+            {/if}
+            {#if pkg.is_archived}
+              <span class="badge badge-yanked">archived</span>
+            {/if}
+          </div>
+        </div>
+      </div>
+    </section>
 
-    {#if pkg.description}
-      <p class="text-muted mt-4" style="font-size:1.05rem;">
-        {pkg.description}
-      </p>
-    {/if}
-
-    <div class="pkg-detail">
-      <div class="pkg-detail__main">
-        <div class="card mb-4">
-          <h3
-            style="font-size:0.8125rem; font-weight:600; color:var(--color-text-muted); text-transform:uppercase; letter-spacing:0.05em; margin-bottom:8px;"
-          >
-            Install
-          </h3>
+    <div class="detail-grid">
+      <div class="detail-main">
+        <section class="detail-summary">
+          <div class="detail-summary__header">
+            <div>
+              <div class="detail-summary__title">Install</div>
+              <p class="detail-summary__copy">
+                Copy the native client command for the latest visible release.
+              </p>
+            </div>
+          </div>
           <div class="code-block">
             <code>{install}</code>
             <button class="copy-btn" type="button" on:click={handleCopyInstall}
               >Copy</button
             >
           </div>
-        </div>
+        </section>
 
         <div class="tabs">
           <button
@@ -979,9 +990,8 @@
           >
             Security
             {#if openFindings.length > 0}
-              <span
-                class={`badge badge-severity-${worstSeverity(openFindings)}`}
-                style="margin-left:4px;">{openFindings.length}</span
+              <span class={`badge badge-severity-${worstSeverity(openFindings)}`}
+                >{openFindings.length}</span
               >
             {/if}
           </button>
@@ -991,15 +1001,15 @@
           {#if readmeHtml}
             <div class="readme-content">{@html readmeHtml}</div>
           {:else}
-            <div class="empty-state">
-              <p>No README available for this package.</p>
-            </div>
+              <div class="empty-state surface-card">
+                <p>No README available for this package.</p>
+              </div>
           {/if}
         {/if}
 
         {#if activeTab === 'versions'}
           {#if releases.length === 0}
-            <div class="empty-state"><p>No releases yet.</p></div>
+              <div class="empty-state surface-card"><p>No releases yet.</p></div>
           {:else}
             {#each releases as release}
               <div class="release-row">
@@ -1046,7 +1056,7 @@
           {/if}
 
           {#if findings.length === 0}
-            <div class="empty-state"><p>No security findings.</p></div>
+              <div class="empty-state surface-card"><p>No security findings.</p></div>
           {:else}
             {#each [...findings].sort((left, right) => severityLevel(right.severity) - severityLevel(left.severity)) as finding}
               {@const severity = finding.severity?.toLowerCase() || 'info'}
@@ -1132,7 +1142,7 @@
         {/if}
       </div>
 
-      <div class="pkg-detail__sidebar">
+      <div class="detail-sidebar">
         {#if packageMetadata}
           <div class="card">
             <div class="sidebar-section">
