@@ -20,6 +20,17 @@ use std::net::SocketAddr;
 
 use crate::config::RateLimitConfig;
 
+const PROTOCOL_READ_PREFIXES: &[&str] = &[
+    "/npm/",
+    "/pypi/",
+    "/composer/",
+    "/rubygems/",
+    "/maven/",
+    "/cargo/",
+    "/nuget/",
+    "/oci/",
+];
+
 /// Rate-limit tier applied to different endpoint groups.
 #[derive(Debug, Clone, Copy)]
 pub enum RateLimitTier {
@@ -64,14 +75,9 @@ pub fn classify_request(method: &axum::http::Method, path: &str) -> RateLimitTie
 
     // Protocol adapter reads
     if matches!(method, &Method::GET | &Method::HEAD)
-        && (path.starts_with("/npm/")
-            || path.starts_with("/pypi/")
-            || path.starts_with("/composer/")
-            || path.starts_with("/rubygems/")
-            || path.starts_with("/maven/")
-            || path.starts_with("/cargo/")
-            || path.starts_with("/nuget/")
-            || path.starts_with("/oci/"))
+        && PROTOCOL_READ_PREFIXES
+            .iter()
+            .any(|prefix| path.starts_with(prefix))
     {
         return RateLimitTier::Protocol;
     }
