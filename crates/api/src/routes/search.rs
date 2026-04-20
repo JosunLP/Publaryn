@@ -237,31 +237,67 @@ async fn load_visible_search_package_ids(
             AND p.visibility <> 'quarantined' \
             AND r.visibility <> 'unlisted' \
            AND r.visibility <> 'quarantined' \
-           AND (\
-                (p.visibility = 'public' OR (\
-                    $2 IS NOT NULL \
-                    AND p.visibility IN ('private', 'internal_org') \
-                    AND (\
-                        p.owner_user_id = $2 \
-                        OR EXISTS (\
-                            SELECT 1 \
-                            FROM org_memberships om \
-                            WHERE om.org_id = p.owner_org_id AND om.user_id = $2\
-                        )\
-                    )\
-                )) \
-                AND (r.visibility = 'public' OR (\
-                    $2 IS NOT NULL \
-                    AND r.visibility IN ('private', 'internal_org') \
-                    AND (\
-                        r.owner_user_id = $2 \
-                        OR EXISTS (\
-                            SELECT 1 \
-                            FROM org_memberships om \
-                            WHERE om.org_id = r.owner_org_id AND om.user_id = $2\
-                        )\
-                    )\
-                ))\
+            AND (\
+                 (p.visibility = 'public' OR (\
+                     $2 IS NOT NULL \
+                     AND p.visibility IN ('private', 'internal_org') \
+                     AND (\
+                         p.owner_user_id = $2 \
+                         OR EXISTS (\
+                             SELECT 1 \
+                             FROM org_memberships om \
+                             WHERE om.org_id = p.owner_org_id AND om.user_id = $2\
+                         ) \
+                         OR EXISTS (\
+                             SELECT 1 \
+                             FROM team_package_access tpa \
+                             JOIN team_memberships tm ON tm.team_id = tpa.team_id \
+                             JOIN teams t ON t.id = tpa.team_id \
+                             WHERE tpa.package_id = p.id \
+                               AND tm.user_id = $2 \
+                               AND t.org_id = p.owner_org_id\
+                         ) \
+                         OR EXISTS (\
+                             SELECT 1 \
+                             FROM team_repository_access tra \
+                             JOIN team_memberships tm ON tm.team_id = tra.team_id \
+                             JOIN teams t ON t.id = tra.team_id \
+                             WHERE tra.repository_id = r.id \
+                               AND tm.user_id = $2 \
+                               AND t.org_id = r.owner_org_id\
+                         )\
+                     )\
+                 )) \
+                 AND (r.visibility = 'public' OR (\
+                     $2 IS NOT NULL \
+                     AND r.visibility IN ('private', 'internal_org') \
+                     AND (\
+                         r.owner_user_id = $2 \
+                         OR EXISTS (\
+                             SELECT 1 \
+                             FROM org_memberships om \
+                             WHERE om.org_id = r.owner_org_id AND om.user_id = $2\
+                         ) \
+                         OR EXISTS (\
+                             SELECT 1 \
+                             FROM team_package_access tpa \
+                             JOIN team_memberships tm ON tm.team_id = tpa.team_id \
+                             JOIN teams t ON t.id = tpa.team_id \
+                             WHERE tpa.package_id = p.id \
+                               AND tm.user_id = $2 \
+                               AND t.org_id = p.owner_org_id\
+                         ) \
+                         OR EXISTS (\
+                             SELECT 1 \
+                             FROM team_repository_access tra \
+                             JOIN team_memberships tm ON tm.team_id = tra.team_id \
+                             JOIN teams t ON t.id = tra.team_id \
+                             WHERE tra.repository_id = r.id \
+                               AND tm.user_id = $2 \
+                               AND t.org_id = r.owner_org_id\
+                         )\
+                     )\
+                 ))\
            )",
     )
     .bind(&package_ids)
@@ -892,6 +928,186 @@ mod tests {
         .await
         .expect("missing repository should return empty");
         assert!(missing.is_empty());
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn visible_search_package_ids_include_delegated_team_private_access(pool: PgPool) {
+        let state = test_state(pool.clone());
+        let owner_id = Uuid::new_v4();
+        let package_grantee_id = Uuid::new_v4();
+        let repository_grantee_id = Uuid::new_v4();
+        let org_id = Uuid::new_v4();
+        let package_team_id = Uuid::new_v4();
+        let repository_team_id = Uuid::new_v4();
+        let package_repo_id = Uuid::new_v4();
+        let repository_repo_id = Uuid::new_v4();
+        let public_repo_id = Uuid::new_v4();
+        let package_private_id = Uuid::new_v4();
+        let repository_private_id = Uuid::new_v4();
+        let public_id = Uuid::new_v4();
+
+        sqlx::query(
+            "INSERT INTO users (id, username, email, password_hash, created_at, updated_at) \
+             VALUES ($1, 'owner', 'owner-search@test.dev', 'hash', NOW(), NOW()), \
+                    ($2, 'package-grantee', 'package-grantee@test.dev', 'hash', NOW(), NOW()), \
+                    ($3, 'repository-grantee', 'repository-grantee@test.dev', 'hash', NOW(), NOW())",
+        )
+        .bind(owner_id)
+        .bind(package_grantee_id)
+        .bind(repository_grantee_id)
+        .execute(&pool)
+        .await
+        .expect("users should insert");
+
+        sqlx::query(
+            "INSERT INTO organizations (id, name, slug, is_verified, mfa_required, created_at, updated_at) \
+             VALUES ($1, 'Delegated Search', 'delegated-search', false, false, NOW(), NOW())",
+        )
+        .bind(org_id)
+        .execute(&pool)
+        .await
+        .expect("org should insert");
+
+        sqlx::query(
+            "INSERT INTO org_memberships (id, org_id, user_id, role, invited_by, joined_at) \
+             VALUES ($1, $4, $2, 'owner', NULL, NOW()), \
+                    ($3, $4, $5, 'viewer', NULL, NOW()), \
+                    ($6, $4, $7, 'viewer', NULL, NOW())",
+        )
+        .bind(Uuid::new_v4())
+        .bind(owner_id)
+        .bind(Uuid::new_v4())
+        .bind(org_id)
+        .bind(package_grantee_id)
+        .bind(Uuid::new_v4())
+        .bind(repository_grantee_id)
+        .execute(&pool)
+        .await
+        .expect("memberships should insert");
+
+        sqlx::query(
+            "INSERT INTO teams (id, org_id, name, slug, description, created_at, updated_at) \
+             VALUES ($1, $3, 'Package Readers', 'package-readers', NULL, NOW(), NOW()), \
+                    ($2, $3, 'Repository Readers', 'repository-readers', NULL, NOW(), NOW())",
+        )
+        .bind(package_team_id)
+        .bind(repository_team_id)
+        .bind(org_id)
+        .execute(&pool)
+        .await
+        .expect("teams should insert");
+
+        sqlx::query(
+            "INSERT INTO team_memberships (id, team_id, user_id, added_at) \
+             VALUES ($1, $2, $3, NOW()), \
+                    ($4, $5, $6, NOW())",
+        )
+        .bind(Uuid::new_v4())
+        .bind(package_team_id)
+        .bind(package_grantee_id)
+        .bind(Uuid::new_v4())
+        .bind(repository_team_id)
+        .bind(repository_grantee_id)
+        .execute(&pool)
+        .await
+        .expect("team memberships should insert");
+
+        sqlx::query(
+            "INSERT INTO repositories (id, name, slug, kind, visibility, owner_org_id, created_at, updated_at) \
+             VALUES ($1, 'Package Private', 'package-private', 'release', 'private', $4, NOW(), NOW()), \
+                    ($2, 'Repository Private', 'repository-private', 'release', 'private', $4, NOW(), NOW()), \
+                    ($3, 'Public', 'public-repo', 'public', 'public', $4, NOW(), NOW())",
+        )
+        .bind(package_repo_id)
+        .bind(repository_repo_id)
+        .bind(public_repo_id)
+        .bind(org_id)
+        .execute(&pool)
+        .await
+        .expect("repositories should insert");
+
+        sqlx::query(
+            "INSERT INTO packages (id, ecosystem, name, normalized_name, visibility, repository_id, owner_org_id, created_at, updated_at) \
+             VALUES ($1, 'npm', 'package-granted-widget', 'package-granted-widget', 'private', $4, $6, NOW(), NOW()), \
+                    ($2, 'npm', 'repository-granted-widget', 'repository-granted-widget', 'private', $5, $6, NOW(), NOW()), \
+                    ($3, 'npm', 'public-widget', 'public-widget', 'public', $7, $6, NOW(), NOW())",
+        )
+        .bind(package_private_id)
+        .bind(repository_private_id)
+        .bind(public_id)
+        .bind(package_repo_id)
+        .bind(repository_repo_id)
+        .bind(org_id)
+        .bind(public_repo_id)
+        .execute(&pool)
+        .await
+        .expect("packages should insert");
+
+        sqlx::query(
+            "INSERT INTO team_package_access (id, team_id, package_id, permission, granted_at) \
+             VALUES ($1, $2, $3, 'read_private', NOW())",
+        )
+        .bind(Uuid::new_v4())
+        .bind(package_team_id)
+        .bind(package_private_id)
+        .execute(&pool)
+        .await
+        .expect("team package access should insert");
+
+        sqlx::query(
+            "INSERT INTO team_repository_access (id, team_id, repository_id, permission, granted_at) \
+             VALUES ($1, $2, $3, 'publish', NOW())",
+        )
+        .bind(Uuid::new_v4())
+        .bind(repository_team_id)
+        .bind(repository_repo_id)
+        .execute(&pool)
+        .await
+        .expect("team repository access should insert");
+
+        let hits = vec![
+            package_doc(
+                package_private_id,
+                "package-granted-widget",
+                "private",
+                "Package Private",
+                "package-private",
+            ),
+            package_doc(
+                repository_private_id,
+                "repository-granted-widget",
+                "private",
+                "Repository Private",
+                "repository-private",
+            ),
+            package_doc(public_id, "public-widget", "public", "Public", "public-repo"),
+        ];
+
+        let package_grantee_ids = load_visible_search_package_ids(
+            &state,
+            &hits,
+            Some(package_grantee_id),
+            SearchScopeFilters::default(),
+        )
+        .await
+        .expect("package grantee ids should load");
+        assert_eq!(
+            package_grantee_ids,
+            HashSet::from([package_private_id, public_id])
+        );
+
+        let repository_grantee_ids = load_visible_search_package_ids(
+            &state,
+            &hits,
+            Some(repository_grantee_id),
+            SearchScopeFilters::default(),
+        )
+        .await
+        .expect("repository grantee ids should load");
+        assert_eq!(
+            repository_grantee_ids,
+            HashSet::from([repository_private_id, public_id])
+        );
     }
 
     #[test]
