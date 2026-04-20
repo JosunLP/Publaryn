@@ -1172,7 +1172,25 @@ async fn search_public_packages(
     query: &str,
     ecosystem: Option<&str>,
 ) -> (StatusCode, Value) {
-    search_packages_with_options(app, None, query, ecosystem, None, None, None, None).await
+    search_packages_with_options(
+        app,
+        None,
+        query,
+        SearchPackagesRequestOptions {
+            ecosystem,
+            ..SearchPackagesRequestOptions::default()
+        },
+    )
+    .await
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct SearchPackagesRequestOptions<'a> {
+    ecosystem: Option<&'a str>,
+    org: Option<&'a str>,
+    repository: Option<&'a str>,
+    page: Option<u32>,
+    per_page: Option<u32>,
 }
 
 /// Search packages through the management API and return the response.
@@ -1180,26 +1198,22 @@ async fn search_packages_with_options(
     app: &axum::Router,
     auth_token: Option<&str>,
     query: &str,
-    ecosystem: Option<&str>,
-    org: Option<&str>,
-    repository: Option<&str>,
-    page: Option<u32>,
-    per_page: Option<u32>,
+    options: SearchPackagesRequestOptions<'_>,
 ) -> (StatusCode, Value) {
     let mut params = vec![format!("q={query}")];
-    if let Some(ecosystem) = ecosystem {
+    if let Some(ecosystem) = options.ecosystem {
         params.push(format!("ecosystem={ecosystem}"));
     }
-    if let Some(org) = org {
+    if let Some(org) = options.org {
         params.push(format!("org={org}"));
     }
-    if let Some(repository) = repository {
+    if let Some(repository) = options.repository {
         params.push(format!("repository={repository}"));
     }
-    if let Some(page) = page {
+    if let Some(page) = options.page {
         params.push(format!("page={page}"));
     }
-    if let Some(per_page) = per_page {
+    if let Some(per_page) = options.per_page {
         params.push(format!("per_page={per_page}"));
     }
 
@@ -8471,11 +8485,11 @@ async fn test_management_search_can_scope_results_to_one_org(pool: PgPool) {
             &app,
             Some(&bob_jwt),
             "orgscopedsearchgamma",
-            Some("npm"),
-            Some("acme-org-search"),
-            None,
-            None,
-            None,
+            SearchPackagesRequestOptions {
+                ecosystem: Some("npm"),
+                org: Some("acme-org-search"),
+                ..SearchPackagesRequestOptions::default()
+            },
         )
         .await;
         assert_eq!(
@@ -8488,11 +8502,11 @@ async fn test_management_search_can_scope_results_to_one_org(pool: PgPool) {
             &app,
             None,
             "orgscopedsearchgamma",
-            Some("npm"),
-            Some("acme-org-search"),
-            None,
-            None,
-            None,
+            SearchPackagesRequestOptions {
+                ecosystem: Some("npm"),
+                org: Some("acme-org-search"),
+                ..SearchPackagesRequestOptions::default()
+            },
         )
         .await;
         assert_eq!(
@@ -8533,11 +8547,11 @@ async fn test_management_search_can_scope_results_to_one_org(pool: PgPool) {
         &app,
         Some(&carol_jwt),
         "orgscopedsearchgamma",
-        Some("npm"),
-        Some("acme-org-search"),
-        None,
-        None,
-        None,
+        SearchPackagesRequestOptions {
+            ecosystem: Some("npm"),
+            org: Some("acme-org-search"),
+            ..SearchPackagesRequestOptions::default()
+        },
     )
     .await;
     assert_eq!(
@@ -8581,8 +8595,13 @@ async fn test_management_search_can_scope_results_to_one_repository(pool: PgPool
     let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
     let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
 
-    let (status, org_body) =
-        create_org(&app, &alice_jwt, "Acme Repository Search", "acme-repository-search").await;
+    let (status, org_body) = create_org(
+        &app,
+        &alice_jwt,
+        "Acme Repository Search",
+        "acme-repository-search",
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED);
     let org_id = org_body["id"].as_str().expect("org id");
 
@@ -8680,11 +8699,12 @@ async fn test_management_search_can_scope_results_to_one_repository(pool: PgPool
             &app,
             Some(&bob_jwt),
             "repositoryscopedsearchdelta",
-            Some("npm"),
-            Some("acme-repository-search"),
-            Some("private-packages"),
-            None,
-            None,
+            SearchPackagesRequestOptions {
+                ecosystem: Some("npm"),
+                org: Some("acme-repository-search"),
+                repository: Some("private-packages"),
+                ..SearchPackagesRequestOptions::default()
+            },
         )
         .await;
         assert_eq!(
@@ -8697,11 +8717,12 @@ async fn test_management_search_can_scope_results_to_one_repository(pool: PgPool
             &app,
             None,
             "repositoryscopedsearchdelta",
-            Some("npm"),
-            Some("acme-repository-search"),
-            Some("private-packages"),
-            None,
-            None,
+            SearchPackagesRequestOptions {
+                ecosystem: Some("npm"),
+                org: Some("acme-repository-search"),
+                repository: Some("private-packages"),
+                ..SearchPackagesRequestOptions::default()
+            },
         )
         .await;
         assert_eq!(
@@ -8742,11 +8763,12 @@ async fn test_management_search_can_scope_results_to_one_repository(pool: PgPool
         &app,
         None,
         "repositoryscopedsearchdelta",
-        Some("npm"),
-        Some("acme-repository-search"),
-        Some("release-packages"),
-        None,
-        None,
+        SearchPackagesRequestOptions {
+            ecosystem: Some("npm"),
+            org: Some("acme-repository-search"),
+            repository: Some("release-packages"),
+            ..SearchPackagesRequestOptions::default()
+        },
     )
     .await;
     assert_eq!(

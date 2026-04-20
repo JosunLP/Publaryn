@@ -69,8 +69,7 @@ impl NpmAppState for AppState {
             self.search.as_ref(),
             &search_query,
             actor_user_id,
-            None,
-            None,
+            crate::routes::search::SearchScopeFilters::default(),
             offset as usize,
             limit as usize,
         )

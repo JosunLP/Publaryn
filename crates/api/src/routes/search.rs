@@ -67,8 +67,10 @@ async fn search_packages(
         state.search.as_ref(),
         &query,
         identity.user_id(),
-        owner_org_slug.as_deref(),
-        repository_slug.as_deref(),
+        SearchScopeFilters {
+            owner_org_slug: owner_org_slug.as_deref(),
+            repository_slug: repository_slug.as_deref(),
+        },
         page,
         per_page,
     )
@@ -87,13 +89,18 @@ pub(crate) struct VisibleSearchPage {
     pub(crate) packages: Vec<PackageDocument>,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct SearchScopeFilters<'a> {
+    pub(crate) owner_org_slug: Option<&'a str>,
+    pub(crate) repository_slug: Option<&'a str>,
+}
+
 pub(crate) async fn load_visible_search_page(
     state: &AppState,
     search: &(dyn publaryn_search::SearchIndex + Send + Sync),
     query: &SearchQuery,
     actor_user_id: Option<Uuid>,
-    owner_org_slug: Option<&str>,
-    repository_slug: Option<&str>,
+    filters: SearchScopeFilters<'_>,
     page: u32,
     per_page: u32,
 ) -> ApiResult<VisibleSearchPage> {
@@ -102,8 +109,7 @@ pub(crate) async fn load_visible_search_page(
         search,
         query,
         actor_user_id,
-        owner_org_slug,
-        repository_slug,
+        filters,
         page.saturating_sub(1).saturating_mul(per_page) as usize,
         per_page as usize,
     )
@@ -115,8 +121,7 @@ pub(crate) async fn load_visible_search_window(
     search: &(dyn publaryn_search::SearchIndex + Send + Sync),
     query: &SearchQuery,
     actor_user_id: Option<Uuid>,
-    owner_org_slug: Option<&str>,
-    repository_slug: Option<&str>,
+    filters: SearchScopeFilters<'_>,
     visible_offset: usize,
     page_size: usize,
 ) -> ApiResult<VisibleSearchPage> {
@@ -142,14 +147,8 @@ pub(crate) async fn load_visible_search_window(
             break;
         }
 
-        let visible_hits = filter_visible_search_hits(
-            state,
-            results.hits,
-            actor_user_id,
-            owner_org_slug,
-            repository_slug,
-        )
-        .await?;
+        let visible_hits =
+            filter_visible_search_hits(state, results.hits, actor_user_id, filters).await?;
         let batch_visible_count = visible_hits.len() as u64;
         let previous_visible_total = visible_total;
         visible_total += batch_visible_count;
@@ -193,17 +192,10 @@ async fn filter_visible_search_hits(
     state: &AppState,
     hits: Vec<PackageDocument>,
     actor_user_id: Option<Uuid>,
-    owner_org_slug: Option<&str>,
-    repository_slug: Option<&str>,
+    filters: SearchScopeFilters<'_>,
 ) -> ApiResult<Vec<PackageDocument>> {
-    let visible_package_ids = load_visible_search_package_ids(
-        state,
-        &hits,
-        actor_user_id,
-        owner_org_slug,
-        repository_slug,
-    )
-    .await?;
+    let visible_package_ids =
+        load_visible_search_package_ids(state, &hits, actor_user_id, filters).await?;
 
     Ok(hits
         .into_iter()
@@ -219,8 +211,7 @@ async fn load_visible_search_package_ids(
     state: &AppState,
     hits: &[PackageDocument],
     actor_user_id: Option<Uuid>,
-    owner_org_slug: Option<&str>,
-    repository_slug: Option<&str>,
+    filters: SearchScopeFilters<'_>,
 ) -> ApiResult<HashSet<Uuid>> {
     let package_ids = hits
         .iter()
@@ -275,8 +266,8 @@ async fn load_visible_search_package_ids(
     )
     .bind(&package_ids)
     .bind(actor_user_id)
-    .bind(owner_org_slug)
-    .bind(repository_slug)
+    .bind(filters.owner_org_slug)
+    .bind(filters.repository_slug)
     .fetch_all(&state.db)
     .await
     .map_err(|e| ApiError(Error::Database(e)))?;
@@ -312,7 +303,7 @@ fn normalize_search_slug(slug: Option<String>) -> ApiResult<Option<String>> {
 mod tests {
     use super::{
         load_visible_search_package_ids, load_visible_search_page, normalize_search_org_slug,
-        normalize_search_repository_slug,
+        normalize_search_repository_slug, SearchScopeFilters,
     };
     use crate::{config::Config, state::AppState};
     use publaryn_search::{
@@ -459,24 +450,33 @@ mod tests {
             package_doc(unlisted_package_id, "unlisted-widget", "unlisted"),
         ];
 
-        let anonymous = load_visible_search_package_ids(&state, &hits, None, None, None)
-            .await
-            .expect("anonymous ids should load");
+        let anonymous =
+            load_visible_search_package_ids(&state, &hits, None, SearchScopeFilters::default())
+                .await
+                .expect("anonymous ids should load");
         assert_eq!(anonymous, HashSet::from([public_package_id]));
 
-        let org_member =
-            load_visible_search_package_ids(&state, &hits, Some(owner_id), None, None)
-            .await
-            .expect("member ids should load");
+        let org_member = load_visible_search_package_ids(
+            &state,
+            &hits,
+            Some(owner_id),
+            SearchScopeFilters::default(),
+        )
+        .await
+        .expect("member ids should load");
         assert_eq!(
             org_member,
             HashSet::from([public_package_id, private_package_id])
         );
 
-        let outsider =
-            load_visible_search_package_ids(&state, &hits, Some(outsider_id), None, None)
-            .await
-            .expect("outsider ids should load");
+        let outsider = load_visible_search_package_ids(
+            &state,
+            &hits,
+            Some(outsider_id),
+            SearchScopeFilters::default(),
+        )
+        .await
+        .expect("outsider ids should load");
         assert_eq!(outsider, HashSet::from([public_package_id]));
     }
 
@@ -541,18 +541,32 @@ mod tests {
             offset: Some(0),
         };
 
-        let anonymous_page =
-            load_visible_search_page(&state, &search, &query, None, None, None, 2, 1)
-            .await
-            .expect("anonymous page should load");
+        let anonymous_page = load_visible_search_page(
+            &state,
+            &search,
+            &query,
+            None,
+            SearchScopeFilters::default(),
+            2,
+            1,
+        )
+        .await
+        .expect("anonymous page should load");
         assert_eq!(anonymous_page.total, 2);
         assert_eq!(anonymous_page.packages.len(), 1);
         assert_eq!(anonymous_page.packages[0].name, "public-b");
 
-        let owner_page =
-            load_visible_search_page(&state, &search, &query, Some(user_id), None, None, 2, 1)
-                .await
-                .expect("owner page should load");
+        let owner_page = load_visible_search_page(
+            &state,
+            &search,
+            &query,
+            Some(user_id),
+            SearchScopeFilters::default(),
+            2,
+            1,
+        )
+        .await
+        .expect("owner page should load");
         assert_eq!(owner_page.total, 3);
         assert_eq!(owner_page.packages.len(), 1);
         assert_eq!(owner_page.packages[0].name, "private-a");
@@ -641,18 +655,27 @@ mod tests {
             package_doc(beta_public_package_id, "beta-public-widget", "public"),
         ];
 
-        let anonymous =
-            load_visible_search_package_ids(&state, &hits, None, Some("acme-search"), None)
-                .await
-                .expect("anonymous ids should load");
+        let anonymous = load_visible_search_package_ids(
+            &state,
+            &hits,
+            None,
+            SearchScopeFilters {
+                owner_org_slug: Some("acme-search"),
+                repository_slug: None,
+            },
+        )
+        .await
+        .expect("anonymous ids should load");
         assert_eq!(anonymous, HashSet::from([acme_public_package_id]));
 
         let member = load_visible_search_package_ids(
             &state,
             &hits,
             Some(member_id),
-            Some("acme-search"),
-            None,
+            SearchScopeFilters {
+                owner_org_slug: Some("acme-search"),
+                repository_slug: None,
+            },
         )
         .await
         .expect("member ids should load");
@@ -665,8 +688,10 @@ mod tests {
             &state,
             &hits,
             Some(member_id),
-            Some("beta-search"),
-            None,
+            SearchScopeFilters {
+                owner_org_slug: Some("beta-search"),
+                repository_slug: None,
+            },
         )
         .await
         .expect("beta ids should load");
@@ -755,8 +780,10 @@ mod tests {
             &state,
             &hits,
             None,
-            Some("acme-repo-search"),
-            Some("release-packages"),
+            SearchScopeFilters {
+                owner_org_slug: Some("acme-repo-search"),
+                repository_slug: Some("release-packages"),
+            },
         )
         .await
         .expect("anonymous ids should load");
@@ -766,8 +793,10 @@ mod tests {
             &state,
             &hits,
             Some(member_id),
-            Some("acme-repo-search"),
-            Some("private-packages"),
+            SearchScopeFilters {
+                owner_org_slug: Some("acme-repo-search"),
+                repository_slug: Some("private-packages"),
+            },
         )
         .await
         .expect("member ids should load");
@@ -777,8 +806,10 @@ mod tests {
             &state,
             &hits,
             Some(member_id),
-            Some("acme-repo-search"),
-            Some("missing-packages"),
+            SearchScopeFilters {
+                owner_org_slug: Some("acme-repo-search"),
+                repository_slug: Some("missing-packages"),
+            },
         )
         .await
         .expect("missing repository should return empty");
@@ -811,8 +842,6 @@ mod tests {
                 .expect("blank slug should clear"),
             None
         );
-        assert!(
-            normalize_search_repository_slug(Some("Release Packages".to_owned())).is_err()
-        );
+        assert!(normalize_search_repository_slug(Some("Release Packages".to_owned())).is_err());
     }
 }
