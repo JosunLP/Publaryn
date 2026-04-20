@@ -89,6 +89,7 @@
     updateRepository,
   } from '../../../api/repositories';
   import OrgAuditFilterControls from '../../../lib/components/OrgAuditFilterControls.svelte';
+  import OrgSecurityFilterControls from '../../../lib/components/OrgSecurityFilterControls.svelte';
   import TeamAccessGrantForm from '../../../lib/components/TeamAccessGrantForm.svelte';
   import type { OrgAuditActorOption } from '../../../pages/org-audit-actors';
   import {
@@ -237,6 +238,10 @@
     value: action,
     label: formatAuditActionLabel(action),
   }));
+  const SECURITY_FILTER_SEVERITY_OPTIONS = SECURITY_SEVERITIES.map((severity) => ({
+    value: severity,
+    label: formatIdentifierLabel(severity),
+  }));
 
   $: repositoryGrantOptions = [...repositories]
     .sort((left, right) =>
@@ -257,6 +262,16 @@
     )
     .map((pkg) => ({
       value: renderPackageSelectionValue(pkg.ecosystem, pkg.name),
+      label: `${pkg.ecosystem || ''} · ${pkg.name || ''}`,
+    }));
+  $: securityPackageOptions = [...packages]
+    .sort((left, right) =>
+      `${left.ecosystem || ''}:${left.name || ''}`.localeCompare(
+        `${right.ecosystem || ''}:${right.name || ''}`
+      )
+    )
+    .map((pkg) => ({
+      value: pkg.name || '',
       label: `${pkg.ecosystem || ''} · ${pkg.name || ''}`,
     }));
 
@@ -328,6 +343,7 @@
   let namespaceError: string | null = null;
   let packages: OrgPackageSummary[] = [];
   let packagesError: string | null = null;
+  let securityPackageOptions: Array<{ value: string; label: string }> = [];
   let packageTransferTargets: OrganizationMembership[] = [];
   let repositoryTransferTargets: OrganizationMembership[] = [];
   let securitySummary: OrgSecuritySummary | null = null;
@@ -3084,101 +3100,25 @@
               </p>
             </div>
           </div>
-          <form
-            class="settings-subsection"
-            on:submit={handleSecurityFilterSubmit}
-          >
-            <div class="flex flex-wrap items-end gap-4">
-              <fieldset
-                class="form-group"
-                style="margin-bottom:0; min-width:320px;"
-              >
-                <legend>Severity</legend>
-                <div class="token-row__scopes">
-                  {#each SECURITY_SEVERITIES as severity}
-                    <label class="badge badge-ecosystem">
-                      <input
-                        type="checkbox"
-                        name="security_severity"
-                        value={severity}
-                        checked={securityView.severities.includes(severity)}
-                        style="margin-right:0.35rem;"
-                      />
-                      {formatIdentifierLabel(severity)}
-                    </label>
-                  {/each}
-                </div>
-              </fieldset>
-              <div class="form-group" style="margin-bottom:0; min-width:220px;">
-                <label for="org-security-ecosystem">Ecosystem</label>
-                <select
-                  id="org-security-ecosystem"
-                  name="security_ecosystem"
-                  class="form-input"
-                  value={securityView.ecosystem}
-                >
-                  <option value="">All ecosystems</option>
-                  {#each SECURITY_FILTER_ECOSYSTEM_OPTIONS as ecosystem}
-                    <option
-                      value={ecosystem.value}
-                      selected={ecosystem.value === securityView.ecosystem}
-                      >{ecosystem.label}</option
-                    >
-                  {/each}
-                </select>
-              </div>
-              <div class="form-group" style="margin-bottom:0; min-width:260px;">
-                <label for="org-security-package">Package name</label>
-                <input
-                  id="org-security-package"
-                  name="security_package"
-                  class="form-input"
-                  list="org-security-package-options"
-                  value={securityView.packageQuery}
-                  placeholder="Match package name"
-                  autocomplete="off"
-                />
-                <datalist id="org-security-package-options">
-                  {#each [...packages].sort( (left, right) => `${left.ecosystem || ''}:${left.name || ''}`.localeCompare(`${right.ecosystem || ''}:${right.name || ''}`) ) as pkg}
-                    <option value={pkg.name || ''}
-                      >{`${pkg.ecosystem || ''} · ${pkg.name || ''}`}</option
-                    >
-                  {/each}
-                </datalist>
-              </div>
-              <button type="submit" class="btn btn-secondary">Apply</button>
-              <button
-                type="button"
-                class="btn btn-secondary"
-                disabled={exportingSecurity}
-                on:click={handleExportSecurity}
-              >
-                {exportingSecurity ? 'Exporting…' : 'Export CSV'}
-              </button>
-              {#if securityView.severities.length > 0}<button
-                  type="button"
-                  class="btn btn-secondary"
-                  on:click={clearSecuritySeverityFilter}>Clear severity</button
-                >{/if}
-              {#if securityView.ecosystem}<button
-                  type="button"
-                  class="btn btn-secondary"
-                  on:click={clearSecurityEcosystemFilter}
-                  >Clear ecosystem</button
-                >{/if}
-              {#if securityView.packageQuery}<button
-                  type="button"
-                  class="btn btn-secondary"
-                  on:click={clearSecurityPackageFilter}>Clear package</button
-                >{/if}
-            </div>
-            <p
-              class="settings-copy"
-              style="margin-top:0.75rem; margin-bottom:0;"
-            >
-              {formatSecurityFilterSummary()}
-            </p>
-          </form>
+          <OrgSecurityFilterControls
+            formClass="settings-subsection"
+            severityOptions={SECURITY_FILTER_SEVERITY_OPTIONS}
+            selectedSeverities={securityView.severities}
+            ecosystemOptions={SECURITY_FILTER_ECOSYSTEM_OPTIONS}
+            ecosystemValue={securityView.ecosystem}
+            packageValue={securityView.packageQuery}
+            packageOptions={securityPackageOptions}
+            exporting={exportingSecurity}
+            summary={formatSecurityFilterSummary()}
+            showSeverityClear={securityView.severities.length > 0}
+            showEcosystemClear={Boolean(securityView.ecosystem)}
+            showPackageClear={Boolean(securityView.packageQuery)}
+            handleSubmit={handleSecurityFilterSubmit}
+            handleExport={handleExportSecurity}
+            clearSeverity={clearSecuritySeverityFilter}
+            clearEcosystem={clearSecurityEcosystemFilter}
+            clearPackage={clearSecurityPackageFilter}
+          />
           {#if securityError}
             <div class="alert alert-error">{securityError}</div>
           {:else if openFindingCount === 0 || securityPackages.length === 0}
