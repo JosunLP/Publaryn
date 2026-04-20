@@ -88,6 +88,7 @@
     transferRepositoryOwnership,
     updateRepository,
   } from '../../../api/repositories';
+  import TeamAccessGrantForm from '../../../lib/components/TeamAccessGrantForm.svelte';
   import type { OrgAuditActorOption } from '../../../pages/org-audit-actors';
   import {
     buildAuditActorOptions,
@@ -231,6 +232,28 @@
     { value: 'composer', label: 'Composer' },
     { value: 'oci', label: 'OCI / Docker' },
   ] as const;
+
+  $: repositoryGrantOptions = [...repositories]
+    .sort((left, right) =>
+      `${left.name || left.slug || ''}`.localeCompare(
+        `${right.name || right.slug || ''}`
+      )
+    )
+    .map((repository) => ({
+      value: repository.slug || '',
+      label: `${repository.name || repository.slug || ''} · ${formatRepositoryKindLabel(repository.kind)} · ${formatRepositoryVisibilityLabel(repository.visibility)}`,
+    }));
+
+  $: packageGrantOptions = [...packages]
+    .sort((left, right) =>
+      `${left.ecosystem || ''}:${left.name || ''}`.localeCompare(
+        `${right.ecosystem || ''}:${right.name || ''}`
+      )
+    )
+    .map((pkg) => ({
+      value: renderPackageSelectionValue(pkg.ecosystem, pkg.name),
+      label: `${pkg.ecosystem || ''} · ${pkg.name || ''}`,
+    }));
 
   interface TeamMemberState {
     members: TeamMember[];
@@ -3022,76 +3045,19 @@
                         </div>
                       {/if}
 
-                      <form
-                        class="settings-subsection"
-                        on:submit={(event) =>
+                      <TeamAccessGrantForm
+                        fieldId={`team-repository-${teamSlug}`}
+                        selectLabel="Organization repository"
+                        selectName="repository_slug"
+                        placeholderLabel="Select a repository"
+                        emptyMessage="Create a repository before delegating repository-wide access."
+                        submitLabel="Save repository access"
+                        error={repositoriesError}
+                        options={repositoryGrantOptions}
+                        permissionOptions={TEAM_PERMISSION_OPTIONS}
+                        handleSubmit={(event) =>
                           handleReplaceTeamRepositoryAccess(event, teamSlug)}
-                      >
-                        <div class="form-group">
-                          <label for={`team-repository-${teamSlug}`}
-                            >Organization repository</label
-                          >
-                          {#if repositoriesError}
-                            <div class="alert alert-error">
-                              {repositoriesError}
-                            </div>
-                          {:else if repositories.length === 0}
-                            <p class="settings-copy">
-                              Create a repository before delegating
-                              repository-wide access.
-                            </p>
-                          {:else}
-                            <select
-                              id={`team-repository-${teamSlug}`}
-                              name="repository_slug"
-                              class="form-input"
-                              required
-                            >
-                              <option value="">Select a repository</option>
-                              {#each [...repositories].sort( (left, right) => `${left.name || left.slug || ''}`.localeCompare(`${right.name || right.slug || ''}`) ) as repository}
-                                <option value={repository.slug || ''}
-                                  >{`${repository.name || repository.slug || ''} · ${formatRepositoryKindLabel(repository.kind)} · ${formatRepositoryVisibilityLabel(repository.visibility)}`}</option
-                                >
-                              {/each}
-                            </select>
-                          {/if}
-                        </div>
-                        <fieldset class="form-group">
-                          <legend>Permissions</legend>
-                          <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                            {#each TEAM_PERMISSION_OPTIONS as permission}
-                              <label
-                                class="rounded-lg border border-neutral-200 p-3 text-sm"
-                              >
-                                <span class="flex items-start gap-3">
-                                  <input
-                                    type="checkbox"
-                                    name="permissions"
-                                    value={permission.value}
-                                    disabled={Boolean(repositoriesError) ||
-                                      repositories.length === 0}
-                                  />
-                                  <span>
-                                    <span class="block font-medium"
-                                      >{permission.label}</span
-                                    >
-                                    <span class="mt-1 block text-muted"
-                                      >{permission.description}</span
-                                    >
-                                  </span>
-                                </span>
-                              </label>
-                            {/each}
-                          </div>
-                        </fieldset>
-                        <button
-                          type="submit"
-                          class="btn btn-primary"
-                          disabled={Boolean(repositoriesError) ||
-                            repositories.length === 0}
-                          >Save repository access</button
-                        >
-                      </form>
+                      />
                     </div>
 
                     <div class="mt-6">
@@ -3149,77 +3115,19 @@
                         </div>
                       {/if}
 
-                      <form
-                        class="settings-subsection"
-                        on:submit={(event) =>
+                      <TeamAccessGrantForm
+                        fieldId={`team-package-${teamSlug}`}
+                        selectLabel="Organization package"
+                        selectName="package_key"
+                        placeholderLabel="Select a package"
+                        emptyMessage="Create or transfer a package before delegating access."
+                        submitLabel="Save package access"
+                        error={packagesError}
+                        options={packageGrantOptions}
+                        permissionOptions={TEAM_PERMISSION_OPTIONS}
+                        handleSubmit={(event) =>
                           handleReplaceTeamPackageAccess(event, teamSlug)}
-                      >
-                        <div class="form-group">
-                          <label for={`team-package-${teamSlug}`}
-                            >Organization package</label
-                          >
-                          {#if packagesError}
-                            <div class="alert alert-error">{packagesError}</div>
-                          {:else if packages.length === 0}
-                            <p class="settings-copy">
-                              Create or transfer a package before delegating
-                              access.
-                            </p>
-                          {:else}
-                            <select
-                              id={`team-package-${teamSlug}`}
-                              name="package_key"
-                              class="form-input"
-                              required
-                            >
-                              <option value="">Select a package</option>
-                              {#each [...packages].sort( (left, right) => `${left.ecosystem || ''}:${left.name || ''}`.localeCompare(`${right.ecosystem || ''}:${right.name || ''}`) ) as pkg}
-                                <option
-                                  value={renderPackageSelectionValue(
-                                    pkg.ecosystem,
-                                    pkg.name
-                                  )}
-                                  >{`${pkg.ecosystem || ''} · ${pkg.name || ''}`}</option
-                                >
-                              {/each}
-                            </select>
-                          {/if}
-                        </div>
-                        <fieldset class="form-group">
-                          <legend>Permissions</legend>
-                          <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                            {#each TEAM_PERMISSION_OPTIONS as permission}
-                              <label
-                                class="rounded-lg border border-neutral-200 p-3 text-sm"
-                              >
-                                <span class="flex items-start gap-3">
-                                  <input
-                                    type="checkbox"
-                                    name="permissions"
-                                    value={permission.value}
-                                    disabled={Boolean(packagesError) ||
-                                      packages.length === 0}
-                                  />
-                                  <span>
-                                    <span class="block font-medium"
-                                      >{permission.label}</span
-                                    >
-                                    <span class="mt-1 block text-muted"
-                                      >{permission.description}</span
-                                    >
-                                  </span>
-                                </span>
-                              </label>
-                            {/each}
-                          </div>
-                        </fieldset>
-                        <button
-                          type="submit"
-                          class="btn btn-primary"
-                          disabled={Boolean(packagesError) ||
-                            packages.length === 0}>Save package access</button
-                        >
-                      </form>
+                      />
                     </div>
                   {/if}
                 </div>
