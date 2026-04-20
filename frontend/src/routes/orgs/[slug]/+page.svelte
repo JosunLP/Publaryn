@@ -242,6 +242,7 @@
     value: severity,
     label: formatIdentifierLabel(severity),
   }));
+  let securityPackageOptions: Array<{ value: string; label: string }> = [];
 
   $: repositoryGrantOptions = [...repositories]
     .sort((left, right) =>
@@ -343,7 +344,6 @@
   let namespaceError: string | null = null;
   let packages: OrgPackageSummary[] = [];
   let packagesError: string | null = null;
-  let securityPackageOptions: Array<{ value: string; label: string }> = [];
   let packageTransferTargets: OrganizationMembership[] = [];
   let repositoryTransferTargets: OrganizationMembership[] = [];
   let securitySummary: OrgSecuritySummary | null = null;
