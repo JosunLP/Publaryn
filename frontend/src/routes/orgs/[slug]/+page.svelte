@@ -3301,6 +3301,8 @@
                             findingNotes={packageFindingState.findingNotes}
                             updatingFindingId={packageFindingState.updatingFindingId}
                             notePlaceholder={SECURITY_FINDING_NOTE_PLACEHOLDER}
+                            formatDateValue={formatDate}
+                            normalizeSeverity={normalizeSecuritySeverity}
                             formatKindLabel={formatIdentifierLabel}
                             handleNoteInput={(findingId, value) =>
                               updateOrgSecurityFindingNote(

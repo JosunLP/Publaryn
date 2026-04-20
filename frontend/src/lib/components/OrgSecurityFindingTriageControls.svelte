@@ -1,12 +1,14 @@
 <script lang="ts">
   import type { SecurityFinding } from '../../api/packages';
-  import { formatDate } from '../../utils/format';
-  import { normalizeSecuritySeverity } from '../../utils/security';
 
   export let findings: readonly SecurityFinding[] = [];
   export let findingNotes: Record<string, string> = {};
   export let updatingFindingId: string | null = null;
   export let notePlaceholder = '';
+  export let formatDateValue: (value: string | null | undefined) => string = (
+    value
+  ) => `${value || ''}`;
+  export let normalizeSeverity: (value: string) => string = (value) => value;
   export let formatKindLabel: (value: string) => string = (value) => value;
   export let handleNoteInput: (
     findingId: string,
@@ -19,7 +21,7 @@
 
 <div class="token-list">
   {#each findings as finding}
-    {@const severity = normalizeSecuritySeverity(finding.severity)}
+    {@const severity = normalizeSeverity(finding.severity)}
     <div class="token-row">
       <div class="token-row__main">
         <div class="token-row__title">
@@ -33,11 +35,11 @@
           {#if finding.release_version}
             <span>{finding.release_version}</span>
           {/if}
-          <span>{formatDate(finding.detected_at)}</span>
+          <span>{formatDateValue(finding.detected_at)}</span>
           {#if finding.is_resolved}
             <span
               >Resolved{finding.resolved_at
-                ? ` ${formatDate(finding.resolved_at)}`
+                ? ` ${formatDateValue(finding.resolved_at)}`
                 : ''}</span
             >
           {/if}

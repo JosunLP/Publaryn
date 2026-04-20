@@ -35,6 +35,8 @@ describe('org security finding triage controls', () => {
       {
         findings: [finding],
         notePlaceholder: 'Optional note (recorded in audit log)',
+        formatDateValue: (value: string | null | undefined) => value || '',
+        normalizeSeverity: (value: string) => value.toLowerCase(),
         formatKindLabel: (value: string) => value.toUpperCase(),
         handleNoteInput(findingId: string, value: string) {
           noteUpdates.push({ findingId, value });
@@ -86,6 +88,8 @@ describe('org security finding triage controls', () => {
         findingNotes: { 'finding-2': 'Already mitigated' },
         updatingFindingId: 'finding-2',
         notePlaceholder: 'Optional note (recorded in audit log)',
+        formatDateValue: (value: string | null | undefined) => value || '',
+        normalizeSeverity: (value: string) => value.toLowerCase(),
       }
     );
 
@@ -120,6 +124,8 @@ describe('org security finding triage controls', () => {
         findings,
         updatingFindingId: 'finding-2',
         notePlaceholder: 'Optional note (recorded in audit log)',
+        formatDateValue: (value: string | null | undefined) => value || '',
+        normalizeSeverity: (value: string) => value.toLowerCase(),
       }
     );
 
