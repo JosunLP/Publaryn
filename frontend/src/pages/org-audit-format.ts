@@ -16,6 +16,7 @@ const ORG_AUDIT_ACTION_LABELS: Record<string, string> = {
   security_finding_resolve: 'Security finding resolved',
   security_finding_reopen: 'Security finding reopened',
   namespace_claim_create: 'Namespace claim created',
+  namespace_claim_delete: 'Namespace claim deleted',
   org_member_add: 'Member added',
   org_role_change: 'Member role updated',
   org_member_remove: 'Member removed',
@@ -212,6 +213,10 @@ export function formatAuditSummary(log: OrgAuditLog): string | null {
       return stringField(metadata.namespace)
         ? `Created namespace ${stringField(metadata.namespace) || ''}.`
         : 'Created a namespace claim.';
+    case 'namespace_claim_delete':
+      return stringField(metadata.namespace)
+        ? `Deleted namespace ${stringField(metadata.namespace) || ''}.`
+        : 'Deleted a namespace claim.';
     case 'org_invitation_create':
       return stringField(metadata.invited_username)
         ? `Sent an invitation to @${stringField(metadata.invited_username) || ''}.`

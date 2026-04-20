@@ -554,6 +554,25 @@ async fn list_namespace_claims(app: &axum::Router, query: Option<&str>) -> (Stat
     (status, body)
 }
 
+/// Delete a namespace claim and return the response.
+async fn delete_namespace_claim(
+    app: &axum::Router,
+    jwt: &str,
+    claim_id: &str,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::DELETE)
+        .uri(format!("/v1/namespaces/{claim_id}"))
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
 /// Create a repository and return the response.
 async fn create_repository(
     app: &axum::Router,
@@ -5494,6 +5513,127 @@ async fn test_duplicate_namespace_claims_are_rejected(pool: PgPool) {
         .as_str()
         .expect("error should be present")
         .contains("Namespace claim already exists"));
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_org_admin_can_delete_namespace_claim_and_audit_it(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &jwt, "Acme Corp", "acme-corp").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id = org_body["id"].as_str().expect("org id should be returned");
+
+    let (status, create_body) =
+        create_namespace_claim(&app, &jwt, "npm", "@acme", Some(org_id)).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected namespace create response: {create_body}"
+    );
+    let claim_id = create_body["id"]
+        .as_str()
+        .expect("namespace claim id should be returned");
+
+    let (status, delete_body) = delete_namespace_claim(&app, &jwt, claim_id).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected namespace delete response: {delete_body}"
+    );
+    assert_eq!(delete_body["message"], "Namespace claim deleted");
+
+    let query = format!("owner_org_id={org_id}");
+    let (status, list_body) = list_namespace_claims(&app, Some(&query)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        list_body["namespaces"]
+            .as_array()
+            .expect("namespaces response should be an array")
+            .len(),
+        0,
+        "namespace claim should be removed: {list_body}"
+    );
+
+    let (status, audit_body) = list_org_audit(
+        &app,
+        &jwt,
+        "acme-corp",
+        Some("action=namespace_claim_delete&per_page=10"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let logs = audit_body["logs"]
+        .as_array()
+        .expect("logs response should be an array");
+    assert_eq!(logs.len(), 1, "unexpected org audit response: {audit_body}");
+    assert_eq!(logs[0]["action"], "namespace_claim_delete");
+    assert_eq!(logs[0]["target_org_id"], org_id);
+    assert_eq!(logs[0]["metadata"]["ecosystem"], "npm");
+    assert_eq!(logs[0]["metadata"]["namespace"], "@acme");
+    assert_eq!(logs[0]["metadata"]["namespace_claim_id"], claim_id);
+    assert_eq!(logs[0]["metadata"]["was_verified"], false);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_namespace_claim_delete_requires_owner_or_org_admin(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    register_user(&app, "carol", "carol@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+    let carol_jwt = login_user(&app, "carol", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &alice_jwt, "Acme Corp", "acme-corp").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id = org_body["id"].as_str().expect("org id should be returned");
+
+    let (status, _) = add_org_member(&app, &alice_jwt, "acme-corp", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, org_claim_body) =
+        create_namespace_claim(&app, &alice_jwt, "npm", "@acme", Some(org_id)).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_claim_id = org_claim_body["id"]
+        .as_str()
+        .expect("org namespace claim id should be returned");
+
+    let (status, forbidden_body) = delete_namespace_claim(&app, &bob_jwt, org_claim_id).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(
+        forbidden_body["error"]
+            .as_str()
+            .expect("error should be present")
+            .contains("admin"),
+        "unexpected error response: {forbidden_body}"
+    );
+
+    let (status, user_claim_body) =
+        create_namespace_claim(&app, &carol_jwt, "pypi", "carol", None).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let user_claim_id = user_claim_body["id"]
+        .as_str()
+        .expect("user namespace claim id should be returned");
+
+    let (status, forbidden_body) = delete_namespace_claim(&app, &alice_jwt, user_claim_id).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(
+        forbidden_body["error"]
+            .as_str()
+            .expect("error should be present")
+            .contains("your own account"),
+        "unexpected error response: {forbidden_body}"
+    );
+
+    let (status, delete_body) = delete_namespace_claim(&app, &carol_jwt, user_claim_id).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected self-delete response: {delete_body}"
+    );
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

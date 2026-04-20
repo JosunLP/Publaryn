@@ -102,22 +102,27 @@ describe('org audit query helpers', () => {
   });
 
   test('keeps namespace claim audit actions when building and parsing filters', () => {
-    const path = buildOrgAuditPath(
-      'acme-corp',
-      {
-        action: 'namespace_claim_create',
-        actorUserId: '',
-        actorUsername: '',
-        page: 1,
-      },
-      '?tab=activity'
-    );
+    for (const action of [
+      'namespace_claim_create',
+      'namespace_claim_delete',
+    ] as const) {
+      const path = buildOrgAuditPath(
+        'acme-corp',
+        {
+          action,
+          actorUserId: '',
+          actorUsername: '',
+          page: 1,
+        },
+        '?tab=activity'
+      );
 
-    const url = new URL(path, 'https://example.test');
-    const view = getAuditViewFromQuery(url.searchParams);
+      const url = new URL(path, 'https://example.test');
+      const view = getAuditViewFromQuery(url.searchParams);
 
-    expect(url.searchParams.get('action')).toBe('namespace_claim_create');
-    expect(view.action).toBe('namespace_claim_create');
+      expect(url.searchParams.get('action')).toBe(action);
+      expect(view.action).toBe(action);
+    }
   });
 
   test('keeps package update audit actions when building and parsing filters', () => {

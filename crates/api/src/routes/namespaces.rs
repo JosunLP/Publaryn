@@ -1,7 +1,7 @@
 use axum::{
-    extract::{Query, State},
+    extract::{Path, Query, State},
     http::StatusCode,
-    routing::{get, post},
+    routing::{delete, get, post},
     Json, Router,
 };
 use serde::Deserialize;
@@ -22,6 +22,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/namespaces", get(list_namespaces))
         .route("/v1/namespaces", post(create_namespace))
+        .route("/v1/namespaces/{claim_id}", delete(delete_namespace))
         .route("/v1/namespaces/lookup", get(lookup_namespace))
 }
 
@@ -197,6 +198,103 @@ async fn list_namespaces(
         .collect();
 
     Ok(Json(serde_json::json!({ "namespaces": namespaces })))
+}
+
+async fn delete_namespace(
+    State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
+    Path(claim_id): Path<Uuid>,
+) -> ApiResult<Json<serde_json::Value>> {
+    ensure_scope(&identity, SCOPE_NAMESPACES_WRITE)?;
+
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let claim_row = sqlx::query(
+        "SELECT ecosystem::text AS ecosystem, namespace, owner_user_id, owner_org_id, is_verified \
+         FROM namespace_claims \
+         WHERE id = $1 \
+         FOR UPDATE",
+    )
+    .bind(claim_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?
+    .ok_or_else(|| ApiError(Error::NotFound("Namespace claim not found".into())))?;
+
+    let ecosystem: String = claim_row
+        .try_get("ecosystem")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let namespace: String = claim_row
+        .try_get("namespace")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let owner_user_id: Option<Uuid> = claim_row
+        .try_get("owner_user_id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let owner_org_id: Option<Uuid> = claim_row
+        .try_get("owner_org_id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let is_verified: bool = claim_row
+        .try_get("is_verified")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+
+    match (owner_user_id, owner_org_id) {
+        (Some(owner_user_id), None) if owner_user_id == identity.user_id => {}
+        (Some(_), None) => {
+            return Err(ApiError(Error::Forbidden(
+                "You can only delete user-owned namespace claims for your own account".into(),
+            )));
+        }
+        (None, Some(owner_org_id)) => {
+            ensure_org_admin_by_id(&state.db, owner_org_id, identity.user_id).await?;
+        }
+        (None, None) => {
+            return Err(ApiError(Error::Internal(
+                "Namespace claim is missing an owner".into(),
+            )));
+        }
+        (Some(_), Some(_)) => {
+            return Err(ApiError(Error::Internal(
+                "Namespace claim has multiple owners".into(),
+            )));
+        }
+    }
+
+    sqlx::query("DELETE FROM namespace_claims WHERE id = $1")
+        .bind(claim_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    sqlx::query(
+        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_user_id, target_org_id, metadata, occurred_at) \
+         VALUES ($1, 'namespace_claim_delete', $2, $3, $4, $5, $6, NOW())",
+    )
+    .bind(Uuid::new_v4())
+    .bind(identity.user_id)
+    .bind(identity.audit_actor_token_id())
+    .bind(owner_user_id)
+    .bind(owner_org_id)
+    .bind(serde_json::json!({
+        "ecosystem": ecosystem,
+        "namespace": namespace,
+        "namespace_claim_id": claim_id,
+        "was_verified": is_verified,
+    }))
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    Ok(Json(
+        serde_json::json!({ "message": "Namespace claim deleted" }),
+    ))
 }
 
 async fn lookup_namespace(

@@ -253,6 +253,7 @@ Organization administrators can also export the full filtered audit view as CSV 
 ```http
 GET    /v1/namespaces
 POST   /v1/namespaces
+DELETE /v1/namespaces/:id
 GET    /v1/namespaces/lookup?ecosystem=<eco>&namespace=<claim>
 ```
 
