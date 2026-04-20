@@ -127,6 +127,16 @@
     getOrgSecurityViewFromQuery,
   } from '../../../pages/org-security-query';
   import {
+    buildAuditExportQuery,
+    buildSecurityExportQuery,
+    decodePackageSelection,
+    renderPackageSelectionValue,
+    resolveAuditFilterSubmission,
+    resolveSecurityFilterSubmission,
+    resolveTeamPackageAccessSubmission,
+    resolveTeamRepositoryAccessSubmission,
+  } from '../../../pages/org-workspace-actions';
+  import {
     buildOrgSecurityPackageKey,
     mergeUpdatedOrgSecurityFinding,
     sortOrgSecurityFindings,
@@ -919,45 +929,20 @@
 
   async function handleAuditFilterSubmit(event: SubmitEvent): Promise<void> {
     event.preventDefault();
-    const formData = new FormData(event.currentTarget as HTMLFormElement);
-    const occurredFrom = formData.get('occurred_from')?.toString().trim() || '';
-    const occurredUntil =
-      formData.get('occurred_until')?.toString().trim() || '';
-    const actorQuery = formData.get('actor_query')?.toString().trim() || '';
-    const normalizedActorUserId = normalizeAuditActorUserId(actorQuery) || '';
-    const actorFromSelect =
-      auditActorOptions.find(
-        (option) =>
-          option.userId === normalizedActorUserId ||
-          option.username.toLowerCase() === actorQuery.toLowerCase()
-      ) || null;
-    const resolvedActorUserId = actorFromSelect
-      ? actorFromSelect.userId
-      : normalizedActorUserId;
-    const resolvedActorUsername = actorFromSelect
-      ? actorFromSelect.username
-      : actorQuery;
+    const resolution = resolveAuditFilterSubmission(
+      new FormData(event.currentTarget as HTMLFormElement),
+      auditActorOptions
+    );
 
-    if (occurredFrom && occurredUntil && occurredFrom > occurredUntil) {
+    if (!resolution.ok) {
       await loadOrganizationPage({
-        error: 'End date must be on or after the start date.',
+        error: resolution.error,
       });
       return;
     }
 
     await goto(
-      buildOrgAuditPath(
-        slug,
-        {
-          action: formData.get('action')?.toString() || '',
-          actorUserId: resolvedActorUserId,
-          actorUsername: resolvedActorUsername,
-          occurredFrom,
-          occurredUntil,
-          page: 1,
-        },
-        $page.url.searchParams
-      )
+      buildOrgAuditPath(slug, resolution.value, $page.url.searchParams)
     );
   }
 
@@ -1057,12 +1042,10 @@
     exportingAudit = true;
 
     try {
-      const csv = await exportOrgAuditLogsCsv(slug, {
-        action: auditView.action || undefined,
-        actorUserId: auditView.actorUserId || undefined,
-        occurredFrom: auditView.occurredFrom || undefined,
-        occurredUntil: auditView.occurredUntil || undefined,
-      });
+      const csv = await exportOrgAuditLogsCsv(
+        slug,
+        buildAuditExportQuery(auditView)
+      );
 
       downloadTextFile(
         buildOrgAuditExportFilename(
@@ -1089,22 +1072,12 @@
 
   async function handleSecurityFilterSubmit(event: SubmitEvent): Promise<void> {
     event.preventDefault();
-    const formData = new FormData(event.currentTarget as HTMLFormElement);
-    const severities = formData
-      .getAll('security_severity')
-      .map((value) => value.toString().trim())
-      .filter(Boolean);
+    const nextView = resolveSecurityFilterSubmission(
+      new FormData(event.currentTarget as HTMLFormElement)
+    );
 
     await goto(
-      buildOrgSecurityPath(
-        slug,
-        {
-          severities,
-          ecosystem: formData.get('security_ecosystem')?.toString() || '',
-          packageQuery: formData.get('security_package')?.toString() || '',
-        },
-        $page.url.searchParams
-      )
+      buildOrgSecurityPath(slug, nextView, $page.url.searchParams)
     );
   }
 
@@ -1154,14 +1127,10 @@
     exportingSecurity = true;
 
     try {
-      const csv = await exportOrgSecurityFindingsCsv(slug, {
-        severities:
-          securityView.severities.length > 0
-            ? securityView.severities
-            : undefined,
-        ecosystem: securityView.ecosystem || undefined,
-        package: securityView.packageQuery || undefined,
-      });
+      const csv = await exportOrgSecurityFindingsCsv(
+        slug,
+        buildSecurityExportQuery(securityView)
+      );
 
       downloadTextFile(
         buildOrgSecurityExportFilename(
@@ -1438,26 +1407,13 @@
     teamSlug: string
   ): Promise<void> {
     event.preventDefault();
-    const formData = new FormData(event.currentTarget as HTMLFormElement);
-    const packageTarget = decodePackageSelection(
-      formData.get('package_key')?.toString().trim() || ''
+    const resolution = resolveTeamPackageAccessSubmission(
+      new FormData(event.currentTarget as HTMLFormElement)
     );
 
-    if (!packageTarget) {
+    if (!resolution.ok) {
       await loadOrganizationPage({
-        error: 'Select a package to manage access.',
-      });
-      return;
-    }
-
-    const permissions = formData
-      .getAll('permissions')
-      .map((value) => value.toString().trim())
-      .filter(Boolean);
-
-    if (permissions.length === 0) {
-      await loadOrganizationPage({
-        error: 'Select at least one delegated package permission.',
+        error: resolution.error,
       });
       return;
     }
@@ -1466,15 +1422,15 @@
       await replaceTeamPackageAccess(
         slug,
         teamSlug,
-        packageTarget.ecosystem,
-        packageTarget.name,
+        resolution.value.ecosystem,
+        resolution.value.name,
         {
-          permissions,
+          permissions: resolution.value.permissions,
         }
       );
 
       await loadOrganizationPage({
-        notice: `Saved package access for ${packageTarget.name}.`,
+        notice: `Saved package access for ${resolution.value.name}.`,
       });
     } catch (caughtError: unknown) {
       await loadOrganizationPage({
@@ -1505,36 +1461,29 @@
     teamSlug: string
   ): Promise<void> {
     event.preventDefault();
-    const formData = new FormData(event.currentTarget as HTMLFormElement);
-    const repositorySlug =
-      formData.get('repository_slug')?.toString().trim() || '';
+    const resolution = resolveTeamRepositoryAccessSubmission(
+      new FormData(event.currentTarget as HTMLFormElement)
+    );
 
-    if (!repositorySlug) {
+    if (!resolution.ok) {
       await loadOrganizationPage({
-        error: 'Select a repository to manage access.',
-      });
-      return;
-    }
-
-    const permissions = formData
-      .getAll('permissions')
-      .map((value) => value.toString().trim())
-      .filter(Boolean);
-
-    if (permissions.length === 0) {
-      await loadOrganizationPage({
-        error: 'Select at least one delegated repository permission.',
+        error: resolution.error,
       });
       return;
     }
 
     try {
-      await replaceTeamRepositoryAccess(slug, teamSlug, repositorySlug, {
-        permissions,
-      });
+      await replaceTeamRepositoryAccess(
+        slug,
+        teamSlug,
+        resolution.value.repositorySlug,
+        {
+          permissions: resolution.value.permissions,
+        }
+      );
 
       await loadOrganizationPage({
-        notice: `Saved repository access for ${repositorySlug}.`,
+        notice: `Saved repository access for ${resolution.value.repositorySlug}.`,
       });
     } catch (caughtError: unknown) {
       await loadOrganizationPage({
@@ -1938,27 +1887,6 @@
     return filters.length > 0
       ? `${base}, filtered by ${filters.join(', ')}.`
       : `${base}.`;
-  }
-
-  function renderPackageSelectionValue(
-    ecosystem: string | null | undefined,
-    name: string | null | undefined
-  ): string {
-    return `${encodeURIComponent((ecosystem || '').trim())}:${encodeURIComponent((name || '').trim())}`;
-  }
-
-  function decodePackageSelection(
-    value: string
-  ): { ecosystem: string; name: string } | null {
-    const separatorIndex = value.indexOf(':');
-    if (separatorIndex <= 0 || separatorIndex === value.length - 1) {
-      return null;
-    }
-
-    return {
-      ecosystem: decodeURIComponent(value.slice(0, separatorIndex)),
-      name: decodeURIComponent(value.slice(separatorIndex + 1)),
-    };
   }
 
   function downloadTextFile(
