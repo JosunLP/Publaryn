@@ -852,6 +852,12 @@
   $: showsRegistryFamily = Boolean(
     pkg?.ecosystem && pkg.ecosystem.toLowerCase() !== ecosystem.toLowerCase()
   );
+  $: sortedTeamOptions = [...teamAccessManagementState.teams]
+    .map((team) => ({
+      team,
+      label: formatTeamOption(team),
+    }))
+    .sort((left, right) => left.label.localeCompare(right.label));
   $: npmPackageMetadata =
     packageMetadata?.kind === 'npm' || packageMetadata?.kind === 'bun'
       ? packageMetadata.details
@@ -1389,7 +1395,7 @@
                 >
                   <h4 style="margin-bottom:12px;">Manage package access</h4>
                   <p class="settings-copy" style="margin-bottom:12px;">
-                    Saving replaces the selected team&apos;s permissions for this
+                    Saving replaces the selected team's permissions for this
                     package.
                   </p>
                   {#if teamAccessManagementState.teams.length === 0}
@@ -1409,9 +1415,9 @@
                           disabled={savingTeamAccess || Boolean(revokingTeamSlug)}
                         >
                           <option value="">Select a team</option>
-                          {#each [...teamAccessManagementState.teams].sort((left, right) => formatTeamOption(left).localeCompare(formatTeamOption(right))) as team}
-                            <option value={team.slug || ''}>
-                              {formatTeamOption(team)}
+                          {#each sortedTeamOptions as option}
+                            <option value={option.team.slug || ''}>
+                              {option.label}
                             </option>
                           {/each}
                         </select>

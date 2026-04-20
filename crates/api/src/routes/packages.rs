@@ -484,9 +484,9 @@ async fn get_package(
 
     let row = sqlx::query(
         "SELECT p.id, p.name, p.display_name, p.ecosystem, p.description, p.readme, \
-             p.homepage, p.repository_url, p.license, p.keywords, p.visibility, p.is_deprecated, \
-                p.deprecation_message, p.is_archived, p.download_count, p.owner_org_id, p.created_at, \
-                 p.updated_at, u.username AS owner_username, o.slug AS owner_org_slug \
+         p.homepage, p.repository_url, p.license, p.keywords, p.visibility, p.is_deprecated, \
+         p.deprecation_message, p.is_archived, p.download_count, p.owner_org_id, p.created_at, \
+         p.updated_at, u.username AS owner_username, o.slug AS owner_org_slug \
          FROM packages p \
          LEFT JOIN users u ON u.id = p.owner_user_id \
          LEFT JOIN organizations o ON o.id = p.owner_org_id \
