@@ -3284,7 +3284,7 @@
                         <span>Review teams</span>
                         {#each reviewerTeams as team}
                           <span class="badge badge-ecosystem"
-                            >{team.name || team.slug || 'Unnamed team'}</span
+                            >{team.name || team.slug || 'Team (no name)'}</span
                           >
                         {/each}
                       </div>

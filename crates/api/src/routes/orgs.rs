@@ -25,10 +25,9 @@ use publaryn_core::{
 use crate::{
     error::{ApiError, ApiResult},
     request_auth::{
-        actor_can_security_review_package_by_id, actor_can_transfer_package_by_id,
-        actor_can_transfer_repository_by_id, ensure_org_admin_by_slug,
-        ensure_org_audit_access_by_slug, ensure_org_member_by_slug, is_org_member,
-        AuthenticatedIdentity, OptionalAuthenticatedIdentity,
+        actor_can_transfer_package_by_id, actor_can_transfer_repository_by_id,
+        ensure_org_admin_by_slug, ensure_org_audit_access_by_slug, ensure_org_member_by_slug,
+        is_org_member, AuthenticatedIdentity, OptionalAuthenticatedIdentity,
     },
     scopes::{ensure_scope, SCOPE_ORGS_TRANSFER, SCOPE_ORGS_WRITE, SCOPE_PACKAGES_WRITE},
     state::AppState,
@@ -2706,6 +2705,62 @@ async fn load_org_security_reviewer_teams(
     Ok(reviewer_teams)
 }
 
+async fn load_actor_security_manageable_packages(
+    db: &sqlx::PgPool,
+    actor_user_id: Option<Uuid>,
+    package_ids: &[Uuid],
+) -> ApiResult<BTreeSet<Uuid>> {
+    let Some(actor_user_id) = actor_user_id else {
+        return Ok(BTreeSet::new());
+    };
+    if package_ids.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+
+    let rows = sqlx::query(
+        "SELECT DISTINCT manageable.package_id \
+         FROM ( \
+             SELECT p.id AS package_id \
+             FROM packages p \
+             WHERE p.id = ANY($1) AND p.owner_user_id = $2 \
+             UNION \
+             SELECT p.id AS package_id \
+             FROM packages p \
+             JOIN org_memberships om ON om.org_id = p.owner_org_id \
+             WHERE p.id = ANY($1) \
+               AND om.user_id = $2 \
+               AND om.role::text IN ('owner', 'admin') \
+             UNION \
+             SELECT tpa.package_id \
+             FROM team_package_access tpa \
+             JOIN team_memberships tm ON tm.team_id = tpa.team_id \
+             WHERE tpa.package_id = ANY($1) \
+               AND tm.user_id = $2 \
+               AND tpa.permission::text IN ('admin', 'security_review') \
+             UNION \
+             SELECT p.id AS package_id \
+             FROM packages p \
+             JOIN team_repository_access tra ON tra.repository_id = p.repository_id \
+             JOIN team_memberships tm ON tm.team_id = tra.team_id \
+             WHERE p.id = ANY($1) \
+               AND tm.user_id = $2 \
+               AND tra.permission::text IN ('admin', 'security_review') \
+         ) manageable",
+    )
+    .bind(package_ids)
+    .bind(actor_user_id)
+    .fetch_all(db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    rows.into_iter()
+        .map(|row| {
+            row.try_get("package_id")
+                .map_err(|e| ApiError(Error::Internal(e.to_string())))
+        })
+        .collect()
+}
+
 async fn enrich_org_security_packages(
     db: &sqlx::PgPool,
     org_id: Uuid,
@@ -2722,15 +2777,19 @@ async fn enrich_org_security_packages(
     } else {
         HashMap::new()
     };
-    let actor_user_id = identity_can_attempt_security_review(identity);
+    let manageable_packages = load_actor_security_manageable_packages(
+        db,
+        identity_can_attempt_security_review(identity),
+        &package_ids,
+    )
+    .await?;
 
     for package in packages {
         package.reviewer_teams = reviewer_teams
             .get(&package.package_id)
             .cloned()
             .unwrap_or_default();
-        package.can_manage_security =
-            actor_can_security_review_package_by_id(db, package.package_id, actor_user_id).await?;
+        package.can_manage_security = manageable_packages.contains(&package.package_id);
     }
 
     Ok(())
