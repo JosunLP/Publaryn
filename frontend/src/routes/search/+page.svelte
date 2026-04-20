@@ -102,7 +102,7 @@
 
   async function loadRepositories(orgSlug: string): Promise<void> {
     repositoryLoadError = null;
-    let data;
+    let data: Awaited<ReturnType<typeof listOrgRepositories>>;
 
     try {
       data = await listOrgRepositories(orgSlug);
