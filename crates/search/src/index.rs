@@ -22,6 +22,8 @@ pub struct PackageDocument {
     pub is_deprecated: bool,
     pub visibility: String,
     pub owner_name: Option<String>,
+    pub repository_name: Option<String>,
+    pub repository_slug: Option<String>,
     pub updated_at: String,
 }
 

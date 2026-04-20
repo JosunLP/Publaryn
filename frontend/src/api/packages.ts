@@ -132,6 +132,8 @@ export type ReleaseEcosystemMetadata =
 export interface SearchPackagesOptions {
   q?: string;
   ecosystem?: string;
+  org?: string;
+  repository?: string;
   page?: number;
   perPage?: number;
 }
@@ -144,6 +146,8 @@ export interface SearchPackage {
   is_deprecated?: boolean;
   visibility?: NullableString;
   owner_name?: NullableString;
+  repository_name?: NullableString;
+  repository_slug?: NullableString;
   download_count?: number | null;
   updated_at?: NullableString;
   description?: NullableString;
@@ -346,11 +350,13 @@ export interface StatsResponse {
 export async function searchPackages({
   q,
   ecosystem,
+  org,
+  repository,
   page,
   perPage,
 }: SearchPackagesOptions = {}): Promise<SearchPackagesResponse> {
   const { data } = await api.get<SearchPackagesResponse>('/v1/search', {
-    query: { q, ecosystem, page, per_page: perPage },
+    query: { q, ecosystem, org, repository, page, per_page: perPage },
   });
 
   return data;

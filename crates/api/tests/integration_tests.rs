@@ -1172,16 +1172,60 @@ async fn search_public_packages(
     query: &str,
     ecosystem: Option<&str>,
 ) -> (StatusCode, Value) {
-    let uri = match ecosystem {
-        Some(ecosystem) => format!("/v1/search?q={query}&ecosystem={ecosystem}"),
-        None => format!("/v1/search?q={query}"),
-    };
+    search_packages_with_options(
+        app,
+        None,
+        query,
+        SearchPackagesRequestOptions {
+            ecosystem,
+            ..SearchPackagesRequestOptions::default()
+        },
+    )
+    .await
+}
 
-    let req = Request::builder()
-        .method(Method::GET)
-        .uri(uri)
-        .body(Body::empty())
-        .unwrap();
+#[derive(Debug, Clone, Copy, Default)]
+struct SearchPackagesRequestOptions<'a> {
+    ecosystem: Option<&'a str>,
+    org: Option<&'a str>,
+    repository: Option<&'a str>,
+    page: Option<u32>,
+    per_page: Option<u32>,
+}
+
+/// Search packages through the management API and return the response.
+async fn search_packages_with_options(
+    app: &axum::Router,
+    auth_token: Option<&str>,
+    query: &str,
+    options: SearchPackagesRequestOptions<'_>,
+) -> (StatusCode, Value) {
+    let mut params = vec![format!("q={query}")];
+    if let Some(ecosystem) = options.ecosystem {
+        params.push(format!("ecosystem={ecosystem}"));
+    }
+    if let Some(org) = options.org {
+        params.push(format!("org={org}"));
+    }
+    if let Some(repository) = options.repository {
+        params.push(format!("repository={repository}"));
+    }
+    if let Some(page) = options.page {
+        params.push(format!("page={page}"));
+    }
+    if let Some(per_page) = options.per_page {
+        params.push(format!("per_page={per_page}"));
+    }
+
+    let uri = format!("/v1/search?{}", params.join("&"));
+
+    let req = Request::builder().method(Method::GET).uri(uri);
+    let req = if let Some(token) = auth_token {
+        req.header(header::AUTHORIZATION, format!("Bearer {token}"))
+    } else {
+        req
+    };
+    let req = req.body(Body::empty()).unwrap();
 
     let resp = app.clone().oneshot(req).await.unwrap();
     let status = resp.status();
@@ -8284,6 +8328,477 @@ async fn test_npm_search_respects_authenticated_visibility_and_filtered_offsets(
             .len(),
         0
     );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_management_search_can_scope_results_to_one_org(pool: PgPool) {
+    if !is_search_backend_available() {
+        eprintln!("Skipping management search org filter verification because the search backend is unavailable.");
+        return;
+    }
+
+    let app = app(pool);
+    register_user(
+        &app,
+        "alice",
+        "alice-org-search@test.dev",
+        "super_secret_pw!",
+    )
+    .await;
+    register_user(&app, "bob", "bob-org-search@test.dev", "super_secret_pw!").await;
+    register_user(
+        &app,
+        "carol",
+        "carol-org-search@test.dev",
+        "super_secret_pw!",
+    )
+    .await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+    let carol_jwt = login_user(&app, "carol", "super_secret_pw!").await;
+
+    let (status, acme_body) =
+        create_org(&app, &alice_jwt, "Acme Org Search", "acme-org-search").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let acme_org_id = acme_body["id"].as_str().expect("acme org id");
+
+    let (status, beta_body) =
+        create_org(&app, &carol_jwt, "Beta Org Search", "beta-org-search").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let beta_org_id = beta_body["id"].as_str().expect("beta org id");
+
+    let (status, body) = add_org_member(&app, &alice_jwt, "acme-org-search", "bob", "viewer").await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected org membership response: {body}"
+    );
+
+    for (name, slug, owner_org_id, visibility) in [
+        (
+            "Acme Public Search",
+            "acme-public-org-search",
+            acme_org_id,
+            "public",
+        ),
+        (
+            "Acme Private Search",
+            "acme-private-org-search",
+            acme_org_id,
+            "private",
+        ),
+        (
+            "Beta Public Search",
+            "beta-public-org-search",
+            beta_org_id,
+            "public",
+        ),
+    ] {
+        let (status, body) = create_repository_with_options(
+            &app,
+            if owner_org_id == acme_org_id {
+                &alice_jwt
+            } else {
+                &carol_jwt
+            },
+            name,
+            slug,
+            Some(owner_org_id),
+            Some("public"),
+            Some(visibility),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected repository response: {body}"
+        );
+    }
+
+    for (jwt, package_name, repository_slug, visibility, descriptor) in [
+        (
+            &alice_jwt,
+            "acme-public-org-search-widget",
+            "acme-public-org-search",
+            Some("public"),
+            "acme public",
+        ),
+        (
+            &alice_jwt,
+            "acme-private-org-search-widget",
+            "acme-private-org-search",
+            Some("private"),
+            "acme private",
+        ),
+        (
+            &carol_jwt,
+            "beta-public-org-search-widget",
+            "beta-public-org-search",
+            Some("public"),
+            "beta public",
+        ),
+    ] {
+        let (status, body) = create_package_with_options(
+            &app,
+            jwt,
+            "npm",
+            package_name,
+            repository_slug,
+            visibility,
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected package response: {body}"
+        );
+
+        let (status, body) = update_package_metadata(
+            &app,
+            jwt,
+            "npm",
+            package_name,
+            json!({
+                "description": format!("orgscopedsearchgamma {descriptor}"),
+            }),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "unexpected package update response: {body}"
+        );
+    }
+
+    let expected_member_names = std::collections::BTreeSet::from([
+        "acme-public-org-search-widget".to_owned(),
+        "acme-private-org-search-widget".to_owned(),
+    ]);
+    let expected_anonymous_names =
+        std::collections::BTreeSet::from(["acme-public-org-search-widget".to_owned()]);
+
+    let mut latest_member_body = Value::Null;
+    let mut latest_anonymous_body = Value::Null;
+    let mut found = false;
+    for _ in 0..30 {
+        let (member_status, member_body) = search_packages_with_options(
+            &app,
+            Some(&bob_jwt),
+            "orgscopedsearchgamma",
+            SearchPackagesRequestOptions {
+                ecosystem: Some("npm"),
+                org: Some("acme-org-search"),
+                ..SearchPackagesRequestOptions::default()
+            },
+        )
+        .await;
+        assert_eq!(
+            member_status,
+            StatusCode::OK,
+            "unexpected member search response: {member_body}"
+        );
+
+        let (anonymous_status, anonymous_body) = search_packages_with_options(
+            &app,
+            None,
+            "orgscopedsearchgamma",
+            SearchPackagesRequestOptions {
+                ecosystem: Some("npm"),
+                org: Some("acme-org-search"),
+                ..SearchPackagesRequestOptions::default()
+            },
+        )
+        .await;
+        assert_eq!(
+            anonymous_status,
+            StatusCode::OK,
+            "unexpected anonymous search response: {anonymous_body}"
+        );
+
+        let member_names = member_body["packages"]
+            .as_array()
+            .expect("member packages should be an array")
+            .iter()
+            .filter_map(|item| item["name"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+        let anonymous_names = anonymous_body["packages"]
+            .as_array()
+            .expect("anonymous packages should be an array")
+            .iter()
+            .filter_map(|item| item["name"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+
+        latest_member_body = member_body;
+        latest_anonymous_body = anonymous_body;
+        if member_names == expected_member_names && anonymous_names == expected_anonymous_names {
+            found = true;
+            break;
+        }
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    assert!(
+        found,
+        "org-scoped search did not converge.\nmember: {latest_member_body}\nanonymous: {latest_anonymous_body}"
+    );
+
+    let (outsider_status, outsider_body) = search_packages_with_options(
+        &app,
+        Some(&carol_jwt),
+        "orgscopedsearchgamma",
+        SearchPackagesRequestOptions {
+            ecosystem: Some("npm"),
+            org: Some("acme-org-search"),
+            ..SearchPackagesRequestOptions::default()
+        },
+    )
+    .await;
+    assert_eq!(
+        outsider_status,
+        StatusCode::OK,
+        "unexpected outsider search response: {outsider_body}"
+    );
+    let outsider_names = outsider_body["packages"]
+        .as_array()
+        .expect("outsider packages should be an array")
+        .iter()
+        .filter_map(|item| item["name"].as_str().map(str::to_owned))
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(outsider_names, expected_anonymous_names);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_management_search_can_scope_results_to_one_repository(pool: PgPool) {
+    if !is_search_backend_available() {
+        eprintln!(
+            "Skipping management search repository filter verification because the search backend is unavailable."
+        );
+        return;
+    }
+
+    let app = app(pool);
+    register_user(
+        &app,
+        "alice",
+        "alice-repository-search@test.dev",
+        "super_secret_pw!",
+    )
+    .await;
+    register_user(
+        &app,
+        "bob",
+        "bob-repository-search@test.dev",
+        "super_secret_pw!",
+    )
+    .await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(
+        &app,
+        &alice_jwt,
+        "Acme Repository Search",
+        "acme-repository-search",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id = org_body["id"].as_str().expect("org id");
+
+    let (status, body) =
+        add_org_member(&app, &alice_jwt, "acme-repository-search", "bob", "viewer").await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected org membership response: {body}"
+    );
+
+    for (name, slug, visibility) in [
+        ("Release Packages", "release-packages", "public"),
+        ("Private Packages", "private-packages", "private"),
+        ("Public Packages", "public-packages", "public"),
+    ] {
+        let (status, body) = create_repository_with_options(
+            &app,
+            &alice_jwt,
+            name,
+            slug,
+            Some(org_id),
+            Some("public"),
+            Some(visibility),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected repository response: {body}"
+        );
+    }
+
+    for (package_name, repository_slug, visibility, descriptor) in [
+        (
+            "release-repository-search-widget",
+            "release-packages",
+            Some("public"),
+            "release public",
+        ),
+        (
+            "private-repository-search-widget",
+            "private-packages",
+            Some("private"),
+            "private repository",
+        ),
+        (
+            "public-repository-search-widget",
+            "public-packages",
+            Some("public"),
+            "public repository",
+        ),
+    ] {
+        let (status, body) = create_package_with_options(
+            &app,
+            &alice_jwt,
+            "npm",
+            package_name,
+            repository_slug,
+            visibility,
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected package response: {body}"
+        );
+
+        let (status, body) = update_package_metadata(
+            &app,
+            &alice_jwt,
+            "npm",
+            package_name,
+            json!({
+                "description": format!("repositoryscopedsearchdelta {descriptor}"),
+            }),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "unexpected package update response: {body}"
+        );
+    }
+
+    let expected_member_names =
+        std::collections::BTreeSet::from(["private-repository-search-widget".to_owned()]);
+    let expected_anonymous_names = std::collections::BTreeSet::new();
+
+    let mut latest_member_body = Value::Null;
+    let mut latest_anonymous_body = Value::Null;
+    let mut found = false;
+    for _ in 0..30 {
+        let (member_status, member_body) = search_packages_with_options(
+            &app,
+            Some(&bob_jwt),
+            "repositoryscopedsearchdelta",
+            SearchPackagesRequestOptions {
+                ecosystem: Some("npm"),
+                org: Some("acme-repository-search"),
+                repository: Some("private-packages"),
+                ..SearchPackagesRequestOptions::default()
+            },
+        )
+        .await;
+        assert_eq!(
+            member_status,
+            StatusCode::OK,
+            "unexpected member repository search response: {member_body}"
+        );
+
+        let (anonymous_status, anonymous_body) = search_packages_with_options(
+            &app,
+            None,
+            "repositoryscopedsearchdelta",
+            SearchPackagesRequestOptions {
+                ecosystem: Some("npm"),
+                org: Some("acme-repository-search"),
+                repository: Some("private-packages"),
+                ..SearchPackagesRequestOptions::default()
+            },
+        )
+        .await;
+        assert_eq!(
+            anonymous_status,
+            StatusCode::OK,
+            "unexpected anonymous repository search response: {anonymous_body}"
+        );
+
+        let member_names = member_body["packages"]
+            .as_array()
+            .expect("member packages should be an array")
+            .iter()
+            .filter_map(|item| item["name"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+        let anonymous_names = anonymous_body["packages"]
+            .as_array()
+            .expect("anonymous packages should be an array")
+            .iter()
+            .filter_map(|item| item["name"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+
+        latest_member_body = member_body;
+        latest_anonymous_body = anonymous_body;
+        if member_names == expected_member_names && anonymous_names == expected_anonymous_names {
+            found = true;
+            break;
+        }
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    assert!(
+        found,
+        "repository-scoped search did not converge.\nmember: {latest_member_body}\nanonymous: {latest_anonymous_body}"
+    );
+
+    let member_packages = latest_member_body["packages"]
+        .as_array()
+        .expect("member packages should be an array");
+    assert_eq!(member_packages.len(), 1);
+    assert_eq!(member_packages[0]["repository_slug"], "private-packages");
+    assert_eq!(member_packages[0]["repository_name"], "Private Packages");
+
+    let (release_status, release_body) = search_packages_with_options(
+        &app,
+        None,
+        "repositoryscopedsearchdelta",
+        SearchPackagesRequestOptions {
+            ecosystem: Some("npm"),
+            org: Some("acme-repository-search"),
+            repository: Some("release-packages"),
+            ..SearchPackagesRequestOptions::default()
+        },
+    )
+    .await;
+    assert_eq!(
+        release_status,
+        StatusCode::OK,
+        "unexpected release repository search response: {release_body}"
+    );
+    let release_names = release_body["packages"]
+        .as_array()
+        .expect("release packages should be an array")
+        .iter()
+        .filter_map(|item| item["name"].as_str().map(str::to_owned))
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        release_names,
+        std::collections::BTreeSet::from(["release-repository-search-widget".to_owned()])
+    );
+    let release_packages = release_body["packages"]
+        .as_array()
+        .expect("release packages should be an array");
+    assert_eq!(release_packages.len(), 1);
+    assert_eq!(release_packages[0]["repository_slug"], "release-packages");
+    assert_eq!(release_packages[0]["repository_name"], "Release Packages");
 }
 
 #[sqlx::test(migrations = "../../migrations")]
