@@ -167,6 +167,9 @@
   const ORG_AUDIT_PAGE_SIZE = 20;
   const DEFAULT_NAMESPACE_ECOSYSTEM = 'npm';
   const DEFAULT_PACKAGE_ECOSYSTEM = 'npm';
+  const REVIEW_TEAM_FALLBACK_LABEL = 'Team (no name)';
+  const SECURITY_FINDING_NOTE_PLACEHOLDER =
+    'Optional note (recorded in audit log)';
   const ORG_ROLE_OPTIONS = [
     { value: 'admin', label: 'Admin' },
     { value: 'maintainer', label: 'Maintainer' },
@@ -3513,9 +3516,9 @@
                         style="margin-top:0.5rem; flex-wrap:wrap;"
                       >
                         <span>Review teams</span>
-                        {#each reviewerTeams as team}
+                          {#each reviewerTeams as team}
                           <span class="badge badge-ecosystem"
-                            >{team.name || team.slug || 'Team (no name)'}</span
+                            >{team.name || team.slug || REVIEW_TEAM_FALLBACK_LABEL}</span
                           >
                         {/each}
                       </div>
@@ -3626,7 +3629,7 @@
                                       class="form-input"
                                       rows="2"
                                       maxlength="2000"
-                                      placeholder="Optional note (recorded in audit log)"
+                                      placeholder={SECURITY_FINDING_NOTE_PLACEHOLDER}
                                       value={packageFindingState.findingNotes[
                                         finding.id
                                       ] || ''}
