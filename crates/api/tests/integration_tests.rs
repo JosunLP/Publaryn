@@ -7832,7 +7832,10 @@ async fn test_package_detail_team_access_updates_after_grant_revoke(pool: PgPool
     let (status, detail_after_grant) =
         get_package_detail(&app, Some(&alice_jwt), "npm", "managed-widget").await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(detail_after_grant["team_access"][0]["team_slug"], "release-engineering");
+    assert_eq!(
+        detail_after_grant["team_access"][0]["team_slug"],
+        "release-engineering"
+    );
     assert_eq!(
         detail_after_grant["team_access"][0]["permissions"],
         json!(["publish", "write_metadata"])

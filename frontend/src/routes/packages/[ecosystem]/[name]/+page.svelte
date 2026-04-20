@@ -77,6 +77,39 @@
     loadError: string | null;
   }
 
+  const TEAM_PERMISSION_OPTIONS = [
+    {
+      value: 'admin',
+      label: 'Admin',
+      description: 'Manage package administration workflows.',
+    },
+    {
+      value: 'publish',
+      label: 'Publish',
+      description: 'Create releases and publish artifacts.',
+    },
+    {
+      value: 'write_metadata',
+      label: 'Write metadata',
+      description: 'Update package readmes and metadata.',
+    },
+    {
+      value: 'read_private',
+      label: 'Read private',
+      description: 'Read non-public package data.',
+    },
+    {
+      value: 'security_review',
+      label: 'Security review',
+      description: 'Reserved for future security workflows.',
+    },
+    {
+      value: 'transfer_ownership',
+      label: 'Transfer ownership',
+      description: 'Transfer a package to another owner.',
+    },
+  ] as const;
+
   let lastLoadKey = '';
   let loading = true;
   let notFound = false;
@@ -521,7 +554,8 @@
       return;
     }
 
-    const formData = new FormData(event.currentTarget as HTMLFormElement);
+    const form = event.currentTarget as HTMLFormElement;
+    const formData = new FormData(form);
     const teamSlug = formData.get('team_slug')?.toString().trim() || '';
     const permissions = formData
       .getAll('permissions')
@@ -554,7 +588,7 @@
         teamSlug;
       await loadPackagePage();
       teamAccessNotice = `Saved package access for ${teamLabel}.`;
-      (event.currentTarget as HTMLFormElement).reset();
+      form.reset();
     } catch (caughtError: unknown) {
       teamAccessError = toErrorMessage(
         caughtError,
@@ -1389,44 +1423,7 @@
                           Permissions
                         </legend>
                         <div class="grid gap-3">
-                          {#each [
-                            {
-                              value: 'admin',
-                              label: 'Admin',
-                              description:
-                                'Manage package administration workflows.',
-                            },
-                            {
-                              value: 'publish',
-                              label: 'Publish',
-                              description:
-                                'Create releases and publish artifacts.',
-                            },
-                            {
-                              value: 'write_metadata',
-                              label: 'Write metadata',
-                              description:
-                                'Update package readmes and metadata.',
-                            },
-                            {
-                              value: 'read_private',
-                              label: 'Read private',
-                              description:
-                                'Read non-public package data.',
-                            },
-                            {
-                              value: 'security_review',
-                              label: 'Security review',
-                              description:
-                                'Reserved for future security workflows.',
-                            },
-                            {
-                              value: 'transfer_ownership',
-                              label: 'Transfer ownership',
-                              description:
-                                'Transfer a package to another owner.',
-                            },
-                          ] as permission}
+                          {#each TEAM_PERMISSION_OPTIONS as permission}
                             <label
                               class="rounded-lg border border-neutral-200 p-3 text-sm"
                             >
