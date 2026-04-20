@@ -11,6 +11,7 @@
     formatVersionLabel,
   } from '../../utils/ecosystem';
   import { formatDate, formatNumber } from '../../utils/format';
+  import { formatRepositoryVisibilityLabel } from '../../utils/repositories';
 
   const PER_PAGE = 20;
 
@@ -94,6 +95,12 @@
     await goto(`/search?${params.toString()}`);
   }
 
+  function shouldShowVisibilityBadge(
+    visibility: string | null | undefined
+  ): boolean {
+    return Boolean(visibility && visibility !== 'public');
+  }
+
   $: totalPages = Math.max(1, Math.ceil((results.total || 0) / PER_PAGE));
 </script>
 
@@ -167,6 +174,11 @@
               {/if}
               {#if pkg.is_deprecated}
                 <span class="badge badge-deprecated">deprecated</span>
+              {/if}
+              {#if shouldShowVisibilityBadge(pkg.visibility)}
+                <span class="badge"
+                  >{formatRepositoryVisibilityLabel(pkg.visibility)}</span
+                >
               {/if}
             </div>
             <div class="package-card__description">{pkg.description || ''}</div>

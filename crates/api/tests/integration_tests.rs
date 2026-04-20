@@ -1170,6 +1170,30 @@ async fn search_public_packages(
     (status, body)
 }
 
+/// Search npm packages through the native adapter and return the response.
+async fn search_npm_packages(
+    app: &axum::Router,
+    auth_token: Option<&str>,
+    query: &str,
+    size: u32,
+    from: u32,
+) -> (StatusCode, Value) {
+    let req = Request::builder().method(Method::GET).uri(format!(
+        "/npm/-/v1/search?text={query}&size={size}&from={from}"
+    ));
+    let req = if let Some(token) = auth_token {
+        req.header(header::AUTHORIZATION, format!("Bearer {token}"))
+    } else {
+        req
+    };
+    let req = req.body(Body::empty()).unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
 fn is_search_backend_available() -> bool {
     let search_url = std::env::var("SEARCH__URL")
         .ok()
@@ -7915,6 +7939,210 @@ async fn test_package_metadata_update_reindexes_search_results(pool: PgPool) {
     assert!(
         found,
         "search did not surface updated package metadata: {latest_body}"
+    );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_npm_search_respects_authenticated_visibility_and_filtered_offsets(pool: PgPool) {
+    if !is_search_backend_available() {
+        eprintln!("Skipping npm search visibility verification because the search backend is unavailable.");
+        return;
+    }
+
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &alice_jwt, "Acme Search", "acme-search").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id = org_body["id"].as_str().expect("org id");
+
+    let (status, _) = add_org_member(&app, &alice_jwt, "acme-search", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    for (name, slug, visibility) in [
+        ("Acme Public", "acme-public-search", "public"),
+        ("Acme Private", "acme-private-search", "private"),
+        ("Acme Internal", "acme-internal-search", "internal_org"),
+    ] {
+        let (status, body) = create_repository_with_options(
+            &app,
+            &alice_jwt,
+            name,
+            slug,
+            Some(org_id),
+            Some("public"),
+            Some(visibility),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected repository response: {body}"
+        );
+    }
+
+    for (name, repository_slug, visibility) in [
+        (
+            "npm-public-search-widget",
+            "acme-public-search",
+            Some("public"),
+        ),
+        (
+            "npm-private-search-widget",
+            "acme-private-search",
+            Some("private"),
+        ),
+        (
+            "npm-internal-search-widget",
+            "acme-internal-search",
+            Some("internal_org"),
+        ),
+        (
+            "npm-unlisted-search-widget",
+            "acme-public-search",
+            Some("unlisted"),
+        ),
+        (
+            "npm-quarantined-search-widget",
+            "acme-public-search",
+            Some("quarantined"),
+        ),
+    ] {
+        let (status, body) =
+            create_package_with_options(&app, &alice_jwt, "npm", name, repository_slug, visibility)
+                .await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected package response: {body}"
+        );
+    }
+
+    let search_token = "npmauthsearchbeta";
+    for (name, descriptor) in [
+        ("npm-public-search-widget", "public"),
+        ("npm-private-search-widget", "private"),
+        ("npm-internal-search-widget", "internal"),
+        ("npm-unlisted-search-widget", "unlisted"),
+        ("npm-quarantined-search-widget", "quarantined"),
+    ] {
+        let (status, body) = update_package_metadata(
+            &app,
+            &alice_jwt,
+            "npm",
+            name,
+            json!({
+                "description": format!("{search_token} npm visibility {descriptor}"),
+            }),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "unexpected package update response: {body}"
+        );
+    }
+
+    let expected_member_names = std::collections::BTreeSet::from([
+        "npm-public-search-widget".to_owned(),
+        "npm-private-search-widget".to_owned(),
+        "npm-internal-search-widget".to_owned(),
+    ]);
+    let expected_anonymous_names =
+        std::collections::BTreeSet::from(["npm-public-search-widget".to_owned()]);
+
+    let mut latest_member_body = Value::Null;
+    let mut latest_anonymous_body = Value::Null;
+    let mut found = false;
+    for _ in 0..30 {
+        let (member_status, member_body) =
+            search_npm_packages(&app, Some(&bob_jwt), search_token, 10, 0).await;
+        assert_eq!(
+            member_status,
+            StatusCode::OK,
+            "unexpected authenticated npm search response: {member_body}"
+        );
+        let (anonymous_status, anonymous_body) =
+            search_npm_packages(&app, None, search_token, 10, 0).await;
+        assert_eq!(
+            anonymous_status,
+            StatusCode::OK,
+            "unexpected anonymous npm search response: {anonymous_body}"
+        );
+
+        let member_names = member_body["objects"]
+            .as_array()
+            .expect("npm search objects should be an array")
+            .iter()
+            .filter_map(|item| item["package"]["name"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+        let anonymous_names = anonymous_body["objects"]
+            .as_array()
+            .expect("npm search objects should be an array")
+            .iter()
+            .filter_map(|item| item["package"]["name"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+
+        latest_member_body = member_body;
+        latest_anonymous_body = anonymous_body;
+
+        if member_names == expected_member_names
+            && anonymous_names == expected_anonymous_names
+            && latest_member_body["total"] == 3
+            && latest_anonymous_body["total"] == 1
+        {
+            found = true;
+            break;
+        }
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    assert!(
+        found,
+        "npm search did not converge to expected visibility results. member={latest_member_body} anonymous={latest_anonymous_body}"
+    );
+
+    let mut paged_names = std::collections::BTreeSet::new();
+    for from in 0..3 {
+        let (status, body) = search_npm_packages(&app, Some(&bob_jwt), search_token, 1, from).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "unexpected paged npm search response: {body}"
+        );
+        assert_eq!(body["total"], 3);
+        let objects = body["objects"]
+            .as_array()
+            .expect("npm paged search objects should be an array");
+        assert_eq!(
+            objects.len(),
+            1,
+            "unexpected paged objects response: {body}"
+        );
+        let name = objects[0]["package"]["name"]
+            .as_str()
+            .expect("paged npm search object should include a package name");
+        paged_names.insert(name.to_owned());
+    }
+    assert_eq!(paged_names, expected_member_names);
+
+    let (status, body) = search_npm_packages(&app, Some(&bob_jwt), search_token, 1, 3).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected exhausted npm search response: {body}"
+    );
+    assert_eq!(body["total"], 3);
+    assert_eq!(
+        body["objects"]
+            .as_array()
+            .expect("exhausted npm search objects should be an array")
+            .len(),
+        0
     );
 }
 

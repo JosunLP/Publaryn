@@ -5,7 +5,7 @@ use bytes::Bytes;
 use publaryn_core::error::Error;
 use sqlx::PgPool;
 
-use publaryn_adapter_npm::routes::{NpmAppState, NpmSearchHit, StoredObject};
+use publaryn_adapter_npm::routes::{NpmAppState, NpmSearchHit, NpmSearchResults, StoredObject};
 
 use crate::state::AppState;
 use crate::storage::PutArtifactObject;
@@ -55,33 +55,39 @@ impl NpmAppState for AppState {
         query: &str,
         limit: u32,
         offset: u32,
-    ) -> Result<Vec<NpmSearchHit>, Error> {
-        use publaryn_search::SearchIndex;
-
+        actor_user_id: Option<uuid::Uuid>,
+    ) -> Result<NpmSearchResults, Error> {
         let search_query = publaryn_search::query::SearchQuery {
             q: query.to_owned(),
             ecosystem: Some(publaryn_core::domain::namespace::Ecosystem::Npm),
-            limit: Some(limit),
-            offset: Some(offset),
+            limit: Some(crate::routes::search::search_batch_size(limit)),
+            offset: Some(0),
         };
 
-        let results = self
-            .search
-            .search(&search_query)
-            .await
-            .map_err(|e| Error::Internal(e.to_string()))?;
+        let results = crate::routes::search::load_visible_search_window(
+            self,
+            self.search.as_ref(),
+            &search_query,
+            actor_user_id,
+            offset as usize,
+            limit as usize,
+        )
+        .await
+        .map_err(|err| err.0)?;
 
-        Ok(results
-            .hits
-            .into_iter()
-            .filter(|hit| hit.visibility == "public")
-            .map(|hit| NpmSearchHit {
-                name: hit.name,
-                description: hit.description,
-                keywords: hit.keywords,
-                version: hit.latest_version,
-                date: Some(hit.updated_at),
-            })
-            .collect())
+        Ok(NpmSearchResults {
+            total: results.total,
+            hits: results
+                .packages
+                .into_iter()
+                .map(|hit| NpmSearchHit {
+                    name: hit.name,
+                    description: hit.description,
+                    keywords: hit.keywords,
+                    version: hit.latest_version,
+                    date: Some(hit.updated_at),
+                })
+                .collect(),
+        })
     }
 }
