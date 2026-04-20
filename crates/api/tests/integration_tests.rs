@@ -1069,6 +1069,30 @@ async fn grant_team_package_access(
     (status, body)
 }
 
+/// Remove delegated team package access and return the response.
+async fn remove_team_package_access(
+    app: &axum::Router,
+    jwt: &str,
+    org_slug: &str,
+    team_slug: &str,
+    ecosystem: &str,
+    name: &str,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::DELETE)
+        .uri(format!(
+            "/v1/orgs/{org_slug}/teams/{team_slug}/package-access/{ecosystem}/{name}"
+        ))
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
 /// List delegated team repository access and return the response.
 async fn list_team_repository_access(
     app: &axum::Router,
@@ -7633,6 +7657,217 @@ async fn test_team_publish_permission_allows_release_creation_but_not_metadata_u
         get_package_detail(&app, Some(&alice_jwt), "npm", "release-widget").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(detail_after["description"], Value::Null);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_package_detail_surfaces_team_access_only_to_org_members(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    register_user(&app, "charlie", "charlie@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+    let charlie_jwt = login_user(&app, "charlie", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &alice_jwt, "Acme Org", "acme-org").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id = org_body["id"].as_str().expect("org id");
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Acme Packages",
+        "acme-packages",
+        Some(org_id),
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, package_body) =
+        create_package(&app, &alice_jwt, "npm", "acme-widget", "acme-packages").await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let (status, _) = add_org_member(&app, &alice_jwt, "acme-org", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "acme-org",
+        "Release Engineering",
+        "release-engineering",
+        Some("Publishes and transfers package releases."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, grant_body) = grant_team_package_access(
+        &app,
+        &alice_jwt,
+        "acme-org",
+        "release-engineering",
+        "npm",
+        "acme-widget",
+        &["publish", "transfer_ownership"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team package access response: {grant_body}"
+    );
+
+    let (status, owner_detail) =
+        get_package_detail(&app, Some(&alice_jwt), "npm", "acme-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        owner_detail["team_access"][0]["team_slug"],
+        "release-engineering"
+    );
+    assert_eq!(
+        owner_detail["team_access"][0]["team_name"],
+        "Release Engineering"
+    );
+    assert_eq!(
+        owner_detail["team_access"][0]["permissions"],
+        json!(["publish", "transfer_ownership"])
+    );
+
+    let (status, member_detail) =
+        get_package_detail(&app, Some(&bob_jwt), "npm", "acme-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(member_detail["team_access"], owner_detail["team_access"]);
+
+    let (status, anonymous_detail) = get_package_detail(&app, None, "npm", "acme-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(anonymous_detail["team_access"], Value::Null);
+
+    let (status, unrelated_detail) =
+        get_package_detail(&app, Some(&charlie_jwt), "npm", "acme-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(unrelated_detail["team_access"], Value::Null);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_package_detail_team_access_updates_after_grant_revoke(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &alice_jwt, "Acme Org", "acme-org").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id = org_body["id"].as_str().expect("org id");
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Acme Packages",
+        "acme-packages",
+        Some(org_id),
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, package_body) =
+        create_package(&app, &alice_jwt, "npm", "managed-widget", "acme-packages").await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let (status, _) = add_org_member(&app, &alice_jwt, "acme-org", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "acme-org",
+        "Release Engineering",
+        "release-engineering",
+        Some("Publishes releases."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, detail_before_grant) =
+        get_package_detail(&app, Some(&alice_jwt), "npm", "managed-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail_before_grant["team_access"], json!([]));
+
+    let (status, grant_body) = grant_team_package_access(
+        &app,
+        &alice_jwt,
+        "acme-org",
+        "release-engineering",
+        "npm",
+        "managed-widget",
+        &["publish", "write_metadata"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team package access response: {grant_body}"
+    );
+
+    let (status, detail_after_grant) =
+        get_package_detail(&app, Some(&alice_jwt), "npm", "managed-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        detail_after_grant["team_access"][0]["team_slug"],
+        "release-engineering"
+    );
+    assert_eq!(
+        detail_after_grant["team_access"][0]["permissions"],
+        json!(["publish", "write_metadata"])
+    );
+
+    let (status, member_detail_after_grant) =
+        get_package_detail(&app, Some(&bob_jwt), "npm", "managed-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        member_detail_after_grant["team_access"],
+        detail_after_grant["team_access"]
+    );
+
+    let (status, revoke_body) = remove_team_package_access(
+        &app,
+        &alice_jwt,
+        "acme-org",
+        "release-engineering",
+        "npm",
+        "managed-widget",
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected remove team package access response: {revoke_body}"
+    );
+
+    let (status, detail_after_revoke) =
+        get_package_detail(&app, Some(&alice_jwt), "npm", "managed-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail_after_revoke["team_access"], json!([]));
 }
 
 #[sqlx::test(migrations = "../../migrations")]

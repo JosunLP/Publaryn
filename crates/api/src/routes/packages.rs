@@ -38,7 +38,7 @@ use crate::{
         actor_can_write_package_by_id, actor_can_write_package_metadata_by_id,
         ensure_package_admin_access, ensure_package_metadata_write_access,
         ensure_package_publish_access, ensure_package_read_access, ensure_package_transfer_access,
-        ensure_repository_package_creation_access, AuthenticatedIdentity,
+        ensure_repository_package_creation_access, is_org_member, AuthenticatedIdentity,
         OptionalAuthenticatedIdentity,
     },
     routes::parse_ecosystem,
@@ -484,9 +484,9 @@ async fn get_package(
 
     let row = sqlx::query(
         "SELECT p.id, p.name, p.display_name, p.ecosystem, p.description, p.readme, \
-            p.homepage, p.repository_url, p.license, p.keywords, p.visibility, p.is_deprecated, \
-                p.deprecation_message, p.is_archived, p.download_count, p.created_at, \
-                p.updated_at, u.username AS owner_username, o.slug AS owner_org_slug \
+         p.homepage, p.repository_url, p.license, p.keywords, p.visibility, p.is_deprecated, \
+         p.deprecation_message, p.is_archived, p.download_count, p.owner_org_id, p.created_at, \
+         p.updated_at, u.username AS owner_username, o.slug AS owner_org_slug \
          FROM packages p \
          LEFT JOIN users u ON u.id = p.owner_user_id \
          LEFT JOIN organizations o ON o.id = p.owner_org_id \
@@ -506,6 +506,46 @@ async fn get_package(
         .try_get::<String, _>("name")
         .unwrap_or_else(|_| name.clone());
     let ecosystem_metadata = build_package_ecosystem_metadata(&eco, &package_name);
+    let owner_org_id = row
+        .try_get::<Option<Uuid>, _>("owner_org_id")
+        .ok()
+        .flatten();
+    let team_access = match (owner_org_id, identity.user_id()) {
+        (Some(owner_org_id), Some(actor_user_id))
+            if is_org_member(&state.db, owner_org_id, actor_user_id).await? =>
+        {
+            let rows = sqlx::query(
+                "SELECT t.id, t.slug, t.name, \
+                        ARRAY_AGG(tpa.permission::text ORDER BY tpa.permission::text) AS permissions, \
+                        MAX(tpa.granted_at) AS granted_at \
+                 FROM team_package_access tpa \
+                 JOIN teams t ON t.id = tpa.team_id \
+                 WHERE tpa.package_id = $1 AND t.org_id = $2 \
+                 GROUP BY t.id, t.slug, t.name \
+                 ORDER BY t.slug ASC",
+            )
+            .bind(package_id)
+            .bind(owner_org_id)
+            .fetch_all(&state.db)
+            .await
+            .map_err(|e| ApiError(Error::Database(e)))?;
+
+            Some(
+                rows.iter()
+                    .map(|row| {
+                        serde_json::json!({
+                            "team_id": row.try_get::<Uuid, _>("id").ok(),
+                            "team_slug": row.try_get::<String, _>("slug").ok(),
+                            "team_name": row.try_get::<String, _>("name").ok(),
+                            "permissions": row.try_get::<Vec<String>, _>("permissions").ok(),
+                            "granted_at": row.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("granted_at").ok().flatten(),
+                        })
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        }
+        _ => None,
+    };
 
     Ok(Json(serde_json::json!({
         "id": row.try_get::<Uuid, _>("id").ok(),
@@ -530,6 +570,7 @@ async fn get_package(
         "can_manage_trusted_publishers": can_manage_trusted_publishers,
         "can_manage_security": can_manage_security,
         "can_transfer": can_transfer,
+        "team_access": team_access,
         "ecosystem_metadata": ecosystem_metadata,
         "created_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at").ok(),
         "updated_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("updated_at").ok(),

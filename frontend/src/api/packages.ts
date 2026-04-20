@@ -181,6 +181,15 @@ export interface PackageDetail {
   can_manage_trusted_publishers?: boolean;
   can_manage_security?: boolean;
   can_transfer?: boolean;
+  team_access?:
+    | Array<{
+        team_id?: NullableString;
+        team_slug?: NullableString;
+        team_name?: NullableString;
+        permissions?: string[] | null;
+        granted_at?: NullableString;
+      }>
+    | null;
   homepage?: NullableString;
   repository_url?: NullableString;
   keywords?: string[] | null;
