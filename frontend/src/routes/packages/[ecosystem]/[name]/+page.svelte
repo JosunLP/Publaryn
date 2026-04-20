@@ -3,8 +3,13 @@
   import { page } from '$app/stores';
 
   import { ApiError, getAuthToken } from '../../../../api/client';
-  import type { OrganizationMembership } from '../../../../api/orgs';
-  import { listMyOrganizations } from '../../../../api/orgs';
+  import type { OrganizationMembership, Team } from '../../../../api/orgs';
+  import {
+    listMyOrganizations,
+    listTeams,
+    removeTeamPackageAccess,
+    replaceTeamPackageAccess,
+  } from '../../../../api/orgs';
   import type {
     PackageDetail,
     Release,
@@ -66,6 +71,12 @@
     loadError: string | null;
   }
 
+  interface TeamAccessManagementState {
+    showManagement: boolean;
+    teams: Team[];
+    loadError: string | null;
+  }
+
   let lastLoadKey = '';
   let loading = true;
   let notFound = false;
@@ -83,10 +94,17 @@
     publishers: [],
     loadError: null,
   };
+  let teamAccessManagementState: TeamAccessManagementState = {
+    showManagement: false,
+    teams: [],
+    loadError: null,
+  };
   let releaseNotice: string | null = null;
   let releaseError: string | null = null;
   let transferNotice: string | null = null;
   let transferError: string | null = null;
+  let teamAccessNotice: string | null = null;
+  let teamAccessError: string | null = null;
   let packageSettingsNotice: string | null = null;
   let packageSettingsError: string | null = null;
   let trustedPublisherNotice: string | null = null;
@@ -124,6 +142,8 @@
   let trustedPublisherEnvironment = '';
   let creatingTrustedPublisher = false;
   let deletingTrustedPublisherId: string | null = null;
+  let savingTeamAccess = false;
+  let revokingTeamSlug: string | null = null;
 
   $: ecosystem = $page.params.ecosystem ?? '';
   $: name = $page.params.name ?? '';
@@ -151,10 +171,17 @@
       publishers: [],
       loadError: null,
     };
+    teamAccessManagementState = {
+      showManagement: false,
+      teams: [],
+      loadError: null,
+    };
     releaseNotice = null;
     releaseError = null;
     transferNotice = null;
     transferError = null;
+    teamAccessNotice = null;
+    teamAccessError = null;
     packageSettingsNotice = null;
     packageSettingsError = null;
     trustedPublisherNotice = null;
@@ -187,6 +214,7 @@
       loadedFindings,
       loadedTransferState,
       loadedTrustedPublisherState,
+      loadedTeamAccessManagementState,
     ] = await Promise.all([
       listReleases(ecosystem, name, { perPage: 20 }).catch(
         () => [] as Release[]
@@ -197,6 +225,7 @@
       ),
       loadTransferState(pkg),
       loadTrustedPublisherState(pkg),
+      loadTeamAccessManagementState(pkg),
     ]);
 
     releases = loadedReleases;
@@ -204,6 +233,7 @@
     findings = loadedFindings;
     transferState = loadedTransferState;
     trustedPublisherState = loadedTrustedPublisherState;
+    teamAccessManagementState = loadedTeamAccessManagementState;
     loading = false;
   }
 
@@ -306,6 +336,58 @@
           caughtError instanceof Error && caughtError.message
             ? caughtError.message
             : 'Failed to load trusted publishers.',
+      };
+    }
+  }
+
+  async function loadTeamAccessManagementState(
+    currentPackage: PackageDetail | null
+  ): Promise<TeamAccessManagementState> {
+    if (
+      !currentPackage ||
+      !getAuthToken() ||
+      !currentPackage.owner_org_slug
+    ) {
+      return {
+        showManagement: false,
+        teams: [],
+        loadError: null,
+      };
+    }
+
+    try {
+      const organizations = await listMyOrganizations();
+      const membership = (organizations.organizations || []).find(
+        (org) => org.slug === currentPackage.owner_org_slug
+      );
+
+      if (!membership || !isOrgAdminRole(membership.role)) {
+        return {
+          showManagement: false,
+          teams: [],
+          loadError: null,
+        };
+      }
+
+      try {
+        const teamResponse = await listTeams(currentPackage.owner_org_slug);
+        return {
+          showManagement: true,
+          teams: (teamResponse.teams || []).filter((team) => Boolean(team.slug)),
+          loadError: teamResponse.load_error || null,
+        };
+      } catch (caughtError: unknown) {
+        return {
+          showManagement: true,
+          teams: [],
+          loadError: toErrorMessage(caughtError, 'Failed to load teams.'),
+        };
+      }
+    } catch {
+      return {
+        showManagement: false,
+        teams: [],
+        loadError: null,
       };
     }
   }
@@ -422,6 +504,95 @@
           : 'Failed to create release.';
     } finally {
       creatingRelease = false;
+    }
+  }
+
+  async function handleReplacePackageTeamAccess(
+    event: SubmitEvent
+  ): Promise<void> {
+    event.preventDefault();
+
+    if (
+      !pkg ||
+      !pkg.owner_org_slug ||
+      !teamAccessManagementState.showManagement ||
+      savingTeamAccess
+    ) {
+      return;
+    }
+
+    const formData = new FormData(event.currentTarget as HTMLFormElement);
+    const teamSlug = formData.get('team_slug')?.toString().trim() || '';
+    const permissions = formData
+      .getAll('permissions')
+      .map((value) => value.toString().trim())
+      .filter(Boolean);
+
+    if (!teamSlug) {
+      teamAccessError = 'Select a team to manage package access.';
+      teamAccessNotice = null;
+      return;
+    }
+
+    if (permissions.length === 0) {
+      teamAccessError = 'Select at least one delegated package permission.';
+      teamAccessNotice = null;
+      return;
+    }
+
+    savingTeamAccess = true;
+    teamAccessError = null;
+    teamAccessNotice = null;
+
+    try {
+      await replaceTeamPackageAccess(pkg.owner_org_slug, teamSlug, ecosystem, name, {
+        permissions,
+      });
+      const teamLabel =
+        teamAccessManagementState.teams.find((team) => team.slug === teamSlug)
+          ?.name ||
+        teamSlug;
+      await loadPackagePage();
+      teamAccessNotice = `Saved package access for ${teamLabel}.`;
+      (event.currentTarget as HTMLFormElement).reset();
+    } catch (caughtError: unknown) {
+      teamAccessError = toErrorMessage(
+        caughtError,
+        'Failed to update package access.'
+      );
+    } finally {
+      savingTeamAccess = false;
+    }
+  }
+
+  async function handleRemovePackageTeamAccess(teamSlug: string): Promise<void> {
+    if (
+      !pkg ||
+      !pkg.owner_org_slug ||
+      !teamAccessManagementState.showManagement ||
+      revokingTeamSlug
+    ) {
+      return;
+    }
+
+    revokingTeamSlug = teamSlug;
+    teamAccessError = null;
+    teamAccessNotice = null;
+
+    try {
+      await removeTeamPackageAccess(pkg.owner_org_slug, teamSlug, ecosystem, name);
+      const teamLabel =
+        pkg.team_access?.find((grant) => grant.team_slug === teamSlug)?.team_name ||
+        teamSlug;
+      await loadPackagePage();
+      teamAccessNotice = `Revoked package access for ${teamLabel}.`;
+    } catch (caughtError: unknown) {
+      teamAccessError = toErrorMessage(
+        caughtError,
+        'Failed to revoke package access.'
+      );
+    } finally {
+      revokingTeamSlug = null;
     }
   }
 
@@ -621,6 +792,25 @@
 
   function formatPermission(permission: string): string {
     return formatIdentifierLabel(permission);
+  }
+
+  function isOrgAdminRole(role: string | null | undefined): boolean {
+    return role === 'owner' || role === 'admin';
+  }
+
+  function formatTeamOption(team: Team): string {
+    const name = team.name?.trim();
+    const slug = team.slug?.trim();
+
+    if (name && slug && name !== slug) {
+      return `${name} (${slug})`;
+    }
+
+    return name || slug || 'Unnamed team';
+  }
+
+  function toErrorMessage(error: unknown, fallback: string): string {
+    return error instanceof Error && error.message ? error.message : fallback;
   }
 
   $: packageMetadata = pkg?.ecosystem_metadata ?? null;
@@ -1096,6 +1286,21 @@
               <p class="settings-copy" style="margin-bottom:12px;">
                 Team grants for this organization-owned package.
               </p>
+              {#if teamAccessNotice}
+                <div class="alert alert-success" style="margin-bottom:12px;">
+                  {teamAccessNotice}
+                </div>
+              {/if}
+              {#if teamAccessError}
+                <div class="alert alert-error" style="margin-bottom:12px;">
+                  {teamAccessError}
+                </div>
+              {/if}
+              {#if teamAccessManagementState.loadError}
+                <div class="alert alert-error" style="margin-bottom:12px;">
+                  {teamAccessManagementState.loadError}
+                </div>
+              {/if}
               {#if pkg.team_access.length === 0}
                 <p class="settings-copy">No team grants assigned yet.</p>
               {:else}
@@ -1122,8 +1327,143 @@
                           {/each}
                         </div>
                       </div>
+                      {#if teamAccessManagementState.showManagement && grant.team_slug}
+                        <div class="token-row__actions">
+                          <button
+                            type="button"
+                            class="btn btn-secondary btn-sm"
+                            disabled={Boolean(revokingTeamSlug)}
+                            on:click={() =>
+                              handleRemovePackageTeamAccess(grant.team_slug || '')}
+                          >
+                            {#if revokingTeamSlug === grant.team_slug}
+                              Revoking…
+                            {:else}
+                              Revoke
+                            {/if}
+                          </button>
+                        </div>
+                      {/if}
                     </div>
                   {/each}
+                </div>
+              {/if}
+              {#if teamAccessManagementState.showManagement}
+                <div
+                  class="settings-subsection"
+                  style="margin-top:16px; padding-top:16px; border-top:1px solid var(--color-border);"
+                >
+                  <h4 style="margin-bottom:12px;">Manage package access</h4>
+                  <p class="settings-copy" style="margin-bottom:12px;">
+                    Saving replaces the selected team&apos;s permissions for this
+                    package.
+                  </p>
+                  {#if teamAccessManagementState.teams.length === 0}
+                    <p class="settings-copy">
+                      Create a team in the organization workspace before
+                      delegating package access.
+                    </p>
+                  {:else}
+                    <form on:submit={handleReplacePackageTeamAccess}>
+                      <div class="form-group" style="margin-bottom:12px;">
+                        <label for="package-team-access-team">Team</label>
+                        <select
+                          id="package-team-access-team"
+                          name="team_slug"
+                          class="form-input"
+                          required
+                          disabled={savingTeamAccess || Boolean(revokingTeamSlug)}
+                        >
+                          <option value="">Select a team</option>
+                          {#each [...teamAccessManagementState.teams].sort((left, right) => formatTeamOption(left).localeCompare(formatTeamOption(right))) as team}
+                            <option value={team.slug || ''}>
+                              {formatTeamOption(team)}
+                            </option>
+                          {/each}
+                        </select>
+                      </div>
+                      <fieldset style="margin:0 0 12px; padding:0; border:none;">
+                        <legend
+                          style="font-size:0.875rem; font-weight:600; margin-bottom:8px;"
+                        >
+                          Permissions
+                        </legend>
+                        <div class="grid gap-3">
+                          {#each [
+                            {
+                              value: 'admin',
+                              label: 'Admin',
+                              description:
+                                'Manage package administration workflows.',
+                            },
+                            {
+                              value: 'publish',
+                              label: 'Publish',
+                              description:
+                                'Create releases and publish artifacts.',
+                            },
+                            {
+                              value: 'write_metadata',
+                              label: 'Write metadata',
+                              description:
+                                'Update package readmes and metadata.',
+                            },
+                            {
+                              value: 'read_private',
+                              label: 'Read private',
+                              description:
+                                'Read non-public package data.',
+                            },
+                            {
+                              value: 'security_review',
+                              label: 'Security review',
+                              description:
+                                'Reserved for future security workflows.',
+                            },
+                            {
+                              value: 'transfer_ownership',
+                              label: 'Transfer ownership',
+                              description:
+                                'Transfer a package to another owner.',
+                            },
+                          ] as permission}
+                            <label
+                              class="rounded-lg border border-neutral-200 p-3 text-sm"
+                            >
+                              <span class="flex items-start gap-3">
+                                <input
+                                  type="checkbox"
+                                  name="permissions"
+                                  value={permission.value}
+                                  disabled={savingTeamAccess ||
+                                    Boolean(revokingTeamSlug)}
+                                />
+                                <span>
+                                  <span class="block font-medium"
+                                    >{permission.label}</span
+                                  >
+                                  <span class="mt-1 block text-muted"
+                                    >{permission.description}</span
+                                  >
+                                </span>
+                              </span>
+                            </label>
+                          {/each}
+                        </div>
+                      </fieldset>
+                      <button
+                        type="submit"
+                        class="btn btn-primary"
+                        disabled={savingTeamAccess || Boolean(revokingTeamSlug)}
+                      >
+                        {#if savingTeamAccess}
+                          Saving…
+                        {:else}
+                          Save package access
+                        {/if}
+                      </button>
+                    </form>
+                  {/if}
                 </div>
               {/if}
             </div>
