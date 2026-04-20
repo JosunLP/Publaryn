@@ -29,7 +29,7 @@ use crate::{
         ensure_org_admin_by_slug, ensure_org_audit_access_by_slug, ensure_org_member_by_slug,
         is_org_member, AuthenticatedIdentity, OptionalAuthenticatedIdentity,
     },
-    scopes::{ensure_scope, SCOPE_ORGS_TRANSFER, SCOPE_ORGS_WRITE},
+    scopes::{ensure_scope, SCOPE_ORGS_TRANSFER, SCOPE_ORGS_WRITE, SCOPE_PACKAGES_WRITE},
     state::AppState,
 };
 
@@ -2582,6 +2582,23 @@ impl SecuritySeverityCounts {
 }
 
 #[derive(Debug, Clone)]
+struct SecurityReviewerTeamSummary {
+    team_id: Uuid,
+    team_slug: String,
+    team_name: String,
+}
+
+impl SecurityReviewerTeamSummary {
+    fn as_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "id": self.team_id,
+            "slug": self.team_slug,
+            "name": self.team_name,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
 struct OrgSecurityPackageSummary {
     package_id: Uuid,
     ecosystem: String,
@@ -2590,6 +2607,8 @@ struct OrgSecurityPackageSummary {
     visibility: String,
     latest_detected_at: Option<chrono::DateTime<chrono::Utc>>,
     severities: SecuritySeverityCounts,
+    reviewer_teams: Vec<SecurityReviewerTeamSummary>,
+    can_manage_security: bool,
 }
 
 impl OrgSecurityPackageSummary {
@@ -2612,8 +2631,168 @@ impl OrgSecurityPackageSummary {
             "worst_severity": self.severities.worst_severity(),
             "latest_detected_at": self.latest_detected_at,
             "severities": self.severities.as_json(),
+            "reviewer_teams": self.reviewer_teams.iter().map(SecurityReviewerTeamSummary::as_json).collect::<Vec<_>>(),
+            "can_manage_security": self.can_manage_security,
         })
     }
+}
+
+fn identity_can_attempt_security_review(identity: &OptionalAuthenticatedIdentity) -> Option<Uuid> {
+    identity
+        .0
+        .as_ref()
+        .filter(|identity| {
+            identity
+                .scopes()
+                .iter()
+                .any(|scope| scope == SCOPE_PACKAGES_WRITE)
+        })
+        .map(|identity| identity.user_id)
+}
+
+async fn load_org_security_reviewer_teams(
+    db: &sqlx::PgPool,
+    org_id: Uuid,
+    package_ids: &[Uuid],
+) -> ApiResult<HashMap<Uuid, Vec<SecurityReviewerTeamSummary>>> {
+    if package_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let rows = sqlx::query(
+        "SELECT reviewer_grants.package_id, t.id AS team_id, t.slug AS team_slug, t.name AS team_name \
+         FROM ( \
+             SELECT DISTINCT tpa.package_id, tpa.team_id \
+             FROM team_package_access tpa \
+             WHERE tpa.package_id = ANY($1) \
+               AND tpa.permission::text IN ('admin', 'security_review') \
+             UNION \
+             SELECT DISTINCT p.id AS package_id, tra.team_id \
+             FROM packages p \
+             JOIN team_repository_access tra ON tra.repository_id = p.repository_id \
+             WHERE p.id = ANY($1) \
+               AND tra.permission::text IN ('admin', 'security_review') \
+         ) reviewer_grants \
+         JOIN teams t ON t.id = reviewer_grants.team_id \
+         WHERE t.org_id = $2 \
+         ORDER BY reviewer_grants.package_id, LOWER(t.name), LOWER(t.slug)",
+    )
+    .bind(package_ids)
+    .bind(org_id)
+    .fetch_all(db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let mut reviewer_teams = HashMap::<Uuid, Vec<SecurityReviewerTeamSummary>>::new();
+    for row in rows {
+        let package_id: Uuid = row
+            .try_get("package_id")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+        let team = SecurityReviewerTeamSummary {
+            team_id: row
+                .try_get("team_id")
+                .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+            team_slug: row
+                .try_get("team_slug")
+                .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+            team_name: row
+                .try_get("team_name")
+                .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        };
+        reviewer_teams.entry(package_id).or_default().push(team);
+    }
+
+    Ok(reviewer_teams)
+}
+
+async fn load_actor_security_manageable_packages(
+    db: &sqlx::PgPool,
+    actor_user_id: Option<Uuid>,
+    package_ids: &[Uuid],
+) -> ApiResult<BTreeSet<Uuid>> {
+    let Some(actor_user_id) = actor_user_id else {
+        return Ok(BTreeSet::new());
+    };
+    if package_ids.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+
+    let rows = sqlx::query(
+        "SELECT DISTINCT manageable.package_id \
+         FROM ( \
+             SELECT p.id AS package_id \
+             FROM packages p \
+             WHERE p.id = ANY($1) AND p.owner_user_id = $2 \
+             UNION \
+             SELECT p.id AS package_id \
+             FROM packages p \
+             JOIN org_memberships om ON om.org_id = p.owner_org_id \
+             WHERE p.id = ANY($1) \
+               AND om.user_id = $2 \
+               AND om.role::text IN ('owner', 'admin') \
+             UNION \
+             SELECT tpa.package_id \
+             FROM team_package_access tpa \
+             JOIN team_memberships tm ON tm.team_id = tpa.team_id \
+             WHERE tpa.package_id = ANY($1) \
+               AND tm.user_id = $2 \
+               AND tpa.permission::text IN ('admin', 'security_review') \
+             UNION \
+             SELECT p.id AS package_id \
+             FROM packages p \
+             JOIN team_repository_access tra ON tra.repository_id = p.repository_id \
+             JOIN team_memberships tm ON tm.team_id = tra.team_id \
+             WHERE p.id = ANY($1) \
+               AND tm.user_id = $2 \
+               AND tra.permission::text IN ('admin', 'security_review') \
+         ) manageable",
+    )
+    .bind(package_ids)
+    .bind(actor_user_id)
+    .fetch_all(db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    rows.into_iter()
+        .map(|row| {
+            row.try_get("package_id")
+                .map_err(|e| ApiError(Error::Internal(e.to_string())))
+        })
+        .collect()
+}
+
+async fn enrich_org_security_packages(
+    db: &sqlx::PgPool,
+    org_id: Uuid,
+    identity: &OptionalAuthenticatedIdentity,
+    include_reviewer_teams: bool,
+    packages: &mut [OrgSecurityPackageSummary],
+) -> ApiResult<()> {
+    let package_ids = packages
+        .iter()
+        .map(|package| package.package_id)
+        .collect::<Vec<_>>();
+    let reviewer_teams = if include_reviewer_teams {
+        load_org_security_reviewer_teams(db, org_id, &package_ids).await?
+    } else {
+        HashMap::new()
+    };
+    let manageable_packages = load_actor_security_manageable_packages(
+        db,
+        identity_can_attempt_security_review(identity),
+        &package_ids,
+    )
+    .await?;
+
+    for package in packages {
+        package.reviewer_teams = reviewer_teams
+            .get(&package.package_id)
+            .cloned()
+            .unwrap_or_default();
+        package.can_manage_security = manageable_packages.contains(&package.package_id);
+    }
+
+    Ok(())
 }
 
 async fn list_org_security_findings(
@@ -2625,8 +2804,16 @@ async fn list_org_security_findings(
     let (org_id, can_view_non_public) =
         resolve_org_security_scope(&state.db, &slug, identity.user_id()).await?;
     let filters = resolve_org_security_filters(&query)?;
-    let packages =
+    let mut packages =
         load_org_security_packages(&state.db, org_id, can_view_non_public, &filters).await?;
+    enrich_org_security_packages(
+        &state.db,
+        org_id,
+        &identity,
+        can_view_non_public,
+        &mut packages,
+    )
+    .await?;
     let summary_severities = summarize_org_security_packages(&packages);
 
     let package_count = packages.len();
@@ -2697,6 +2884,8 @@ fn build_org_security_package_summary(
             .try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("latest_detected_at")
             .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
         severities: security_severity_counts_from_row(row)?,
+        reviewer_teams: Vec::new(),
+        can_manage_security: false,
     })
 }
 
