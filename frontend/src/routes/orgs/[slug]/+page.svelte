@@ -3813,7 +3813,7 @@
                       type="button"
                       on:click={() =>
                         handleDeleteNamespace(
-                          claim.id || '',
+                          claim.id!,
                           claim.namespace || 'this claim'
                         )}>Delete</button
                     >
