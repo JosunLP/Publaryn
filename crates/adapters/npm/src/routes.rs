@@ -1524,7 +1524,7 @@ async fn actor_has_any_team_package_access(
              JOIN packages p ON p.id = tpa.package_id \
              WHERE tpa.package_id = $1 \
                AND tm.user_id = $2 \
-               AND t.org_id = p.owner_org_id\
+               AND t.org_id = p.owner_org_id \
          )",
     )
     .bind(package_id)
@@ -1548,7 +1548,7 @@ async fn actor_has_any_team_repository_access(
              JOIN repositories r ON r.id = tra.repository_id \
              WHERE tra.repository_id = $1 \
                AND tm.user_id = $2 \
-               AND t.org_id = r.owner_org_id\
+               AND t.org_id = r.owner_org_id \
          )",
     )
     .bind(repository_id)
