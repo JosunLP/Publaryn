@@ -104,17 +104,6 @@
 
     try {
       const data = await listOrgRepositories(orgSlug);
-      if (org !== orgSlug) {
-        return;
-      }
-
-      repositories = [...(data.repositories || [])]
-        .filter((repositoryOption) => Boolean(repositoryOption.slug?.trim()))
-        .sort((left, right) =>
-          `${left.name || left.slug || ''}`.localeCompare(
-            `${right.name || right.slug || ''}`
-          )
-        );
     } catch (caughtError: unknown) {
       if (org !== orgSlug) {
         return;
@@ -125,7 +114,20 @@
           ? caughtError.message
           : 'Failed to load repositories.';
       repositories = [];
+      return;
     }
+
+    if (org !== orgSlug) {
+      return;
+    }
+
+    repositories = [...(data.repositories || [])]
+      .filter((repositoryOption) => Boolean(repositoryOption.slug?.trim()))
+      .sort((left, right) =>
+        `${left.name || left.slug || ''}`.localeCompare(
+          `${right.name || right.slug || ''}`
+        )
+      );
   }
 
   async function loadResults(): Promise<void> {
@@ -238,9 +240,7 @@
         class="form-input"
         aria-label="Organization scope"
         style="width:auto; min-width:180px;"
-        on:change={() => {
-          repository = '';
-        }}
+        on:change={() => (repository = '')}
       >
         <option value="">All owners</option>
         {#if org && !currentOrgInOptions}

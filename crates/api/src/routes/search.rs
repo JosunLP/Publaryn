@@ -230,7 +230,7 @@ async fn load_visible_search_package_ids(
              AND ($3 IS NULL OR EXISTS (\
                 SELECT 1 \
                 FROM organizations o \
-                WHERE o.id = p.owner_org_id AND o.slug = $3\
+                WHERE o.id = p.owner_org_id AND o.slug = $3 \
              )) \
              AND ($4 IS NULL OR r.slug = $4) \
              AND p.visibility <> 'unlisted' \
