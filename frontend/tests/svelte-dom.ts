@@ -159,6 +159,8 @@ function installDomGlobals(window: Window): void {
     'Node',
     'Element',
     'Text',
+    'Comment',
+    'DocumentFragment',
     'Event',
     'SubmitEvent',
     'CustomEvent',
