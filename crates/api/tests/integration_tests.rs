@@ -8820,8 +8820,20 @@ async fn test_search_surfaces_include_private_packages_visible_through_team_gran
     }
 
     let app = app(pool);
-    register_user(&app, "alice", "alice-delegated-search@test.dev", "super_secret_pw!").await;
-    register_user(&app, "bob", "bob-delegated-search@test.dev", "super_secret_pw!").await;
+    register_user(
+        &app,
+        "alice",
+        "alice-delegated-search@test.dev",
+        "super_secret_pw!",
+    )
+    .await;
+    register_user(
+        &app,
+        "bob",
+        "bob-delegated-search@test.dev",
+        "super_secret_pw!",
+    )
+    .await;
     register_user(
         &app,
         "carol",
@@ -8833,8 +8845,13 @@ async fn test_search_surfaces_include_private_packages_visible_through_team_gran
     let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
     let carol_jwt = login_user(&app, "carol", "super_secret_pw!").await;
 
-    let (status, org_body) =
-        create_org(&app, &alice_jwt, "Delegated Search Org", "delegated-search-org").await;
+    let (status, org_body) = create_org(
+        &app,
+        &alice_jwt,
+        "Delegated Search Org",
+        "delegated-search-org",
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED);
     let org_id = org_body["id"].as_str().expect("org id should be present");
 
@@ -8847,7 +8864,11 @@ async fn test_search_surfaces_include_private_packages_visible_through_team_gran
 
     for (name, slug, visibility) in [
         ("Delegated Public", "delegated-public-search", "public"),
-        ("Delegated Package Private", "delegated-package-private", "private"),
+        (
+            "Delegated Package Private",
+            "delegated-package-private",
+            "private",
+        ),
         (
             "Delegated Repository Private",
             "delegated-repository-private",
@@ -9040,16 +9061,17 @@ async fn test_search_surfaces_include_private_packages_visible_through_team_gran
             "unexpected carol management search response: {management_carol_body}"
         );
 
-        let (management_anonymous_status, management_anonymous_body) = search_packages_with_options(
-            &app,
-            None,
-            "delegatedsearchomega",
-            SearchPackagesRequestOptions {
-                ecosystem: Some("npm"),
-                ..SearchPackagesRequestOptions::default()
-            },
-        )
-        .await;
+        let (management_anonymous_status, management_anonymous_body) =
+            search_packages_with_options(
+                &app,
+                None,
+                "delegatedsearchomega",
+                SearchPackagesRequestOptions {
+                    ecosystem: Some("npm"),
+                    ..SearchPackagesRequestOptions::default()
+                },
+            )
+            .await;
         assert_eq!(
             management_anonymous_status,
             StatusCode::OK,

@@ -1080,7 +1080,13 @@ mod tests {
                 "Repository Private",
                 "repository-private",
             ),
-            package_doc(public_id, "public-widget", "public", "Public", "public-repo"),
+            package_doc(
+                public_id,
+                "public-widget",
+                "public",
+                "Public",
+                "public-repo",
+            ),
         ];
 
         let package_grantee_ids = load_visible_search_package_ids(
