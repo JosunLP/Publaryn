@@ -7502,7 +7502,7 @@ async fn test_team_namespace_transfer_permission_allows_namespace_transfer(pool:
 async fn test_team_repository_write_metadata_permission_allows_package_creation_and_metadata_updates_but_not_repository_settings(
     pool: PgPool,
 ) {
-    let app = app(pool);
+    let app = app(pool.clone());
     register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
     register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
     let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
@@ -7566,6 +7566,50 @@ async fn test_team_repository_write_metadata_permission_allows_package_creation_
     assert_eq!(status, StatusCode::OK);
     assert_eq!(repository_detail_before["can_manage"], false);
     assert_eq!(repository_detail_before["can_create_packages"], true);
+
+    let (status, updated_org_body) = update_org_profile(
+        &app,
+        &alice_jwt,
+        "source-org",
+        json!({ "mfa_required": true }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(updated_org_body["mfa_required"], true);
+
+    let (status, repository_detail_mfa_required) =
+        get_repository_detail(&app, Some(&bob_jwt), "source-packages").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(repository_detail_mfa_required["can_manage"], false);
+    assert_eq!(repository_detail_mfa_required["can_create_packages"], false);
+
+    let (status, mfa_forbidden_body) = create_package(
+        &app,
+        &bob_jwt,
+        "npm",
+        "repo-metadata-widget",
+        "source-packages",
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(
+        mfa_forbidden_body["error"]
+            .as_str()
+            .expect("error should be present")
+            .contains("This organization requires MFA for elevated members before write actions are allowed"),
+        "unexpected error response: {mfa_forbidden_body}"
+    );
+
+    sqlx::query("UPDATE users SET mfa_enabled = true WHERE username = 'bob'")
+        .execute(&pool)
+        .await
+        .expect("should enable MFA for bob");
+
+    let (status, repository_detail_after_mfa) =
+        get_repository_detail(&app, Some(&bob_jwt), "source-packages").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(repository_detail_after_mfa["can_manage"], false);
+    assert_eq!(repository_detail_after_mfa["can_create_packages"], true);
 
     let (status, create_body) = create_package(
         &app,
@@ -7921,6 +7965,52 @@ async fn test_team_repository_admin_permission_allows_repository_updates_and_tea
     assert_eq!(status, StatusCode::OK);
     assert_eq!(repository_detail_before["can_manage"], true);
     assert_eq!(repository_detail_before["can_create_packages"], true);
+
+    let (status, updated_org_body) = update_org_profile(
+        &app,
+        &alice_jwt,
+        "source-org",
+        json!({ "mfa_required": true }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(updated_org_body["mfa_required"], true);
+
+    let (status, repository_detail_mfa_required) =
+        get_repository_detail(&app, Some(&bob_jwt), "source-packages").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(repository_detail_mfa_required["can_manage"], false);
+    assert_eq!(repository_detail_mfa_required["can_create_packages"], false);
+
+    let (status, mfa_forbidden_body) = update_repository_detail(
+        &app,
+        &bob_jwt,
+        "source-packages",
+        json!({
+            "description": "Managed by the repository-admins team.",
+            "upstream_url": "https://github.com/acme/source-packages",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(
+        mfa_forbidden_body["error"]
+            .as_str()
+            .expect("error should be present")
+            .contains("This organization requires MFA for elevated members before write actions are allowed"),
+        "unexpected error response: {mfa_forbidden_body}"
+    );
+
+    sqlx::query("UPDATE users SET mfa_enabled = true WHERE username = 'bob'")
+        .execute(&pool)
+        .await
+        .expect("should enable MFA for bob");
+
+    let (status, repository_detail_after_mfa) =
+        get_repository_detail(&app, Some(&bob_jwt), "source-packages").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(repository_detail_after_mfa["can_manage"], true);
+    assert_eq!(repository_detail_after_mfa["can_create_packages"], true);
 
     let (status, update_body) = update_repository_detail(
         &app,
@@ -8425,6 +8515,42 @@ async fn test_team_repository_transfer_permission_allows_repository_transfer(poo
         get_repository_detail(&app, Some(&bob_jwt), "source-packages").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(detail_after_grant["can_transfer"], true);
+
+    let (status, updated_org_body) = update_org_profile(
+        &app,
+        &alice_jwt,
+        "source-org",
+        json!({ "mfa_required": true }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(updated_org_body["mfa_required"], true);
+
+    let (status, detail_mfa_required) =
+        get_repository_detail(&app, Some(&bob_jwt), "source-packages").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail_mfa_required["can_transfer"], false);
+
+    let (status, mfa_forbidden_body) =
+        transfer_repository_ownership(&app, &bob_jwt, "source-packages", "target-org").await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(
+        mfa_forbidden_body["error"]
+            .as_str()
+            .expect("error should be present")
+            .contains("This organization requires MFA for elevated members before write actions are allowed"),
+        "unexpected error response: {mfa_forbidden_body}"
+    );
+
+    sqlx::query("UPDATE users SET mfa_enabled = true WHERE username = 'bob'")
+        .execute(&pool)
+        .await
+        .expect("should enable MFA for bob");
+
+    let (status, detail_after_mfa) =
+        get_repository_detail(&app, Some(&bob_jwt), "source-packages").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail_after_mfa["can_transfer"], true);
 
     let (status, transfer_body) =
         transfer_repository_ownership(&app, &bob_jwt, "source-packages", "target-org").await;
