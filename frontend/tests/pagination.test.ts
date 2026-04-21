@@ -52,7 +52,15 @@ describe('pagination helpers', () => {
     ).rejects.toThrow('perPage must be a positive integer.');
 
     await expect(
+      collectPaginatedItems(async () => ['unused'], { perPage: -1 })
+    ).rejects.toThrow('perPage must be a positive integer.');
+
+    await expect(
       collectPaginatedItems(async () => ['unused'], { maxPages: 1.5 })
+    ).rejects.toThrow('maxPages must be a positive integer.');
+
+    await expect(
+      collectPaginatedItems(async () => ['unused'], { maxPages: -1 })
     ).rejects.toThrow('maxPages must be a positive integer.');
   });
 });

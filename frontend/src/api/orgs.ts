@@ -740,9 +740,7 @@ export async function listOrgPackages(
       }
     );
 
-    if (typeof data.load_error === 'string' && data.load_error.length > 0) {
-      throw new Error(data.load_error);
-    }
+    throwOrgCollectionLoadError(data.load_error);
 
     return data.packages || [];
   });
@@ -766,9 +764,7 @@ export async function listOrgRepositories(
       }
     );
 
-    if (typeof data.load_error === 'string' && data.load_error.length > 0) {
-      throw new Error(data.load_error);
-    }
+    throwOrgCollectionLoadError(data.load_error);
 
     return data.repositories || [];
   });
@@ -932,4 +928,10 @@ export async function declineInvitation(
 
 function enc(value: string): string {
   return encodeURIComponent(value);
+}
+
+function throwOrgCollectionLoadError(loadError: NullableString | undefined): void {
+  if (typeof loadError === 'string' && loadError.length > 0) {
+    throw new Error(loadError);
+  }
 }
