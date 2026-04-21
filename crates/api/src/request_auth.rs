@@ -1535,7 +1535,7 @@ async fn actor_can_namespace_claim_by_id_and_requirement(
 
     authorize_namespace_claim_write_access_by_id(db, namespace_claim_id, actor_user_id, requirement)
         .await
-    .map(is_write_access_allowed)
+        .map(is_write_access_allowed)
 }
 
 pub async fn ensure_namespace_claim_admin_access_by_id(
