@@ -423,7 +423,7 @@ async fn actor_has_org_roles(
     .map_err(|e| ApiError(Error::Database(e)))
 }
 
-fn org_role_requires_mfa_for_write(role: &str) -> bool {
+fn does_org_role_require_mfa_for_write(role: &str) -> bool {
     ORG_MFA_REQUIRED_WRITE_ROLES.contains(&role)
 }
 
@@ -436,7 +436,7 @@ fn resolve_org_write_role_access(
         return OrgWriteRoleAccess::MissingRole;
     };
 
-    if mfa_required && org_role_requires_mfa_for_write(role) && !mfa_enabled {
+    if mfa_required && does_org_role_require_mfa_for_write(role) && !mfa_enabled {
         return OrgWriteRoleAccess::MfaRequired;
     }
 
@@ -459,7 +459,7 @@ fn resolve_team_write_access(
     TeamWriteAccess::Allowed
 }
 
-fn write_access_allows_capability(access: TeamWriteAccess) -> bool {
+fn is_write_access_allowed(access: TeamWriteAccess) -> bool {
     matches!(access, TeamWriteAccess::Allowed)
 }
 
@@ -1339,7 +1339,7 @@ async fn actor_can_package_by_id_and_requirement(
         requirement,
     )
     .await
-    .map(write_access_allows_capability)
+    .map(is_write_access_allowed)
 }
 
 async fn fetch_repository_owner_fields_by_id(
@@ -1468,7 +1468,7 @@ async fn actor_can_repository_by_id_and_requirement(
         requirement.team_permissions(),
     )
     .await
-    .map(write_access_allows_capability)
+    .map(is_write_access_allowed)
 }
 
 async fn authorize_namespace_claim_write_access_by_id(
@@ -1535,7 +1535,7 @@ async fn actor_can_namespace_claim_by_id_and_requirement(
 
     authorize_namespace_claim_write_access_by_id(db, namespace_claim_id, actor_user_id, requirement)
         .await
-        .map(write_access_allows_capability)
+    .map(is_write_access_allowed)
 }
 
 pub async fn ensure_namespace_claim_admin_access_by_id(
