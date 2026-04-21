@@ -23,5 +23,5 @@ export async function collectPaginatedItems<TItem>(
     }
   }
 
-  throw new Error('Exceeded supported pagination depth.');
+  throw new Error(`Exceeded maximum pagination depth of ${maxPages} pages.`);
 }

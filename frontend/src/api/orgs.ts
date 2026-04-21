@@ -729,7 +729,6 @@ export async function removeTeamNamespaceAccess(
 export async function listOrgPackages(
   slug: string
 ): Promise<OrgPackageListResponse> {
-  let loadError: NullableString | undefined;
   const packages = await collectPaginatedItems(async (page, perPage) => {
     const { data } = await api.get<OrgPackageListResponse>(
       `/v1/orgs/${enc(slug)}/packages`,
@@ -742,7 +741,7 @@ export async function listOrgPackages(
     );
 
     if (typeof data.load_error === 'string' && data.load_error.length > 0) {
-      loadError = data.load_error;
+      throw new Error(data.load_error);
     }
 
     return data.packages || [];
@@ -750,14 +749,12 @@ export async function listOrgPackages(
 
   return {
     packages,
-    load_error: loadError,
   };
 }
 
 export async function listOrgRepositories(
   slug: string
 ): Promise<OrgRepositoryListResponse> {
-  let loadError: NullableString | undefined;
   const repositories = await collectPaginatedItems(async (page, perPage) => {
     const { data } = await api.get<OrgRepositoryListResponse>(
       `/v1/orgs/${enc(slug)}/repositories`,
@@ -770,7 +767,7 @@ export async function listOrgRepositories(
     );
 
     if (typeof data.load_error === 'string' && data.load_error.length > 0) {
-      loadError = data.load_error;
+      throw new Error(data.load_error);
     }
 
     return data.repositories || [];
@@ -778,7 +775,6 @@ export async function listOrgRepositories(
 
   return {
     repositories,
-    load_error: loadError,
   };
 }
 

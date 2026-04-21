@@ -43,6 +43,6 @@ describe('pagination helpers', () => {
       collectPaginatedItems(async (_page, perPage) => {
         return Array.from({ length: perPage }, () => 'still-full');
       }, { perPage: 2, maxPages: 2 })
-    ).rejects.toThrow('Exceeded supported pagination depth.');
+    ).rejects.toThrow('Exceeded maximum pagination depth of 2 pages.');
   });
 });
