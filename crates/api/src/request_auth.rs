@@ -735,12 +735,12 @@ async fn ensure_package_access_by_requirement(
         }
 
         if actor_has_team_package_permissions(
-                db,
-                package_id,
-                actor_user_id,
-                requirement.team_permissions(),
-            )
-            .await?
+            db,
+            package_id,
+            actor_user_id,
+            requirement.team_permissions(),
+        )
+        .await?
             || actor_has_team_repository_permissions(
                 db,
                 repository_id,
