@@ -260,7 +260,7 @@
         name="q"
         class="search-input"
         placeholder="Search packages, owners, and repositories…"
-        aria-label="Search packages"
+        aria-label="Search packages, owners, and repositories"
       />
       <select bind:value={ecosystem} name="ecosystem" class="form-input">
         <option value="">All ecosystems</option>
