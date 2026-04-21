@@ -70,6 +70,12 @@ enum PackageAccessRequirement {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NamespaceClaimAccessRequirement {
+    Admin,
+    TransferOwnership,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OrgWriteRoleAccess {
     Allowed,
     MissingRole,
@@ -131,6 +137,24 @@ impl PackageAccessRequirement {
                 "You do not have permission to manage security findings for this package"
             }
             Self::ManagementVisibility => "You do not have permission to manage this package",
+        }
+    }
+}
+
+impl NamespaceClaimAccessRequirement {
+    fn team_permissions(self) -> &'static [&'static str] {
+        match self {
+            Self::Admin => TEAM_NAMESPACE_ADMIN_PERMISSIONS,
+            Self::TransferOwnership => TEAM_NAMESPACE_TRANSFER_PERMISSIONS,
+        }
+    }
+
+    fn denial_message(self) -> &'static str {
+        match self {
+            Self::Admin => "You do not have permission to manage this namespace claim",
+            Self::TransferOwnership => {
+                "You do not have permission to transfer this namespace claim"
+            }
         }
     }
 }
@@ -1490,7 +1514,7 @@ async fn authorize_namespace_claim_write_access_by_id(
     db: &PgPool,
     namespace_claim_id: Uuid,
     actor_user_id: Uuid,
-    allowed_permissions: &[&str],
+    requirement: NamespaceClaimAccessRequirement,
 ) -> ApiResult<TeamWriteAccess> {
     let (owner_user_id, owner_org_id) =
         fetch_namespace_claim_owner_fields_by_id(db, namespace_claim_id).await?;
@@ -1507,8 +1531,50 @@ async fn authorize_namespace_claim_write_access_by_id(
         }
     }
 
-    actor_has_team_namespace_permissions(db, namespace_claim_id, actor_user_id, allowed_permissions)
+    actor_has_team_namespace_permissions(
+        db,
+        namespace_claim_id,
+        actor_user_id,
+        requirement.team_permissions(),
+    )
+    .await
+}
+
+async fn ensure_namespace_claim_access_by_requirement(
+    db: &PgPool,
+    namespace_claim_id: Uuid,
+    actor_user_id: Uuid,
+    requirement: NamespaceClaimAccessRequirement,
+) -> ApiResult<()> {
+    match authorize_namespace_claim_write_access_by_id(
+        db,
+        namespace_claim_id,
+        actor_user_id,
+        requirement,
+    )
+    .await?
+    {
+        TeamWriteAccess::Allowed => Ok(()),
+        TeamWriteAccess::MfaRequired => Err(org_mfa_required_for_write_error()),
+        TeamWriteAccess::MissingPermission => Err(ApiError(Error::Forbidden(
+            requirement.denial_message().into(),
+        ))),
+    }
+}
+
+async fn actor_can_namespace_claim_by_id_and_requirement(
+    db: &PgPool,
+    namespace_claim_id: Uuid,
+    actor_user_id: Option<Uuid>,
+    requirement: NamespaceClaimAccessRequirement,
+) -> ApiResult<bool> {
+    let Some(actor_user_id) = actor_user_id else {
+        return Ok(false);
+    };
+
+    authorize_namespace_claim_write_access_by_id(db, namespace_claim_id, actor_user_id, requirement)
         .await
+        .map(write_access_allows_capability)
 }
 
 pub async fn ensure_namespace_claim_admin_access_by_id(
@@ -1516,20 +1582,13 @@ pub async fn ensure_namespace_claim_admin_access_by_id(
     namespace_claim_id: Uuid,
     actor_user_id: Uuid,
 ) -> ApiResult<()> {
-    match authorize_namespace_claim_write_access_by_id(
+    ensure_namespace_claim_access_by_requirement(
         db,
         namespace_claim_id,
         actor_user_id,
-        TEAM_NAMESPACE_ADMIN_PERMISSIONS,
+        NamespaceClaimAccessRequirement::Admin,
     )
-    .await?
-    {
-        TeamWriteAccess::Allowed => Ok(()),
-        TeamWriteAccess::MfaRequired => Err(org_mfa_required_for_write_error()),
-        TeamWriteAccess::MissingPermission => Err(ApiError(Error::Forbidden(
-            "You do not have permission to manage this namespace claim".into(),
-        ))),
-    }
+    .await
 }
 
 pub async fn actor_can_manage_namespace_claim_by_id(
@@ -1537,21 +1596,13 @@ pub async fn actor_can_manage_namespace_claim_by_id(
     namespace_claim_id: Uuid,
     actor_user_id: Option<Uuid>,
 ) -> ApiResult<bool> {
-    let Some(actor_user_id) = actor_user_id else {
-        return Ok(false);
-    };
-
-    match authorize_namespace_claim_write_access_by_id(
+    actor_can_namespace_claim_by_id_and_requirement(
         db,
         namespace_claim_id,
         actor_user_id,
-        TEAM_NAMESPACE_ADMIN_PERMISSIONS,
+        NamespaceClaimAccessRequirement::Admin,
     )
-    .await?
-    {
-        TeamWriteAccess::Allowed => Ok(true),
-        TeamWriteAccess::MfaRequired | TeamWriteAccess::MissingPermission => Ok(false),
-    }
+    .await
 }
 
 pub async fn ensure_namespace_claim_transfer_access_by_id(
@@ -1559,20 +1610,13 @@ pub async fn ensure_namespace_claim_transfer_access_by_id(
     namespace_claim_id: Uuid,
     actor_user_id: Uuid,
 ) -> ApiResult<()> {
-    match authorize_namespace_claim_write_access_by_id(
+    ensure_namespace_claim_access_by_requirement(
         db,
         namespace_claim_id,
         actor_user_id,
-        TEAM_NAMESPACE_TRANSFER_PERMISSIONS,
+        NamespaceClaimAccessRequirement::TransferOwnership,
     )
-    .await?
-    {
-        TeamWriteAccess::Allowed => Ok(()),
-        TeamWriteAccess::MfaRequired => Err(org_mfa_required_for_write_error()),
-        TeamWriteAccess::MissingPermission => Err(ApiError(Error::Forbidden(
-            "You do not have permission to transfer this namespace claim".into(),
-        ))),
-    }
+    .await
 }
 
 pub async fn actor_can_transfer_namespace_claim_by_id(
@@ -1580,21 +1624,13 @@ pub async fn actor_can_transfer_namespace_claim_by_id(
     namespace_claim_id: Uuid,
     actor_user_id: Option<Uuid>,
 ) -> ApiResult<bool> {
-    let Some(actor_user_id) = actor_user_id else {
-        return Ok(false);
-    };
-
-    match authorize_namespace_claim_write_access_by_id(
+    actor_can_namespace_claim_by_id_and_requirement(
         db,
         namespace_claim_id,
         actor_user_id,
-        TEAM_NAMESPACE_TRANSFER_PERMISSIONS,
+        NamespaceClaimAccessRequirement::TransferOwnership,
     )
-    .await?
-    {
-        TeamWriteAccess::Allowed => Ok(true),
-        TeamWriteAccess::MfaRequired | TeamWriteAccess::MissingPermission => Ok(false),
-    }
+    .await
 }
 
 pub async fn actor_can_transfer_package_by_id(
