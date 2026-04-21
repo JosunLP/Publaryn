@@ -12,6 +12,7 @@ pub const SCOPE_ORGS_WRITE: &str = "orgs:write";
 pub const SCOPE_ORGS_JOIN: &str = "orgs:join";
 pub const SCOPE_ORGS_TRANSFER: &str = "orgs:transfer";
 pub const SCOPE_NAMESPACES_WRITE: &str = "namespaces:write";
+pub const SCOPE_NAMESPACES_TRANSFER: &str = "namespaces:transfer";
 pub const SCOPE_REPOSITORIES_WRITE: &str = "repositories:write";
 pub const SCOPE_REPOSITORIES_TRANSFER: &str = "repositories:transfer";
 pub const SCOPE_PACKAGES_WRITE: &str = "packages:write";
@@ -26,6 +27,7 @@ const DEFAULT_SESSION_SCOPES: &[&str] = &[
     SCOPE_ORGS_JOIN,
     SCOPE_ORGS_TRANSFER,
     SCOPE_NAMESPACES_WRITE,
+    SCOPE_NAMESPACES_TRANSFER,
     SCOPE_REPOSITORIES_WRITE,
     SCOPE_REPOSITORIES_TRANSFER,
     SCOPE_PACKAGES_WRITE,
@@ -40,6 +42,7 @@ const GRANTABLE_SCOPES: &[&str] = &[
     SCOPE_ORGS_JOIN,
     SCOPE_ORGS_TRANSFER,
     SCOPE_NAMESPACES_WRITE,
+    SCOPE_NAMESPACES_TRANSFER,
     SCOPE_REPOSITORIES_WRITE,
     SCOPE_REPOSITORIES_TRANSFER,
     SCOPE_PACKAGES_WRITE,
@@ -128,8 +131,9 @@ pub fn ensure_scope(identity: &AuthenticatedIdentity, scope: &str) -> ApiResult<
 mod tests {
     use super::{
         default_session_scopes, ensure_scope_grant_allowed, normalize_requested_scopes,
-        supported_scopes, SCOPE_AUDIT_READ, SCOPE_ORGS_TRANSFER, SCOPE_PACKAGES_TRANSFER,
-        SCOPE_PACKAGES_WRITE, SCOPE_PROFILE_WRITE, SCOPE_REPOSITORIES_TRANSFER,
+        supported_scopes, SCOPE_AUDIT_READ, SCOPE_NAMESPACES_TRANSFER, SCOPE_ORGS_TRANSFER,
+        SCOPE_PACKAGES_TRANSFER, SCOPE_PACKAGES_WRITE, SCOPE_PROFILE_WRITE,
+        SCOPE_REPOSITORIES_TRANSFER,
     };
 
     #[test]
@@ -206,5 +210,10 @@ mod tests {
     #[test]
     fn supported_scope_list_contains_repository_transfer_scope() {
         assert!(supported_scopes().contains(&SCOPE_REPOSITORIES_TRANSFER));
+    }
+
+    #[test]
+    fn supported_scope_list_contains_namespace_transfer_scope() {
+        assert!(supported_scopes().contains(&SCOPE_NAMESPACES_TRANSFER));
     }
 }

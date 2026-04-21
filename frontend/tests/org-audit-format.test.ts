@@ -40,6 +40,12 @@ describe('org audit formatting helpers', () => {
     expect(formatAuditActionLabel('namespace_claim_delete')).toBe(
       'Namespace claim deleted'
     );
+    expect(formatAuditActionLabel('namespace_claim_transfer')).toBe(
+      'Namespace claim transferred'
+    );
+    expect(formatAuditActionLabel('team_namespace_access_update')).toBe(
+      'Namespace access updated'
+    );
   });
 
   test('formats team creation summaries', () => {
@@ -167,5 +173,28 @@ describe('org audit formatting helpers', () => {
 
     expect(formatAuditTarget(log)).toBe('namespace npm · @acme');
     expect(formatAuditSummary(log)).toBe('Deleted namespace @acme.');
+  });
+
+  test('formats namespace transfer summaries as a regression', () => {
+    expect(
+      formatAuditSummary(
+        makeLog('namespace_claim_transfer', {
+          ecosystem: 'npm',
+          namespace: '@acme',
+          new_owner_org_name: 'Acme Platform',
+        })
+      )
+    ).toBe('Transferred namespace @acme to organization Acme Platform.');
+  });
+
+  test('formats namespace delegation summaries as a regression', () => {
+    expect(
+      formatAuditSummary(
+        makeLog('team_namespace_access_update', {
+          namespace: '@acme',
+          permissions: ['admin', 'transfer_ownership'],
+        })
+      )
+    ).toBe('Updated namespace access for @acme: Admin, Transfer Ownership.');
   });
 });

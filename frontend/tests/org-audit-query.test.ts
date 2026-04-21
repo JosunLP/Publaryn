@@ -104,6 +104,7 @@ describe('org audit query helpers', () => {
   test('keeps namespace claim audit actions when building and parsing filters', () => {
     for (const action of [
       'namespace_claim_create',
+      'namespace_claim_transfer',
       'namespace_claim_delete',
     ] as const) {
       const path = buildOrgAuditPath(
@@ -123,6 +124,25 @@ describe('org audit query helpers', () => {
       expect(url.searchParams.get('action')).toBe(action);
       expect(view.action).toBe(action);
     }
+  });
+
+  test('keeps team namespace access audit actions when building and parsing filters', () => {
+    const path = buildOrgAuditPath(
+      'acme-corp',
+      {
+        action: 'team_namespace_access_update',
+        actorUserId: '',
+        actorUsername: '',
+        page: 1,
+      },
+      '?tab=activity'
+    );
+
+    const url = new URL(path, 'https://example.test');
+    const view = getAuditViewFromQuery(url.searchParams);
+
+    expect(url.searchParams.get('action')).toBe('team_namespace_access_update');
+    expect(view.action).toBe('team_namespace_access_update');
   });
 
   test('keeps package update audit actions when building and parsing filters', () => {

@@ -14,6 +14,7 @@ export const ORG_AUDIT_ACTION_VALUES = [
   'security_finding_resolve',
   'security_finding_reopen',
   'namespace_claim_create',
+  'namespace_claim_transfer',
   'namespace_claim_delete',
   'org_member_add',
   'org_role_change',
@@ -30,6 +31,7 @@ export const ORG_AUDIT_ACTION_VALUES = [
   'team_member_remove',
   'team_package_access_update',
   'team_repository_access_update',
+  'team_namespace_access_update',
 ] as const;
 
 const ORG_AUDIT_ACTION_SET = new Set<string>(ORG_AUDIT_ACTION_VALUES);

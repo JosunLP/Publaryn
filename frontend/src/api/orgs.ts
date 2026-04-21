@@ -98,6 +98,21 @@ export interface TeamRepositoryAccessListResponse {
   load_error?: NullableString;
 }
 
+export interface TeamNamespaceAccessGrant {
+  namespace_claim_id?: NullableString;
+  ecosystem?: NullableString;
+  namespace?: NullableString;
+  is_verified?: boolean | null;
+  permissions?: string[] | null;
+  granted_at?: NullableString;
+}
+
+export interface TeamNamespaceAccessListResponse {
+  team?: TeamPackageAccessTeam | null;
+  namespace_access: TeamNamespaceAccessGrant[];
+  load_error?: NullableString;
+}
+
 export interface TeamPackageAccessMutationResult {
   message?: NullableString;
   package?: {
@@ -117,6 +132,17 @@ export interface TeamRepositoryAccessMutationResult {
     slug?: NullableString;
     kind?: NullableString;
     visibility?: NullableString;
+  } | null;
+  permissions?: string[] | null;
+}
+
+export interface TeamNamespaceAccessMutationResult {
+  message?: NullableString;
+  namespace_claim?: {
+    id?: NullableString;
+    ecosystem?: NullableString;
+    namespace?: NullableString;
+    is_verified?: boolean | null;
   } | null;
   permissions?: string[] | null;
 }
@@ -620,6 +646,17 @@ export async function listTeamRepositoryAccess(
   return data;
 }
 
+export async function listTeamNamespaceAccess(
+  slug: string,
+  teamSlug: string
+): Promise<TeamNamespaceAccessListResponse> {
+  const { data } = await api.get<TeamNamespaceAccessListResponse>(
+    `/v1/orgs/${enc(slug)}/teams/${enc(teamSlug)}/namespace-access`
+  );
+
+  return data;
+}
+
 export async function replaceTeamRepositoryAccess(
   slug: string,
   teamSlug: string,
@@ -648,6 +685,40 @@ export async function removeTeamRepositoryAccess(
   const { data } = await api.delete<TeamRepositoryAccessMutationResult>(
     `/v1/orgs/${enc(slug)}/teams/${enc(teamSlug)}/repository-access/${enc(
       repositorySlug
+    )}`
+  );
+
+  return data;
+}
+
+export async function replaceTeamNamespaceAccess(
+  slug: string,
+  teamSlug: string,
+  claimId: string,
+  input: ReplaceTeamPackageAccessInput
+): Promise<TeamNamespaceAccessMutationResult> {
+  const { data } = await api.put<TeamNamespaceAccessMutationResult>(
+    `/v1/orgs/${enc(slug)}/teams/${enc(teamSlug)}/namespace-access/${enc(
+      claimId
+    )}`,
+    {
+      body: {
+        permissions: input.permissions,
+      },
+    }
+  );
+
+  return data;
+}
+
+export async function removeTeamNamespaceAccess(
+  slug: string,
+  teamSlug: string,
+  claimId: string
+): Promise<TeamNamespaceAccessMutationResult> {
+  const { data } = await api.delete<TeamNamespaceAccessMutationResult>(
+    `/v1/orgs/${enc(slug)}/teams/${enc(teamSlug)}/namespace-access/${enc(
+      claimId
     )}`
   );
 

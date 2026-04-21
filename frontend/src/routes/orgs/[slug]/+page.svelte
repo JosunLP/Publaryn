@@ -6,11 +6,13 @@
   import type {
     NamespaceClaim,
     NamespaceListResponse,
+    NamespaceTransferOwnershipResult,
   } from '../../../api/namespaces';
   import {
     createNamespaceClaim,
     deleteNamespaceClaim,
     listOrgNamespaces,
+    transferNamespaceClaim,
   } from '../../../api/namespaces';
   import type {
     MemberListResponse,
@@ -33,8 +35,11 @@
     Team,
     TeamListResponse,
     TeamMember,
+    TeamNamespaceAccessGrant,
+    TeamNamespaceAccessListResponse,
     TeamPackageAccessGrant,
     TeamPackageAccessListResponse,
+    TeamNamespaceAccessMutationResult,
     TeamRepositoryAccessGrant,
     TeamRepositoryAccessListResponse,
     TransferOwnershipResult,
@@ -54,14 +59,17 @@
     listOrgPackages,
     listOrgRepositories,
     listOrgSecurityFindings,
+    listTeamNamespaceAccess,
     listTeamMembers,
     listTeamPackageAccess,
     listTeamRepositoryAccess,
     listTeams,
     removeMember,
     removeTeamMember,
+    removeTeamNamespaceAccess,
     removeTeamPackageAccess,
     removeTeamRepositoryAccess,
+    replaceTeamNamespaceAccess,
     replaceTeamPackageAccess,
     replaceTeamRepositoryAccess,
     revokeInvitation,
@@ -120,6 +128,10 @@
     formatOrgInvitationStatusLabel,
     partitionOrgInvitations,
   } from '../../../pages/org-invitation-history';
+  import {
+    selectNamespaceTransferTargets,
+    sortNamespaceClaims,
+  } from '../../../pages/personal-namespaces';
   import type { OrgMemberPickerOption } from '../../../pages/org-member-picker';
   import {
     buildOrgMemberPickerOptions,
@@ -137,6 +149,7 @@
     renderPackageSelectionValue,
     resolveAuditFilterSubmission,
     resolveSecurityFilterSubmission,
+    resolveTeamNamespaceAccessSubmission,
     resolveTeamPackageAccessSubmission,
     resolveTeamRepositoryAccessSubmission,
   } from '../../../pages/org-workspace-actions';
@@ -225,6 +238,19 @@
       description: 'Transfer a package to another owner.',
     },
   ] as const;
+  const TEAM_NAMESPACE_PERMISSION_OPTIONS = [
+    {
+      value: 'admin',
+      label: 'Admin',
+      description: 'Delete organization-owned namespace claims.',
+    },
+    {
+      value: 'transfer_ownership',
+      label: 'Transfer ownership',
+      description: 'Transfer a namespace claim into another controlled organization.',
+    },
+  ] as const;
+  let transferableNamespaceClaims: NamespaceClaim[] = [];
   const SECURITY_FILTER_ECOSYSTEM_OPTIONS = [
     { value: 'npm', label: 'npm / Bun' },
     { value: 'pypi', label: 'PyPI' },
@@ -266,6 +292,18 @@
       value: renderPackageSelectionValue(pkg.ecosystem, pkg.name),
       label: `${pkg.ecosystem || ''} · ${pkg.name || ''}`,
     }));
+  $: namespaceGrantOptions = sortNamespaceClaims(namespaceClaims)
+    .filter(
+      (claim): claim is NamespaceClaim & { id: string } =>
+        typeof claim.id === 'string' && claim.id.trim().length > 0
+    )
+    .map((claim) => ({
+      value: claim.id,
+      label: `${claim.namespace || 'Unnamed claim'} · ${ecosystemLabel(claim.ecosystem)}`,
+    }));
+  $: transferableNamespaceClaims = sortNamespaceClaims(
+    namespaceClaims.filter((claim) => claim.can_transfer)
+  );
   $: securityPackageOptions = [...packages]
     .sort((left, right) =>
       `${left.ecosystem || ''}:${left.name || ''}`.localeCompare(
@@ -289,6 +327,11 @@
 
   interface TeamRepositoryAccessState {
     grants: TeamRepositoryAccessGrant[];
+    load_error: string | null;
+  }
+
+  interface TeamNamespaceAccessState {
+    grants: TeamNamespaceAccessGrant[];
     load_error: string | null;
   }
 
@@ -338,6 +381,7 @@
   let teamPackageAccessBySlug: Record<string, TeamPackageAccessState> = {};
   let teamRepositoryAccessBySlug: Record<string, TeamRepositoryAccessState> =
     {};
+  let teamNamespaceAccessBySlug: Record<string, TeamNamespaceAccessState> = {};
   let repositories: OrgRepositorySummary[] = [];
   let repositoriesError: string | null = null;
   let repositoryPackagesBySlug: Record<string, RepositoryPackageState> = {};
@@ -345,6 +389,7 @@
   let namespaceError: string | null = null;
   let packages: OrgPackageSummary[] = [];
   let packagesError: string | null = null;
+  let namespaceTransferTargets: OrganizationMembership[] = [];
   let packageTransferTargets: OrganizationMembership[] = [];
   let repositoryTransferTargets: OrganizationMembership[] = [];
   let securitySummary: OrgSecuritySummary | null = null;
@@ -686,6 +731,10 @@
         myOrganizationsData.organizations,
         slug
       );
+      namespaceTransferTargets = selectNamespaceTransferTargets(
+        myOrganizationsData.organizations,
+        slug
+      );
       repositoryTransferTargets = selectRepositoryTransferTargets(
         myOrganizationsData.organizations,
         slug
@@ -792,7 +841,12 @@
       membersError = memberData.load_error || null;
       teams = teamData.teams || [];
       teamsError = teamData.load_error || null;
-      const [teamMembersData, teamPackageAccessData, teamRepositoryAccessData] =
+      const [
+        teamMembersData,
+        teamPackageAccessData,
+        teamRepositoryAccessData,
+        teamNamespaceAccessData,
+      ] =
         await Promise.all([
           canAdminister
             ? loadTeamMembers(slug, teams)
@@ -803,10 +857,14 @@
           canAdminister
             ? loadTeamRepositoryAccess(slug, teams)
             : Promise.resolve<Record<string, TeamRepositoryAccessState>>({}),
+          canAdminister
+            ? loadTeamNamespaceAccess(slug, teams)
+            : Promise.resolve<Record<string, TeamNamespaceAccessState>>({}),
         ]);
       teamMembersBySlug = teamMembersData;
       teamPackageAccessBySlug = teamPackageAccessData;
       teamRepositoryAccessBySlug = teamRepositoryAccessData;
+      teamNamespaceAccessBySlug = teamNamespaceAccessData;
       namespaceClaims = namespaceData.namespaces || [];
       namespaceError = namespaceData.load_error || null;
       auditLogs = auditData.logs || [];
@@ -929,6 +987,37 @@
               load_error: toErrorMessage(
                 caughtError,
                 `Failed to load repository access for ${team.name || team.slug}.`
+              ),
+            },
+          ] as const;
+        }
+      })
+    );
+
+    return Object.fromEntries(entries);
+  }
+
+  async function loadTeamNamespaceAccess(
+    currentSlug: string,
+    teamList: Team[]
+  ): Promise<Record<string, TeamNamespaceAccessState>> {
+    const entries = await Promise.all(
+      teamList.filter(hasTeamSlug).map(async (team) => {
+        try {
+          const data: TeamNamespaceAccessListResponse =
+            await listTeamNamespaceAccess(currentSlug, team.slug);
+          return [
+            team.slug,
+            { grants: data.namespace_access || [], load_error: null },
+          ] as const;
+        } catch (caughtError: unknown) {
+          return [
+            team.slug,
+            {
+              grants: [],
+              load_error: toErrorMessage(
+                caughtError,
+                `Failed to load namespace access for ${team.name || team.slug}.`
               ),
             },
           ] as const;
@@ -1559,6 +1648,66 @@
     }
   }
 
+  async function handleReplaceTeamNamespaceAccess(
+    event: SubmitEvent,
+    teamSlug: string
+  ): Promise<void> {
+    event.preventDefault();
+    const resolution = resolveTeamNamespaceAccessSubmission(
+      new FormData(event.currentTarget as HTMLFormElement)
+    );
+
+    if (!resolution.ok) {
+      await loadOrganizationPage({
+        error: resolution.error,
+      });
+      return;
+    }
+
+    try {
+      const result: TeamNamespaceAccessMutationResult =
+        await replaceTeamNamespaceAccess(
+          slug,
+          teamSlug,
+          resolution.value.claimId,
+          {
+            permissions: resolution.value.permissions,
+          }
+        );
+
+      await loadOrganizationPage({
+        notice: `Saved namespace access for ${result.namespace_claim?.namespace || 'the selected claim'}.`,
+      });
+    } catch (caughtError: unknown) {
+      await loadOrganizationPage({
+        error: toErrorMessage(
+          caughtError,
+          'Failed to update namespace access.'
+        ),
+      });
+    }
+  }
+
+  async function handleRemoveTeamNamespaceAccess(
+    teamSlug: string,
+    claimId: string,
+    namespace: string
+  ): Promise<void> {
+    try {
+      await removeTeamNamespaceAccess(slug, teamSlug, claimId);
+      await loadOrganizationPage({
+        notice: `Revoked namespace access for ${namespace}.`,
+      });
+    } catch (caughtError: unknown) {
+      await loadOrganizationPage({
+        error: toErrorMessage(
+          caughtError,
+          'Failed to revoke namespace access.'
+        ),
+      });
+    }
+  }
+
   async function handleCreateNamespace(event: SubmitEvent): Promise<void> {
     event.preventDefault();
 
@@ -1614,6 +1763,58 @@
     } catch (caughtError: unknown) {
       await loadOrganizationPage({
         error: toErrorMessage(caughtError, 'Failed to delete namespace claim.'),
+      });
+    }
+  }
+
+  async function handleNamespaceTransfer(event: SubmitEvent): Promise<void> {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget as HTMLFormElement);
+    const claimId = formData.get('claim_id')?.toString().trim() || '';
+    const targetOrgSlug =
+      formData.get('target_org_slug')?.toString().trim() || '';
+
+    if (!claimId) {
+      await loadOrganizationPage({
+        error: 'Select a namespace claim to transfer.',
+      });
+      return;
+    }
+
+    if (!targetOrgSlug) {
+      await loadOrganizationPage({
+        error: 'Select a target organization.',
+      });
+      return;
+    }
+
+    if (!formData.get('confirm')) {
+      await loadOrganizationPage({
+        error: 'Please confirm the namespace transfer.',
+      });
+      return;
+    }
+
+    try {
+      const result: NamespaceTransferOwnershipResult = await transferNamespaceClaim(
+        claimId,
+        {
+          targetOrgSlug,
+        }
+      );
+      const namespace =
+        result.namespace_claim?.namespace ||
+        namespaceClaims.find((claim) => claim.id === claimId)?.namespace ||
+        'namespace claim';
+      await loadOrganizationPage({
+        notice: `Transferred ${namespace} to ${result.owner?.name || result.owner?.slug || targetOrgSlug}.`,
+      });
+    } catch (caughtError: unknown) {
+      await loadOrganizationPage({
+        error: toErrorMessage(
+          caughtError,
+          'Failed to transfer namespace claim ownership.'
+        ),
       });
     }
   }
@@ -2773,6 +2974,10 @@
                   teamRepositoryAccessBySlug[teamSlug]?.grants || []}
                 {@const teamRepositoryGrantsError =
                   teamRepositoryAccessBySlug[teamSlug]?.load_error || null}
+                {@const teamNamespaceGrants =
+                  teamNamespaceAccessBySlug[teamSlug]?.grants || []}
+                {@const teamNamespaceGrantsError =
+                  teamNamespaceAccessBySlug[teamSlug]?.load_error || null}
                 {@const teamGrants =
                   teamPackageAccessBySlug[teamSlug]?.grants || []}
                 {@const teamGrantsError =
@@ -3082,6 +3287,84 @@
                         permissionOptions={TEAM_PERMISSION_OPTIONS}
                         handleSubmit={(event) =>
                           handleReplaceTeamPackageAccess(event, teamSlug)}
+                      />
+                    </div>
+
+                    <div class="mt-6">
+                      <h4>Namespace access</h4>
+                      <p class="settings-copy">
+                        Namespace grants let a team delete or transfer specific
+                        organization-owned namespace claims without broader
+                        organization roles.
+                      </p>
+                      {#if teamNamespaceGrantsError}
+                        <div class="alert alert-error">
+                          {teamNamespaceGrantsError}
+                        </div>
+                      {:else if teamNamespaceGrants.length === 0}
+                        <p class="settings-copy">
+                          No namespace grants assigned yet.
+                        </p>
+                      {:else}
+                        <div class="token-list">
+                          {#each teamNamespaceGrants as grant}
+                            <div class="token-row">
+                              <div class="token-row__main">
+                                <div class="token-row__title">
+                                  {grant.namespace || 'Unnamed namespace claim'}
+                                </div>
+                                <div class="token-row__meta">
+                                  <span>{ecosystemLabel(grant.ecosystem)}</span>
+                                  <span
+                                    >granted {formatDate(
+                                      grant.granted_at
+                                    )}</span
+                                  >
+                                  <span
+                                    >{grant.is_verified
+                                      ? 'verified'
+                                      : 'pending verification'}</span
+                                  >
+                                </div>
+                                <div class="token-row__scopes">
+                                  {#each grant.permissions || [] as permission}
+                                    <span class="badge badge-ecosystem"
+                                      >{formatPermission(permission)}</span
+                                    >
+                                  {/each}
+                                </div>
+                              </div>
+                              {#if grant.namespace_claim_id}
+                                <div class="token-row__actions">
+                                  <button
+                                    class="btn btn-secondary btn-sm"
+                                    type="button"
+                                    on:click={() =>
+                                      handleRemoveTeamNamespaceAccess(
+                                        teamSlug,
+                                        grant.namespace_claim_id || '',
+                                        grant.namespace || 'this namespace claim'
+                                      )}>Revoke</button
+                                  >
+                                </div>
+                              {/if}
+                            </div>
+                          {/each}
+                        </div>
+                      {/if}
+
+                      <TeamAccessGrantForm
+                        fieldId={`team-namespace-${teamSlug}`}
+                        selectLabel="Organization namespace claim"
+                        selectName="claim_id"
+                        placeholderLabel="Select a namespace claim"
+                        emptyMessage="Create or transfer a namespace claim before delegating access."
+                        submitLabel="Save namespace access"
+                        error={namespaceError}
+                        options={namespaceGrantOptions}
+                        permissionOptions={TEAM_NAMESPACE_PERMISSION_OPTIONS}
+                        handleSubmit={(event) =>
+                          handleReplaceTeamNamespaceAccess(event, teamSlug)}
                       />
                     </div>
                   {/if}
@@ -3852,7 +4135,7 @@
                       >Pending verification</span
                     >
                   {/if}
-                  {#if canAdminister && claim.id}
+                  {#if claim.can_manage && claim.id}
                     <button
                       class="btn btn-secondary btn-sm"
                       type="button"
@@ -3904,6 +4187,85 @@
               >Create namespace claim</button
             >
           </form>
+        {/if}
+
+        {#if org.id}
+          <div class="settings-subsection">
+            <h3>Transfer a namespace</h3>
+            <p class="settings-copy">
+              Move an organization-owned namespace claim into another
+              organization you already administer.
+            </p>
+            {#if transferableNamespaceClaims.length === 0}
+              <p class="settings-copy">
+                No namespace claims are currently transferable with this
+                credential.
+              </p>
+            {:else if namespaceTransferTargets.length === 0}
+              <p class="settings-copy">
+                You do not administer another organization that can receive one
+                of these namespace claims.
+              </p>
+            {:else}
+              <div class="alert alert-warning" style="margin-bottom:12px;">
+                This transfer is immediate and keeps the claim's verification
+                state unchanged.
+              </div>
+              <form class="settings-subsection" on:submit={handleNamespaceTransfer}>
+                <div class="grid gap-4 xl:grid-cols-2">
+                  <div class="form-group">
+                    <label for="org-namespace-transfer-claim"
+                      >Organization namespace claim</label
+                    >
+                    <select
+                      id="org-namespace-transfer-claim"
+                      name="claim_id"
+                      class="form-input"
+                      required
+                    >
+                      <option value="">Select a namespace claim</option>
+                      {#each transferableNamespaceClaims as claim}
+                        <option value={claim.id || ''}
+                          >{`${claim.namespace || 'Unnamed claim'} · ${ecosystemLabel(claim.ecosystem)}`}</option
+                        >
+                      {/each}
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label for="org-namespace-transfer-target"
+                      >Target organization</label
+                    >
+                    <select
+                      id="org-namespace-transfer-target"
+                      name="target_org_slug"
+                      class="form-input"
+                      required
+                    >
+                      <option value="">Select an organization</option>
+                      {#each namespaceTransferTargets as target}
+                        <option value={target.slug || ''}
+                          >{target.name ||
+                            target.slug ||
+                            'Unnamed organization'}</option
+                        >
+                      {/each}
+                    </select>
+                  </div>
+                </div>
+                <div class="form-group" style="margin-bottom:12px;">
+                  <label class="flex items-start gap-2">
+                    <input type="checkbox" name="confirm" required />
+                    <span
+                      >I understand this namespace transfer is immediate.</span
+                    >
+                  </label>
+                </div>
+                <button type="submit" class="btn btn-danger"
+                  >Transfer namespace</button
+                >
+              </form>
+            {/if}
+          </div>
         {/if}
       </section>
     </div>

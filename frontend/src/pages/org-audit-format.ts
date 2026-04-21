@@ -16,6 +16,7 @@ const ORG_AUDIT_ACTION_LABELS: Record<string, string> = {
   security_finding_resolve: 'Security finding resolved',
   security_finding_reopen: 'Security finding reopened',
   namespace_claim_create: 'Namespace claim created',
+  namespace_claim_transfer: 'Namespace claim transferred',
   namespace_claim_delete: 'Namespace claim deleted',
   org_member_add: 'Member added',
   org_role_change: 'Member role updated',
@@ -32,6 +33,7 @@ const ORG_AUDIT_ACTION_LABELS: Record<string, string> = {
   team_member_remove: 'Team member removed',
   team_package_access_update: 'Package access updated',
   team_repository_access_update: 'Repository access updated',
+  team_namespace_access_update: 'Namespace access updated',
 };
 
 type AuditMetadata = Record<string, unknown>;
@@ -213,6 +215,17 @@ export function formatAuditSummary(log: OrgAuditLog): string | null {
       return stringField(metadata.namespace)
         ? `Created namespace ${stringField(metadata.namespace) || ''}.`
         : 'Created a namespace claim.';
+    case 'namespace_claim_transfer': {
+      const namespace = stringField(metadata.namespace);
+      const newOwnerName = stringField(metadata.new_owner_org_name);
+      const newOwnerSlug = stringField(metadata.new_owner_org_slug);
+      const targetLabel = newOwnerName || newOwnerSlug;
+      return namespace && targetLabel
+        ? `Transferred namespace ${namespace} to organization ${targetLabel}.`
+        : namespace
+          ? `Transferred namespace ${namespace}.`
+          : 'Transferred a namespace claim.';
+    }
     case 'namespace_claim_delete':
       return stringField(metadata.namespace)
         ? `Deleted namespace ${stringField(metadata.namespace) || ''}.`
@@ -359,6 +372,17 @@ export function formatAuditSummary(log: OrgAuditLog): string | null {
       return permissions.length > 0
         ? `Updated repository-wide access for ${repositoryName}: ${permissions.map((permission) => formatPermission(permission)).join(', ')}.`
         : `Removed repository-wide access for ${repositoryName}.`;
+    }
+    case 'team_namespace_access_update': {
+      const permissions = Array.isArray(metadata.permissions)
+        ? metadata.permissions.filter(
+            (item): item is string => typeof item === 'string'
+          )
+        : [];
+      const namespace = stringField(metadata.namespace) || 'selected namespace claim';
+      return permissions.length > 0
+        ? `Updated namespace access for ${namespace}: ${permissions.map((permission) => formatPermission(permission)).join(', ')}.`
+        : `Removed namespace access for ${namespace}.`;
     }
     default:
       return null;

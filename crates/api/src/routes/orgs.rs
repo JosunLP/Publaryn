@@ -79,6 +79,14 @@ pub fn router() -> Router<AppState> {
             "/v1/orgs/{slug}/teams/{team_slug}/repository-access/{repository_slug}",
             put(replace_team_repository_access).delete(remove_team_repository_access),
         )
+        .route(
+            "/v1/orgs/{slug}/teams/{team_slug}/namespace-access",
+            get(list_team_namespace_access),
+        )
+        .route(
+            "/v1/orgs/{slug}/teams/{team_slug}/namespace-access/{claim_id}",
+            put(replace_team_namespace_access).delete(remove_team_namespace_access),
+        )
         .route("/v1/orgs/{slug}/repositories", get(list_org_repositories))
         .route(
             "/v1/orgs/{slug}/security-findings",
@@ -1267,6 +1275,14 @@ struct TeamRepositoryAccessTarget {
     visibility: String,
 }
 
+#[derive(Debug, Clone)]
+struct TeamNamespaceAccessTarget {
+    id: Uuid,
+    ecosystem: String,
+    namespace: String,
+    is_verified: bool,
+}
+
 async fn create_team(
     State(state): State<AppState>,
     identity: AuthenticatedIdentity,
@@ -1444,6 +1460,13 @@ async fn delete_team(
     .await
     .map_err(|e| ApiError(Error::Database(e)))?;
 
+    let namespace_access_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*)::BIGINT FROM team_namespace_access WHERE team_id = $1")
+            .bind(team.id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| ApiError(Error::Database(e)))?;
+
     sqlx::query("DELETE FROM teams WHERE id = $1")
         .bind(team.id)
         .execute(&mut *tx)
@@ -1465,6 +1488,7 @@ async fn delete_team(
         "removed_member_count": member_count,
         "removed_package_access_count": package_access_count,
         "removed_repository_access_count": repository_access_count,
+        "removed_namespace_access_count": namespace_access_count,
     }))
     .execute(&mut *tx)
     .await
@@ -2146,6 +2170,241 @@ async fn remove_team_repository_access(
 
     Ok(Json(
         serde_json::json!({ "message": "Team repository access removed" }),
+    ))
+}
+
+async fn list_team_namespace_access(
+    State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
+    Path((slug, team_slug)): Path<(String, String)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    ensure_scope(&identity, SCOPE_ORGS_WRITE)?;
+
+    let org_id = ensure_org_admin_by_slug(&state.db, &slug, identity.user_id).await?;
+    let team = load_team_record(&state.db, org_id, &team_slug).await?;
+
+    let rows = sqlx::query(
+        "SELECT nc.id, nc.ecosystem::text AS ecosystem, nc.namespace, nc.is_verified, \
+                ARRAY_AGG(tna.permission::text ORDER BY tna.permission::text) AS permissions, \
+                MAX(tna.granted_at) AS granted_at \
+         FROM team_namespace_access tna \
+         JOIN namespace_claims nc ON nc.id = tna.namespace_claim_id \
+         WHERE tna.team_id = $1 AND nc.owner_org_id = $2 \
+         GROUP BY nc.id, nc.ecosystem, nc.namespace, nc.is_verified \
+         ORDER BY nc.ecosystem ASC, nc.namespace ASC",
+    )
+    .bind(team.id)
+    .bind(org_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let namespace_access = rows
+        .iter()
+        .map(|row| {
+            serde_json::json!({
+                "namespace_claim_id": row.try_get::<Uuid, _>("id").ok(),
+                "ecosystem": row.try_get::<String, _>("ecosystem").ok(),
+                "namespace": row.try_get::<String, _>("namespace").ok(),
+                "is_verified": row.try_get::<bool, _>("is_verified").ok(),
+                "permissions": row.try_get::<Vec<String>, _>("permissions").ok(),
+                "granted_at": row.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("granted_at").ok().flatten(),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    Ok(Json(serde_json::json!({
+        "team": {
+            "id": team.id,
+            "slug": team.slug,
+            "name": team.name,
+        },
+        "namespace_access": namespace_access,
+    })))
+}
+
+async fn replace_team_namespace_access(
+    State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
+    Path((slug, team_slug, claim_id)): Path<(String, String, Uuid)>,
+    Json(body): Json<ReplaceTeamPackageAccessRequest>,
+) -> ApiResult<Json<serde_json::Value>> {
+    ensure_scope(&identity, SCOPE_ORGS_WRITE)?;
+
+    let org_id = ensure_org_admin_by_slug(&state.db, &slug, identity.user_id).await?;
+    let team = load_team_record(&state.db, org_id, &team_slug).await?;
+    let claim = load_org_owned_namespace_claim_for_team_access(&state.db, org_id, claim_id).await?;
+    let permissions = normalize_namespace_team_permissions(&body.permissions)?;
+    let permission_strings = team_permission_strings(&permissions);
+
+    let previous_permissions = sqlx::query(
+        "SELECT permission::text AS permission \
+         FROM team_namespace_access \
+         WHERE team_id = $1 AND namespace_claim_id = $2 \
+         ORDER BY permission::text ASC",
+    )
+    .bind(team.id)
+    .bind(claim.id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?
+    .into_iter()
+    .filter_map(|row| row.try_get::<String, _>("permission").ok())
+    .collect::<Vec<_>>();
+
+    if previous_permissions == permission_strings {
+        return Ok(Json(serde_json::json!({
+            "message": "Team namespace access unchanged",
+            "namespace_claim": {
+                "id": claim.id,
+                "ecosystem": claim.ecosystem,
+                "namespace": claim.namespace,
+                "is_verified": claim.is_verified,
+            },
+            "permissions": permission_strings,
+        })));
+    }
+
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    sqlx::query("DELETE FROM team_namespace_access WHERE team_id = $1 AND namespace_claim_id = $2")
+        .bind(team.id)
+        .bind(claim.id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    for permission in &permissions {
+        sqlx::query(
+            "INSERT INTO team_namespace_access (id, team_id, namespace_claim_id, permission, granted_at) \
+             VALUES ($1, $2, $3, $4, NOW())",
+        )
+        .bind(Uuid::new_v4())
+        .bind(team.id)
+        .bind(claim.id)
+        .bind(permission)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+    }
+
+    sqlx::query(
+        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_org_id, metadata, occurred_at) \
+         VALUES ($1, 'team_namespace_access_update', $2, $3, $4, $5, NOW())",
+    )
+    .bind(Uuid::new_v4())
+    .bind(identity.user_id)
+    .bind(identity.audit_actor_token_id())
+    .bind(team.org_id)
+    .bind(serde_json::json!({
+        "team_id": team.id,
+        "team_slug": team.slug,
+        "team_name": team.name,
+        "namespace_claim_id": claim.id,
+        "ecosystem": claim.ecosystem,
+        "namespace": claim.namespace,
+        "is_verified": claim.is_verified,
+        "previous_permissions": previous_permissions,
+        "permissions": permission_strings,
+    }))
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    Ok(Json(serde_json::json!({
+        "message": "Team namespace access updated",
+        "namespace_claim": {
+            "id": claim.id,
+            "ecosystem": claim.ecosystem,
+            "namespace": claim.namespace,
+            "is_verified": claim.is_verified,
+        },
+        "permissions": permission_strings,
+    })))
+}
+
+async fn remove_team_namespace_access(
+    State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
+    Path((slug, team_slug, claim_id)): Path<(String, String, Uuid)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    ensure_scope(&identity, SCOPE_ORGS_WRITE)?;
+
+    let org_id = ensure_org_admin_by_slug(&state.db, &slug, identity.user_id).await?;
+    let team = load_team_record(&state.db, org_id, &team_slug).await?;
+    let claim = load_org_owned_namespace_claim_for_team_access(&state.db, org_id, claim_id).await?;
+
+    let previous_permissions = sqlx::query(
+        "SELECT permission::text AS permission \
+         FROM team_namespace_access \
+         WHERE team_id = $1 AND namespace_claim_id = $2 \
+         ORDER BY permission::text ASC",
+    )
+    .bind(team.id)
+    .bind(claim.id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?
+    .into_iter()
+    .filter_map(|row| row.try_get::<String, _>("permission").ok())
+    .collect::<Vec<_>>();
+
+    if previous_permissions.is_empty() {
+        return Err(ApiError(Error::NotFound(
+            "Team namespace access not found".into(),
+        )));
+    }
+
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    sqlx::query("DELETE FROM team_namespace_access WHERE team_id = $1 AND namespace_claim_id = $2")
+        .bind(team.id)
+        .bind(claim.id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    sqlx::query(
+        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_org_id, metadata, occurred_at) \
+         VALUES ($1, 'team_namespace_access_update', $2, $3, $4, $5, NOW())",
+    )
+    .bind(Uuid::new_v4())
+    .bind(identity.user_id)
+    .bind(identity.audit_actor_token_id())
+    .bind(team.org_id)
+    .bind(serde_json::json!({
+        "team_id": team.id,
+        "team_slug": team.slug,
+        "team_name": team.name,
+        "namespace_claim_id": claim.id,
+        "ecosystem": claim.ecosystem,
+        "namespace": claim.namespace,
+        "is_verified": claim.is_verified,
+        "previous_permissions": previous_permissions,
+        "permissions": Vec::<String>::new(),
+    }))
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    Ok(Json(
+        serde_json::json!({ "message": "Team namespace access removed" }),
     ))
 }
 
@@ -3049,6 +3308,53 @@ async fn load_org_owned_repository_for_team_access(
     })
 }
 
+async fn load_org_owned_namespace_claim_for_team_access(
+    db: &sqlx::PgPool,
+    org_id: Uuid,
+    claim_id: Uuid,
+) -> ApiResult<TeamNamespaceAccessTarget> {
+    let row = sqlx::query(
+        "SELECT id, ecosystem::text AS ecosystem, namespace, is_verified, owner_org_id \
+         FROM namespace_claims \
+         WHERE id = $1",
+    )
+    .bind(claim_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?
+    .ok_or_else(|| {
+        ApiError(Error::NotFound(format!(
+            "Namespace claim '{claim_id}' not found"
+        )))
+    })?;
+
+    let owner_org_id = row
+        .try_get::<Option<Uuid>, _>("owner_org_id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+
+    if owner_org_id != Some(org_id) {
+        return Err(ApiError(Error::Forbidden(
+            "Teams can only be granted access to namespace claims owned by the same organization"
+                .into(),
+        )));
+    }
+
+    Ok(TeamNamespaceAccessTarget {
+        id: row
+            .try_get("id")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        ecosystem: row
+            .try_get("ecosystem")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        namespace: row
+            .try_get("namespace")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        is_verified: row
+            .try_get("is_verified")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+    })
+}
+
 fn normalize_team_permissions(input: &[String]) -> ApiResult<Vec<TeamPermission>> {
     if input.is_empty() {
         return Err(ApiError(Error::Validation(
@@ -3070,6 +3376,24 @@ fn normalize_team_permissions(input: &[String]) -> ApiResult<Vec<TeamPermission>
     Ok(normalized)
 }
 
+fn normalize_namespace_team_permissions(input: &[String]) -> ApiResult<Vec<TeamPermission>> {
+    let normalized = normalize_team_permissions(input)?;
+
+    if normalized.iter().all(|permission| {
+        matches!(
+            permission,
+            TeamPermission::Admin | TeamPermission::TransferOwnership
+        )
+    }) {
+        Ok(normalized)
+    } else {
+        Err(ApiError(Error::Validation(
+            "Namespace delegation only supports the 'admin' and 'transfer_ownership' permissions"
+                .into(),
+        )))
+    }
+}
+
 fn team_permission_strings(permissions: &[TeamPermission]) -> Vec<String> {
     permissions
         .iter()
@@ -3084,8 +3408,9 @@ mod tests {
     use publaryn_core::domain::{organization::OrgRole, team::TeamPermission};
 
     use super::{
-        normalize_optional_org_field, normalize_team_permissions, resolve_org_security_filters,
-        validate_ownership_transfer, OrgSecurityFindingsQuery,
+        normalize_namespace_team_permissions, normalize_optional_org_field,
+        normalize_team_permissions, resolve_org_security_filters, validate_ownership_transfer,
+        OrgSecurityFindingsQuery,
     };
 
     #[test]
@@ -3188,6 +3513,17 @@ mod tests {
         assert_eq!(
             error.0.to_string(),
             "Validation error: Unknown team permission: superpowers"
+        );
+    }
+
+    #[test]
+    fn normalize_namespace_team_permissions_rejects_publish() {
+        let error = normalize_namespace_team_permissions(&["publish".to_owned()])
+            .expect_err("namespace grants should reject package-only permissions");
+
+        assert_eq!(
+            error.0.to_string(),
+            "Validation error: Namespace delegation only supports the 'admin' and 'transfer_ownership' permissions"
         );
     }
 

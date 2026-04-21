@@ -10,6 +10,8 @@ export interface NamespaceClaim {
   owner_org_id?: NullableString;
   is_verified?: boolean | null;
   created_at?: NullableString;
+  can_manage?: boolean | null;
+  can_transfer?: boolean | null;
 }
 
 export interface NamespaceListResponse {
@@ -29,6 +31,22 @@ export interface CreateNamespaceClaimInput {
   namespace: string;
   ownerUserId?: string;
   ownerOrgId?: string;
+}
+
+export interface NamespaceTransferOwnershipResult {
+  message?: NullableString;
+  namespace_claim?: {
+    id?: NullableString;
+    ecosystem?: NullableString;
+    namespace?: NullableString;
+    is_verified?: boolean | null;
+  } | null;
+  owner?: {
+    type?: NullableString;
+    id?: NullableString;
+    slug?: NullableString;
+    name?: NullableString;
+  } | null;
 }
 
 export async function listNamespaces(
@@ -78,4 +96,20 @@ export async function createNamespaceClaim(
 
 export async function deleteNamespaceClaim(claimId: string): Promise<void> {
   await api.delete<null>(`/v1/namespaces/${encodeURIComponent(claimId)}`);
+}
+
+export async function transferNamespaceClaim(
+  claimId: string,
+  { targetOrgSlug }: { targetOrgSlug: string }
+): Promise<NamespaceTransferOwnershipResult> {
+  const { data } = await api.post<NamespaceTransferOwnershipResult>(
+    `/v1/namespaces/${encodeURIComponent(claimId)}/ownership-transfer`,
+    {
+      body: {
+        target_org_slug: targetOrgSlug,
+      },
+    }
+  );
+
+  return data;
 }

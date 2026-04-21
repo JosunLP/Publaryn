@@ -1,0 +1,16 @@
+ALTER TYPE audit_action ADD VALUE IF NOT EXISTS 'team_namespace_access_update';
+
+CREATE TABLE IF NOT EXISTS team_namespace_access (
+    id UUID PRIMARY KEY,
+    team_id UUID NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    namespace_claim_id UUID NOT NULL REFERENCES namespace_claims(id) ON DELETE CASCADE,
+    permission team_permission NOT NULL,
+    granted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (team_id, namespace_claim_id, permission)
+);
+
+CREATE INDEX IF NOT EXISTS idx_team_namespace_access_team_id
+    ON team_namespace_access (team_id);
+
+CREATE INDEX IF NOT EXISTS idx_team_namespace_access_claim_id
+    ON team_namespace_access (namespace_claim_id);

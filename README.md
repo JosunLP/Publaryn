@@ -171,6 +171,7 @@ Initial control-plane scopes:
 | `orgs:join`             | Review, accept, and decline invitations for the current user      |
 | `orgs:transfer`         | Transfer organization ownership to another active member          |
 | `namespaces:write`      | Create namespace claims                                           |
+| `namespaces:transfer`   | Transfer namespace claims into an organization you administer     |
 | `repositories:write`    | Create and update repositories                                    |
 | `repositories:transfer` | Transfer repository ownership into an organization you administer |
 | `packages:write`        | Update packages, releases, tags, and trusted publishers           |
@@ -224,6 +225,9 @@ DELETE /v1/orgs/:slug/teams/:team_slug/package-access/:ecosystem/:name
 GET    /v1/orgs/:slug/teams/:team_slug/repository-access
 PUT    /v1/orgs/:slug/teams/:team_slug/repository-access/:repository_slug
 DELETE /v1/orgs/:slug/teams/:team_slug/repository-access/:repository_slug
+GET    /v1/orgs/:slug/teams/:team_slug/namespace-access
+PUT    /v1/orgs/:slug/teams/:team_slug/namespace-access/:claim_id
+DELETE /v1/orgs/:slug/teams/:team_slug/namespace-access/:claim_id
 GET    /v1/orgs/:slug/repositories
 GET    /v1/orgs/:slug/security-findings
 GET    /v1/orgs/:slug/security-findings/export
@@ -240,6 +244,8 @@ These grants are stored in PostgreSQL, enforced by the management API, and autom
 Organization administrators can also delegate repository-scoped responsibilities to teams for organization-owned repositories.
 Repository-wide grants use the same permission vocabulary, apply across current and future packages in the selected repository, and the `admin` permission additionally allows repository configuration changes.
 These repository grants are stored in PostgreSQL, enforced by the management API, and automatically cleared when the team or repository is removed.
+Organization administrators can also delegate namespace-claim management to teams for organization-owned namespace claims.
+Namespace grants currently support `admin` for namespace-claim administration and `transfer_ownership` for ownership handoff flows; both are stored in PostgreSQL, enforced by the management API, and cleared when the claim changes owners or is deleted.
 Repository ownership can be transferred through `POST /v1/repositories/:slug/ownership-transfer` when the caller has `repositories:transfer`, currently controls the source repository, and is also an owner/admin in the target organization.
 Cross-organization repository transfers revoke any repository-scoped team grants tied to the previous owner organization, but they do not automatically re-home packages that already belong to the repository.
 The organization workspace also includes an aggregated security overview backed by `GET /v1/orgs/:slug/security-findings`, scoped to the packages currently visible to the requesting actor.
@@ -254,6 +260,7 @@ Organization administrators can also export the full filtered audit view as CSV 
 GET    /v1/namespaces
 POST   /v1/namespaces
 DELETE /v1/namespaces/:id
+POST   /v1/namespaces/:id/ownership-transfer
 GET    /v1/namespaces/lookup?ecosystem=<eco>&namespace=<claim>
 ```
 

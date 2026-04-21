@@ -25,6 +25,8 @@ const TEAM_PACKAGE_PUBLISH_PERMISSIONS: &[&str] = &["admin", "publish"];
 const TEAM_PACKAGE_ADMIN_PERMISSIONS: &[&str] = &["admin"];
 const TEAM_PACKAGE_TRANSFER_PERMISSIONS: &[&str] = &["admin", "transfer_ownership"];
 const TEAM_PACKAGE_SECURITY_REVIEW_PERMISSIONS: &[&str] = &["admin", "security_review"];
+const TEAM_NAMESPACE_ADMIN_PERMISSIONS: &[&str] = &["admin"];
+const TEAM_NAMESPACE_TRANSFER_PERMISSIONS: &[&str] = &["admin", "transfer_ownership"];
 const TEAM_PACKAGE_MANAGEMENT_VISIBILITY_PERMISSIONS: &[&str] = &[
     "admin",
     "publish",
@@ -560,6 +562,38 @@ async fn actor_has_team_repository_permissions(
     .map_err(|e| ApiError(Error::Database(e)))
 }
 
+async fn actor_has_team_namespace_permissions(
+    db: &PgPool,
+    namespace_claim_id: Uuid,
+    actor_user_id: Uuid,
+    allowed_permissions: &[&str],
+) -> ApiResult<bool> {
+    let allowed_permissions = allowed_permissions
+        .iter()
+        .map(|permission| (*permission).to_owned())
+        .collect::<Vec<_>>();
+
+    sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (\
+             SELECT 1 \
+             FROM team_namespace_access tna \
+             JOIN team_memberships tm ON tm.team_id = tna.team_id \
+             JOIN teams t ON t.id = tna.team_id \
+             JOIN namespace_claims nc ON nc.id = tna.namespace_claim_id \
+             WHERE tna.namespace_claim_id = $1 \
+               AND tm.user_id = $2 \
+               AND t.org_id = nc.owner_org_id \
+               AND tna.permission::text = ANY($3)\
+         )",
+    )
+    .bind(namespace_claim_id)
+    .bind(actor_user_id)
+    .bind(&allowed_permissions)
+    .fetch_one(db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))
+}
+
 async fn fetch_package_ownership(
     db: &PgPool,
     ecosystem: &str,
@@ -1085,6 +1119,33 @@ async fn fetch_repository_owner_fields_by_id(
     ))
 }
 
+async fn fetch_namespace_claim_owner_fields_by_id(
+    db: &PgPool,
+    namespace_claim_id: Uuid,
+) -> ApiResult<(Option<Uuid>, Option<Uuid>)> {
+    let row = sqlx::query(
+        "SELECT owner_user_id, owner_org_id \
+         FROM namespace_claims \
+         WHERE id = $1",
+    )
+    .bind(namespace_claim_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?
+    .ok_or_else(|| {
+        ApiError(Error::NotFound(format!(
+            "Namespace claim '{namespace_claim_id}' not found"
+        )))
+    })?;
+
+    Ok((
+        row.try_get::<Option<Uuid>, _>("owner_user_id")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        row.try_get::<Option<Uuid>, _>("owner_org_id")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+    ))
+}
+
 pub async fn actor_can_write_repository_by_id(
     db: &PgPool,
     repository_id: Uuid,
@@ -1155,6 +1216,68 @@ pub async fn actor_can_transfer_repository_by_id(
         owner_user_id,
         owner_org_id,
         actor_user_id,
+    )
+    .await
+}
+
+pub async fn actor_can_manage_namespace_claim_by_id(
+    db: &PgPool,
+    namespace_claim_id: Uuid,
+    actor_user_id: Option<Uuid>,
+) -> ApiResult<bool> {
+    let Some(actor_user_id) = actor_user_id else {
+        return Ok(false);
+    };
+
+    let (owner_user_id, owner_org_id) =
+        fetch_namespace_claim_owner_fields_by_id(db, namespace_claim_id).await?;
+
+    if owner_user_id == Some(actor_user_id) {
+        return Ok(true);
+    }
+
+    if let Some(owner_org_id) = owner_org_id {
+        if actor_has_org_roles(db, owner_org_id, actor_user_id, ORG_ADMIN_ROLES).await? {
+            return Ok(true);
+        }
+    }
+
+    actor_has_team_namespace_permissions(
+        db,
+        namespace_claim_id,
+        actor_user_id,
+        TEAM_NAMESPACE_ADMIN_PERMISSIONS,
+    )
+    .await
+}
+
+pub async fn actor_can_transfer_namespace_claim_by_id(
+    db: &PgPool,
+    namespace_claim_id: Uuid,
+    actor_user_id: Option<Uuid>,
+) -> ApiResult<bool> {
+    let Some(actor_user_id) = actor_user_id else {
+        return Ok(false);
+    };
+
+    let (owner_user_id, owner_org_id) =
+        fetch_namespace_claim_owner_fields_by_id(db, namespace_claim_id).await?;
+
+    if owner_user_id == Some(actor_user_id) {
+        return Ok(true);
+    }
+
+    if let Some(owner_org_id) = owner_org_id {
+        if actor_has_org_roles(db, owner_org_id, actor_user_id, ORG_ADMIN_ROLES).await? {
+            return Ok(true);
+        }
+    }
+
+    actor_has_team_namespace_permissions(
+        db,
+        namespace_claim_id,
+        actor_user_id,
+        TEAM_NAMESPACE_TRANSFER_PERMISSIONS,
     )
     .await
 }
