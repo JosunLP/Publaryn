@@ -63,6 +63,9 @@
   $: canManageTeamWorkspace = canManageOrgTeams(org);
   $: canViewRepositoryAccess = canManageOrgRepositories(org);
   $: canViewNamespaceAccess = canManageOrgNamespaces(org);
+  $: teamWorkspaceAnchor = `/orgs/${encodeURIComponent(slug)}#team-${encodeURIComponent(
+    team?.slug || teamSlug
+  )}`;
 
   async function loadTeamWorkspace(): Promise<void> {
     loading = true;
@@ -242,7 +245,7 @@
             data-sveltekit-preload-data="hover">Back to organization</a
           >
           <a
-            href={`/orgs/${encodeURIComponent(slug)}#team-${encodeURIComponent(team.slug || teamSlug)}`}
+            href={teamWorkspaceAnchor}
             class="btn btn-primary"
             data-sveltekit-preload-data="hover">Manage in org workspace</a
           >
@@ -336,7 +339,7 @@
                         >
                       </div>
                       <div class="token-row__meta">
-                        <span>{grant.ecosystem || 'unknown'}</span>
+                        <span>{ecosystemLabel(grant.ecosystem)}</span>
                         <span>Granted {formatDate(grant.granted_at)}</span>
                       </div>
                       <div class="token-row__scopes">
@@ -484,7 +487,7 @@
               </div>
             </div>
             <a
-              href={`/orgs/${encodeURIComponent(slug)}#team-${encodeURIComponent(team.slug || teamSlug)}`}
+              href={teamWorkspaceAnchor}
               class="btn btn-primary"
               data-sveltekit-preload-data="hover">Open editable team section</a
             >
