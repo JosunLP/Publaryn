@@ -6,12 +6,36 @@ export interface CollectPaginatedItemsOptions {
   maxPages?: number;
 }
 
+function resolvePositiveIntegerOption(
+  name: 'perPage' | 'maxPages',
+  value: number | undefined,
+  fallback: number
+): number {
+  if (value == null) {
+    return fallback;
+  }
+
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`${name} must be a positive integer.`);
+  }
+
+  return value;
+}
+
 export async function collectPaginatedItems<TItem>(
   fetchPage: (page: number, perPage: number) => Promise<TItem[]>,
   options: CollectPaginatedItemsOptions = {}
 ): Promise<TItem[]> {
-  const perPage = Math.max(1, Math.trunc(options.perPage ?? DEFAULT_PAGE_SIZE));
-  const maxPages = Math.max(1, Math.trunc(options.maxPages ?? DEFAULT_MAX_PAGES));
+  const perPage = resolvePositiveIntegerOption(
+    'perPage',
+    options.perPage,
+    DEFAULT_PAGE_SIZE
+  );
+  const maxPages = resolvePositiveIntegerOption(
+    'maxPages',
+    options.maxPages,
+    DEFAULT_MAX_PAGES
+  );
   const items: TItem[] = [];
 
   for (let page = 1; page <= maxPages; page += 1) {

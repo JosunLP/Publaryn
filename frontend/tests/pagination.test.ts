@@ -45,4 +45,14 @@ describe('pagination helpers', () => {
       }, { perPage: 2, maxPages: 2 })
     ).rejects.toThrow('Exceeded maximum pagination depth of 2 pages.');
   });
+
+  test('rejects invalid pagination option values', async () => {
+    await expect(
+      collectPaginatedItems(async () => ['unused'], { perPage: 0 })
+    ).rejects.toThrow('perPage must be a positive integer.');
+
+    await expect(
+      collectPaginatedItems(async () => ['unused'], { maxPages: 1.5 })
+    ).rejects.toThrow('maxPages must be a positive integer.');
+  });
 });
