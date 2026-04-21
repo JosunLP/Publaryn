@@ -1,4 +1,5 @@
 import { api } from './client';
+import { collectPaginatedItems } from './pagination';
 
 type NullableString = string | null;
 
@@ -728,21 +729,49 @@ export async function removeTeamNamespaceAccess(
 export async function listOrgPackages(
   slug: string
 ): Promise<OrgPackageListResponse> {
-  const { data } = await api.get<OrgPackageListResponse>(
-    `/v1/orgs/${enc(slug)}/packages`
-  );
+  const packages = await collectPaginatedItems(async (page, perPage) => {
+    const { data } = await api.get<OrgPackageListResponse>(
+      `/v1/orgs/${enc(slug)}/packages`,
+      {
+        query: {
+          page,
+          per_page: perPage,
+        },
+      }
+    );
 
-  return data;
+    throwOrgCollectionLoadError(data.load_error);
+
+    return data.packages || [];
+  });
+
+  return {
+    packages,
+  };
 }
 
 export async function listOrgRepositories(
   slug: string
 ): Promise<OrgRepositoryListResponse> {
-  const { data } = await api.get<OrgRepositoryListResponse>(
-    `/v1/orgs/${enc(slug)}/repositories`
-  );
+  const repositories = await collectPaginatedItems(async (page, perPage) => {
+    const { data } = await api.get<OrgRepositoryListResponse>(
+      `/v1/orgs/${enc(slug)}/repositories`,
+      {
+        query: {
+          page,
+          per_page: perPage,
+        },
+      }
+    );
 
-  return data;
+    throwOrgCollectionLoadError(data.load_error);
+
+    return data.repositories || [];
+  });
+
+  return {
+    repositories,
+  };
 }
 
 export async function listOrgSecurityFindings(
@@ -899,4 +928,13 @@ export async function declineInvitation(
 
 function enc(value: string): string {
   return encodeURIComponent(value);
+}
+
+function throwOrgCollectionLoadError(loadError: NullableString | undefined): void {
+  // The org collection endpoints may surface a load_error payload instead of a
+  // transport failure; treat that as a hard failure so paginated callers do not
+  // silently return incomplete repository or package lists.
+  if (typeof loadError === 'string' && loadError.length > 0) {
+    throw new Error(loadError);
+  }
 }
