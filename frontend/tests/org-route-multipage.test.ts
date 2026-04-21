@@ -38,6 +38,7 @@ interface FetchScenario {
   canManageMembers: boolean;
   canManageTeams: boolean;
   canManageRepositories: boolean;
+  canManageNamespaces: boolean;
   repositoryPageRequests: number[];
   packagePageRequests: number[];
   invitationRequests: string[];
@@ -102,6 +103,7 @@ const currentOrgMembership = {
     can_manage_members: true,
     can_manage_teams: true,
     can_manage_repositories: true,
+    can_manage_namespaces: true,
     can_view_member_directory: true,
     can_view_audit_log: true,
     can_transfer_ownership: true,
@@ -119,6 +121,7 @@ const targetOrgMembership = {
     can_manage_members: true,
     can_manage_teams: true,
     can_manage_repositories: true,
+    can_manage_namespaces: true,
     can_view_member_directory: true,
     can_view_audit_log: true,
     can_transfer_ownership: false,
@@ -383,6 +386,26 @@ describe('route-level multi-page org dataset coverage', () => {
     }
   });
 
+  test('org workspace hides namespace management controls when the explicit namespace-management capability is absent', async () => {
+    const scenario = createFetchScenario();
+    scenario.canManageNamespaces = false;
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Namespace claims');
+        expect(target.textContent).toContain('Teams');
+      });
+
+      expect(target.querySelector(`#team-repository-${TEAM_SLUG}`)).not.toBeNull();
+      expect(target.querySelector(`#team-namespace-${TEAM_SLUG}`)).toBeNull();
+      expect(target.querySelector('#namespace-value')).toBeNull();
+      expect(target.textContent).not.toContain('Create namespace claim');
+    } finally {
+      unmount();
+    }
+  });
+
   test('org workspace submits second-page delegated repository and package access selections', async () => {
     const finalRepository = repositories.at(-1);
     const finalPackage = packages.at(-1);
@@ -639,6 +662,7 @@ function createFetchScenario(): FetchScenario {
     canManageMembers: true,
     canManageTeams: true,
     canManageRepositories: true,
+    canManageNamespaces: true,
     repositoryPageRequests: [],
     packagePageRequests: [],
     invitationRequests: [],
@@ -688,6 +712,7 @@ async function handleApiRequest(
         can_manage_members: scenario.canManageMembers,
         can_manage_teams: scenario.canManageTeams,
         can_manage_repositories: scenario.canManageRepositories,
+        can_manage_namespaces: scenario.canManageNamespaces,
         can_view_member_directory: true,
         can_view_audit_log: true,
         can_transfer_ownership: true,
@@ -706,6 +731,7 @@ async function handleApiRequest(
             can_manage_members: scenario.canManageMembers,
             can_manage_teams: scenario.canManageTeams,
             can_manage_repositories: scenario.canManageRepositories,
+            can_manage_namespaces: scenario.canManageNamespaces,
           },
         },
         targetOrgMembership,

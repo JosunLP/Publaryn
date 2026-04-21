@@ -161,6 +161,7 @@
   import {
     canManageOrgInvitations,
     canManageOrgMembers,
+    canManageOrgNamespaces,
     canManageOrgRepositories,
     canManageOrgTeams,
     canManageOrgWorkspace,
@@ -375,6 +376,7 @@
   let canManageMembers = false;
   let canManageTeams = false;
   let canManageRepositories = false;
+  let canManageNamespaces = false;
   let canViewAudit = false;
   let canViewPeopleWorkspace = false;
   let canTransferOwnership = false;
@@ -732,6 +734,7 @@
       canManageMembers = canManageOrgMembers(org);
       canManageTeams = canManageOrgTeams(org);
       canManageRepositories = canManageOrgRepositories(org);
+      canManageNamespaces = canManageOrgNamespaces(org);
       canViewAudit = canViewOrgAuditWorkspace(org);
       canTransferOwnership = canTransferOrgOwnership(org);
 
@@ -872,7 +875,7 @@
           canManageRepositories
             ? loadTeamRepositoryAccess(slug, teams)
             : Promise.resolve<Record<string, TeamRepositoryAccessState>>({}),
-          canManageTeams
+          canManageNamespaces
             ? loadTeamNamespaceAccess(slug, teams)
             : Promise.resolve<Record<string, TeamNamespaceAccessState>>({}),
         ]);
@@ -3342,7 +3345,8 @@
                       />
                     </div>
 
-                    <div class="mt-6">
+                    {#if canManageNamespaces}
+                      <div class="mt-6">
                       <h4>Namespace access</h4>
                       <p class="settings-copy">
                         Namespace grants let a team delete or transfer specific
@@ -3418,7 +3422,8 @@
                         handleSubmit={(event) =>
                           handleReplaceTeamNamespaceAccess(event, teamSlug)}
                       />
-                    </div>
+                      </div>
+                    {/if}
                   {/if}
                 </div>
               {/each}
@@ -4204,7 +4209,7 @@
           </div>
         {/if}
 
-        {#if canAdminister && org.id}
+        {#if canManageNamespaces && org.id}
           <form class="settings-subsection" on:submit={handleCreateNamespace}>
             <h3>Claim a namespace</h3>
             <div class="grid gap-4 xl:grid-cols-2">

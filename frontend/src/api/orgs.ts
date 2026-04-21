@@ -9,6 +9,7 @@ export interface OrganizationCapabilities {
   can_manage_members?: boolean | null;
   can_manage_teams?: boolean | null;
   can_manage_repositories?: boolean | null;
+  can_manage_namespaces?: boolean | null;
   can_view_member_directory?: boolean | null;
   can_view_audit_log?: boolean | null;
   can_transfer_ownership?: boolean | null;

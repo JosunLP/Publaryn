@@ -34,6 +34,12 @@ export function canManageOrgRepositories(
   return resolveCapabilities(source)?.can_manage_repositories === true;
 }
 
+export function canManageOrgNamespaces(
+  source: OrganizationDetail | null | undefined
+): boolean {
+  return resolveCapabilities(source)?.can_manage_namespaces === true;
+}
+
 export function canViewOrgPeopleWorkspace(
   source: OrganizationDetail | null | undefined
 ): boolean {
