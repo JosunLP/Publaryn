@@ -849,9 +849,9 @@ async fn ensure_package_access_by_requirement(
     {
         TeamWriteAccess::Allowed => Ok(package_id),
         TeamWriteAccess::MfaRequired => Err(org_mfa_required_for_write_error()),
-        TeamWriteAccess::MissingPermission => {
-            Err(ApiError(Error::Forbidden(requirement.denial_message().into())))
-        }
+        TeamWriteAccess::MissingPermission => Err(ApiError(Error::Forbidden(
+            requirement.denial_message().into(),
+        ))),
     }
 }
 
@@ -1277,15 +1277,21 @@ async fn authorize_package_write_access(
         return Ok(TeamWriteAccess::MissingPermission);
     };
 
-    match authorize_org_write_roles(db, owner_org_id, actor_user_id, requirement.org_roles()).await?
+    match authorize_org_write_roles(db, owner_org_id, actor_user_id, requirement.org_roles())
+        .await?
     {
         OrgWriteRoleAccess::Allowed => return Ok(TeamWriteAccess::Allowed),
         OrgWriteRoleAccess::MfaRequired => return Ok(TeamWriteAccess::MfaRequired),
         OrgWriteRoleAccess::MissingRole => {}
     }
 
-    match actor_has_team_package_permissions(db, package_id, actor_user_id, requirement.team_permissions())
-        .await?
+    match actor_has_team_package_permissions(
+        db,
+        package_id,
+        actor_user_id,
+        requirement.team_permissions(),
+    )
+    .await?
     {
         TeamWriteAccess::Allowed => return Ok(TeamWriteAccess::Allowed),
         TeamWriteAccess::MfaRequired => return Ok(TeamWriteAccess::MfaRequired),
