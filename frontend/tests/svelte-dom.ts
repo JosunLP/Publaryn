@@ -4,7 +4,8 @@ import { afterEach } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { existsSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { fileURLToPath } from 'node:url';
+import { dirname, resolve as resolvePath } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
 import { compile } from 'svelte/compiler';
 
@@ -21,6 +22,7 @@ installDomGlobals(window);
 document.body.innerHTML = '';
 
 const componentModuleCache = new Map<string, Promise<any>>();
+const compiledComponentUrlCache = new Map<string, Promise<string>>();
 
 afterEach(() => {
   document.body.innerHTML = '';
@@ -121,6 +123,24 @@ async function loadComponentModule(component: any): Promise<any> {
     return cached;
   }
 
+  const outputUrl = await ensureCompiledComponentUrl(componentPath);
+  const modulePromise = import(outputUrl);
+  componentModuleCache.set(componentPath, modulePromise);
+  return modulePromise;
+}
+
+async function ensureCompiledComponentUrl(componentPath: string): Promise<string> {
+  const cached = compiledComponentUrlCache.get(componentPath);
+  if (cached) {
+    return cached;
+  }
+
+  const outputUrlPromise = compileComponentModule(componentPath);
+  compiledComponentUrlCache.set(componentPath, outputUrlPromise);
+  return outputUrlPromise;
+}
+
+async function compileComponentModule(componentPath: string): Promise<string> {
   const source = readFileSync(componentPath, 'utf8');
   const compiled = compile(source, {
     filename: componentPath,
@@ -137,11 +157,62 @@ async function loadComponentModule(component: any): Promise<any> {
   if (!existsSync(nodeModulesLink)) {
     symlinkSync(localNodeModulesPath, nodeModulesLink, 'dir');
   }
-  writeFileSync(outputPath, compiled.js.code, 'utf8');
+  const rewrittenCode = await rewriteRelativeImports(compiled.js.code, componentPath);
+  writeFileSync(outputPath, rewrittenCode, 'utf8');
 
-  const modulePromise = import(new URL(`file://${outputPath}`).href);
-  componentModuleCache.set(componentPath, modulePromise);
-  return modulePromise;
+  return pathToFileURL(outputPath).href;
+}
+
+async function rewriteRelativeImports(
+  code: string,
+  componentPath: string
+): Promise<string> {
+  const importPattern =
+    /(from\s+['"]|import\s*\(\s*['"]|import\s+['"])(\.{1,2}\/[^'"]+)(['"]\s*\)?)/g;
+  const replacements = new Map<string, string>();
+  let match: RegExpExecArray | null;
+
+  while ((match = importPattern.exec(code)) !== null) {
+    const specifier = match[2];
+    if (replacements.has(specifier)) {
+      continue;
+    }
+
+    const resolvedPath = resolveRelativeImport(componentPath, specifier);
+    const rewrittenSpecifier = resolvedPath.endsWith('.svelte')
+      ? await ensureCompiledComponentUrl(resolvedPath)
+      : pathToFileURL(resolvedPath).href;
+    replacements.set(specifier, rewrittenSpecifier);
+  }
+
+  let rewrittenCode = code;
+  for (const [specifier, rewrittenSpecifier] of replacements) {
+    rewrittenCode = rewrittenCode.replaceAll(specifier, rewrittenSpecifier);
+  }
+
+  return rewrittenCode;
+}
+
+function resolveRelativeImport(componentPath: string, specifier: string): string {
+  const basePath = resolvePath(dirname(componentPath), specifier);
+  const candidates = [
+    basePath,
+    `${basePath}.ts`,
+    `${basePath}.js`,
+    `${basePath}.svelte`,
+    resolvePath(basePath, 'index.ts'),
+    resolvePath(basePath, 'index.js'),
+    resolvePath(basePath, 'index.svelte'),
+  ];
+
+  const resolved = candidates.find((candidate) => existsSync(candidate));
+  if (!resolved) {
+    throw new Error(
+      `Unable to resolve relative import '${specifier}' from ${componentPath}`
+    );
+  }
+
+  return resolved;
 }
 
 function installDomGlobals(window: Window): void {
