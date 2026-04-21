@@ -573,6 +573,32 @@ async fn delete_namespace_claim(
     (status, body)
 }
 
+/// Transfer a namespace claim and return the response.
+async fn transfer_namespace_claim(
+    app: &axum::Router,
+    jwt: &str,
+    claim_id: &str,
+    target_org_slug: &str,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri(format!("/v1/namespaces/{claim_id}/ownership-transfer"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::from(
+            json!({
+                "target_org_slug": target_org_slug,
+            })
+            .to_string(),
+        ))
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
 /// Create a repository and return the response.
 async fn create_repository(
     app: &axum::Router,
@@ -5946,6 +5972,291 @@ async fn test_namespace_claim_delete_requires_owner_or_org_admin(pool: PgPool) {
         status,
         StatusCode::OK,
         "unexpected self-delete response: {delete_body}"
+    );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_user_owned_namespace_claim_can_transfer_to_controlled_org(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &jwt, "Acme Corp", "acme-corp").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id = org_body["id"].as_str().expect("org id should be returned");
+
+    let (status, create_body) = create_namespace_claim(&app, &jwt, "npm", "@alice", None).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected namespace create response: {create_body}"
+    );
+    let claim_id = create_body["id"]
+        .as_str()
+        .expect("namespace claim id should be returned");
+
+    let (status, transfer_body) = transfer_namespace_claim(&app, &jwt, claim_id, "acme-corp").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected namespace transfer response: {transfer_body}"
+    );
+    assert_eq!(
+        transfer_body["message"],
+        "Namespace claim ownership transferred"
+    );
+    assert_eq!(transfer_body["namespace_claim"]["namespace"], "@alice");
+    assert_eq!(transfer_body["owner"]["slug"], "acme-corp");
+    let owner_user_id = create_body["owner_user_id"]
+        .as_str()
+        .expect("user-owned namespace claim should expose the owner user id");
+
+    let (status, user_list_body) =
+        list_namespace_claims(&app, Some(&format!("owner_user_id={owner_user_id}"))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        user_list_body["namespaces"]
+            .as_array()
+            .expect("namespaces response should be an array")
+            .len(),
+        0,
+        "transferred namespace claim should no longer be user-owned: {user_list_body}"
+    );
+
+    let (status, org_list_body) =
+        list_namespace_claims(&app, Some(&format!("owner_org_id={org_id}"))).await;
+    assert_eq!(status, StatusCode::OK);
+    let namespaces = org_list_body["namespaces"]
+        .as_array()
+        .expect("namespaces response should be an array");
+    assert_eq!(
+        namespaces.len(),
+        1,
+        "transferred claim should be org-owned: {org_list_body}"
+    );
+    assert_eq!(namespaces[0]["namespace"], "@alice");
+
+    let (status, audit_body) = list_org_audit(
+        &app,
+        &jwt,
+        "acme-corp",
+        Some("action=namespace_claim_transfer&per_page=10"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let logs = audit_body["logs"]
+        .as_array()
+        .expect("logs response should be an array");
+    assert_eq!(logs.len(), 1, "unexpected org audit response: {audit_body}");
+    assert_eq!(logs[0]["action"], "namespace_claim_transfer");
+    assert_eq!(logs[0]["target_org_id"], org_id);
+    assert_eq!(logs[0]["metadata"]["namespace_claim_id"], claim_id);
+    assert_eq!(logs[0]["metadata"]["previous_owner_type"], "user");
+    assert_eq!(logs[0]["metadata"]["new_owner_org_slug"], "acme-corp");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_org_admin_can_transfer_namespace_claim_between_controlled_orgs(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, source_body) = create_org(&app, &jwt, "Source Corp", "source-corp").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let source_org_id = source_body["id"]
+        .as_str()
+        .expect("source org id should be returned");
+
+    let (status, target_body) = create_org(&app, &jwt, "Target Corp", "target-corp").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let target_org_id = target_body["id"]
+        .as_str()
+        .expect("target org id should be returned");
+
+    let (status, create_body) =
+        create_namespace_claim(&app, &jwt, "npm", "@source", Some(source_org_id)).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let claim_id = create_body["id"]
+        .as_str()
+        .expect("namespace claim id should be returned");
+
+    let (status, transfer_body) =
+        transfer_namespace_claim(&app, &jwt, claim_id, "target-corp").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected namespace transfer response: {transfer_body}"
+    );
+    assert_eq!(transfer_body["owner"]["slug"], "target-corp");
+
+    let (status, source_list_body) =
+        list_namespace_claims(&app, Some(&format!("owner_org_id={source_org_id}"))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        source_list_body["namespaces"]
+            .as_array()
+            .expect("namespaces response should be an array")
+            .len(),
+        0,
+        "source organization should no longer own the claim: {source_list_body}"
+    );
+
+    let (status, target_list_body) =
+        list_namespace_claims(&app, Some(&format!("owner_org_id={target_org_id}"))).await;
+    assert_eq!(status, StatusCode::OK);
+    let namespaces = target_list_body["namespaces"]
+        .as_array()
+        .expect("namespaces response should be an array");
+    assert_eq!(
+        namespaces.len(),
+        1,
+        "target organization should own the claim: {target_list_body}"
+    );
+    assert_eq!(namespaces[0]["namespace"], "@source");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_namespace_claim_transfer_requires_source_and_target_org_control(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+
+    let (status, source_body) = create_org(&app, &alice_jwt, "Source Corp", "source-corp").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let source_org_id = source_body["id"]
+        .as_str()
+        .expect("source org id should be returned");
+
+    let (status, _) = add_org_member(&app, &alice_jwt, "source-corp", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, create_body) =
+        create_namespace_claim(&app, &alice_jwt, "npm", "@source", Some(source_org_id)).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let claim_id = create_body["id"]
+        .as_str()
+        .expect("namespace claim id should be returned");
+
+    let (status, target_body) = create_org(&app, &bob_jwt, "Target Corp", "target-corp").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let target_org_id = target_body["id"]
+        .as_str()
+        .expect("target org id should be returned");
+
+    let (status, forbidden_body) =
+        transfer_namespace_claim(&app, &bob_jwt, claim_id, "target-corp").await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(
+        forbidden_body["error"]
+            .as_str()
+            .expect("error should be present")
+            .contains("current owning organization"),
+        "unexpected error response: {forbidden_body}"
+    );
+
+    let (status, other_claim_body) =
+        create_namespace_claim(&app, &bob_jwt, "pypi", "bob", None).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let other_claim_id = other_claim_body["id"]
+        .as_str()
+        .expect("user namespace claim id should be returned");
+
+    let (status, forbidden_body) =
+        transfer_namespace_claim(&app, &alice_jwt, other_claim_id, "source-corp").await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(
+        forbidden_body["error"]
+            .as_str()
+            .expect("error should be present")
+            .contains("your own account"),
+        "unexpected error response: {forbidden_body}"
+    );
+
+    let (status, same_target_body) =
+        transfer_namespace_claim(&app, &bob_jwt, other_claim_id, "target-corp").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "first transfer should succeed: {same_target_body}"
+    );
+
+    let (status, duplicate_target_body) =
+        transfer_namespace_claim(&app, &bob_jwt, other_claim_id, "target-corp").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        duplicate_target_body["error"]
+            .as_str()
+            .expect("error should be present")
+            .contains("already owned by the target organization"),
+        "unexpected duplicate target response: {duplicate_target_body}"
+    );
+
+    let (status, final_list_body) =
+        list_namespace_claims(&app, Some(&format!("owner_org_id={target_org_id}"))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        final_list_body["namespaces"]
+            .as_array()
+            .expect("namespaces response should be an array")
+            .len(),
+        1
+    );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_namespace_claim_transfer_requires_explicit_scope(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &jwt, "Acme Corp", "acme-corp").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, create_body) = create_namespace_claim(&app, &jwt, "npm", "@alice", None).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let claim_id = create_body["id"]
+        .as_str()
+        .expect("namespace claim id should be returned");
+
+    let (status, token_body) =
+        create_personal_access_token(&app, &jwt, "namespace-write-only", &["namespaces:write"])
+            .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
+    let token = token_body["token"]
+        .as_str()
+        .expect("token should be returned")
+        .to_owned();
+
+    let (status, forbidden_body) =
+        transfer_namespace_claim(&app, &token, claim_id, "acme-corp").await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        forbidden_body["error"],
+        "This operation requires the 'namespaces:transfer' scope"
+    );
+
+    let (status, org_list_body) = list_namespace_claims(
+        &app,
+        Some(&format!(
+            "owner_org_id={}",
+            org_body["id"].as_str().expect("org id should be returned")
+        )),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        org_list_body["namespaces"]
+            .as_array()
+            .expect("namespaces response should be an array")
+            .len(),
+        0,
+        "claim should remain user-owned when transfer scope is missing: {org_list_body}"
     );
 }
 

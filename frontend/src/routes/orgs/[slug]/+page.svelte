@@ -6,11 +6,13 @@
   import type {
     NamespaceClaim,
     NamespaceListResponse,
+    NamespaceTransferOwnershipResult,
   } from '../../../api/namespaces';
   import {
     createNamespaceClaim,
     deleteNamespaceClaim,
     listOrgNamespaces,
+    transferNamespaceClaim,
   } from '../../../api/namespaces';
   import type {
     MemberListResponse,
@@ -120,6 +122,10 @@
     formatOrgInvitationStatusLabel,
     partitionOrgInvitations,
   } from '../../../pages/org-invitation-history';
+  import {
+    selectNamespaceTransferTargets,
+    sortNamespaceClaims,
+  } from '../../../pages/personal-namespaces';
   import type { OrgMemberPickerOption } from '../../../pages/org-member-picker';
   import {
     buildOrgMemberPickerOptions,
@@ -345,6 +351,7 @@
   let namespaceError: string | null = null;
   let packages: OrgPackageSummary[] = [];
   let packagesError: string | null = null;
+  let namespaceTransferTargets: OrganizationMembership[] = [];
   let packageTransferTargets: OrganizationMembership[] = [];
   let repositoryTransferTargets: OrganizationMembership[] = [];
   let securitySummary: OrgSecuritySummary | null = null;
@@ -683,6 +690,10 @@
       securityPackages = securityData.packages || [];
       securityError = securityData.load_error || null;
       packageTransferTargets = selectPackageTransferTargets(
+        myOrganizationsData.organizations,
+        slug
+      );
+      namespaceTransferTargets = selectNamespaceTransferTargets(
         myOrganizationsData.organizations,
         slug
       );
@@ -1614,6 +1625,58 @@
     } catch (caughtError: unknown) {
       await loadOrganizationPage({
         error: toErrorMessage(caughtError, 'Failed to delete namespace claim.'),
+      });
+    }
+  }
+
+  async function handleNamespaceTransfer(event: SubmitEvent): Promise<void> {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget as HTMLFormElement);
+    const claimId = formData.get('claim_id')?.toString().trim() || '';
+    const targetOrgSlug =
+      formData.get('target_org_slug')?.toString().trim() || '';
+
+    if (!claimId) {
+      await loadOrganizationPage({
+        error: 'Select a namespace claim to transfer.',
+      });
+      return;
+    }
+
+    if (!targetOrgSlug) {
+      await loadOrganizationPage({
+        error: 'Select a target organization.',
+      });
+      return;
+    }
+
+    if (!formData.get('confirm')) {
+      await loadOrganizationPage({
+        error: 'Please confirm the namespace transfer.',
+      });
+      return;
+    }
+
+    try {
+      const result: NamespaceTransferOwnershipResult = await transferNamespaceClaim(
+        claimId,
+        {
+          targetOrgSlug,
+        }
+      );
+      const namespace =
+        result.namespace_claim?.namespace ||
+        namespaceClaims.find((claim) => claim.id === claimId)?.namespace ||
+        'namespace claim';
+      await loadOrganizationPage({
+        notice: `Transferred ${namespace} to ${result.owner?.name || result.owner?.slug || targetOrgSlug}.`,
+      });
+    } catch (caughtError: unknown) {
+      await loadOrganizationPage({
+        error: toErrorMessage(
+          caughtError,
+          'Failed to transfer namespace claim ownership.'
+        ),
       });
     }
   }
@@ -3904,6 +3967,82 @@
               >Create namespace claim</button
             >
           </form>
+
+          <div class="settings-subsection">
+            <h3>Transfer a namespace</h3>
+            <p class="settings-copy">
+              Move an organization-owned namespace claim into another
+              organization you already administer.
+            </p>
+            {#if namespaceClaims.length === 0}
+              <p class="settings-copy">
+                Create a namespace claim here before transferring one away.
+              </p>
+            {:else if namespaceTransferTargets.length === 0}
+              <p class="settings-copy">
+                You do not administer another organization that can receive one
+                of these namespace claims.
+              </p>
+            {:else}
+              <div class="alert alert-warning" style="margin-bottom:12px;">
+                This transfer is immediate and keeps the claim's verification
+                state unchanged.
+              </div>
+              <form class="settings-subsection" on:submit={handleNamespaceTransfer}>
+                <div class="grid gap-4 xl:grid-cols-2">
+                  <div class="form-group">
+                    <label for="org-namespace-transfer-claim"
+                      >Organization namespace claim</label
+                    >
+                    <select
+                      id="org-namespace-transfer-claim"
+                      name="claim_id"
+                      class="form-input"
+                      required
+                    >
+                      <option value="">Select a namespace claim</option>
+                      {#each sortNamespaceClaims(namespaceClaims) as claim}
+                        <option value={claim.id || ''}
+                          >{`${claim.namespace || 'Unnamed claim'} · ${ecosystemLabel(claim.ecosystem)}`}</option
+                        >
+                      {/each}
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label for="org-namespace-transfer-target"
+                      >Target organization</label
+                    >
+                    <select
+                      id="org-namespace-transfer-target"
+                      name="target_org_slug"
+                      class="form-input"
+                      required
+                    >
+                      <option value="">Select an organization</option>
+                      {#each namespaceTransferTargets as target}
+                        <option value={target.slug || ''}
+                          >{target.name ||
+                            target.slug ||
+                            'Unnamed organization'}</option
+                        >
+                      {/each}
+                    </select>
+                  </div>
+                </div>
+                <div class="form-group" style="margin-bottom:12px;">
+                  <label class="flex items-start gap-2">
+                    <input type="checkbox" name="confirm" required />
+                    <span
+                      >I understand this namespace transfer is immediate.</span
+                    >
+                  </label>
+                </div>
+                <button type="submit" class="btn btn-danger"
+                  >Transfer namespace</button
+                >
+              </form>
+            {/if}
+          </div>
         {/if}
       </section>
     </div>

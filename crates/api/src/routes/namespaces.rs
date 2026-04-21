@@ -8,13 +8,13 @@ use serde::Deserialize;
 use sqlx::{Postgres, QueryBuilder, Row};
 use uuid::Uuid;
 
-use publaryn_core::{domain::namespace::NamespaceClaim, error::Error};
+use publaryn_core::{domain::namespace::NamespaceClaim, error::Error, validation};
 
 use crate::{
     error::{ApiError, ApiResult},
     request_auth::{ensure_org_admin_by_id, AuthenticatedIdentity},
     routes::parse_ecosystem,
-    scopes::{ensure_scope, SCOPE_NAMESPACES_WRITE},
+    scopes::{ensure_scope, SCOPE_NAMESPACES_TRANSFER, SCOPE_NAMESPACES_WRITE},
     state::AppState,
 };
 
@@ -23,6 +23,10 @@ pub fn router() -> Router<AppState> {
         .route("/v1/namespaces", get(list_namespaces))
         .route("/v1/namespaces", post(create_namespace))
         .route("/v1/namespaces/{claim_id}", delete(delete_namespace))
+        .route(
+            "/v1/namespaces/{claim_id}/ownership-transfer",
+            post(transfer_namespace_ownership),
+        )
         .route("/v1/namespaces/lookup", get(lookup_namespace))
 }
 
@@ -46,6 +50,24 @@ struct NamespaceListQuery {
 struct NamespaceLookupQuery {
     ecosystem: String,
     namespace: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct TransferNamespaceOwnershipRequest {
+    target_org_slug: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum NamespaceClaimOwner {
+    User(Uuid),
+    Organization(Uuid),
+}
+
+#[derive(Debug)]
+struct TargetOrganization {
+    id: Uuid,
+    slug: String,
+    name: String,
 }
 
 async fn create_namespace(
@@ -328,4 +350,256 @@ async fn lookup_namespace(
         "is_verified": row.try_get::<bool, _>("is_verified").ok(),
         "created_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at").ok(),
     })))
+}
+
+async fn transfer_namespace_ownership(
+    State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
+    Path(claim_id): Path<Uuid>,
+    Json(body): Json<TransferNamespaceOwnershipRequest>,
+) -> ApiResult<Json<serde_json::Value>> {
+    ensure_scope(&identity, SCOPE_NAMESPACES_TRANSFER)?;
+    validation::validate_slug(&body.target_org_slug).map_err(ApiError::from)?;
+
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let claim_row = sqlx::query(
+        "SELECT id, ecosystem::text AS ecosystem, namespace, owner_user_id, owner_org_id, is_verified \
+         FROM namespace_claims \
+         WHERE id = $1 \
+         FOR UPDATE",
+    )
+    .bind(claim_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?
+    .ok_or_else(|| ApiError(Error::NotFound("Namespace claim not found".into())))?;
+
+    let claim_id: Uuid = claim_row
+        .try_get("id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let ecosystem: String = claim_row
+        .try_get("ecosystem")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let namespace: String = claim_row
+        .try_get("namespace")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let owner_user_id = claim_row
+        .try_get::<Option<Uuid>, _>("owner_user_id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let owner_org_id = claim_row
+        .try_get::<Option<Uuid>, _>("owner_org_id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let is_verified: bool = claim_row
+        .try_get("is_verified")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+
+    let current_owner = namespace_claim_owner_from_fields(owner_user_id, owner_org_id)?;
+
+    match current_owner {
+        NamespaceClaimOwner::User(owner_user_id) if owner_user_id == identity.user_id => {}
+        NamespaceClaimOwner::User(_) => {
+            return Err(ApiError(Error::Forbidden(
+                "You can only transfer user-owned namespace claims for your own account".into(),
+            )));
+        }
+        NamespaceClaimOwner::Organization(owner_org_id) => {
+            let actor_controls_source = sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS (\
+                     SELECT 1 \
+                     FROM org_memberships \
+                     WHERE org_id = $1 AND user_id = $2 AND role::text = ANY($3)\
+                 )",
+            )
+            .bind(owner_org_id)
+            .bind(identity.user_id)
+            .bind(vec!["owner".to_owned(), "admin".to_owned()])
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| ApiError(Error::Database(e)))?;
+
+            if !actor_controls_source {
+                return Err(ApiError(Error::Forbidden(
+                    "Transferring an organization-owned namespace claim requires owner or admin membership in the current owning organization".into(),
+                )));
+            }
+        }
+    }
+
+    let target_org_row = sqlx::query(
+        "SELECT id, slug, name \
+         FROM organizations \
+         WHERE slug = $1",
+    )
+    .bind(&body.target_org_slug)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?
+    .ok_or_else(|| {
+        ApiError(Error::NotFound(format!(
+            "Organization '{}' not found",
+            body.target_org_slug
+        )))
+    })?;
+
+    let target_org = TargetOrganization {
+        id: target_org_row
+            .try_get("id")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        slug: target_org_row
+            .try_get("slug")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+        name: target_org_row
+            .try_get("name")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
+    };
+
+    let actor_controls_target = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (\
+             SELECT 1 \
+             FROM org_memberships \
+             WHERE org_id = $1 AND user_id = $2 AND role::text = ANY($3)\
+         )",
+    )
+    .bind(target_org.id)
+    .bind(identity.user_id)
+    .bind(vec!["owner".to_owned(), "admin".to_owned()])
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    if !actor_controls_target {
+        return Err(ApiError(Error::Forbidden(
+            "Transferring a namespace claim into an organization requires owner or admin membership in the target organization".into(),
+        )));
+    }
+
+    validate_namespace_transfer_target(&current_owner, target_org.id)?;
+
+    let (previous_owner_type, previous_owner_user_id, previous_owner_org_id) = match current_owner {
+        NamespaceClaimOwner::User(user_id) => ("user", Some(user_id), None),
+        NamespaceClaimOwner::Organization(org_id) => ("organization", None, Some(org_id)),
+    };
+
+    sqlx::query(
+        "UPDATE namespace_claims \
+         SET owner_user_id = NULL, \
+             owner_org_id = $1 \
+         WHERE id = $2",
+    )
+    .bind(target_org.id)
+    .bind(claim_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    sqlx::query(
+        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_org_id, metadata, occurred_at) \
+         VALUES ($1, 'namespace_claim_transfer', $2, $3, $4, $5, NOW())",
+    )
+    .bind(Uuid::new_v4())
+    .bind(identity.user_id)
+    .bind(identity.audit_actor_token_id())
+    .bind(target_org.id)
+    .bind(serde_json::json!({
+        "namespace_claim_id": claim_id,
+        "ecosystem": &ecosystem,
+        "namespace": &namespace,
+        "is_verified": is_verified,
+        "previous_owner_type": previous_owner_type,
+        "previous_owner_user_id": previous_owner_user_id,
+        "previous_owner_org_id": previous_owner_org_id,
+        "new_owner_type": "organization",
+        "new_owner_org_id": target_org.id,
+        "new_owner_org_slug": &target_org.slug,
+        "new_owner_org_name": &target_org.name,
+    }))
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    Ok(Json(serde_json::json!({
+        "message": "Namespace claim ownership transferred",
+        "namespace_claim": {
+            "id": claim_id,
+            "ecosystem": ecosystem,
+            "namespace": namespace,
+            "is_verified": is_verified,
+        },
+        "owner": {
+            "type": "organization",
+            "id": target_org.id,
+            "slug": target_org.slug,
+            "name": target_org.name,
+        }
+    })))
+}
+
+fn namespace_claim_owner_from_fields(
+    owner_user_id: Option<Uuid>,
+    owner_org_id: Option<Uuid>,
+) -> ApiResult<NamespaceClaimOwner> {
+    match (owner_user_id, owner_org_id) {
+        (Some(owner_user_id), None) => Ok(NamespaceClaimOwner::User(owner_user_id)),
+        (None, Some(owner_org_id)) => Ok(NamespaceClaimOwner::Organization(owner_org_id)),
+        (None, None) => Err(ApiError(Error::Internal(
+            "Namespace claim is missing an owner".into(),
+        ))),
+        (Some(_), Some(_)) => Err(ApiError(Error::Internal(
+            "Namespace claim has multiple owners".into(),
+        ))),
+    }
+}
+
+fn validate_namespace_transfer_target(
+    current_owner: &NamespaceClaimOwner,
+    target_org_id: Uuid,
+) -> ApiResult<()> {
+    if matches!(
+        current_owner,
+        NamespaceClaimOwner::Organization(owner_org_id) if *owner_org_id == target_org_id
+    ) {
+        return Err(ApiError(Error::Validation(
+            "Namespace claim is already owned by the target organization".into(),
+        )));
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{validate_namespace_transfer_target, NamespaceClaimOwner};
+    use uuid::Uuid;
+
+    #[test]
+    fn namespace_transfer_rejects_same_target_org() {
+        let org_id = Uuid::new_v4();
+
+        let error =
+            validate_namespace_transfer_target(&NamespaceClaimOwner::Organization(org_id), org_id)
+                .expect_err("namespace transfer should reject the current owning organization");
+
+        assert_eq!(
+            error.0.to_string(),
+            "Validation error: Namespace claim is already owned by the target organization"
+        );
+    }
+
+    #[test]
+    fn namespace_transfer_allows_user_owned_claim_to_org() {
+        validate_namespace_transfer_target(
+            &NamespaceClaimOwner::User(Uuid::new_v4()),
+            Uuid::new_v4(),
+        )
+        .expect("user-owned namespace claims should be transferable to an organization");
+    }
 }

@@ -28,6 +28,7 @@ The initial supported scopes are:
 - `orgs:join`
 - `orgs:transfer`
 - `namespaces:write`
+- `namespaces:transfer`
 - `repositories:write`
 - `packages:write`
 - `packages:transfer`
@@ -48,6 +49,9 @@ Separating it from `orgs:write` allows automation and personal API tokens to omi
 
 `packages:transfer` is reserved for dedicated package ownership transfer flows.
 Separating it from `packages:write` keeps day-to-day release and metadata maintenance distinct from durable ownership handoff.
+
+`namespaces:transfer` is reserved for dedicated namespace-claim ownership transfer flows.
+Separating it from `namespaces:write` keeps day-to-day namespace creation and cleanup distinct from durable governance handoff into organizations.
 
 The first enforcement pass applies scopes only to sensitive control-plane operations.
 Public read endpoints remain unchanged unless they are explicitly security-sensitive.

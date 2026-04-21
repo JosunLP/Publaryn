@@ -104,6 +104,7 @@ describe('org audit query helpers', () => {
   test('keeps namespace claim audit actions when building and parsing filters', () => {
     for (const action of [
       'namespace_claim_create',
+      'namespace_claim_transfer',
       'namespace_claim_delete',
     ] as const) {
       const path = buildOrgAuditPath(

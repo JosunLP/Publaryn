@@ -14,6 +14,7 @@ export const ORG_AUDIT_ACTION_VALUES = [
   'security_finding_resolve',
   'security_finding_reopen',
   'namespace_claim_create',
+  'namespace_claim_transfer',
   'namespace_claim_delete',
   'org_member_add',
   'org_role_change',

@@ -171,6 +171,7 @@ Initial control-plane scopes:
 | `orgs:join`             | Review, accept, and decline invitations for the current user      |
 | `orgs:transfer`         | Transfer organization ownership to another active member          |
 | `namespaces:write`      | Create namespace claims                                           |
+| `namespaces:transfer`   | Transfer namespace claims into an organization you administer     |
 | `repositories:write`    | Create and update repositories                                    |
 | `repositories:transfer` | Transfer repository ownership into an organization you administer |
 | `packages:write`        | Update packages, releases, tags, and trusted publishers           |
@@ -254,6 +255,7 @@ Organization administrators can also export the full filtered audit view as CSV 
 GET    /v1/namespaces
 POST   /v1/namespaces
 DELETE /v1/namespaces/:id
+POST   /v1/namespaces/:id/ownership-transfer
 GET    /v1/namespaces/lookup?ecosystem=<eco>&namespace=<claim>
 ```
 
