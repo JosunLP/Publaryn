@@ -239,7 +239,10 @@ describe('organization team workspace route', () => {
 
       await waitFor(() => {
         expect(target.textContent).toContain('Removed @admin-user from release-engineering.');
-        expect(target.textContent).not.toContain('Admin User');
+        expect(target.textContent).toContain('Eligible members 1');
+        expect(
+          target.querySelector('#team-member-remove-admin-user')
+        ).toBeNull();
       });
 
       expect(currentScenario?.patchCalls).toEqual([

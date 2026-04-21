@@ -391,7 +391,8 @@
 
   async function handleAddTeamMember(event: SubmitEvent): Promise<void> {
     event.preventDefault();
-    const formData = new FormData(event.currentTarget as HTMLFormElement);
+    const form = event.currentTarget as HTMLFormElement;
+    const formData = new FormData(form);
     const username = resolveOrgMemberPickerInput(
       formData.get('username')?.toString() || '',
       eligibleTeamMemberOptions
@@ -399,7 +400,7 @@
 
     try {
       await addTeamMember(slug, teamSlug, { username });
-      (event.currentTarget as HTMLFormElement).reset();
+      form.reset();
       await loadTeamWorkspace({
         notice: `Added a member to ${teamSlug}.`,
       });
