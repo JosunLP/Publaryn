@@ -99,7 +99,11 @@
   import OrgAuditFilterControls from '../../../lib/components/OrgAuditFilterControls.svelte';
   import OrgSecurityFindingTriageControls from '../../../lib/components/OrgSecurityFindingTriageControls.svelte';
   import OrgSecurityFilterControls from '../../../lib/components/OrgSecurityFilterControls.svelte';
-  import TeamAccessGrantForm from '../../../lib/components/TeamAccessGrantForm.svelte';
+  import TeamMembersEditor from '../../../lib/components/TeamMembersEditor.svelte';
+  import TeamNamespaceAccessEditor from '../../../lib/components/TeamNamespaceAccessEditor.svelte';
+  import TeamPackageAccessEditor from '../../../lib/components/TeamPackageAccessEditor.svelte';
+  import TeamRepositoryAccessEditor from '../../../lib/components/TeamRepositoryAccessEditor.svelte';
+  import TeamSettingsEditor from '../../../lib/components/TeamSettingsEditor.svelte';
   import type { OrgAuditActorOption } from '../../../pages/org-audit-actors';
   import {
     buildAuditActorOptions,
@@ -146,13 +150,20 @@
     buildAuditExportQuery,
     buildSecurityExportQuery,
     decodePackageSelection,
-    renderPackageSelectionValue,
     resolveAuditFilterSubmission,
     resolveSecurityFilterSubmission,
     resolveTeamNamespaceAccessSubmission,
     resolveTeamPackageAccessSubmission,
     resolveTeamRepositoryAccessSubmission,
   } from '../../../pages/org-workspace-actions';
+  import {
+    buildEligibleTeamMemberOptions,
+    buildNamespaceGrantOptions,
+    buildPackageGrantOptions,
+    buildRepositoryGrantOptions,
+    TEAM_NAMESPACE_PERMISSION_OPTIONS,
+    TEAM_PERMISSION_OPTIONS,
+  } from '../../../pages/team-management';
   import {
     buildOrgSecurityPackageKey,
     mergeUpdatedOrgSecurityFinding,
@@ -214,50 +225,6 @@
     { value: 'billing_manager', label: 'Billing manager' },
     { value: 'viewer', label: 'Viewer' },
   ] as const;
-  const TEAM_PERMISSION_OPTIONS = [
-    {
-      value: 'admin',
-      label: 'Admin',
-      description: 'Manage package administration workflows.',
-    },
-    {
-      value: 'publish',
-      label: 'Publish',
-      description: 'Create releases and publish artifacts.',
-    },
-    {
-      value: 'write_metadata',
-      label: 'Write metadata',
-      description: 'Update package readmes and metadata.',
-    },
-    {
-      value: 'read_private',
-      label: 'Read private',
-      description: 'Read non-public package data.',
-    },
-    {
-      value: 'security_review',
-      label: 'Security review',
-      description: 'Reserved for future security workflows.',
-    },
-    {
-      value: 'transfer_ownership',
-      label: 'Transfer ownership',
-      description: 'Transfer a package to another owner.',
-    },
-  ] as const;
-  const TEAM_NAMESPACE_PERMISSION_OPTIONS = [
-    {
-      value: 'admin',
-      label: 'Admin',
-      description: 'Delete organization-owned namespace claims.',
-    },
-    {
-      value: 'transfer_ownership',
-      label: 'Transfer ownership',
-      description: 'Transfer a namespace claim into another controlled organization.',
-    },
-  ] as const;
   let transferableNamespaceClaims: NamespaceClaim[] = [];
   const SECURITY_FILTER_ECOSYSTEM_OPTIONS = [
     { value: 'npm', label: 'npm / Bun' },
@@ -279,36 +246,9 @@
   }));
   let securityPackageOptions: Array<{ value: string; label: string }> = [];
 
-  $: repositoryGrantOptions = [...repositories]
-    .sort((left, right) =>
-      `${left.name || left.slug || ''}`.localeCompare(
-        `${right.name || right.slug || ''}`
-      )
-    )
-    .map((repository) => ({
-      value: repository.slug || '',
-      label: `${repository.name || repository.slug || ''} · ${formatRepositoryKindLabel(repository.kind)} · ${formatRepositoryVisibilityLabel(repository.visibility)}`,
-    }));
-
-  $: packageGrantOptions = [...packages]
-    .sort((left, right) =>
-      `${left.ecosystem || ''}:${left.name || ''}`.localeCompare(
-        `${right.ecosystem || ''}:${right.name || ''}`
-      )
-    )
-    .map((pkg) => ({
-      value: renderPackageSelectionValue(pkg.ecosystem, pkg.name),
-      label: `${pkg.ecosystem || ''} · ${pkg.name || ''}`,
-    }));
-  $: namespaceGrantOptions = sortNamespaceClaims(namespaceClaims)
-    .filter(
-      (claim): claim is NamespaceClaim & { id: string } =>
-        typeof claim.id === 'string' && claim.id.trim().length > 0
-    )
-    .map((claim) => ({
-      value: claim.id,
-      label: `${claim.namespace || 'Unnamed claim'} · ${ecosystemLabel(claim.ecosystem)}`,
-    }));
+  $: repositoryGrantOptions = buildRepositoryGrantOptions(repositories);
+  $: packageGrantOptions = buildPackageGrantOptions(packages);
+  $: namespaceGrantOptions = buildNamespaceGrantOptions(namespaceClaims);
   $: transferableNamespaceClaims = sortNamespaceClaims(
     namespaceClaims.filter((claim) => claim.can_transfer)
   );
@@ -2057,10 +1997,7 @@
     teamSlug: string
   ): OrgMemberPickerOption[] {
     const teamMembers = teamMembersBySlug[teamSlug]?.members || [];
-    return buildOrgMemberPickerOptions(
-      members,
-      teamMembers.map((member) => member.username?.trim() || '').filter(Boolean)
-    );
+    return buildEligibleTeamMemberOptions(members, teamMembers);
   }
 
   function hasRepositorySlug(
@@ -2102,10 +2039,6 @@
       .filter(Boolean)
       .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
       .join(' ');
-  }
-
-  function formatPermission(permission: string): string {
-    return formatIdentifierLabel(permission);
   }
 
   function formatAuditActor(log: OrgAuditLog): string | null {
@@ -3068,123 +3001,30 @@
 
                   {#if canManageTeams && teamSlug}
                     <div class="grid gap-6 xl:grid-cols-2">
-                      <form
-                        on:submit={(event) => handleUpdateTeam(event, teamSlug)}
-                      >
-                        <div class="form-group">
-                          <label for={`team-name-${teamSlug}`}>Team name</label>
-                          <input
-                            id={`team-name-${teamSlug}`}
-                            name="name"
-                            class="form-input"
-                            value={team.name || ''}
-                            required
-                          />
-                        </div>
-                        <div class="form-group">
-                          <label for={`team-description-${teamSlug}`}
-                            >Description</label
-                          >
-                          <textarea
-                            id={`team-description-${teamSlug}`}
-                            name="description"
-                            class="form-input"
-                            rows="3">{team.description || ''}</textarea
-                          >
-                        </div>
-                        <button type="submit" class="btn btn-secondary"
-                          >Save changes</button
-                        >
-                      </form>
+                      <TeamSettingsEditor
+                        {team}
+                        {teamSlug}
+                        nameFieldId={`team-name-${teamSlug}`}
+                        descriptionFieldId={`team-description-${teamSlug}`}
+                        submitLabel="Save changes"
+                        submitClass="btn btn-secondary"
+                        handleSubmit={(event) => handleUpdateTeam(event, teamSlug)}
+                      />
 
                       <div>
                         <h4>Team members</h4>
-                        {#if teamMembersError}
-                          <div class="alert alert-error">
-                            {teamMembersError}
-                          </div>
-                        {:else if teamMembers.length === 0}
-                          <p class="settings-copy">
-                            No members in this team yet.
-                          </p>
-                        {:else}
-                          <div class="token-list">
-                            {#each teamMembers as teamMember}
-                              <div class="token-row">
-                                <div class="token-row__main">
-                                  <div class="token-row__title">
-                                    {teamMember.display_name ||
-                                      teamMember.username ||
-                                      'Unknown member'}
-                                  </div>
-                                  <div class="token-row__meta">
-                                    <span
-                                      >@{teamMember.username || 'unknown'}</span
-                                    >
-                                    <span
-                                      >added {formatDate(
-                                        teamMember.added_at
-                                      )}</span
-                                    >
-                                  </div>
-                                </div>
-                                {#if teamMember.username}
-                                  <div class="token-row__actions">
-                                    <button
-                                      class="btn btn-secondary btn-sm"
-                                      type="button"
-                                      on:click={() =>
-                                        handleRemoveTeamMember(
-                                          teamSlug,
-                                          teamMember.username || ''
-                                        )}>Remove</button
-                                    >
-                                  </div>
-                                {/if}
-                              </div>
-                            {/each}
-                          </div>
-                        {/if}
-
-                        {#if eligibleTeamMemberOptions.length === 0}
-                          <p class="settings-copy">
-                            Every current organization member is already part of
-                            this team.
-                          </p>
-                        {:else}
-                          <form
-                            on:submit={(event) =>
-                              handleAddTeamMember(event, teamSlug)}
-                          >
-                            <div class="form-group">
-                              <label for={`team-member-${teamSlug}`}
-                                >Add organization member</label
-                              >
-                              <input
-                                id={`team-member-${teamSlug}`}
-                                name="username"
-                                class="form-input"
-                                list={`team-member-options-${teamSlug}`}
-                                placeholder="Search username or paste user id"
-                                autocomplete="off"
-                                required
-                              />
-                              <datalist id={`team-member-options-${teamSlug}`}>
-                                {#each eligibleTeamMemberOptions as option}
-                                  <option value={option.username}
-                                    >{option.label}</option
-                                  >
-                                  <option value={option.userId}
-                                    >{option.label}</option
-                                  >
-                                {/each}
-                              </datalist>
-                            </div>
-                            <button type="submit" class="btn btn-primary"
-                              >Add member</button
-                            >
-                          </form>
-                        {/if}
+                        <TeamMembersEditor
+                          members={teamMembers}
+                          membersError={teamMembersError}
+                          eligibleOptions={eligibleTeamMemberOptions}
+                          inputId={`team-member-${teamSlug}`}
+                          datalistId={`team-member-options-${teamSlug}`}
+                          emptyMembersMessage="No members in this team yet."
+                          eligibleOptionsError={null}
+                          handleSubmit={(event) => handleAddTeamMember(event, teamSlug)}
+                          handleRemoveMember={(username) =>
+                            handleRemoveTeamMember(teamSlug, username)}
+                        />
                       </div>
                     </div>
 
@@ -3198,157 +3038,40 @@
                         >
                         permission also unlocks repository setting updates.
                       </p>
-                      {#if teamRepositoryGrantsError}
-                        <div class="alert alert-error">
-                          {teamRepositoryGrantsError}
-                        </div>
-                      {:else if teamRepositoryGrants.length === 0}
-                        <p class="settings-copy">
-                          No repository grants assigned yet.
-                        </p>
-                      {:else}
-                        <div class="token-list">
-                          {#each teamRepositoryGrants as grant}
-                            <div class="token-row">
-                              <div class="token-row__main">
-                                <div class="token-row__title">
-                                  {#if grant.slug}
-                                    <a
-                                      href={`/repositories/${encodeURIComponent(grant.slug || '')}`}
-                                      data-sveltekit-preload-data="hover"
-                                      >{grant.name || grant.slug}</a
-                                    >
-                                  {:else}
-                                    {grant.name || 'Unnamed repository'}
-                                  {/if}
-                                </div>
-                                <div class="token-row__meta">
-                                  <span>@{grant.slug || 'no-slug'}</span>
-                                  <span
-                                    >{formatRepositoryKindLabel(
-                                      grant.kind
-                                    )}</span
-                                  >
-                                  <span
-                                    >{formatRepositoryVisibilityLabel(
-                                      grant.visibility
-                                    )}</span
-                                  >
-                                  <span
-                                    >granted {formatDate(
-                                      grant.granted_at
-                                    )}</span
-                                  >
-                                </div>
-                                <div class="token-row__scopes">
-                                  {#each grant.permissions || [] as permission}
-                                    <span class="badge badge-ecosystem"
-                                      >{formatPermission(permission)}</span
-                                    >
-                                  {/each}
-                                </div>
-                              </div>
-                              {#if grant.slug}
-                                <div class="token-row__actions">
-                                  <button
-                                    class="btn btn-secondary btn-sm"
-                                    type="button"
-                                    on:click={() =>
-                                      handleRemoveTeamRepositoryAccess(
-                                        teamSlug,
-                                        grant.slug || ''
-                                      )}>Revoke</button
-                                  >
-                                </div>
-                              {/if}
-                            </div>
-                          {/each}
-                        </div>
-                      {/if}
-
-                      <TeamAccessGrantForm
-                        fieldId={`team-repository-${teamSlug}`}
-                        selectLabel="Organization repository"
-                        selectName="repository_slug"
-                        placeholderLabel="Select a repository"
-                        emptyMessage="Create a repository before delegating repository-wide access."
-                        submitLabel="Save repository access"
-                        error={repositoriesError}
+                      <TeamRepositoryAccessEditor
+                        grants={teamRepositoryGrants}
+                        grantsError={teamRepositoryGrantsError}
+                        optionsError={repositoriesError}
                         options={repositoryGrantOptions}
                         permissionOptions={TEAM_PERMISSION_OPTIONS}
+                        fieldId={`team-repository-${teamSlug}`}
+                        emptyGrantsMessage="No repository grants assigned yet."
                         handleSubmit={(event) =>
                           handleReplaceTeamRepositoryAccess(event, teamSlug)}
+                        handleRevoke={(repositorySlug) =>
+                          handleRemoveTeamRepositoryAccess(teamSlug, repositorySlug)}
                       />
                       </div>
                     {/if}
 
                     <div class="mt-6">
                       <h4>Package access</h4>
-                      {#if teamGrantsError}
-                        <div class="alert alert-error">{teamGrantsError}</div>
-                      {:else if teamGrants.length === 0}
-                        <p class="settings-copy">
-                          No package grants assigned yet.
-                        </p>
-                      {:else}
-                        <div class="token-list">
-                          {#each teamGrants as grant}
-                            <div class="token-row">
-                              <div class="token-row__main">
-                                <div class="token-row__title">
-                                  <a
-                                    href={`/packages/${encodeURIComponent(grant.ecosystem || 'unknown')}/${encodeURIComponent(grant.name || '')}`}
-                                    data-sveltekit-preload-data="hover"
-                                    >{grant.name || 'Unnamed package'}</a
-                                  >
-                                </div>
-                                <div class="token-row__meta">
-                                  <span>{grant.ecosystem || 'unknown'}</span>
-                                  <span
-                                    >granted {formatDate(
-                                      grant.granted_at
-                                    )}</span
-                                  >
-                                </div>
-                                <div class="token-row__scopes">
-                                  {#each grant.permissions || [] as permission}
-                                    <span class="badge badge-ecosystem"
-                                      >{formatPermission(permission)}</span
-                                    >
-                                  {/each}
-                                </div>
-                              </div>
-                              {#if grant.ecosystem && grant.name}
-                                <div class="token-row__actions">
-                                  <button
-                                    class="btn btn-secondary btn-sm"
-                                    type="button"
-                                    on:click={() =>
-                                      handleRemoveTeamPackageAccess(
-                                        teamSlug,
-                                        grant.ecosystem || '',
-                                        grant.name || ''
-                                      )}>Revoke</button
-                                  >
-                                </div>
-                              {/if}
-                            </div>
-                          {/each}
-                        </div>
-                      {/if}
-
-                      <TeamAccessGrantForm
-                        fieldId={`team-package-${teamSlug}`}
-                        selectLabel="Organization package"
-                        selectName="package_key"
-                        placeholderLabel="Select a package"
-                        emptyMessage="Create or transfer a package before delegating access."
-                        submitLabel="Save package access"
-                        error={packagesError}
+                      <TeamPackageAccessEditor
+                        grants={teamGrants}
+                        grantsError={teamGrantsError}
+                        optionsError={packagesError}
                         options={packageGrantOptions}
                         permissionOptions={TEAM_PERMISSION_OPTIONS}
+                        fieldId={`team-package-${teamSlug}`}
+                        emptyGrantsMessage="No package grants assigned yet."
                         handleSubmit={(event) =>
                           handleReplaceTeamPackageAccess(event, teamSlug)}
+                        handleRevoke={(ecosystem, packageName) =>
+                          handleRemoveTeamPackageAccess(
+                            teamSlug,
+                            ecosystem,
+                            packageName
+                          )}
                       />
                     </div>
 
@@ -3360,74 +3083,18 @@
                         organization-owned namespace claims without broader
                         organization roles.
                       </p>
-                      {#if teamNamespaceGrantsError}
-                        <div class="alert alert-error">
-                          {teamNamespaceGrantsError}
-                        </div>
-                      {:else if teamNamespaceGrants.length === 0}
-                        <p class="settings-copy">
-                          No namespace grants assigned yet.
-                        </p>
-                      {:else}
-                        <div class="token-list">
-                          {#each teamNamespaceGrants as grant}
-                            <div class="token-row">
-                              <div class="token-row__main">
-                                <div class="token-row__title">
-                                  {grant.namespace || 'Unnamed namespace claim'}
-                                </div>
-                                <div class="token-row__meta">
-                                  <span>{ecosystemLabel(grant.ecosystem)}</span>
-                                  <span
-                                    >granted {formatDate(
-                                      grant.granted_at
-                                    )}</span
-                                  >
-                                  <span
-                                    >{grant.is_verified
-                                      ? 'verified'
-                                      : 'pending verification'}</span
-                                  >
-                                </div>
-                                <div class="token-row__scopes">
-                                  {#each grant.permissions || [] as permission}
-                                    <span class="badge badge-ecosystem"
-                                      >{formatPermission(permission)}</span
-                                    >
-                                  {/each}
-                                </div>
-                              </div>
-                              {#if grant.namespace_claim_id}
-                                <div class="token-row__actions">
-                                  <button
-                                    class="btn btn-secondary btn-sm"
-                                    type="button"
-                                    on:click={() =>
-                                      handleRemoveTeamNamespaceAccess(
-                                        teamSlug,
-                                        grant.namespace_claim_id || '',
-                                        grant.namespace || 'this namespace claim'
-                                      )}>Revoke</button
-                                  >
-                                </div>
-                              {/if}
-                            </div>
-                          {/each}
-                        </div>
-                      {/if}
-
-                      <TeamAccessGrantForm
-                        fieldId={`team-namespace-${teamSlug}`}
-                        selectLabel="Organization namespace claim"
-                        selectName="claim_id"
-                        placeholderLabel="Select a namespace claim"
-                        emptyMessage="Create or transfer a namespace claim before delegating access."
-                        submitLabel="Save namespace access"
-                        error={namespaceError}
+                      <TeamNamespaceAccessEditor
+                        grants={teamNamespaceGrants}
+                        grantsError={teamNamespaceGrantsError}
+                        optionsError={namespaceError}
                         options={namespaceGrantOptions}
                         permissionOptions={TEAM_NAMESPACE_PERMISSION_OPTIONS}
+                        fieldId={`team-namespace-${teamSlug}`}
+                        emptyGrantsMessage="No namespace grants assigned yet."
                         handleSubmit={(event) =>
                           handleReplaceTeamNamespaceAccess(event, teamSlug)}
+                        handleRevoke={(claimId, namespace) =>
+                          handleRemoveTeamNamespaceAccess(teamSlug, claimId, namespace)}
                       />
                       </div>
                     {/if}
