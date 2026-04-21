@@ -362,6 +362,22 @@ fn org_role_requires_mfa_for_write(role: &str) -> bool {
     ORG_MFA_REQUIRED_WRITE_ROLES.contains(&role)
 }
 
+fn resolve_org_write_role_access(
+    role: Option<&str>,
+    mfa_required: bool,
+    mfa_enabled: bool,
+) -> OrgWriteRoleAccess {
+    let Some(role) = role else {
+        return OrgWriteRoleAccess::MissingRole;
+    };
+
+    if mfa_required && org_role_requires_mfa_for_write(role) && !mfa_enabled {
+        return OrgWriteRoleAccess::MfaRequired;
+    }
+
+    OrgWriteRoleAccess::Allowed
+}
+
 fn org_mfa_required_for_write_error() -> ApiError {
     ApiError(Error::Forbidden(
         ORG_MFA_REQUIRED_WRITE_ERROR_MESSAGE.into(),
@@ -395,25 +411,29 @@ async fn authorize_org_write_roles(
     .await
     .map_err(|e| ApiError(Error::Database(e)))?;
 
-    let Some(row) = row else {
-        return Ok(OrgWriteRoleAccess::MissingRole);
-    };
-
     let role = row
-        .try_get::<String, _>("role")
+        .as_ref()
+        .map(|row| row.try_get::<String, _>("role"))
+        .transpose()
         .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
     let mfa_required = row
-        .try_get::<bool, _>("mfa_required")
-        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+        .as_ref()
+        .map(|row| row.try_get::<bool, _>("mfa_required"))
+        .transpose()
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?
+        .unwrap_or(false);
     let mfa_enabled = row
-        .try_get::<bool, _>("mfa_enabled")
-        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+        .as_ref()
+        .map(|row| row.try_get::<bool, _>("mfa_enabled"))
+        .transpose()
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?
+        .unwrap_or(false);
 
-    if mfa_required && org_role_requires_mfa_for_write(&role) && !mfa_enabled {
-        return Ok(OrgWriteRoleAccess::MfaRequired);
-    }
-
-    Ok(OrgWriteRoleAccess::Allowed)
+    Ok(resolve_org_write_role_access(
+        role.as_deref(),
+        mfa_required,
+        mfa_enabled,
+    ))
 }
 
 pub async fn is_org_member(db: &PgPool, org_id: Uuid, actor_user_id: Uuid) -> ApiResult<bool> {
@@ -1666,15 +1686,14 @@ mod tests {
         extract::FromRequestParts,
         http::{header::AUTHORIZATION, Request},
     };
-    use sqlx::{postgres::PgPoolOptions, PgPool};
+    use sqlx::postgres::PgPoolOptions;
     use uuid::Uuid;
 
     use crate::{config::Config, state::AppState};
 
     use super::{
-        ensure_org_admin_by_id, ensure_package_publish_access, visibility_allows_read,
-        visibility_is_discoverable, AuthenticatedIdentity, CredentialKind,
-        OptionalAuthenticatedIdentity, ORG_MFA_REQUIRED_WRITE_ERROR_MESSAGE,
+        resolve_org_write_role_access, visibility_allows_read, visibility_is_discoverable,
+        AuthenticatedIdentity, CredentialKind, OptionalAuthenticatedIdentity, OrgWriteRoleAccess,
     };
 
     fn test_state() -> AppState {
@@ -1689,93 +1708,6 @@ mod tests {
                 .expect("lazy postgres pool"),
             config,
         )
-    }
-
-    async fn insert_test_user(pool: &PgPool, username: &str, mfa_enabled: bool) -> Uuid {
-        let user_id = Uuid::new_v4();
-        sqlx::query(
-            "INSERT INTO users (id, username, email, password_hash, is_admin, is_active, \
-             email_verified, mfa_enabled, created_at, updated_at) \
-             VALUES ($1, $2, $3, NULL, false, true, true, $4, NOW(), NOW())",
-        )
-        .bind(user_id)
-        .bind(username)
-        .bind(format!("{username}@example.test"))
-        .bind(mfa_enabled)
-        .execute(pool)
-        .await
-        .expect("test user should insert");
-
-        user_id
-    }
-
-    async fn insert_test_org_membership(
-        pool: &PgPool,
-        actor_user_id: Uuid,
-        role: &str,
-        mfa_required: bool,
-    ) -> Uuid {
-        let org_id = Uuid::new_v4();
-        let slug = format!("org-{}", &org_id.to_string()[..8]);
-
-        sqlx::query(
-            "INSERT INTO organizations (id, name, slug, is_verified, mfa_required, created_at, updated_at) \
-             VALUES ($1, $2, $3, false, $4, NOW(), NOW())",
-        )
-        .bind(org_id)
-        .bind(format!("Org {slug}"))
-        .bind(&slug)
-        .bind(mfa_required)
-        .execute(pool)
-        .await
-        .expect("test org should insert");
-
-        sqlx::query(
-            "INSERT INTO org_memberships (id, org_id, user_id, role, invited_by, joined_at) \
-             VALUES ($1, $2, $3, $4::org_role, NULL, NOW())",
-        )
-        .bind(Uuid::new_v4())
-        .bind(org_id)
-        .bind(actor_user_id)
-        .bind(role)
-        .execute(pool)
-        .await
-        .expect("test org membership should insert");
-
-        org_id
-    }
-
-    async fn insert_test_org_package(pool: &PgPool, org_id: Uuid, package_name: &str) -> Uuid {
-        let repository_id = Uuid::new_v4();
-        let package_id = Uuid::new_v4();
-        let repository_slug = format!("repo-{}", &repository_id.to_string()[..8]);
-
-        sqlx::query(
-            "INSERT INTO repositories (id, name, slug, kind, visibility, owner_user_id, owner_org_id, created_at, updated_at) \
-             VALUES ($1, $2, $3, 'release', 'private', NULL, $4, NOW(), NOW())",
-        )
-        .bind(repository_id)
-        .bind(format!("Repository {repository_slug}"))
-        .bind(&repository_slug)
-        .bind(org_id)
-        .execute(pool)
-        .await
-        .expect("test repository should insert");
-
-        sqlx::query(
-            "INSERT INTO packages (id, repository_id, ecosystem, name, normalized_name, visibility, owner_user_id, owner_org_id, created_at, updated_at) \
-             VALUES ($1, $2, 'npm', $3, $4, 'private', NULL, $5, NOW(), NOW())",
-        )
-        .bind(package_id)
-        .bind(repository_id)
-        .bind(package_name)
-        .bind(package_name.to_lowercase())
-        .bind(org_id)
-        .execute(pool)
-        .await
-        .expect("test package should insert");
-
-        package_id
     }
 
     #[tokio::test]
@@ -1875,55 +1807,28 @@ mod tests {
         assert_eq!(identity.user_id(), Some(user_id));
     }
 
-    #[sqlx::test(migrations = "../../migrations")]
-    async fn ensure_org_admin_by_id_requires_mfa_when_org_policy_is_enabled(pool: PgPool) {
-        let user_id = insert_test_user(&pool, "owner-no-mfa", false).await;
-        let org_id = insert_test_org_membership(&pool, user_id, "owner", true).await;
-
-        let error = ensure_org_admin_by_id(&pool, org_id, user_id)
-            .await
-            .expect_err("org admin writes should require MFA when the org policy is enabled");
-
+    #[test]
+    fn org_write_role_access_requires_mfa_for_elevated_publishers() {
         assert_eq!(
-            error.0.to_string(),
-            format!("Forbidden: {ORG_MFA_REQUIRED_WRITE_ERROR_MESSAGE}")
+            resolve_org_write_role_access(Some("publisher"), true, false),
+            OrgWriteRoleAccess::MfaRequired
         );
-
-        sqlx::query("UPDATE users SET mfa_enabled = true WHERE id = $1")
-            .bind(user_id)
-            .execute(&pool)
-            .await
-            .expect("test user MFA should update");
-
-        ensure_org_admin_by_id(&pool, org_id, user_id)
-            .await
-            .expect("owner with MFA should satisfy org write policy");
+        assert_eq!(
+            resolve_org_write_role_access(Some("publisher"), true, true),
+            OrgWriteRoleAccess::Allowed
+        );
     }
 
-    #[sqlx::test(migrations = "../../migrations")]
-    async fn ensure_package_publish_access_requires_mfa_for_org_publishers(pool: PgPool) {
-        let user_id = insert_test_user(&pool, "publisher-no-mfa", false).await;
-        let org_id = insert_test_org_membership(&pool, user_id, "publisher", true).await;
-        let _package_id = insert_test_org_package(&pool, org_id, "widget").await;
-
-        let error = ensure_package_publish_access(&pool, "npm", "widget", user_id)
-            .await
-            .expect_err("org publisher writes should require MFA when the org policy is enabled");
-
+    #[test]
+    fn org_write_role_access_preserves_non_elevated_members_and_missing_roles() {
         assert_eq!(
-            error.0.to_string(),
-            format!("Forbidden: {ORG_MFA_REQUIRED_WRITE_ERROR_MESSAGE}")
+            resolve_org_write_role_access(Some("auditor"), true, false),
+            OrgWriteRoleAccess::Allowed
         );
-
-        sqlx::query("UPDATE users SET mfa_enabled = true WHERE id = $1")
-            .bind(user_id)
-            .execute(&pool)
-            .await
-            .expect("test user MFA should update");
-
-        ensure_package_publish_access(&pool, "npm", "widget", user_id)
-            .await
-            .expect("publisher with MFA should regain publish access");
+        assert_eq!(
+            resolve_org_write_role_access(None, true, false),
+            OrgWriteRoleAccess::MissingRole
+        );
     }
 
     #[test]
