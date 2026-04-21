@@ -509,6 +509,10 @@ fn org_mfa_required_for_write_error() -> ApiError {
     ))
 }
 
+fn is_org_access_allowed(outcome: OrgAccessOutcome) -> bool {
+    matches!(outcome, OrgAccessOutcome::Allowed)
+}
+
 async fn authorize_org_write_roles(
     db: &PgPool,
     org_id: Uuid,
@@ -627,6 +631,21 @@ async fn ensure_org_access_by_slug_and_requirement(
     let org_id = fetch_org_id_by_slug(db, slug).await?;
     ensure_org_access_by_requirement(db, org_id, actor_user_id, requirement).await?;
     Ok(org_id)
+}
+
+async fn actor_can_org_by_id_and_requirement(
+    db: &PgPool,
+    org_id: Uuid,
+    actor_user_id: Option<Uuid>,
+    requirement: OrgAccessRequirement,
+) -> ApiResult<bool> {
+    let Some(actor_user_id) = actor_user_id else {
+        return Ok(false);
+    };
+
+    authorize_org_access_by_requirement(db, org_id, actor_user_id, requirement)
+        .await
+        .map(is_org_access_allowed)
 }
 
 pub async fn is_org_member(db: &PgPool, org_id: Uuid, actor_user_id: Uuid) -> ApiResult<bool> {
@@ -1158,6 +1177,38 @@ pub async fn ensure_org_audit_access_by_slug(
         OrgAccessRequirement::AuditLog,
     )
     .await
+}
+
+pub async fn actor_can_manage_org_by_id(
+    db: &PgPool,
+    org_id: Uuid,
+    actor_user_id: Option<Uuid>,
+) -> ApiResult<bool> {
+    actor_can_org_by_id_and_requirement(db, org_id, actor_user_id, OrgAccessRequirement::Admin)
+        .await
+}
+
+pub async fn actor_can_access_org_member_directory_by_id(
+    db: &PgPool,
+    org_id: Uuid,
+    actor_user_id: Option<Uuid>,
+) -> ApiResult<bool> {
+    actor_can_org_by_id_and_requirement(
+        db,
+        org_id,
+        actor_user_id,
+        OrgAccessRequirement::MemberDirectory,
+    )
+    .await
+}
+
+pub async fn actor_can_access_org_audit_log_by_id(
+    db: &PgPool,
+    org_id: Uuid,
+    actor_user_id: Option<Uuid>,
+) -> ApiResult<bool> {
+    actor_can_org_by_id_and_requirement(db, org_id, actor_user_id, OrgAccessRequirement::AuditLog)
+        .await
 }
 
 pub async fn is_platform_admin(db: &PgPool, actor_user_id: Uuid) -> ApiResult<bool> {
@@ -1785,10 +1836,11 @@ mod tests {
     use crate::{config::Config, state::AppState};
 
     use super::{
+        is_org_access_allowed,
         resolve_org_write_role_access, resolve_team_write_access, visibility_allows_read,
         visibility_is_discoverable, AuthenticatedIdentity, CredentialKind,
-        OptionalAuthenticatedIdentity, OrgAccessRequirement, OrgWriteRoleAccess, TeamWriteAccess,
-        ORG_ADMIN_ROLES, ORG_AUDIT_ROLES,
+        OptionalAuthenticatedIdentity, OrgAccessOutcome, OrgAccessRequirement,
+        OrgWriteRoleAccess, TeamWriteAccess, ORG_ADMIN_ROLES, ORG_AUDIT_ROLES,
     };
 
     fn test_state() -> AppState {
@@ -1957,6 +2009,13 @@ mod tests {
         assert!(OrgAccessRequirement::Admin.requires_write_role_mfa());
         assert!(!OrgAccessRequirement::MemberDirectory.requires_write_role_mfa());
         assert!(!OrgAccessRequirement::AuditLog.requires_write_role_mfa());
+    }
+
+    #[test]
+    fn org_access_allowed_only_accepts_allowed_outcome() {
+        assert!(is_org_access_allowed(OrgAccessOutcome::Allowed));
+        assert!(!is_org_access_allowed(OrgAccessOutcome::MissingPermission));
+        assert!(!is_org_access_allowed(OrgAccessOutcome::MfaRequired));
     }
 
     #[test]

@@ -25,9 +25,10 @@ use publaryn_core::{
 use crate::{
     error::{ApiError, ApiResult},
     request_auth::{
+        actor_can_access_org_member_directory_by_id,
         actor_can_transfer_package_by_id, actor_can_transfer_repository_by_id,
         ensure_org_admin_by_slug, ensure_org_audit_access_by_slug, ensure_org_member_by_slug,
-        is_org_member, AuthenticatedIdentity, OptionalAuthenticatedIdentity,
+        AuthenticatedIdentity, OptionalAuthenticatedIdentity,
     },
     scopes::{ensure_scope, SCOPE_ORGS_TRANSFER, SCOPE_ORGS_WRITE, SCOPE_PACKAGES_WRITE},
     state::AppState,
@@ -2484,10 +2485,8 @@ async fn list_org_packages(
         .try_get("id")
         .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
     let actor_user_id = identity.user_id();
-    let can_view_non_public = match actor_user_id {
-        Some(actor_user_id) => is_org_member(&state.db, org_id, actor_user_id).await?,
-        None => false,
-    };
+    let can_view_non_public =
+        actor_can_access_org_member_directory_by_id(&state.db, org_id, actor_user_id).await?;
 
     let rows = sqlx::query(
         "SELECT p.id, p.name, p.ecosystem, p.description, p.download_count, p.created_at \
@@ -2552,10 +2551,8 @@ async fn list_org_repositories(
         .try_get("id")
         .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
     let actor_user_id = identity.user_id();
-    let can_view_non_public = match actor_user_id {
-        Some(actor_user_id) => is_org_member(&state.db, org_id, actor_user_id).await?,
-        None => false,
-    };
+    let can_view_non_public =
+        actor_can_access_org_member_directory_by_id(&state.db, org_id, actor_user_id).await?;
 
     let rows = sqlx::query(
         "SELECT r.id, r.name, r.slug, r.description, r.kind::text AS kind, \
@@ -2619,10 +2616,8 @@ async fn resolve_org_security_scope(
     let org_id: Uuid = org_row
         .try_get("id")
         .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
-    let can_view_non_public = match actor_user_id {
-        Some(actor_user_id) => is_org_member(db, org_id, actor_user_id).await?,
-        None => false,
-    };
+    let can_view_non_public =
+        actor_can_access_org_member_directory_by_id(db, org_id, actor_user_id).await?;
 
     Ok((org_id, can_view_non_public))
 }
