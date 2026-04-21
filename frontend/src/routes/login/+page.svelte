@@ -98,13 +98,49 @@
   <title>Sign in — Publaryn</title>
 </svelte:head>
 
-<div class="mt-6" style="max-width:400px; margin-left:auto; margin-right:auto;">
-  <h1 style="text-align:center; margin-bottom:24px;">Sign in</h1>
-  {#if error}
-    <div class="alert alert-error">{error}</div>
-  {/if}
+<div class="auth-shell">
+  <section class="auth-hero">
+    <span class="auth-hero__eyebrow">
+      <span class="page-hero__eyebrow-dot" aria-hidden="true"></span>
+      Welcome back
+    </span>
+    <h1 class="auth-hero__title">A seamless registry experience, end to end.</h1>
+    <p class="auth-hero__copy">
+      Sign in to manage packages, organizations, releases, security triage, and
+      delegated access — all in one place.
+    </p>
+    <div class="auth-benefits">
+      <div class="auth-benefit">
+        <div class="auth-benefit__title">Unified package control</div>
+        <p class="auth-benefit__copy">
+          Manage npm, PyPI, Cargo, NuGet, Maven, Composer, OCI, and more from one workspace.
+        </p>
+      </div>
+      <div class="auth-benefit">
+        <div class="auth-benefit__title">Security-first workflows</div>
+        <p class="auth-benefit__copy">
+          Review findings, enforce trusted publishing, and protect private reads with shared auth.
+        </p>
+      </div>
+    </div>
+  </section>
 
-  <div class="card">
+  <section class="auth-card">
+    <div class="auth-card__header">
+      <h2 class="auth-card__title">{mfaToken ? 'Complete verification' : 'Sign in'}</h2>
+      <p class="auth-card__copy">
+        {#if mfaToken}
+          Enter the code from your authenticator app or a recovery code.
+        {:else}
+          Use your username or email and password to access Publaryn.
+        {/if}
+      </p>
+    </div>
+
+    {#if error}
+      <div class="alert alert-error">{error}</div>
+    {/if}
+
     {#if mfaToken}
       <form id="mfa-form" on:submit={handleMfaSubmit}>
         <div class="form-group">
@@ -119,19 +155,20 @@
             autocomplete="one-time-code"
           />
         </div>
-        <button
-          type="submit"
-          class="btn btn-primary"
-          style="width:100%; justify-content:center;"
-          disabled={mfaSubmitting}
-        >
-          {mfaSubmitting ? 'Verifying…' : 'Complete sign in'}
-        </button>
+        <div class="auth-form-actions">
+          <button
+            type="submit"
+            class="btn btn-primary"
+            disabled={mfaSubmitting}
+          >
+            {mfaSubmitting ? 'Verifying…' : 'Complete sign in'}
+          </button>
+        </div>
       </form>
     {:else}
       <form id="login-form" on:submit={handleLoginSubmit}>
         <div class="form-group">
-          <label for="login-username">Username</label>
+          <label for="login-username">Username or email</label>
           <input
             bind:value={username}
             type="text"
@@ -156,21 +193,20 @@
             autocomplete="current-password"
           />
         </div>
-        <button
-          type="submit"
-          class="btn btn-primary"
-          style="width:100%; justify-content:center;"
-          disabled={submitting}
-        >
-          {submitting ? 'Signing in…' : 'Sign in'}
-        </button>
+        <div class="auth-form-actions">
+          <button
+            type="submit"
+            class="btn btn-primary"
+            disabled={submitting}
+          >
+            {submitting ? 'Signing in…' : 'Sign in'}
+          </button>
+        </div>
       </form>
-      <p style="text-align:center; margin-top:16px; font-size:0.875rem;">
-        Don't have an account? <a
-          href="/register"
-          data-sveltekit-preload-data="hover">Sign up</a
-        >
+      <p class="auth-card__footer">
+        Don’t have an account?
+        <a href="/register" data-sveltekit-preload-data="hover">Create one</a>
       </p>
     {/if}
-  </div>
+  </section>
 </div>

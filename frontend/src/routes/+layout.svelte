@@ -51,27 +51,33 @@
 <svelte:head>
   <link
     rel="icon"
-    href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%232563eb'/%3E%3Ctext x='5' y='23' font-family='monospace' font-weight='bold' font-size='18' fill='white'%3EP%3C/text%3E%3C/svg%3E"
+    href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0%25' stop-color='%230a84ff'/%3E%3Cstop offset='100%25' stop-color='%23af52de'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='8' fill='url(%23g)'/%3E%3Ctext x='6' y='23' font-family='-apple-system,SF Pro Display,Helvetica,Arial' font-weight='700' font-size='18' fill='white'%3EP%3C/text%3E%3C/svg%3E"
   />
 </svelte:head>
 
-<header
-  class="site-header border-b border-slate-200/80 bg-white/90 backdrop-blur supports-[backdrop-filter]:bg-white/80 dark:border-slate-800/80 dark:bg-slate-950/85"
->
+<a class="skip-link sr-only" href="#main-content">Skip to main content</a>
+
+<header class="site-header">
   <div class="container">
     <a href="/" class="logo" data-sveltekit-preload-data="hover">
       <svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg"
-        ><rect width="32" height="32" rx="6" fill="#2563eb" /><text
-          x="5"
+        ><defs
+          ><linearGradient id="publaryn-logo-grad" x1="0" y1="0" x2="1" y2="1"
+            ><stop offset="0%" stop-color="#0a84ff" /><stop
+              offset="100%"
+              stop-color="#af52de"
+            /></linearGradient
+          ></defs
+        ><rect width="32" height="32" rx="8" fill="url(#publaryn-logo-grad)" /><text
+          x="6"
           y="23"
-          font-family="monospace"
-          font-weight="bold"
+          font-family="-apple-system, SF Pro Display, Helvetica, Arial"
+          font-weight="700"
           font-size="18"
           fill="white">P</text
         ></svg
       >
       <span>Publaryn</span>
-      <span class="badge badge-verified">SvelteKit</span>
     </a>
 
     <div class="search-bar">
@@ -81,34 +87,70 @@
           type="search"
           name="q"
           class="search-input"
-          placeholder="Search packages…"
+          placeholder="Search packages across every ecosystem…"
           aria-label="Search packages"
           autocomplete="off"
         />
       </form>
     </div>
 
-    <nav class="flex flex-wrap justify-end">
+    <nav aria-label="Primary">
       <a
         href="/search"
-        class="btn btn-secondary btn-sm"
+        class="btn btn-ghost btn-sm"
         data-sveltekit-preload-data="hover"
         aria-current={$page.url.pathname === '/search' ? 'page' : undefined}
       >
-        Search
+        Explore
       </a>
       <button
-        class="btn btn-secondary btn-sm"
+        class="btn btn-ghost btn-sm theme-toggle"
         type="button"
+        aria-label={$themeMode === 'dark'
+          ? 'Switch to light mode'
+          : 'Switch to dark mode'}
         aria-pressed={$themeMode === 'dark'}
+        title={$themeMode === 'dark'
+          ? 'Switch to light mode'
+          : 'Switch to dark mode'}
         on:click={toggleThemeMode}
       >
-        {$themeMode === 'dark' ? 'Light mode' : 'Dark mode'}
+        {#if $themeMode === 'dark'}
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+            ><circle cx="12" cy="12" r="4" /><path
+              d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"
+            /></svg
+          >
+        {:else}
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+            ><path
+              d="M21 12.79A9 9 0 1 1 11.21 3a7 7 0 0 0 9.79 9.79Z"
+            /></svg
+          >
+        {/if}
       </button>
       {#if $authToken}
         <a
           href="/settings"
-          class="btn btn-secondary btn-sm"
+          class="btn btn-ghost btn-sm"
           data-sveltekit-preload-data="hover"
           aria-current={$page.url.pathname === '/settings' ? 'page' : undefined}
         >
@@ -119,30 +161,62 @@
           type="button"
           on:click={handleLogout}
         >
-          Logout
+          Sign out
         </button>
       {:else}
         <a
           href="/login"
-          class="btn btn-secondary btn-sm"
+          class="btn btn-ghost btn-sm"
           data-sveltekit-preload-data="hover">Sign in</a
         >
         <a
           href="/register"
           class="btn btn-primary btn-sm"
-          data-sveltekit-preload-data="hover">Sign up</a
+          data-sveltekit-preload-data="hover">Get started</a
         >
       {/if}
     </nav>
   </div>
 </header>
 
-<main class="container">
+<main id="main-content" class="container">
   <slot />
 </main>
 
 <footer class="site-footer">
   <div class="container">
-    Publaryn — Secure multi-ecosystem package registry
+    <span>Publaryn — Secure multi-ecosystem package registry</span>
   </div>
 </footer>
+
+<style>
+  .skip-link {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    z-index: 200;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    padding: 8px 14px;
+    background: var(--color-primary);
+    color: #fff;
+    border-radius: var(--radius-md);
+  }
+  .skip-link:focus {
+    width: auto;
+    height: auto;
+    clip: auto;
+    margin: 0;
+    overflow: visible;
+    white-space: normal;
+  }
+  .theme-toggle {
+    width: 36px;
+    height: 32px;
+    padding: 0;
+  }
+</style>
