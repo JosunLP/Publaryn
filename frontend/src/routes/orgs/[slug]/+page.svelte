@@ -2553,9 +2553,9 @@
               rows="3">{org.description || ''}</textarea
             >
           </div>
-           <div class="grid gap-4 xl:grid-cols-2">
-             <div class="form-group">
-               <label for="org-profile-website">Website</label>
+          <div class="grid gap-4 xl:grid-cols-2">
+            <div class="form-group">
+              <label for="org-profile-website">Website</label>
               <input
                 id="org-profile-website"
                 name="website"
@@ -2573,10 +2573,10 @@
                 class="form-input"
                 type="email"
                 value={org.email || ''}
-               placeholder="registry@example.com"
-             />
-           </div>
-         </div>
+                placeholder="registry@example.com"
+              />
+            </div>
+          </div>
           <div class="form-group">
             <label for="org-profile-mfa-required"
               >Organization security policy</label
