@@ -161,6 +161,7 @@
   import {
     canManageOrgInvitations,
     canManageOrgMembers,
+    canManageOrgRepositories,
     canManageOrgTeams,
     canManageOrgWorkspace,
     canTransferOrgOwnership,
@@ -373,6 +374,7 @@
   let canManageInvitations = false;
   let canManageMembers = false;
   let canManageTeams = false;
+  let canManageRepositories = false;
   let canViewAudit = false;
   let canViewPeopleWorkspace = false;
   let canTransferOwnership = false;
@@ -729,6 +731,7 @@
       canManageInvitations = canManageOrgInvitations(org);
       canManageMembers = canManageOrgMembers(org);
       canManageTeams = canManageOrgTeams(org);
+      canManageRepositories = canManageOrgRepositories(org);
       canViewAudit = canViewOrgAuditWorkspace(org);
       canTransferOwnership = canTransferOrgOwnership(org);
 
@@ -866,7 +869,7 @@
           canManageTeams
             ? loadTeamPackageAccess(slug, teams)
             : Promise.resolve<Record<string, TeamPackageAccessState>>({}),
-          canManageTeams
+          canManageRepositories
             ? loadTeamRepositoryAccess(slug, teams)
             : Promise.resolve<Record<string, TeamRepositoryAccessState>>({}),
           canManageTeams
@@ -3175,10 +3178,11 @@
                       </div>
                     </div>
 
-                    <div class="mt-6">
-                      <h4>Repository access</h4>
-                      <p class="settings-copy">
-                        Repository grants apply across current and future
+                    {#if canManageRepositories}
+                      <div class="mt-6">
+                        <h4>Repository access</h4>
+                        <p class="settings-copy">
+                          Repository grants apply across current and future
                         packages in the selected repository. The <strong
                           >Admin</strong
                         >
@@ -3265,7 +3269,8 @@
                         handleSubmit={(event) =>
                           handleReplaceTeamRepositoryAccess(event, teamSlug)}
                       />
-                    </div>
+                      </div>
+                    {/if}
 
                     <div class="mt-6">
                       <h4>Package access</h4>
@@ -3766,7 +3771,7 @@
                   {/if}
                 </div>
 
-                {#if canAdminister && repositorySlug}
+                {#if canManageRepositories && repositorySlug}
                   <form
                     class="mt-4"
                     on:submit={(event) =>
@@ -3838,7 +3843,7 @@
           </div>
         {/if}
 
-        {#if canAdminister}
+        {#if canManageRepositories}
           <div class="settings-subsection">
             <h3>Transfer repository ownership</h3>
             {#if repositoriesError}
@@ -4071,7 +4076,7 @@
           </div>
         {/if}
 
-        {#if canAdminister && org.id}
+        {#if canManageRepositories && org.id}
           <form class="settings-subsection" on:submit={handleCreateRepository}>
             <h3>Create a repository</h3>
             <div class="grid gap-4 xl:grid-cols-2">

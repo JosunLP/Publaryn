@@ -37,6 +37,7 @@ interface FetchScenario {
   canManageInvitations: boolean;
   canManageMembers: boolean;
   canManageTeams: boolean;
+  canManageRepositories: boolean;
   repositoryPageRequests: number[];
   packagePageRequests: number[];
   invitationRequests: string[];
@@ -100,6 +101,7 @@ const currentOrgMembership = {
     can_manage_invitations: true,
     can_manage_members: true,
     can_manage_teams: true,
+    can_manage_repositories: true,
     can_view_member_directory: true,
     can_view_audit_log: true,
     can_transfer_ownership: true,
@@ -116,6 +118,7 @@ const targetOrgMembership = {
     can_manage_invitations: true,
     can_manage_members: true,
     can_manage_teams: true,
+    can_manage_repositories: true,
     can_view_member_directory: true,
     can_view_audit_log: true,
     can_transfer_ownership: false,
@@ -352,6 +355,29 @@ describe('route-level multi-page org dataset coverage', () => {
       expect(target.querySelector(`#team-repository-${TEAM_SLUG}`)).toBeNull();
       expect(target.querySelector(`#team-namespace-${TEAM_SLUG}`)).toBeNull();
       expect(target.textContent).not.toContain('Create team');
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace hides repository management controls when the explicit repository-management capability is absent', async () => {
+    const scenario = createFetchScenario();
+    scenario.canManageRepositories = false;
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Repositories');
+        expect(target.textContent).toContain('Teams');
+      });
+
+      expect(target.querySelector(`#team-package-${TEAM_SLUG}`)).not.toBeNull();
+      expect(target.querySelector(`#team-repository-${TEAM_SLUG}`)).toBeNull();
+      expect(target.querySelector('#repository-create-name')).toBeNull();
+      expect(target.querySelector('#org-repository-transfer-repository')).toBeNull();
+      expect(target.querySelector('#repository-visibility-repo-001')).toBeNull();
+      expect(target.textContent).not.toContain('Create repository');
+      expect(target.textContent).not.toContain('Transfer repository ownership');
     } finally {
       unmount();
     }
@@ -612,6 +638,7 @@ function createFetchScenario(): FetchScenario {
     canManageInvitations: true,
     canManageMembers: true,
     canManageTeams: true,
+    canManageRepositories: true,
     repositoryPageRequests: [],
     packagePageRequests: [],
     invitationRequests: [],
@@ -660,6 +687,7 @@ async function handleApiRequest(
         can_manage_invitations: scenario.canManageInvitations,
         can_manage_members: scenario.canManageMembers,
         can_manage_teams: scenario.canManageTeams,
+        can_manage_repositories: scenario.canManageRepositories,
         can_view_member_directory: true,
         can_view_audit_log: true,
         can_transfer_ownership: true,
@@ -677,6 +705,7 @@ async function handleApiRequest(
             can_manage_invitations: scenario.canManageInvitations,
             can_manage_members: scenario.canManageMembers,
             can_manage_teams: scenario.canManageTeams,
+            can_manage_repositories: scenario.canManageRepositories,
           },
         },
         targetOrgMembership,
