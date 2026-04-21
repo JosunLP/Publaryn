@@ -931,6 +931,9 @@ function enc(value: string): string {
 }
 
 function throwOrgCollectionLoadError(loadError: NullableString | undefined): void {
+  // The org collection endpoints may surface a load_error payload instead of a
+  // transport failure; treat that as a hard failure so paginated callers do not
+  // silently return incomplete repository or package lists.
   if (typeof loadError === 'string' && loadError.length > 0) {
     throw new Error(loadError);
   }

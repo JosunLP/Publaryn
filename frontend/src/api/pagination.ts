@@ -42,6 +42,7 @@ export async function collectPaginatedItems<TItem>(
     const pageItems = await fetchPage(page, perPage);
     items.push(...pageItems);
 
+    // A short page means the backend has no additional results beyond this page.
     if (pageItems.length < perPage) {
       return items;
     }

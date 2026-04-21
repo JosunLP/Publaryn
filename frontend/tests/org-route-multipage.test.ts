@@ -2,7 +2,6 @@
 
 import { afterEach, describe, expect, mock, test } from 'bun:test';
 import { writable } from 'svelte/store';
-import { pathToFileURL } from 'node:url';
 
 import { renderPackageSelectionValue } from '../src/pages/org-workspace-actions';
 import {
@@ -48,9 +47,7 @@ const ORG_ID = '11111111-1111-4111-8111-111111111111';
 const TEAM_SLUG = 'release-engineering';
 const ORG_SLUG = 'source-org';
 const TARGET_ORG_SLUG = 'target-org';
-const apiClientModuleUrl = pathToFileURL(
-  '/home/runner/work/Publaryn/Publaryn/frontend/src/api/client.ts'
-).href;
+const apiClientModuleUrl = new URL('../src/api/client.ts', import.meta.url).href;
 const gotoCalls: string[] = [];
 const pageStore = writable<TestPageState>(buildPageState('https://example.test/'));
 let currentAuthToken: string | null = null;

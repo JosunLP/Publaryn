@@ -170,12 +170,18 @@ async function rewriteRelativeImports(
   code: string,
   componentPath: string
 ): Promise<string> {
-  const importPattern =
+  // These patterns target runtime import statements emitted by the compiled
+  // Svelte component output. Type-only imports are erased during TypeScript
+  // compilation before this runtime code exists, so only executable import
+  // forms remain here: `from "..."`, bare `import "..."`, and `import("...")`.
+  // Capture group 1 = import syntax prefix, group 2 = relative specifier,
+  // group 3 = closing quote / dynamic-import suffix.
+  const relativeRuntimeImportPattern =
     /(from\s+['"]|import\s*\(\s*['"]|import\s+['"])(\.{1,2}\/[^'"]+)(['"]\s*\)?)/g;
   const replacements = new Map<string, string>();
   let match: RegExpExecArray | null;
 
-  while ((match = importPattern.exec(code)) !== null) {
+  while ((match = relativeRuntimeImportPattern.exec(code)) !== null) {
     const specifier = match[2];
     if (replacements.has(specifier)) {
       continue;
