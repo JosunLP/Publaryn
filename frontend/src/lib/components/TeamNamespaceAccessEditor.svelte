@@ -40,7 +40,7 @@
           </div>
           <div class="token-row__meta">
             <span>{ecosystemLabel(grant.ecosystem)}</span>
-            <span>{grant.is_verified ? 'Verified' : 'Pending verification'}</span>
+            <span>{grant.is_verified ? 'verified' : 'pending verification'}</span>
             <span>Granted {formatDate(grant.granted_at)}</span>
           </div>
           <div class="token-row__scopes">
