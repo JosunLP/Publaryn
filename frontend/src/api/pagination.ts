@@ -11,7 +11,7 @@ function resolvePositiveIntegerOption(
   value: number | undefined,
   fallback: number
 ): number {
-  if (value == null) {
+  if (value === undefined) {
     return fallback;
   }
 
