@@ -252,7 +252,7 @@
     </div>
   </section>
 
-  <form id="search-form" class="toolbar" on:submit={handleSearchSubmit}>
+  <form id="search-form" class="toolbar search-toolbar" on:submit={handleSearchSubmit}>
     <div class="filter-grid filter-grid--search">
       <input
         bind:value={q}

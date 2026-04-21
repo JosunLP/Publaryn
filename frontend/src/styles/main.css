@@ -723,7 +723,6 @@ main.container {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  justify-content: flex-end;
   gap: 8px;
   margin-left: auto;
 }
@@ -1554,7 +1553,7 @@ bq-badge {
     padding: 16px;
   }
 
-  #search-form .btn {
+  .search-toolbar .btn {
     width: 100%;
     justify-content: center;
   }
