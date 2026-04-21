@@ -159,6 +159,7 @@
     sortOrgSecurityFindings,
   } from '../../../pages/org-security-triage';
   import {
+    canManageOrgInvitations,
     canManageOrgWorkspace,
     canTransferOrgOwnership,
     canViewOrgAuditWorkspace,
@@ -367,6 +368,7 @@
   let membership: OrganizationMembership | undefined;
   let isAuthenticated = false;
   let canAdminister = false;
+  let canManageInvitations = false;
   let canViewAudit = false;
   let canViewPeopleWorkspace = false;
   let canTransferOwnership = false;
@@ -720,6 +722,7 @@
       );
       canViewPeopleWorkspace = canViewOrgPeopleWorkspace(org);
       canAdminister = canManageOrgWorkspace(org);
+      canManageInvitations = canManageOrgInvitations(org);
       canViewAudit = canViewOrgAuditWorkspace(org);
       canTransferOwnership = canTransferOrgOwnership(org);
 
@@ -751,7 +754,7 @@
         auditData,
         repositoryPackageData,
       ] = await Promise.all([
-        canAdminister
+        canManageInvitations
           ? listOrgInvitations(slug, { includeInactive: true }).catch(
               (caughtError: unknown): OrgInvitationListResponse => ({
                 invitations: [],
@@ -2606,121 +2609,129 @@
           <button type="submit" class="btn btn-primary">Save profile</button>
         </form>
       </section>
+    {/if}
 
+    {#if canManageInvitations || canAdminister}
       <div class="settings-grid">
-        <section class="card settings-section">
-          <h2>Invite a member</h2>
-          <form on:submit={handleInviteMember}>
-            <div class="form-group">
-              <label for="org-invite-target">Username or email</label>
-              <input
-                id="org-invite-target"
-                name="username_or_email"
-                class="form-input"
-                placeholder="alice or alice@example.com"
-                required
-              />
-            </div>
-            <div class="grid gap-4 xl:grid-cols-2">
+        {#if canManageInvitations}
+          <section class="card settings-section">
+            <h2>Invite a member</h2>
+            <form on:submit={handleInviteMember}>
               <div class="form-group">
-                <label for="org-invite-role">Role</label>
-                <select id="org-invite-role" name="role" class="form-input">
+                <label for="org-invite-target">Username or email</label>
+                <input
+                  id="org-invite-target"
+                  name="username_or_email"
+                  class="form-input"
+                  placeholder="alice or alice@example.com"
+                  required
+                />
+              </div>
+              <div class="grid gap-4 xl:grid-cols-2">
+                <div class="form-group">
+                  <label for="org-invite-role">Role</label>
+                  <select id="org-invite-role" name="role" class="form-input">
+                    {#each ORG_ROLE_OPTIONS as role}
+                      <option value={role.value}>{role.label}</option>
+                    {/each}
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label for="org-invite-expiry">Expires in days</label>
+                  <input
+                    id="org-invite-expiry"
+                    name="expires_in_days"
+                    type="number"
+                    min="1"
+                    max="30"
+                    class="form-input"
+                    value="7"
+                  />
+                </div>
+              </div>
+              <button type="submit" class="btn btn-primary"
+                >Send invitation</button
+              >
+            </form>
+          </section>
+        {/if}
+
+        {#if canAdminister}
+          <section class="card settings-section">
+            <h2>Add member directly</h2>
+            <form on:submit={handleAddMember}>
+              <div class="form-group">
+                <label for="org-member-username">Username</label>
+                <input
+                  id="org-member-username"
+                  name="username"
+                  class="form-input"
+                  placeholder="alice"
+                  required
+                />
+              </div>
+              <div class="form-group">
+                <label for="org-member-role">Role</label>
+                <select id="org-member-role" name="role" class="form-input">
                   {#each ORG_ROLE_OPTIONS as role}
                     <option value={role.value}>{role.label}</option>
                   {/each}
                 </select>
               </div>
-              <div class="form-group">
-                <label for="org-invite-expiry">Expires in days</label>
-                <input
-                  id="org-invite-expiry"
-                  name="expires_in_days"
-                  type="number"
-                  min="1"
-                  max="30"
-                  class="form-input"
-                  value="7"
-                />
-              </div>
-            </div>
-            <button type="submit" class="btn btn-primary"
-              >Send invitation</button
-            >
-          </form>
-        </section>
+              <button type="submit" class="btn btn-primary">Add member</button>
+            </form>
+          </section>
+        {/if}
+      </div>
+    {/if}
 
-        <section class="card settings-section">
-          <h2>Add member directly</h2>
-          <form on:submit={handleAddMember}>
+    {#if canTransferOwnership}
+      <section class="card settings-section">
+        <h2>Transfer ownership</h2>
+        <div class="alert alert-warning">
+          <strong>This action is immediate.</strong> You will be demoted to Admin.
+        </div>
+        {#if ownershipMemberOptions.length === 0}
+          <p class="settings-copy">
+            Add another organization member before transferring ownership.
+          </p>
+        {:else}
+          <form on:submit={handleTransferOwnership}>
             <div class="form-group">
-              <label for="org-member-username">Username</label>
+              <label for="org-transfer-owner">New owner username</label>
               <input
-                id="org-member-username"
+                id="org-transfer-owner"
                 name="username"
                 class="form-input"
-                placeholder="alice"
+                list="org-transfer-owner-options"
+                placeholder="Search member username or paste user id"
+                autocomplete="off"
                 required
               />
+              <datalist id="org-transfer-owner-options">
+                {#each ownershipMemberOptions as option}
+                  <option value={option.username}>{option.label}</option>
+                  <option value={option.userId}>{option.label}</option>
+                {/each}
+              </datalist>
             </div>
             <div class="form-group">
-              <label for="org-member-role">Role</label>
-              <select id="org-member-role" name="role" class="form-input">
-                {#each ORG_ROLE_OPTIONS as role}
-                  <option value={role.value}>{role.label}</option>
-                {/each}
-              </select>
+              <label class="flex items-start gap-2">
+                <input type="checkbox" name="confirm" required />
+                <span
+                  >I understand this transfer is immediate and irreversible.</span
+                >
+              </label>
             </div>
-            <button type="submit" class="btn btn-primary">Add member</button>
+            <button type="submit" class="btn btn-danger"
+              >Transfer ownership</button
+            >
           </form>
-        </section>
-      </div>
+        {/if}
+      </section>
+    {/if}
 
-      {#if canTransferOwnership}
-        <section class="card settings-section">
-          <h2>Transfer ownership</h2>
-          <div class="alert alert-warning">
-            <strong>This action is immediate.</strong> You will be demoted to Admin.
-          </div>
-          {#if ownershipMemberOptions.length === 0}
-            <p class="settings-copy">
-              Add another organization member before transferring ownership.
-            </p>
-          {:else}
-            <form on:submit={handleTransferOwnership}>
-              <div class="form-group">
-                <label for="org-transfer-owner">New owner username</label>
-                <input
-                  id="org-transfer-owner"
-                  name="username"
-                  class="form-input"
-                  list="org-transfer-owner-options"
-                  placeholder="Search member username or paste user id"
-                  autocomplete="off"
-                  required
-                />
-                <datalist id="org-transfer-owner-options">
-                  {#each ownershipMemberOptions as option}
-                    <option value={option.username}>{option.label}</option>
-                    <option value={option.userId}>{option.label}</option>
-                  {/each}
-                </datalist>
-              </div>
-              <div class="form-group">
-                <label class="flex items-start gap-2">
-                  <input type="checkbox" name="confirm" required />
-                  <span
-                    >I understand this transfer is immediate and irreversible.</span
-                  >
-                </label>
-              </div>
-              <button type="submit" class="btn btn-danger"
-                >Transfer ownership</button
-              >
-            </form>
-          {/if}
-        </section>
-      {/if}
-
+    {#if canManageInvitations}
       <section class="card settings-section">
         <div class="org-section-header">
           <div>

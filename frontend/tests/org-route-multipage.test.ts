@@ -34,8 +34,10 @@ interface SearchCall {
 }
 
 interface FetchScenario {
+  canManageInvitations: boolean;
   repositoryPageRequests: number[];
   packagePageRequests: number[];
+  invitationRequests: string[];
   orgUpdateCalls: MutationCall[];
   orgMfaRequired: boolean;
   teamRepositoryAccessUpdates: MutationCall[];
@@ -93,6 +95,7 @@ const currentOrgMembership = {
   team_count: 1,
   capabilities: {
     can_manage: true,
+    can_manage_invitations: true,
     can_view_member_directory: true,
     can_view_audit_log: true,
     can_transfer_ownership: true,
@@ -106,6 +109,7 @@ const targetOrgMembership = {
   role: 'admin',
   capabilities: {
     can_manage: true,
+    can_manage_invitations: true,
     can_view_member_directory: true,
     can_view_audit_log: true,
     can_transfer_ownership: false,
@@ -282,6 +286,25 @@ describe('route-level multi-page org dataset coverage', () => {
         },
       });
       expect(queryCheckbox(target, '#org-profile-mfa-required').checked).toBe(true);
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace does not load invitation management UI when the explicit invitation capability is absent', async () => {
+    const scenario = createFetchScenario();
+    scenario.canManageInvitations = false;
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Organization profile');
+        expect(target.textContent).toContain('Add member directly');
+      });
+
+      expect(scenario.invitationRequests).toEqual([]);
+      expect(target.textContent).not.toContain('Invite a member');
+      expect(target.textContent).not.toContain('Invitations');
     } finally {
       unmount();
     }
@@ -539,8 +562,10 @@ function buildPageState(
 
 function createFetchScenario(): FetchScenario {
   return {
+    canManageInvitations: true,
     repositoryPageRequests: [],
     packagePageRequests: [],
+    invitationRequests: [],
     orgUpdateCalls: [],
     orgMfaRequired: false,
     teamRepositoryAccessUpdates: [],
@@ -583,6 +608,7 @@ async function handleApiRequest(
       created_at: '2026-04-01T00:00:00Z',
       capabilities: {
         can_manage: true,
+        can_manage_invitations: scenario.canManageInvitations,
         can_view_member_directory: true,
         can_view_audit_log: true,
         can_transfer_ownership: true,
@@ -592,7 +618,16 @@ async function handleApiRequest(
 
   if (method === 'GET' && requestPath === '/v1/users/me/organizations') {
     return apiResponse({
-      organizations: [currentOrgMembership, targetOrgMembership],
+      organizations: [
+        {
+          ...currentOrgMembership,
+          capabilities: {
+            ...currentOrgMembership.capabilities,
+            can_manage_invitations: scenario.canManageInvitations,
+          },
+        },
+        targetOrgMembership,
+      ],
     });
   }
 
@@ -635,6 +670,7 @@ async function handleApiRequest(
   }
 
   if (method === 'GET' && requestPath === `/v1/orgs/${ORG_SLUG}/invitations`) {
+    scenario.invitationRequests.push(url.toString());
     return apiResponse({ invitations: [] });
   }
 

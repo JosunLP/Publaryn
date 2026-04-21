@@ -3017,6 +3017,7 @@ async fn test_create_and_get_org(pool: PgPool) {
     let body = body_json(resp).await;
     assert_eq!(body["slug"], "acme-corp");
     assert_eq!(body["capabilities"]["can_manage"], false);
+    assert_eq!(body["capabilities"]["can_manage_invitations"], false);
     assert_eq!(body["capabilities"]["can_view_member_directory"], false);
     assert_eq!(body["capabilities"]["can_view_audit_log"], false);
     assert_eq!(body["capabilities"]["can_transfer_ownership"], false);
@@ -3032,6 +3033,7 @@ async fn test_create_and_get_org(pool: PgPool) {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
     assert_eq!(body["capabilities"]["can_manage"], true);
+    assert_eq!(body["capabilities"]["can_manage_invitations"], true);
     assert_eq!(body["capabilities"]["can_view_member_directory"], true);
     assert_eq!(body["capabilities"]["can_view_audit_log"], true);
     assert_eq!(body["capabilities"]["can_transfer_ownership"], true);
@@ -3047,6 +3049,7 @@ async fn test_create_and_get_org(pool: PgPool) {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
     assert_eq!(body["capabilities"]["can_manage"], true);
+    assert_eq!(body["capabilities"]["can_manage_invitations"], true);
     assert_eq!(body["capabilities"]["can_view_member_directory"], true);
     assert_eq!(body["capabilities"]["can_view_audit_log"], true);
     assert_eq!(body["capabilities"]["can_transfer_ownership"], false);
@@ -3066,6 +3069,7 @@ async fn test_create_and_get_org(pool: PgPool) {
     assert_eq!(organizations.len(), 1);
     assert_eq!(organizations[0]["slug"], "acme-corp");
     assert_eq!(organizations[0]["capabilities"]["can_manage"], true);
+    assert_eq!(organizations[0]["capabilities"]["can_manage_invitations"], true);
     assert_eq!(
         organizations[0]["capabilities"]["can_view_member_directory"],
         true

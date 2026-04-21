@@ -10,6 +10,12 @@ export function canManageOrgWorkspace(
   return resolveCapabilities(source)?.can_manage === true;
 }
 
+export function canManageOrgInvitations(
+  source: OrganizationDetail | null | undefined
+): boolean {
+  return resolveCapabilities(source)?.can_manage_invitations === true;
+}
+
 export function canViewOrgPeopleWorkspace(
   source: OrganizationDetail | null | undefined
 ): boolean {
