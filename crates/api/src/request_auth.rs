@@ -77,6 +77,13 @@ enum RepositoryAccessRequirement {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OrgAccessRequirement {
+    Admin,
+    MemberDirectory,
+    AuditLog,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NamespaceClaimAccessRequirement {
     Admin,
     TransferOwnership,
@@ -91,6 +98,13 @@ enum OrgWriteRoleAccess {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TeamWriteAccess {
+    Allowed,
+    MissingPermission,
+    MfaRequired,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OrgAccessOutcome {
     Allowed,
     MissingPermission,
     MfaRequired,
@@ -144,6 +158,32 @@ impl PackageAccessRequirement {
                 "You do not have permission to manage security findings for this package"
             }
             Self::ManagementVisibility => "You do not have permission to manage this package",
+        }
+    }
+}
+
+impl OrgAccessRequirement {
+    fn org_roles(self) -> Option<&'static [&'static str]> {
+        match self {
+            Self::Admin => Some(ORG_ADMIN_ROLES),
+            Self::AuditLog => Some(ORG_AUDIT_ROLES),
+            Self::MemberDirectory => None,
+        }
+    }
+
+    fn requires_write_role_mfa(self) -> bool {
+        matches!(self, Self::Admin)
+    }
+
+    fn denial_message(self) -> &'static str {
+        match self {
+            Self::Admin => "Organization administration requires owner or admin membership",
+            Self::MemberDirectory => {
+                "Organization member and team directories require organization membership"
+            }
+            Self::AuditLog => {
+                "Organization activity log requires owner, admin, or auditor membership"
+            }
         }
     }
 }
@@ -519,6 +559,72 @@ async fn authorize_org_write_roles(
         mfa_required,
         mfa_enabled,
     ))
+}
+
+async fn authorize_org_access_by_requirement(
+    db: &PgPool,
+    org_id: Uuid,
+    actor_user_id: Uuid,
+    requirement: OrgAccessRequirement,
+) -> ApiResult<OrgAccessOutcome> {
+    if requirement.requires_write_role_mfa() {
+        return Ok(
+            match authorize_org_write_roles(
+                db,
+                org_id,
+                actor_user_id,
+                requirement
+                    .org_roles()
+                    .expect("write-role org access must define allowed roles"),
+            )
+            .await?
+            {
+                OrgWriteRoleAccess::Allowed => OrgAccessOutcome::Allowed,
+                OrgWriteRoleAccess::MfaRequired => OrgAccessOutcome::MfaRequired,
+                OrgWriteRoleAccess::MissingRole => OrgAccessOutcome::MissingPermission,
+            },
+        );
+    }
+
+    if let Some(roles) = requirement.org_roles() {
+        return Ok(if actor_has_org_roles(db, org_id, actor_user_id, roles).await? {
+            OrgAccessOutcome::Allowed
+        } else {
+            OrgAccessOutcome::MissingPermission
+        });
+    }
+
+    Ok(if is_org_member(db, org_id, actor_user_id).await? {
+        OrgAccessOutcome::Allowed
+    } else {
+        OrgAccessOutcome::MissingPermission
+    })
+}
+
+async fn ensure_org_access_by_requirement(
+    db: &PgPool,
+    org_id: Uuid,
+    actor_user_id: Uuid,
+    requirement: OrgAccessRequirement,
+) -> ApiResult<()> {
+    match authorize_org_access_by_requirement(db, org_id, actor_user_id, requirement).await? {
+        OrgAccessOutcome::Allowed => Ok(()),
+        OrgAccessOutcome::MfaRequired => Err(org_mfa_required_for_write_error()),
+        OrgAccessOutcome::MissingPermission => Err(ApiError(Error::Forbidden(
+            requirement.denial_message().into(),
+        ))),
+    }
+}
+
+async fn ensure_org_access_by_slug_and_requirement(
+    db: &PgPool,
+    slug: &str,
+    actor_user_id: Uuid,
+    requirement: OrgAccessRequirement,
+) -> ApiResult<Uuid> {
+    let org_id = fetch_org_id_by_slug(db, slug).await?;
+    ensure_org_access_by_requirement(db, org_id, actor_user_id, requirement).await?;
+    Ok(org_id)
 }
 
 pub async fn is_org_member(db: &PgPool, org_id: Uuid, actor_user_id: Uuid) -> ApiResult<bool> {
@@ -1012,15 +1118,7 @@ pub async fn ensure_org_admin_by_id(
     org_id: Uuid,
     actor_user_id: Uuid,
 ) -> ApiResult<()> {
-    match authorize_org_write_roles(db, org_id, actor_user_id, ORG_ADMIN_ROLES).await? {
-        OrgWriteRoleAccess::Allowed => return Ok(()),
-        OrgWriteRoleAccess::MfaRequired => return Err(org_mfa_required_for_write_error()),
-        OrgWriteRoleAccess::MissingRole => {}
-    }
-
-    Err(ApiError(Error::Forbidden(
-        "Organization administration requires owner or admin membership".into(),
-    )))
+    ensure_org_access_by_requirement(db, org_id, actor_user_id, OrgAccessRequirement::Admin).await
 }
 
 pub async fn ensure_org_admin_by_slug(
@@ -1028,9 +1126,8 @@ pub async fn ensure_org_admin_by_slug(
     slug: &str,
     actor_user_id: Uuid,
 ) -> ApiResult<Uuid> {
-    let org_id = fetch_org_id_by_slug(db, slug).await?;
-    ensure_org_admin_by_id(db, org_id, actor_user_id).await?;
-    Ok(org_id)
+    ensure_org_access_by_slug_and_requirement(db, slug, actor_user_id, OrgAccessRequirement::Admin)
+        .await
 }
 
 pub async fn ensure_org_member_by_slug(
@@ -1038,15 +1135,13 @@ pub async fn ensure_org_member_by_slug(
     slug: &str,
     actor_user_id: Uuid,
 ) -> ApiResult<Uuid> {
-    let org_id = fetch_org_id_by_slug(db, slug).await?;
-
-    if is_org_member(db, org_id, actor_user_id).await? {
-        return Ok(org_id);
-    }
-
-    Err(ApiError(Error::Forbidden(
-        "Organization member and team directories require organization membership".into(),
-    )))
+    ensure_org_access_by_slug_and_requirement(
+        db,
+        slug,
+        actor_user_id,
+        OrgAccessRequirement::MemberDirectory,
+    )
+    .await
 }
 
 pub async fn ensure_org_audit_access_by_slug(
@@ -1054,15 +1149,13 @@ pub async fn ensure_org_audit_access_by_slug(
     slug: &str,
     actor_user_id: Uuid,
 ) -> ApiResult<Uuid> {
-    let org_id = fetch_org_id_by_slug(db, slug).await?;
-
-    if actor_has_org_roles(db, org_id, actor_user_id, ORG_AUDIT_ROLES).await? {
-        return Ok(org_id);
-    }
-
-    Err(ApiError(Error::Forbidden(
-        "Organization activity log requires owner, admin, or auditor membership".into(),
-    )))
+    ensure_org_access_by_slug_and_requirement(
+        db,
+        slug,
+        actor_user_id,
+        OrgAccessRequirement::AuditLog,
+    )
+    .await
 }
 
 pub async fn is_platform_admin(db: &PgPool, actor_user_id: Uuid) -> ApiResult<bool> {
@@ -1692,7 +1785,8 @@ mod tests {
     use super::{
         resolve_org_write_role_access, resolve_team_write_access, visibility_allows_read,
         visibility_is_discoverable, AuthenticatedIdentity, CredentialKind,
-        OptionalAuthenticatedIdentity, OrgWriteRoleAccess, TeamWriteAccess,
+        OptionalAuthenticatedIdentity, OrgAccessRequirement, OrgWriteRoleAccess,
+        TeamWriteAccess, ORG_ADMIN_ROLES, ORG_AUDIT_ROLES,
     };
 
     fn test_state() -> AppState {
@@ -1828,6 +1922,39 @@ mod tests {
             resolve_org_write_role_access(None, true, false),
             OrgWriteRoleAccess::MissingRole
         );
+    }
+
+    #[test]
+    fn org_access_requirements_define_stable_roles_and_denials() {
+        assert_eq!(
+            OrgAccessRequirement::Admin.org_roles(),
+            Some(ORG_ADMIN_ROLES)
+        );
+        assert_eq!(
+            OrgAccessRequirement::AuditLog.org_roles(),
+            Some(ORG_AUDIT_ROLES)
+        );
+        assert_eq!(OrgAccessRequirement::MemberDirectory.org_roles(), None);
+
+        assert_eq!(
+            OrgAccessRequirement::Admin.denial_message(),
+            "Organization administration requires owner or admin membership"
+        );
+        assert_eq!(
+            OrgAccessRequirement::MemberDirectory.denial_message(),
+            "Organization member and team directories require organization membership"
+        );
+        assert_eq!(
+            OrgAccessRequirement::AuditLog.denial_message(),
+            "Organization activity log requires owner, admin, or auditor membership"
+        );
+    }
+
+    #[test]
+    fn org_access_requirement_mfa_is_only_enforced_for_admin_writes() {
+        assert!(OrgAccessRequirement::Admin.requires_write_role_mfa());
+        assert!(!OrgAccessRequirement::MemberDirectory.requires_write_role_mfa());
+        assert!(!OrgAccessRequirement::AuditLog.requires_write_role_mfa());
     }
 
     #[test]
