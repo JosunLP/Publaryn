@@ -412,7 +412,9 @@ async function loadStateMapByTeamSlug<TState>(
   loadState: (team: Team & { slug: string }) => Promise<TState>
 ): Promise<Record<string, TState>> {
   const entries = await Promise.all(
-    teams.filter(hasTeamManagementSlug).map(async (team) => [team.slug, await loadState(team)] as const)
+    teams
+      .filter(hasTeamManagementSlug)
+      .map((team) => loadState(team).then((state) => [team.slug, state] as const))
   );
 
   return Object.fromEntries(entries);
