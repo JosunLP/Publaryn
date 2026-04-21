@@ -22,6 +22,12 @@ export function canManageOrgMembers(
   return resolveCapabilities(source)?.can_manage_members === true;
 }
 
+export function canManageOrgTeams(
+  source: OrganizationDetail | null | undefined
+): boolean {
+  return resolveCapabilities(source)?.can_manage_teams === true;
+}
+
 export function canViewOrgPeopleWorkspace(
   source: OrganizationDetail | null | undefined
 ): boolean {

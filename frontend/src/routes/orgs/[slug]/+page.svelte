@@ -161,6 +161,7 @@
   import {
     canManageOrgInvitations,
     canManageOrgMembers,
+    canManageOrgTeams,
     canManageOrgWorkspace,
     canTransferOrgOwnership,
     canViewOrgAuditWorkspace,
@@ -371,6 +372,7 @@
   let canAdminister = false;
   let canManageInvitations = false;
   let canManageMembers = false;
+  let canManageTeams = false;
   let canViewAudit = false;
   let canViewPeopleWorkspace = false;
   let canTransferOwnership = false;
@@ -726,6 +728,7 @@
       canAdminister = canManageOrgWorkspace(org);
       canManageInvitations = canManageOrgInvitations(org);
       canManageMembers = canManageOrgMembers(org);
+      canManageTeams = canManageOrgTeams(org);
       canViewAudit = canViewOrgAuditWorkspace(org);
       canTransferOwnership = canTransferOrgOwnership(org);
 
@@ -857,16 +860,16 @@
         teamNamespaceAccessData,
       ] =
         await Promise.all([
-          canAdminister
+          canManageTeams
             ? loadTeamMembers(slug, teams)
             : Promise.resolve<Record<string, TeamMemberState>>({}),
-          canAdminister
+          canManageTeams
             ? loadTeamPackageAccess(slug, teams)
             : Promise.resolve<Record<string, TeamPackageAccessState>>({}),
-          canAdminister
+          canManageTeams
             ? loadTeamRepositoryAccess(slug, teams)
             : Promise.resolve<Record<string, TeamRepositoryAccessState>>({}),
-          canAdminister
+          canManageTeams
             ? loadTeamNamespaceAccess(slug, teams)
             : Promise.resolve<Record<string, TeamNamespaceAccessState>>({}),
         ]);
@@ -2960,7 +2963,7 @@
       <div class="settings-grid">
         <section class="card settings-section">
           <h2>Teams</h2>
-          {#if canAdminister}
+          {#if canManageTeams}
             <form class="settings-subsection" on:submit={handleCreateTeam}>
               <div class="grid gap-4 xl:grid-cols-2">
                 <div class="form-group">
@@ -3040,7 +3043,7 @@
                         <span>created {formatDate(team.created_at)}</span>
                       </div>
                     </div>
-                    {#if canAdminister && teamSlug}
+                    {#if canManageTeams && teamSlug}
                       <button
                         class="btn btn-danger btn-sm"
                         type="button"
@@ -3050,7 +3053,7 @@
                     {/if}
                   </div>
 
-                  {#if canAdminister && teamSlug}
+                  {#if canManageTeams && teamSlug}
                     <div class="grid gap-6 xl:grid-cols-2">
                       <form
                         on:submit={(event) => handleUpdateTeam(event, teamSlug)}

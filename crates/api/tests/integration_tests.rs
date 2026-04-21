@@ -3019,6 +3019,7 @@ async fn test_create_and_get_org(pool: PgPool) {
     assert_eq!(body["capabilities"]["can_manage"], false);
     assert_eq!(body["capabilities"]["can_manage_invitations"], false);
     assert_eq!(body["capabilities"]["can_manage_members"], false);
+    assert_eq!(body["capabilities"]["can_manage_teams"], false);
     assert_eq!(body["capabilities"]["can_view_member_directory"], false);
     assert_eq!(body["capabilities"]["can_view_audit_log"], false);
     assert_eq!(body["capabilities"]["can_transfer_ownership"], false);
@@ -3036,6 +3037,7 @@ async fn test_create_and_get_org(pool: PgPool) {
     assert_eq!(body["capabilities"]["can_manage"], true);
     assert_eq!(body["capabilities"]["can_manage_invitations"], true);
     assert_eq!(body["capabilities"]["can_manage_members"], true);
+    assert_eq!(body["capabilities"]["can_manage_teams"], true);
     assert_eq!(body["capabilities"]["can_view_member_directory"], true);
     assert_eq!(body["capabilities"]["can_view_audit_log"], true);
     assert_eq!(body["capabilities"]["can_transfer_ownership"], true);
@@ -3053,6 +3055,7 @@ async fn test_create_and_get_org(pool: PgPool) {
     assert_eq!(body["capabilities"]["can_manage"], true);
     assert_eq!(body["capabilities"]["can_manage_invitations"], true);
     assert_eq!(body["capabilities"]["can_manage_members"], true);
+    assert_eq!(body["capabilities"]["can_manage_teams"], true);
     assert_eq!(body["capabilities"]["can_view_member_directory"], true);
     assert_eq!(body["capabilities"]["can_view_audit_log"], true);
     assert_eq!(body["capabilities"]["can_transfer_ownership"], false);
@@ -3077,6 +3080,7 @@ async fn test_create_and_get_org(pool: PgPool) {
         true
     );
     assert_eq!(organizations[0]["capabilities"]["can_manage_members"], true);
+    assert_eq!(organizations[0]["capabilities"]["can_manage_teams"], true);
     assert_eq!(
         organizations[0]["capabilities"]["can_view_member_directory"],
         true

@@ -3,6 +3,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   canManageOrgInvitations,
   canManageOrgMembers,
+  canManageOrgTeams,
   canManageOrgWorkspace,
   canTransferOrgOwnership,
   canViewOrgAuditWorkspace,
@@ -40,6 +41,14 @@ describe('org workspace access helpers', () => {
         slug: 'acme',
         capabilities: {
           can_manage_members: true,
+        },
+      })
+    ).toBe(true);
+    expect(
+      canManageOrgTeams({
+        slug: 'acme',
+        capabilities: {
+          can_manage_teams: true,
         },
       })
     ).toBe(true);
@@ -93,6 +102,14 @@ describe('org workspace access helpers', () => {
         slug: 'acme',
         capabilities: {
           can_manage_members: false,
+        },
+      })
+    ).toBe(false);
+    expect(
+      canManageOrgTeams({
+        slug: 'acme',
+        capabilities: {
+          can_manage_teams: false,
         },
       })
     ).toBe(false);

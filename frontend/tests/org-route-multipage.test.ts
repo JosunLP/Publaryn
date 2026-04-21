@@ -36,6 +36,7 @@ interface SearchCall {
 interface FetchScenario {
   canManageInvitations: boolean;
   canManageMembers: boolean;
+  canManageTeams: boolean;
   repositoryPageRequests: number[];
   packagePageRequests: number[];
   invitationRequests: string[];
@@ -98,6 +99,7 @@ const currentOrgMembership = {
     can_manage: true,
     can_manage_invitations: true,
     can_manage_members: true,
+    can_manage_teams: true,
     can_view_member_directory: true,
     can_view_audit_log: true,
     can_transfer_ownership: true,
@@ -113,6 +115,7 @@ const targetOrgMembership = {
     can_manage: true,
     can_manage_invitations: true,
     can_manage_members: true,
+    can_manage_teams: true,
     can_view_member_directory: true,
     can_view_audit_log: true,
     can_transfer_ownership: false,
@@ -327,6 +330,28 @@ describe('route-level multi-page org dataset coverage', () => {
       expect(target.textContent).not.toContain('Add member directly');
       expect(target.querySelector('#org-member-username')).toBeNull();
       expect(target.querySelector('[id^="member-role-"]')).toBeNull();
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace hides team management controls when the explicit team-management capability is absent', async () => {
+    const scenario = createFetchScenario();
+    scenario.canManageTeams = false;
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Members');
+        expect(target.textContent).toContain('Teams');
+      });
+
+      expect(target.textContent).toContain('Add member directly');
+      expect(target.querySelector('#team-create-name')).toBeNull();
+      expect(target.querySelector(`#team-package-${TEAM_SLUG}`)).toBeNull();
+      expect(target.querySelector(`#team-repository-${TEAM_SLUG}`)).toBeNull();
+      expect(target.querySelector(`#team-namespace-${TEAM_SLUG}`)).toBeNull();
+      expect(target.textContent).not.toContain('Create team');
     } finally {
       unmount();
     }
@@ -586,6 +611,7 @@ function createFetchScenario(): FetchScenario {
   return {
     canManageInvitations: true,
     canManageMembers: true,
+    canManageTeams: true,
     repositoryPageRequests: [],
     packagePageRequests: [],
     invitationRequests: [],
@@ -633,6 +659,7 @@ async function handleApiRequest(
         can_manage: true,
         can_manage_invitations: scenario.canManageInvitations,
         can_manage_members: scenario.canManageMembers,
+        can_manage_teams: scenario.canManageTeams,
         can_view_member_directory: true,
         can_view_audit_log: true,
         can_transfer_ownership: true,
@@ -649,6 +676,7 @@ async function handleApiRequest(
             ...currentOrgMembership.capabilities,
             can_manage_invitations: scenario.canManageInvitations,
             can_manage_members: scenario.canManageMembers,
+            can_manage_teams: scenario.canManageTeams,
           },
         },
         targetOrgMembership,
