@@ -1836,11 +1836,10 @@ mod tests {
     use crate::{config::Config, state::AppState};
 
     use super::{
-        is_org_access_allowed,
-        resolve_org_write_role_access, resolve_team_write_access, visibility_allows_read,
-        visibility_is_discoverable, AuthenticatedIdentity, CredentialKind,
-        OptionalAuthenticatedIdentity, OrgAccessOutcome, OrgAccessRequirement,
-        OrgWriteRoleAccess, TeamWriteAccess, ORG_ADMIN_ROLES, ORG_AUDIT_ROLES,
+        is_org_access_allowed, resolve_org_write_role_access, resolve_team_write_access,
+        visibility_allows_read, visibility_is_discoverable, AuthenticatedIdentity, CredentialKind,
+        OptionalAuthenticatedIdentity, OrgAccessOutcome, OrgAccessRequirement, OrgWriteRoleAccess,
+        TeamWriteAccess, ORG_ADMIN_ROLES, ORG_AUDIT_ROLES,
     };
 
     fn test_state() -> AppState {

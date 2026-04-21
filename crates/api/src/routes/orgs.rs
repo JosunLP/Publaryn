@@ -25,10 +25,10 @@ use publaryn_core::{
 use crate::{
     error::{ApiError, ApiResult},
     request_auth::{
-        actor_can_access_org_member_directory_by_id,
-        actor_can_transfer_package_by_id, actor_can_transfer_repository_by_id,
-        ensure_org_admin_by_slug, ensure_org_audit_access_by_slug, ensure_org_member_by_slug,
-        AuthenticatedIdentity, OptionalAuthenticatedIdentity,
+        actor_can_access_org_member_directory_by_id, actor_can_transfer_package_by_id,
+        actor_can_transfer_repository_by_id, ensure_org_admin_by_slug,
+        ensure_org_audit_access_by_slug, ensure_org_member_by_slug, AuthenticatedIdentity,
+        OptionalAuthenticatedIdentity,
     },
     scopes::{ensure_scope, SCOPE_ORGS_TRANSFER, SCOPE_ORGS_WRITE, SCOPE_PACKAGES_WRITE},
     state::AppState,
