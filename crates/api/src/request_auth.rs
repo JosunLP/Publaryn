@@ -75,6 +75,13 @@ enum OrgWriteRoleAccess {
     MfaRequired,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TeamWriteAccess {
+    Allowed,
+    MissingPermission,
+    MfaRequired,
+}
+
 impl PackageAccessRequirement {
     fn org_roles(self) -> &'static [&'static str] {
         match self {
@@ -378,6 +385,22 @@ fn resolve_org_write_role_access(
     OrgWriteRoleAccess::Allowed
 }
 
+fn resolve_team_write_access(
+    has_permission: bool,
+    mfa_required: bool,
+    mfa_enabled: bool,
+) -> TeamWriteAccess {
+    if !has_permission {
+        return TeamWriteAccess::MissingPermission;
+    }
+
+    if mfa_required && !mfa_enabled {
+        return TeamWriteAccess::MfaRequired;
+    }
+
+    TeamWriteAccess::Allowed
+}
+
 fn org_mfa_required_for_write_error() -> ApiError {
     ApiError(Error::Forbidden(
         ORG_MFA_REQUIRED_WRITE_ERROR_MESSAGE.into(),
@@ -505,13 +528,17 @@ async fn actor_can_manage_owned_repository(
                 OrgWriteRoleAccess::MissingRole => {}
             }
 
-            actor_has_team_repository_permissions(
+            match actor_has_team_repository_permissions(
                 db,
                 repository_id,
                 actor_user_id,
                 TEAM_REPOSITORY_ADMIN_PERMISSIONS,
             )
             .await
+            ? {
+                TeamWriteAccess::Allowed => Ok(true),
+                TeamWriteAccess::MfaRequired | TeamWriteAccess::MissingPermission => Ok(false),
+            }
         }
         None => Ok(false),
     }
@@ -538,13 +565,17 @@ async fn actor_can_create_packages_in_owned_repository(
                 OrgWriteRoleAccess::MissingRole => {}
             }
 
-            actor_has_team_repository_permissions(
+            match actor_has_team_repository_permissions(
                 db,
                 repository_id,
                 actor_user_id,
                 TEAM_REPOSITORY_PACKAGE_CREATION_PERMISSIONS,
             )
             .await
+            ? {
+                TeamWriteAccess::Allowed => Ok(true),
+                TeamWriteAccess::MfaRequired | TeamWriteAccess::MissingPermission => Ok(false),
+            }
         }
         None => Ok(false),
     }
@@ -569,13 +600,17 @@ async fn actor_can_transfer_owned_repository(
         }
     }
 
-    actor_has_team_repository_permissions(
+    match actor_has_team_repository_permissions(
         db,
         repository_id,
         actor_user_id,
         TEAM_REPOSITORY_TRANSFER_PERMISSIONS,
     )
     .await
+    ? {
+        TeamWriteAccess::Allowed => Ok(true),
+        TeamWriteAccess::MfaRequired | TeamWriteAccess::MissingPermission => Ok(false),
+    }
 }
 
 async fn actor_has_any_team_package_access(
@@ -607,31 +642,52 @@ async fn actor_has_team_package_permissions(
     package_id: Uuid,
     actor_user_id: Uuid,
     allowed_permissions: &[&str],
-) -> ApiResult<bool> {
+) -> ApiResult<TeamWriteAccess> {
     let allowed_permissions = allowed_permissions
         .iter()
         .map(|permission| (*permission).to_owned())
         .collect::<Vec<_>>();
 
-    sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS (\
-             SELECT 1 \
-             FROM team_package_access tpa \
-             JOIN team_memberships tm ON tm.team_id = tpa.team_id \
-             JOIN teams t ON t.id = tpa.team_id \
-             JOIN packages p ON p.id = tpa.package_id \
-             WHERE tpa.package_id = $1 \
-               AND tm.user_id = $2 \
-               AND t.org_id = p.owner_org_id \
-               AND tpa.permission::text = ANY($3)\
-         )",
+    let row = sqlx::query(
+        "SELECT TRUE AS has_permission, o.mfa_required, u.mfa_enabled \
+         FROM team_package_access tpa \
+         JOIN team_memberships tm ON tm.team_id = tpa.team_id \
+         JOIN teams t ON t.id = tpa.team_id \
+         JOIN packages p ON p.id = tpa.package_id \
+         JOIN organizations o ON o.id = t.org_id \
+         JOIN users u ON u.id = tm.user_id \
+         WHERE tpa.package_id = $1 \
+           AND tm.user_id = $2 \
+           AND t.org_id = p.owner_org_id \
+           AND tpa.permission::text = ANY($3) \
+         LIMIT 1",
     )
     .bind(package_id)
     .bind(actor_user_id)
     .bind(&allowed_permissions)
-    .fetch_one(db)
+    .fetch_optional(db)
     .await
-    .map_err(|e| ApiError(Error::Database(e)))
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let has_permission = row.is_some();
+    let mfa_required = row
+        .as_ref()
+        .map(|row| row.try_get::<bool, _>("mfa_required"))
+        .transpose()
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?
+        .unwrap_or(false);
+    let mfa_enabled = row
+        .as_ref()
+        .map(|row| row.try_get::<bool, _>("mfa_enabled"))
+        .transpose()
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?
+        .unwrap_or(false);
+
+    Ok(resolve_team_write_access(
+        has_permission,
+        mfa_required,
+        mfa_enabled,
+    ))
 }
 
 async fn actor_has_team_repository_permissions(
@@ -639,31 +695,52 @@ async fn actor_has_team_repository_permissions(
     repository_id: Uuid,
     actor_user_id: Uuid,
     allowed_permissions: &[&str],
-) -> ApiResult<bool> {
+) -> ApiResult<TeamWriteAccess> {
     let allowed_permissions = allowed_permissions
         .iter()
         .map(|permission| (*permission).to_owned())
         .collect::<Vec<_>>();
 
-    sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS (\
-             SELECT 1 \
-             FROM team_repository_access tra \
-             JOIN team_memberships tm ON tm.team_id = tra.team_id \
-             JOIN teams t ON t.id = tra.team_id \
-             JOIN repositories r ON r.id = tra.repository_id \
-             WHERE tra.repository_id = $1 \
-               AND tm.user_id = $2 \
-               AND t.org_id = r.owner_org_id \
-               AND tra.permission::text = ANY($3)\
-         )",
+    let row = sqlx::query(
+        "SELECT TRUE AS has_permission, o.mfa_required, u.mfa_enabled \
+         FROM team_repository_access tra \
+         JOIN team_memberships tm ON tm.team_id = tra.team_id \
+         JOIN teams t ON t.id = tra.team_id \
+         JOIN repositories r ON r.id = tra.repository_id \
+         JOIN organizations o ON o.id = t.org_id \
+         JOIN users u ON u.id = tm.user_id \
+         WHERE tra.repository_id = $1 \
+           AND tm.user_id = $2 \
+           AND t.org_id = r.owner_org_id \
+           AND tra.permission::text = ANY($3) \
+         LIMIT 1",
     )
     .bind(repository_id)
     .bind(actor_user_id)
     .bind(&allowed_permissions)
-    .fetch_one(db)
+    .fetch_optional(db)
     .await
-    .map_err(|e| ApiError(Error::Database(e)))
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let has_permission = row.is_some();
+    let mfa_required = row
+        .as_ref()
+        .map(|row| row.try_get::<bool, _>("mfa_required"))
+        .transpose()
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?
+        .unwrap_or(false);
+    let mfa_enabled = row
+        .as_ref()
+        .map(|row| row.try_get::<bool, _>("mfa_enabled"))
+        .transpose()
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?
+        .unwrap_or(false);
+
+    Ok(resolve_team_write_access(
+        has_permission,
+        mfa_required,
+        mfa_enabled,
+    ))
 }
 
 async fn actor_has_team_namespace_permissions(
@@ -754,14 +831,20 @@ async fn ensure_package_access_by_requirement(
             OrgWriteRoleAccess::MissingRole => {}
         }
 
-        if actor_has_team_package_permissions(
+        match actor_has_team_package_permissions(
             db,
             package_id,
             actor_user_id,
             requirement.team_permissions(),
         )
         .await?
-            || actor_has_team_repository_permissions(
+        {
+            TeamWriteAccess::Allowed => return Ok(package_id),
+            TeamWriteAccess::MfaRequired => return Err(org_mfa_required_for_write_error()),
+            TeamWriteAccess::MissingPermission => {}
+        }
+
+        match actor_has_team_repository_permissions(
                 db,
                 repository_id,
                 actor_user_id,
@@ -769,7 +852,9 @@ async fn ensure_package_access_by_requirement(
             )
             .await?
         {
-            return Ok(package_id);
+            TeamWriteAccess::Allowed => return Ok(package_id),
+            TeamWriteAccess::MfaRequired => return Err(org_mfa_required_for_write_error()),
+            TeamWriteAccess::MissingPermission => {}
         }
     }
 
@@ -1425,7 +1510,7 @@ pub async fn actor_can_transfer_package_by_id(
         }
     }
 
-    if actor_has_team_package_permissions(
+    match actor_has_team_package_permissions(
         db,
         package_id,
         actor_user_id,
@@ -1433,16 +1518,21 @@ pub async fn actor_can_transfer_package_by_id(
     )
     .await?
     {
-        return Ok(true);
+        TeamWriteAccess::Allowed => return Ok(true),
+        TeamWriteAccess::MfaRequired | TeamWriteAccess::MissingPermission => {}
     }
 
-    actor_has_team_repository_permissions(
+    match actor_has_team_repository_permissions(
         db,
         repository_id,
         actor_user_id,
         TEAM_REPOSITORY_PACKAGE_TRANSFER_PERMISSIONS,
     )
     .await
+    ? {
+        TeamWriteAccess::Allowed => Ok(true),
+        TeamWriteAccess::MfaRequired | TeamWriteAccess::MissingPermission => Ok(false),
+    }
 }
 
 pub async fn actor_can_security_review_package_by_id(
@@ -1471,7 +1561,7 @@ pub async fn actor_can_security_review_package_by_id(
         }
     }
 
-    if actor_has_team_package_permissions(
+    match actor_has_team_package_permissions(
         db,
         package_id,
         actor_user_id,
@@ -1479,16 +1569,21 @@ pub async fn actor_can_security_review_package_by_id(
     )
     .await?
     {
-        return Ok(true);
+        TeamWriteAccess::Allowed => return Ok(true),
+        TeamWriteAccess::MfaRequired | TeamWriteAccess::MissingPermission => {}
     }
 
-    actor_has_team_repository_permissions(
+    match actor_has_team_repository_permissions(
         db,
         repository_id,
         actor_user_id,
         TEAM_REPOSITORY_PACKAGE_SECURITY_REVIEW_PERMISSIONS,
     )
     .await
+    ? {
+        TeamWriteAccess::Allowed => Ok(true),
+        TeamWriteAccess::MfaRequired | TeamWriteAccess::MissingPermission => Ok(false),
+    }
 }
 
 pub async fn actor_can_publish_package_by_id(
@@ -1517,7 +1612,7 @@ pub async fn actor_can_publish_package_by_id(
         }
     }
 
-    if actor_has_team_package_permissions(
+    match actor_has_team_package_permissions(
         db,
         package_id,
         actor_user_id,
@@ -1525,16 +1620,21 @@ pub async fn actor_can_publish_package_by_id(
     )
     .await?
     {
-        return Ok(true);
+        TeamWriteAccess::Allowed => return Ok(true),
+        TeamWriteAccess::MfaRequired | TeamWriteAccess::MissingPermission => {}
     }
 
-    actor_has_team_repository_permissions(
+    match actor_has_team_repository_permissions(
         db,
         repository_id,
         actor_user_id,
         TEAM_REPOSITORY_PACKAGE_PUBLISH_PERMISSIONS,
     )
     .await
+    ? {
+        TeamWriteAccess::Allowed => Ok(true),
+        TeamWriteAccess::MfaRequired | TeamWriteAccess::MissingPermission => Ok(false),
+    }
 }
 
 pub async fn actor_can_write_package_metadata_by_id(
@@ -1563,7 +1663,7 @@ pub async fn actor_can_write_package_metadata_by_id(
         }
     }
 
-    if actor_has_team_package_permissions(
+    match actor_has_team_package_permissions(
         db,
         package_id,
         actor_user_id,
@@ -1571,16 +1671,21 @@ pub async fn actor_can_write_package_metadata_by_id(
     )
     .await?
     {
-        return Ok(true);
+        TeamWriteAccess::Allowed => return Ok(true),
+        TeamWriteAccess::MfaRequired | TeamWriteAccess::MissingPermission => {}
     }
 
-    actor_has_team_repository_permissions(
+    match actor_has_team_repository_permissions(
         db,
         repository_id,
         actor_user_id,
         TEAM_REPOSITORY_PACKAGE_METADATA_PERMISSIONS,
     )
     .await
+    ? {
+        TeamWriteAccess::Allowed => Ok(true),
+        TeamWriteAccess::MfaRequired | TeamWriteAccess::MissingPermission => Ok(false),
+    }
 }
 
 pub async fn actor_can_admin_package_by_id(
@@ -1609,7 +1714,7 @@ pub async fn actor_can_admin_package_by_id(
         }
     }
 
-    if actor_has_team_package_permissions(
+    match actor_has_team_package_permissions(
         db,
         package_id,
         actor_user_id,
@@ -1617,16 +1722,21 @@ pub async fn actor_can_admin_package_by_id(
     )
     .await?
     {
-        return Ok(true);
+        TeamWriteAccess::Allowed => return Ok(true),
+        TeamWriteAccess::MfaRequired | TeamWriteAccess::MissingPermission => {}
     }
 
-    actor_has_team_repository_permissions(
+    match actor_has_team_repository_permissions(
         db,
         repository_id,
         actor_user_id,
         TEAM_REPOSITORY_ADMIN_PERMISSIONS,
     )
     .await
+    ? {
+        TeamWriteAccess::Allowed => Ok(true),
+        TeamWriteAccess::MfaRequired | TeamWriteAccess::MissingPermission => Ok(false),
+    }
 }
 
 pub async fn actor_can_write_package_by_id(
@@ -1660,7 +1770,7 @@ pub async fn actor_can_write_package_by_id(
         }
     }
 
-    if actor_has_team_package_permissions(
+    match actor_has_team_package_permissions(
         db,
         package_id,
         actor_user_id,
@@ -1668,16 +1778,21 @@ pub async fn actor_can_write_package_by_id(
     )
     .await?
     {
-        return Ok(true);
+        TeamWriteAccess::Allowed => return Ok(true),
+        TeamWriteAccess::MfaRequired | TeamWriteAccess::MissingPermission => {}
     }
 
-    actor_has_team_repository_permissions(
+    match actor_has_team_repository_permissions(
         db,
         repository_id,
         actor_user_id,
         TEAM_REPOSITORY_PACKAGE_MANAGEMENT_VISIBILITY_PERMISSIONS,
     )
     .await
+    ? {
+        TeamWriteAccess::Allowed => Ok(true),
+        TeamWriteAccess::MfaRequired | TeamWriteAccess::MissingPermission => Ok(false),
+    }
 }
 
 #[cfg(test)]
@@ -1692,8 +1807,9 @@ mod tests {
     use crate::{config::Config, state::AppState};
 
     use super::{
-        resolve_org_write_role_access, visibility_allows_read, visibility_is_discoverable,
-        AuthenticatedIdentity, CredentialKind, OptionalAuthenticatedIdentity, OrgWriteRoleAccess,
+        resolve_org_write_role_access, resolve_team_write_access, visibility_allows_read,
+        visibility_is_discoverable, AuthenticatedIdentity, CredentialKind,
+        OptionalAuthenticatedIdentity, OrgWriteRoleAccess, TeamWriteAccess,
     };
 
     fn test_state() -> AppState {
@@ -1828,6 +1944,30 @@ mod tests {
         assert_eq!(
             resolve_org_write_role_access(None, true, false),
             OrgWriteRoleAccess::MissingRole
+        );
+    }
+
+    #[test]
+    fn team_write_access_requires_mfa_when_permission_exists_and_org_policy_is_enabled() {
+        assert_eq!(
+            resolve_team_write_access(true, true, false),
+            TeamWriteAccess::MfaRequired
+        );
+        assert_eq!(
+            resolve_team_write_access(true, true, true),
+            TeamWriteAccess::Allowed
+        );
+    }
+
+    #[test]
+    fn team_write_access_preserves_missing_permission_and_orgs_without_mfa_policy() {
+        assert_eq!(
+            resolve_team_write_access(false, true, false),
+            TeamWriteAccess::MissingPermission
+        );
+        assert_eq!(
+            resolve_team_write_access(true, false, false),
+            TeamWriteAccess::Allowed
         );
     }
 
