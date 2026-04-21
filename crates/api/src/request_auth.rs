@@ -587,11 +587,13 @@ async fn authorize_org_access_by_requirement(
     }
 
     if let Some(roles) = requirement.org_roles() {
-        return Ok(if actor_has_org_roles(db, org_id, actor_user_id, roles).await? {
-            OrgAccessOutcome::Allowed
-        } else {
-            OrgAccessOutcome::MissingPermission
-        });
+        return Ok(
+            if actor_has_org_roles(db, org_id, actor_user_id, roles).await? {
+                OrgAccessOutcome::Allowed
+            } else {
+                OrgAccessOutcome::MissingPermission
+            },
+        );
     }
 
     Ok(if is_org_member(db, org_id, actor_user_id).await? {
@@ -1785,8 +1787,8 @@ mod tests {
     use super::{
         resolve_org_write_role_access, resolve_team_write_access, visibility_allows_read,
         visibility_is_discoverable, AuthenticatedIdentity, CredentialKind,
-        OptionalAuthenticatedIdentity, OrgAccessRequirement, OrgWriteRoleAccess,
-        TeamWriteAccess, ORG_ADMIN_ROLES, ORG_AUDIT_ROLES,
+        OptionalAuthenticatedIdentity, OrgAccessRequirement, OrgWriteRoleAccess, TeamWriteAccess,
+        ORG_ADMIN_ROLES, ORG_AUDIT_ROLES,
     };
 
     fn test_state() -> AppState {
