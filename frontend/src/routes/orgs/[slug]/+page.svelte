@@ -786,18 +786,17 @@
       membersError = memberData.load_error || null;
       teams = teamData.teams || [];
       teamsError = teamData.load_error || null;
-      const {
-        teamMembersBySlug,
-        teamPackageAccessBySlug,
-        teamRepositoryAccessBySlug,
-        teamNamespaceAccessBySlug,
-      } = await loadTeamManagementStateMaps(slug, teams, {
+      const teamManagementStateMaps = await loadTeamManagementStateMaps(slug, teams, {
         includeMembers: canManageTeams,
         includePackageAccess: canManageTeams,
         includeRepositoryAccess: canManageRepositories,
         includeNamespaceAccess: canManageNamespaces,
         toErrorMessage,
       });
+      teamMembersBySlug = teamManagementStateMaps.teamMembersBySlug;
+      teamPackageAccessBySlug = teamManagementStateMaps.teamPackageAccessBySlug;
+      teamRepositoryAccessBySlug = teamManagementStateMaps.teamRepositoryAccessBySlug;
+      teamNamespaceAccessBySlug = teamManagementStateMaps.teamNamespaceAccessBySlug;
       namespaceClaims = namespaceData.namespaces || [];
       namespaceError = namespaceData.load_error || null;
       auditLogs = auditData.logs || [];

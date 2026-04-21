@@ -136,7 +136,7 @@
         return;
       }
 
-      const [teamManagementState, orgMemberData, orgPackageData, orgRepositoryData, orgNamespaceData] =
+      const [singleTeamState, orgMemberData, orgPackageData, orgRepositoryData, orgNamespaceData] =
         await Promise.all([
           loadSingleTeamManagementState(slug, team, {
             includeRepositoryAccess: canManageOrgRepositories(loadedOrg),
@@ -203,14 +203,14 @@
       orgRepositoriesError = orgRepositoryData.load_error || null;
       orgNamespaces = orgNamespaceData.namespaces || [];
       orgNamespacesError = orgNamespaceData.load_error || null;
-      members = teamManagementState.members;
-      membersError = teamManagementState.membersError;
-      packageAccess = teamManagementState.packageAccess;
-      packageAccessError = teamManagementState.packageAccessError;
-      repositoryAccess = teamManagementState.repositoryAccess;
-      repositoryAccessError = teamManagementState.repositoryAccessError;
-      namespaceAccess = teamManagementState.namespaceAccess;
-      namespaceAccessError = teamManagementState.namespaceAccessError;
+      members = singleTeamState.members;
+      membersError = singleTeamState.membersError;
+      packageAccess = singleTeamState.packageAccess;
+      packageAccessError = singleTeamState.packageAccessError;
+      repositoryAccess = singleTeamState.repositoryAccess;
+      repositoryAccessError = singleTeamState.repositoryAccessError;
+      namespaceAccess = singleTeamState.namespaceAccess;
+      namespaceAccessError = singleTeamState.namespaceAccessError;
     } catch (caughtError: unknown) {
       if (caughtError instanceof ApiError && caughtError.status === 404) {
         notFound = true;
