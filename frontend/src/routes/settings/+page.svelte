@@ -171,7 +171,10 @@
       user = loadedUser;
       tokens = tokenData.tokens || [];
       organizations = organizationData.organizations || [];
-      namespaceTransferTargets = selectNamespaceTransferTargets(organizations);
+      namespaceTransferTargets = selectNamespaceTransferTargets(
+        organizations,
+        undefined
+      );
       organizationsError = organizationData.load_error || null;
       namespaceClaims = namespaceData.namespaces || [];
       namespaceClaimsError = namespaceData.load_error || null;

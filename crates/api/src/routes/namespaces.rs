@@ -18,6 +18,8 @@ use crate::{
     state::AppState,
 };
 
+const NAMESPACE_TRANSFER_ADMIN_ROLES: &[&str] = &["owner", "admin"];
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/namespaces", get(list_namespaces))
@@ -417,7 +419,7 @@ async fn transfer_namespace_ownership(
             )
             .bind(owner_org_id)
             .bind(identity.user_id)
-            .bind(vec!["owner".to_owned(), "admin".to_owned()])
+            .bind(NAMESPACE_TRANSFER_ADMIN_ROLES)
             .fetch_one(&mut *tx)
             .await
             .map_err(|e| ApiError(Error::Database(e)))?;
@@ -467,7 +469,7 @@ async fn transfer_namespace_ownership(
     )
     .bind(target_org.id)
     .bind(identity.user_id)
-    .bind(vec!["owner".to_owned(), "admin".to_owned()])
+    .bind(NAMESPACE_TRANSFER_ADMIN_ROLES)
     .fetch_one(&mut *tx)
     .await
     .map_err(|e| ApiError(Error::Database(e)))?;
