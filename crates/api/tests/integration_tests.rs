@@ -2999,14 +2999,52 @@ async fn test_create_and_get_org(pool: PgPool) {
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
 
-    // Get org
+    // Get org anonymously
     let req = Request::get("/v1/orgs/acme-corp")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["slug"], "acme-corp");
+    assert_eq!(body["capabilities"]["can_manage"], false);
+    assert_eq!(body["capabilities"]["can_view_member_directory"], false);
+    assert_eq!(body["capabilities"]["can_view_audit_log"], false);
+
+    // Get org as the owner
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/v1/orgs/acme-corp")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["capabilities"]["can_manage"], true);
+    assert_eq!(body["capabilities"]["can_view_member_directory"], true);
+    assert_eq!(body["capabilities"]["can_view_audit_log"], true);
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/v1/users/me/organizations")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
         .body(Body::empty())
         .unwrap();
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    assert_eq!(body["slug"], "acme-corp");
+    let organizations = body["organizations"]
+        .as_array()
+        .expect("organizations response should be an array");
+    assert_eq!(organizations.len(), 1);
+    assert_eq!(organizations[0]["slug"], "acme-corp");
+    assert_eq!(organizations[0]["capabilities"]["can_manage"], true);
+    assert_eq!(
+        organizations[0]["capabilities"]["can_view_member_directory"],
+        true
+    );
+    assert_eq!(organizations[0]["capabilities"]["can_view_audit_log"], true);
 }
 
 #[sqlx::test(migrations = "../../migrations")]

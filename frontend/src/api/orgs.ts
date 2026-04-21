@@ -3,6 +3,12 @@ import { collectPaginatedItems } from './pagination';
 
 type NullableString = string | null;
 
+export interface OrganizationCapabilities {
+  can_manage?: boolean | null;
+  can_view_member_directory?: boolean | null;
+  can_view_audit_log?: boolean | null;
+}
+
 export interface OrganizationDetail {
   id?: NullableString;
   name?: NullableString;
@@ -13,6 +19,7 @@ export interface OrganizationDetail {
   website?: NullableString;
   email?: NullableString;
   created_at?: NullableString;
+  capabilities?: OrganizationCapabilities | null;
 }
 
 export interface OrganizationMembership extends OrganizationDetail {

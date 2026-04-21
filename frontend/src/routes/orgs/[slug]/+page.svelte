@@ -158,7 +158,11 @@
     mergeUpdatedOrgSecurityFinding,
     sortOrgSecurityFindings,
   } from '../../../pages/org-security-triage';
-  import { canViewOrgPeopleWorkspace } from '../../../pages/org-workspace-access';
+  import {
+    canManageOrgWorkspace,
+    canViewOrgAuditWorkspace,
+    canViewOrgPeopleWorkspace,
+  } from '../../../pages/org-workspace-access';
   import { buildPackageDetailPath } from '../../../pages/package-detail-tabs';
   import { ECOSYSTEMS, ecosystemLabel } from '../../../utils/ecosystem';
   import { formatDate, formatNumber } from '../../../utils/format';
@@ -189,8 +193,6 @@
     worstSecuritySeverityFromCounts,
   } from '../../../utils/security';
 
-  const ADMIN_ROLES = new Set(['owner', 'admin']);
-  const AUDIT_ROLES = new Set(['owner', 'admin', 'auditor']);
   const ORG_AUDIT_PAGE_SIZE = 20;
   const DEFAULT_NAMESPACE_ECOSYSTEM = 'npm';
   const DEFAULT_PACKAGE_ECOSYSTEM = 'npm';
@@ -715,9 +717,12 @@
       membership = myOrganizationsData.organizations.find(
         (item) => item.slug === slug
       );
-      canViewPeopleWorkspace = canViewOrgPeopleWorkspace(membership);
-      canAdminister = ADMIN_ROLES.has(membership?.role || '');
-      canViewAudit = AUDIT_ROLES.has(membership?.role || '');
+      canViewPeopleWorkspace =
+        canViewOrgPeopleWorkspace(org) || canViewOrgPeopleWorkspace(membership);
+      canAdminister =
+        canManageOrgWorkspace(org) || canManageOrgWorkspace(membership);
+      canViewAudit =
+        canViewOrgAuditWorkspace(org) || canViewOrgAuditWorkspace(membership);
       isOwner = membership?.role === 'owner';
 
       repositories = repositoryData.repositories || [];

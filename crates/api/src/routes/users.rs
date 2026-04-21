@@ -11,7 +11,7 @@ use publaryn_core::error::Error;
 
 use crate::{
     error::{ApiError, ApiResult},
-    request_auth::{AuthenticatedIdentity, OptionalAuthenticatedIdentity},
+    request_auth::{actor_org_capabilities_by_id, AuthenticatedIdentity, OptionalAuthenticatedIdentity},
     scopes::{ensure_scope, SCOPE_PROFILE_WRITE},
     state::AppState,
 };
@@ -75,23 +75,27 @@ async fn list_current_user_organizations(
     .await
     .map_err(|e| ApiError(Error::Database(e)))?;
 
-    let organizations: Vec<serde_json::Value> = rows
-        .iter()
-        .map(|row| {
-            serde_json::json!({
-                "id": row.try_get::<Uuid, _>("id").ok(),
-                "name": row.try_get::<String, _>("name").ok(),
-                "slug": row.try_get::<String, _>("slug").ok(),
-                "description": row.try_get::<Option<String>, _>("description").ok().flatten(),
-                "website": row.try_get::<Option<String>, _>("website").ok().flatten(),
-                "is_verified": row.try_get::<bool, _>("is_verified").ok(),
-                "role": row.try_get::<String, _>("role").ok(),
-                "joined_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("joined_at").ok(),
-                "team_count": row.try_get::<i64, _>("team_count").ok(),
-                "package_count": row.try_get::<i64, _>("package_count").ok(),
-            })
-        })
-        .collect();
+    let mut organizations = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let org_id: Uuid = row
+            .try_get("id")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+        let capabilities =
+            actor_org_capabilities_by_id(&state.db, org_id, Some(identity.user_id)).await?;
+        organizations.push(serde_json::json!({
+            "id": Some(org_id),
+            "name": row.try_get::<String, _>("name").ok(),
+            "slug": row.try_get::<String, _>("slug").ok(),
+            "description": row.try_get::<Option<String>, _>("description").ok().flatten(),
+            "website": row.try_get::<Option<String>, _>("website").ok().flatten(),
+            "is_verified": row.try_get::<bool, _>("is_verified").ok(),
+            "role": row.try_get::<String, _>("role").ok(),
+            "joined_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("joined_at").ok(),
+            "team_count": row.try_get::<i64, _>("team_count").ok(),
+            "package_count": row.try_get::<i64, _>("package_count").ok(),
+            "capabilities": capabilities,
+        }));
+    }
 
     Ok(Json(serde_json::json!({ "organizations": organizations })))
 }

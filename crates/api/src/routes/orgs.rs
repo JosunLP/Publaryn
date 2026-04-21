@@ -25,6 +25,7 @@ use publaryn_core::{
 use crate::{
     error::{ApiError, ApiResult},
     request_auth::{
+        actor_org_capabilities_by_id,
         actor_can_access_org_member_directory_by_id, actor_can_transfer_package_by_id,
         actor_can_transfer_repository_by_id, ensure_org_admin_by_slug,
         ensure_org_audit_access_by_slug, ensure_org_member_by_slug, AuthenticatedIdentity,
@@ -182,6 +183,7 @@ async fn create_org(
 
 async fn get_org(
     State(state): State<AppState>,
+    identity: OptionalAuthenticatedIdentity,
     Path(slug): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let row = sqlx::query(
@@ -193,9 +195,14 @@ async fn get_org(
     .await
     .map_err(|e| ApiError(Error::Database(e)))?
     .ok_or_else(|| ApiError(Error::NotFound(format!("Organization '{slug}' not found"))))?;
+    let org_id: Uuid = row
+        .try_get("id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let capabilities =
+        actor_org_capabilities_by_id(&state.db, org_id, identity.user_id()).await?;
 
     Ok(Json(serde_json::json!({
-        "id": row.try_get::<Uuid, _>("id").ok(),
+        "id": Some(org_id),
         "name": row.try_get::<String, _>("name").ok(),
         "slug": row.try_get::<String, _>("slug").ok(),
         "description": row.try_get::<Option<String>, _>("description").ok().flatten(),
@@ -204,6 +211,7 @@ async fn get_org(
         "is_verified": row.try_get::<bool, _>("is_verified").ok(),
         "mfa_required": row.try_get::<bool, _>("mfa_required").ok(),
         "created_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at").ok(),
+        "capabilities": capabilities,
     })))
 }
 

@@ -1,13 +1,35 @@
 import { describe, expect, test } from 'bun:test';
 
-import { canViewOrgPeopleWorkspace } from '../src/pages/org-workspace-access';
+import {
+  canManageOrgWorkspace,
+  canViewOrgAuditWorkspace,
+  canViewOrgPeopleWorkspace,
+} from '../src/pages/org-workspace-access';
 
 describe('org workspace access helpers', () => {
-  test('allows org members to view people and team sections', () => {
+  test('reads explicit workspace capabilities from the payload', () => {
     expect(
       canViewOrgPeopleWorkspace({
         slug: 'acme',
-        role: 'viewer',
+        capabilities: {
+          can_view_member_directory: true,
+        },
+      })
+    ).toBe(true);
+    expect(
+      canManageOrgWorkspace({
+        slug: 'acme',
+        capabilities: {
+          can_manage: true,
+        },
+      })
+    ).toBe(true);
+    expect(
+      canViewOrgAuditWorkspace({
+        slug: 'acme',
+        capabilities: {
+          can_view_audit_log: true,
+        },
       })
     ).toBe(true);
   });
@@ -15,6 +37,29 @@ describe('org workspace access helpers', () => {
   test('hides people and team sections for visitors and unknown memberships', () => {
     expect(canViewOrgPeopleWorkspace(undefined)).toBe(false);
     expect(canViewOrgPeopleWorkspace(null)).toBe(false);
-    expect(canViewOrgPeopleWorkspace({ slug: 'acme', role: '   ' })).toBe(false);
+    expect(
+      canViewOrgPeopleWorkspace({
+        slug: 'acme',
+        capabilities: {
+          can_view_member_directory: false,
+        },
+      })
+    ).toBe(false);
+    expect(
+      canManageOrgWorkspace({
+        slug: 'acme',
+        capabilities: {
+          can_manage: false,
+        },
+      })
+    ).toBe(false);
+    expect(
+      canViewOrgAuditWorkspace({
+        slug: 'acme',
+        capabilities: {
+          can_view_audit_log: false,
+        },
+      })
+    ).toBe(false);
   });
 });

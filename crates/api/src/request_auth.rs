@@ -3,6 +3,7 @@ use axum::{
     http::{header::AUTHORIZATION, request::Parts},
 };
 use chrono::Utc;
+use serde::Serialize;
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
@@ -511,6 +512,13 @@ fn org_mfa_required_for_write_error() -> ApiError {
 
 fn is_org_access_allowed(outcome: OrgAccessOutcome) -> bool {
     matches!(outcome, OrgAccessOutcome::Allowed)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct OrgActorCapabilities {
+    pub can_manage: bool,
+    pub can_view_member_directory: bool,
+    pub can_view_audit_log: bool,
 }
 
 async fn authorize_org_write_roles(
@@ -1209,6 +1217,24 @@ pub async fn actor_can_access_org_audit_log_by_id(
 ) -> ApiResult<bool> {
     actor_can_org_by_id_and_requirement(db, org_id, actor_user_id, OrgAccessRequirement::AuditLog)
         .await
+}
+
+pub async fn actor_org_capabilities_by_id(
+    db: &PgPool,
+    org_id: Uuid,
+    actor_user_id: Option<Uuid>,
+) -> ApiResult<OrgActorCapabilities> {
+    Ok(OrgActorCapabilities {
+        can_manage: actor_can_manage_org_by_id(db, org_id, actor_user_id).await?,
+        can_view_member_directory: actor_can_access_org_member_directory_by_id(
+            db,
+            org_id,
+            actor_user_id,
+        )
+        .await?,
+        can_view_audit_log: actor_can_access_org_audit_log_by_id(db, org_id, actor_user_id)
+            .await?,
+    })
 }
 
 pub async fn is_platform_admin(db: &PgPool, actor_user_id: Uuid) -> ApiResult<bool> {

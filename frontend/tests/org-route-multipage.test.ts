@@ -91,6 +91,11 @@ const currentOrgMembership = {
   role: 'owner',
   package_count: packages.length,
   team_count: 1,
+  capabilities: {
+    can_manage: true,
+    can_view_member_directory: true,
+    can_view_audit_log: true,
+  },
 };
 
 const targetOrgMembership = {
@@ -98,6 +103,11 @@ const targetOrgMembership = {
   slug: TARGET_ORG_SLUG,
   name: 'Target Org',
   role: 'admin',
+  capabilities: {
+    can_manage: true,
+    can_view_member_directory: true,
+    can_view_audit_log: true,
+  },
 };
 
 const members = [
@@ -560,16 +570,21 @@ async function handleApiRequest(
 
   if (method === 'GET' && requestPath === `/v1/orgs/${ORG_SLUG}`) {
     return apiResponse({
-        id: ORG_ID,
-        name: 'Source Org',
-        slug: ORG_SLUG,
-        description: 'Source organization',
-        is_verified: true,
-        mfa_required: scenario.orgMfaRequired,
-        website: null,
-        email: null,
-        created_at: '2026-04-01T00:00:00Z',
-      });
+      id: ORG_ID,
+      name: 'Source Org',
+      slug: ORG_SLUG,
+      description: 'Source organization',
+      is_verified: true,
+      mfa_required: scenario.orgMfaRequired,
+      website: null,
+      email: null,
+      created_at: '2026-04-01T00:00:00Z',
+      capabilities: {
+        can_manage: true,
+        can_view_member_directory: true,
+        can_view_audit_log: true,
+      },
+    });
   }
 
   if (method === 'GET' && requestPath === '/v1/users/me/organizations') {

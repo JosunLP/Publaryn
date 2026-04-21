@@ -1,7 +1,23 @@
-import type { OrganizationMembership } from '../api/orgs';
+import type { OrganizationDetail } from '../api/orgs';
+
+function resolveCapabilities(source: OrganizationDetail | null | undefined) {
+  return source?.capabilities;
+}
+
+export function canManageOrgWorkspace(
+  source: OrganizationDetail | null | undefined
+): boolean {
+  return resolveCapabilities(source)?.can_manage === true;
+}
 
 export function canViewOrgPeopleWorkspace(
-  membership: OrganizationMembership | null | undefined
+  source: OrganizationDetail | null | undefined
 ): boolean {
-  return Boolean(membership?.role?.trim());
+  return resolveCapabilities(source)?.can_view_member_directory === true;
+}
+
+export function canViewOrgAuditWorkspace(
+  source: OrganizationDetail | null | undefined
+): boolean {
+  return resolveCapabilities(source)?.can_view_audit_log === true;
 }
