@@ -3037,7 +3037,7 @@
                   teamPackageAccessBySlug[teamSlug]?.load_error || null}
                 {@const eligibleTeamMemberOptions =
                   getEligibleTeamMemberOptions(teamSlug)}
-                <div class="settings-subsection">
+                <div class="settings-subsection" id={teamSlug ? `team-${teamSlug}` : undefined}>
                   <div class="org-section-header">
                     <div>
                       <h3>{team.name || team.slug || 'Team'}</h3>
@@ -3050,12 +3050,19 @@
                       </div>
                     </div>
                     {#if canManageTeams && teamSlug}
-                      <button
-                        class="btn btn-danger btn-sm"
-                        type="button"
-                        on:click={() => handleDeleteTeam(teamSlug)}
-                        >Delete</button
-                      >
+                      <div class="token-row__actions">
+                        <a
+                          class="btn btn-secondary btn-sm"
+                          href={`/orgs/${encodeURIComponent(slug)}/teams/${encodeURIComponent(teamSlug)}`}
+                          data-sveltekit-preload-data="hover">Open workspace</a
+                        >
+                        <button
+                          class="btn btn-danger btn-sm"
+                          type="button"
+                          on:click={() => handleDeleteTeam(teamSlug)}
+                          >Delete</button
+                        >
+                      </div>
                     {/if}
                   </div>
 
