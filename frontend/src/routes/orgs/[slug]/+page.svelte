@@ -158,7 +158,17 @@
     mergeUpdatedOrgSecurityFinding,
     sortOrgSecurityFindings,
   } from '../../../pages/org-security-triage';
-  import { canViewOrgPeopleWorkspace } from '../../../pages/org-workspace-access';
+  import {
+    canManageOrgInvitations,
+    canManageOrgMembers,
+    canManageOrgNamespaces,
+    canManageOrgRepositories,
+    canManageOrgTeams,
+    canManageOrgWorkspace,
+    canTransferOrgOwnership,
+    canViewOrgAuditWorkspace,
+    canViewOrgPeopleWorkspace,
+  } from '../../../pages/org-workspace-access';
   import { buildPackageDetailPath } from '../../../pages/package-detail-tabs';
   import { ECOSYSTEMS, ecosystemLabel } from '../../../utils/ecosystem';
   import { formatDate, formatNumber } from '../../../utils/format';
@@ -189,8 +199,6 @@
     worstSecuritySeverityFromCounts,
   } from '../../../utils/security';
 
-  const ADMIN_ROLES = new Set(['owner', 'admin']);
-  const AUDIT_ROLES = new Set(['owner', 'admin', 'auditor']);
   const ORG_AUDIT_PAGE_SIZE = 20;
   const DEFAULT_NAMESPACE_ECOSYSTEM = 'npm';
   const DEFAULT_PACKAGE_ECOSYSTEM = 'npm';
@@ -364,9 +372,14 @@
   let membership: OrganizationMembership | undefined;
   let isAuthenticated = false;
   let canAdminister = false;
+  let canManageInvitations = false;
+  let canManageMembers = false;
+  let canManageTeams = false;
+  let canManageRepositories = false;
+  let canManageNamespaces = false;
   let canViewAudit = false;
   let canViewPeopleWorkspace = false;
-  let isOwner = false;
+  let canTransferOwnership = false;
 
   let members: OrgMember[] = [];
   let membersError: string | null = null;
@@ -715,10 +728,15 @@
       membership = myOrganizationsData.organizations.find(
         (item) => item.slug === slug
       );
-      canViewPeopleWorkspace = canViewOrgPeopleWorkspace(membership);
-      canAdminister = ADMIN_ROLES.has(membership?.role || '');
-      canViewAudit = AUDIT_ROLES.has(membership?.role || '');
-      isOwner = membership?.role === 'owner';
+      canViewPeopleWorkspace = canViewOrgPeopleWorkspace(org);
+      canAdminister = canManageOrgWorkspace(org);
+      canManageInvitations = canManageOrgInvitations(org);
+      canManageMembers = canManageOrgMembers(org);
+      canManageTeams = canManageOrgTeams(org);
+      canManageRepositories = canManageOrgRepositories(org);
+      canManageNamespaces = canManageOrgNamespaces(org);
+      canViewAudit = canViewOrgAuditWorkspace(org);
+      canTransferOwnership = canTransferOrgOwnership(org);
 
       repositories = repositoryData.repositories || [];
       repositoriesError = repositoryData.load_error || null;
@@ -748,7 +766,7 @@
         auditData,
         repositoryPackageData,
       ] = await Promise.all([
-        canAdminister
+        canManageInvitations
           ? listOrgInvitations(slug, { includeInactive: true }).catch(
               (caughtError: unknown): OrgInvitationListResponse => ({
                 invitations: [],
@@ -848,16 +866,16 @@
         teamNamespaceAccessData,
       ] =
         await Promise.all([
-          canAdminister
+          canManageTeams
             ? loadTeamMembers(slug, teams)
             : Promise.resolve<Record<string, TeamMemberState>>({}),
-          canAdminister
+          canManageTeams
             ? loadTeamPackageAccess(slug, teams)
             : Promise.resolve<Record<string, TeamPackageAccessState>>({}),
-          canAdminister
+          canManageRepositories
             ? loadTeamRepositoryAccess(slug, teams)
             : Promise.resolve<Record<string, TeamRepositoryAccessState>>({}),
-          canAdminister
+          canManageNamespaces
             ? loadTeamNamespaceAccess(slug, teams)
             : Promise.resolve<Record<string, TeamNamespaceAccessState>>({}),
         ]);
@@ -1304,6 +1322,7 @@
         description: normalizeFormOptionalText(formData.get('description')),
         website: normalizeFormOptionalText(formData.get('website')),
         email: normalizeFormOptionalText(formData.get('email')),
+        mfaRequired: formData.has('mfa_required'),
       });
       await loadOrganizationPage({ notice: 'Organization profile updated.' });
     } catch (caughtError: unknown) {
@@ -2359,6 +2378,9 @@
             {#if org.is_verified}<span class="badge badge-verified"
                 >Verified</span
               >{/if}
+            {#if org.mfa_required}<span class="badge badge-ecosystem"
+                >MFA required</span
+              >{/if}
           </div>
           <p class="text-muted">@{org.slug || slug}</p>
           <p class="settings-copy">
@@ -2573,124 +2595,155 @@
               />
             </div>
           </div>
+          <div class="form-group">
+            <label for="org-profile-mfa-required"
+              >Organization security policy</label
+            >
+            <label
+              for="org-profile-mfa-required"
+              class="settings-copy"
+              style="display:flex; gap:12px; align-items:flex-start; margin-top:0;"
+            >
+              <input
+                id="org-profile-mfa-required"
+                name="mfa_required"
+                type="checkbox"
+                checked={Boolean(org.mfa_required)}
+              />
+              <span>
+                <strong>Require MFA for maintainers</strong><br />
+                Record an organization-level MFA requirement for elevated roles
+                including owners, admins, maintainers, publishers, and security
+                managers.
+              </span>
+            </label>
+          </div>
           <button type="submit" class="btn btn-primary">Save profile</button>
         </form>
       </section>
+    {/if}
 
+    {#if canManageInvitations || canManageMembers}
       <div class="settings-grid">
-        <section class="card settings-section">
-          <h2>Invite a member</h2>
-          <form on:submit={handleInviteMember}>
-            <div class="form-group">
-              <label for="org-invite-target">Username or email</label>
-              <input
-                id="org-invite-target"
-                name="username_or_email"
-                class="form-input"
-                placeholder="alice or alice@example.com"
-                required
-              />
-            </div>
-            <div class="grid gap-4 xl:grid-cols-2">
+        {#if canManageInvitations}
+          <section class="card settings-section">
+            <h2>Invite a member</h2>
+            <form on:submit={handleInviteMember}>
               <div class="form-group">
-                <label for="org-invite-role">Role</label>
-                <select id="org-invite-role" name="role" class="form-input">
+                <label for="org-invite-target">Username or email</label>
+                <input
+                  id="org-invite-target"
+                  name="username_or_email"
+                  class="form-input"
+                  placeholder="alice or alice@example.com"
+                  required
+                />
+              </div>
+              <div class="grid gap-4 xl:grid-cols-2">
+                <div class="form-group">
+                  <label for="org-invite-role">Role</label>
+                  <select id="org-invite-role" name="role" class="form-input">
+                    {#each ORG_ROLE_OPTIONS as role}
+                      <option value={role.value}>{role.label}</option>
+                    {/each}
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label for="org-invite-expiry">Expires in days</label>
+                  <input
+                    id="org-invite-expiry"
+                    name="expires_in_days"
+                    type="number"
+                    min="1"
+                    max="30"
+                    class="form-input"
+                    value="7"
+                  />
+                </div>
+              </div>
+              <button type="submit" class="btn btn-primary"
+                >Send invitation</button
+              >
+            </form>
+          </section>
+        {/if}
+
+        {#if canManageMembers}
+          <section class="card settings-section">
+            <h2>Add member directly</h2>
+            <form on:submit={handleAddMember}>
+              <div class="form-group">
+                <label for="org-member-username">Username</label>
+                <input
+                  id="org-member-username"
+                  name="username"
+                  class="form-input"
+                  placeholder="alice"
+                  required
+                />
+              </div>
+              <div class="form-group">
+                <label for="org-member-role">Role</label>
+                <select id="org-member-role" name="role" class="form-input">
                   {#each ORG_ROLE_OPTIONS as role}
                     <option value={role.value}>{role.label}</option>
                   {/each}
                 </select>
               </div>
-              <div class="form-group">
-                <label for="org-invite-expiry">Expires in days</label>
-                <input
-                  id="org-invite-expiry"
-                  name="expires_in_days"
-                  type="number"
-                  min="1"
-                  max="30"
-                  class="form-input"
-                  value="7"
-                />
-              </div>
-            </div>
-            <button type="submit" class="btn btn-primary"
-              >Send invitation</button
-            >
-          </form>
-        </section>
+              <button type="submit" class="btn btn-primary">Add member</button>
+            </form>
+          </section>
+        {/if}
+      </div>
+    {/if}
 
-        <section class="card settings-section">
-          <h2>Add member directly</h2>
-          <form on:submit={handleAddMember}>
+    {#if canTransferOwnership}
+      <section class="card settings-section">
+        <h2>Transfer ownership</h2>
+        <div class="alert alert-warning">
+          <strong>This action is immediate.</strong> You will be demoted to Admin.
+        </div>
+        {#if ownershipMemberOptions.length === 0}
+          <p class="settings-copy">
+            Add another organization member before transferring ownership.
+          </p>
+        {:else}
+          <form on:submit={handleTransferOwnership}>
             <div class="form-group">
-              <label for="org-member-username">Username</label>
+              <label for="org-transfer-owner">New owner username</label>
               <input
-                id="org-member-username"
+                id="org-transfer-owner"
                 name="username"
                 class="form-input"
-                placeholder="alice"
+                list="org-transfer-owner-options"
+                placeholder="Search member username or paste user id"
+                autocomplete="off"
                 required
               />
+              <datalist id="org-transfer-owner-options">
+                {#each ownershipMemberOptions as option}
+                  <option value={option.username}>{option.label}</option>
+                  <option value={option.userId}>{option.label}</option>
+                {/each}
+              </datalist>
             </div>
             <div class="form-group">
-              <label for="org-member-role">Role</label>
-              <select id="org-member-role" name="role" class="form-input">
-                {#each ORG_ROLE_OPTIONS as role}
-                  <option value={role.value}>{role.label}</option>
-                {/each}
-              </select>
+              <label class="flex items-start gap-2">
+                <input type="checkbox" name="confirm" required />
+                <span
+                  >I understand this transfer is immediate and irreversible.</span
+                >
+              </label>
             </div>
-            <button type="submit" class="btn btn-primary">Add member</button>
+            <button type="submit" class="btn btn-danger"
+              >Transfer ownership</button
+            >
           </form>
-        </section>
-      </div>
+        {/if}
+      </section>
+    {/if}
 
-      {#if isOwner}
-        <section class="card settings-section">
-          <h2>Transfer ownership</h2>
-          <div class="alert alert-warning">
-            <strong>This action is immediate.</strong> You will be demoted to Admin.
-          </div>
-          {#if ownershipMemberOptions.length === 0}
-            <p class="settings-copy">
-              Add another organization member before transferring ownership.
-            </p>
-          {:else}
-            <form on:submit={handleTransferOwnership}>
-              <div class="form-group">
-                <label for="org-transfer-owner">New owner username</label>
-                <input
-                  id="org-transfer-owner"
-                  name="username"
-                  class="form-input"
-                  list="org-transfer-owner-options"
-                  placeholder="Search member username or paste user id"
-                  autocomplete="off"
-                  required
-                />
-                <datalist id="org-transfer-owner-options">
-                  {#each ownershipMemberOptions as option}
-                    <option value={option.username}>{option.label}</option>
-                    <option value={option.userId}>{option.label}</option>
-                  {/each}
-                </datalist>
-              </div>
-              <div class="form-group">
-                <label class="flex items-start gap-2">
-                  <input type="checkbox" name="confirm" required />
-                  <span
-                    >I understand this transfer is immediate and irreversible.</span
-                  >
-                </label>
-              </div>
-              <button type="submit" class="btn btn-danger"
-                >Transfer ownership</button
-              >
-            </form>
-          {/if}
-        </section>
-      {/if}
-
+    {#if canManageInvitations}
       <section class="card settings-section">
         <div class="org-section-header">
           <div>
@@ -2865,7 +2918,7 @@
                     <span>joined {formatDate(member.joined_at)}</span>
                   </div>
                 </div>
-                {#if canAdminister && member.role !== 'owner' && member.username}
+                {#if canManageMembers && member.role !== 'owner' && member.username}
                   <div class="token-row__actions">
                     <form
                       class="flex flex-wrap items-center gap-2"
@@ -2916,7 +2969,7 @@
       <div class="settings-grid">
         <section class="card settings-section">
           <h2>Teams</h2>
-          {#if canAdminister}
+          {#if canManageTeams}
             <form class="settings-subsection" on:submit={handleCreateTeam}>
               <div class="grid gap-4 xl:grid-cols-2">
                 <div class="form-group">
@@ -2996,7 +3049,7 @@
                         <span>created {formatDate(team.created_at)}</span>
                       </div>
                     </div>
-                    {#if canAdminister && teamSlug}
+                    {#if canManageTeams && teamSlug}
                       <button
                         class="btn btn-danger btn-sm"
                         type="button"
@@ -3006,7 +3059,7 @@
                     {/if}
                   </div>
 
-                  {#if canAdminister && teamSlug}
+                  {#if canManageTeams && teamSlug}
                     <div class="grid gap-6 xl:grid-cols-2">
                       <form
                         on:submit={(event) => handleUpdateTeam(event, teamSlug)}
@@ -3128,10 +3181,11 @@
                       </div>
                     </div>
 
-                    <div class="mt-6">
-                      <h4>Repository access</h4>
-                      <p class="settings-copy">
-                        Repository grants apply across current and future
+                    {#if canManageRepositories}
+                      <div class="mt-6">
+                        <h4>Repository access</h4>
+                        <p class="settings-copy">
+                          Repository grants apply across current and future
                         packages in the selected repository. The <strong
                           >Admin</strong
                         >
@@ -3218,7 +3272,8 @@
                         handleSubmit={(event) =>
                           handleReplaceTeamRepositoryAccess(event, teamSlug)}
                       />
-                    </div>
+                      </div>
+                    {/if}
 
                     <div class="mt-6">
                       <h4>Package access</h4>
@@ -3290,7 +3345,8 @@
                       />
                     </div>
 
-                    <div class="mt-6">
+                    {#if canManageNamespaces}
+                      <div class="mt-6">
                       <h4>Namespace access</h4>
                       <p class="settings-copy">
                         Namespace grants let a team delete or transfer specific
@@ -3366,7 +3422,8 @@
                         handleSubmit={(event) =>
                           handleReplaceTeamNamespaceAccess(event, teamSlug)}
                       />
-                    </div>
+                      </div>
+                    {/if}
                   {/if}
                 </div>
               {/each}
@@ -3719,7 +3776,7 @@
                   {/if}
                 </div>
 
-                {#if canAdminister && repositorySlug}
+                {#if canManageRepositories && repositorySlug}
                   <form
                     class="mt-4"
                     on:submit={(event) =>
@@ -3791,7 +3848,7 @@
           </div>
         {/if}
 
-        {#if canAdminister}
+        {#if canManageRepositories}
           <div class="settings-subsection">
             <h3>Transfer repository ownership</h3>
             {#if repositoriesError}
@@ -4024,7 +4081,7 @@
           </div>
         {/if}
 
-        {#if canAdminister && org.id}
+        {#if canManageRepositories && org.id}
           <form class="settings-subsection" on:submit={handleCreateRepository}>
             <h3>Create a repository</h3>
             <div class="grid gap-4 xl:grid-cols-2">
@@ -4152,7 +4209,7 @@
           </div>
         {/if}
 
-        {#if canAdminister && org.id}
+        {#if canManageNamespaces && org.id}
           <form class="settings-subsection" on:submit={handleCreateNamespace}>
             <h3>Claim a namespace</h3>
             <div class="grid gap-4 xl:grid-cols-2">

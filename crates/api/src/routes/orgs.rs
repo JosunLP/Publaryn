@@ -25,9 +25,10 @@ use publaryn_core::{
 use crate::{
     error::{ApiError, ApiResult},
     request_auth::{
-        actor_can_transfer_package_by_id, actor_can_transfer_repository_by_id,
+        actor_can_access_org_member_directory_by_id, actor_can_transfer_package_by_id,
+        actor_can_transfer_repository_by_id, actor_org_capabilities_by_id,
         ensure_org_admin_by_slug, ensure_org_audit_access_by_slug, ensure_org_member_by_slug,
-        is_org_member, AuthenticatedIdentity, OptionalAuthenticatedIdentity,
+        AuthenticatedIdentity, OptionalAuthenticatedIdentity,
     },
     scopes::{ensure_scope, SCOPE_ORGS_TRANSFER, SCOPE_ORGS_WRITE, SCOPE_PACKAGES_WRITE},
     state::AppState,
@@ -181,10 +182,11 @@ async fn create_org(
 
 async fn get_org(
     State(state): State<AppState>,
+    identity: OptionalAuthenticatedIdentity,
     Path(slug): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let row = sqlx::query(
-        "SELECT id, name, slug, description, website, email, is_verified, created_at \
+        "SELECT id, name, slug, description, website, email, is_verified, mfa_required, created_at \
          FROM organizations WHERE slug = $1",
     )
     .bind(&slug)
@@ -192,16 +194,22 @@ async fn get_org(
     .await
     .map_err(|e| ApiError(Error::Database(e)))?
     .ok_or_else(|| ApiError(Error::NotFound(format!("Organization '{slug}' not found"))))?;
+    let org_id: Uuid = row
+        .try_get("id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let capabilities = actor_org_capabilities_by_id(&state.db, org_id, identity.user_id()).await?;
 
     Ok(Json(serde_json::json!({
-        "id": row.try_get::<Uuid, _>("id").ok(),
+        "id": Some(org_id),
         "name": row.try_get::<String, _>("name").ok(),
         "slug": row.try_get::<String, _>("slug").ok(),
         "description": row.try_get::<Option<String>, _>("description").ok().flatten(),
         "website": row.try_get::<Option<String>, _>("website").ok().flatten(),
         "email": row.try_get::<Option<String>, _>("email").ok().flatten(),
         "is_verified": row.try_get::<bool, _>("is_verified").ok(),
+        "mfa_required": row.try_get::<bool, _>("mfa_required").ok(),
         "created_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at").ok(),
+        "capabilities": capabilities,
     })))
 }
 
@@ -210,6 +218,15 @@ struct UpdateOrgRequest {
     description: Option<Option<String>>,
     website: Option<Option<String>>,
     email: Option<Option<String>>,
+    mfa_required: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedOrgProfileUpdate {
+    description: Option<String>,
+    website: Option<String>,
+    email: Option<String>,
+    mfa_required: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -254,7 +271,7 @@ async fn update_org(
     let org_id = ensure_org_admin_by_slug(&state.db, &slug, identity.user_id).await?;
 
     let current_org = sqlx::query(
-        "SELECT name, description, website, email \
+        "SELECT name, description, website, email, mfa_required \
          FROM organizations \
          WHERE id = $1",
     )
@@ -275,51 +292,18 @@ async fn update_org(
     let current_email = current_org
         .try_get::<Option<String>, _>("email")
         .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let current_mfa_required = current_org
+        .try_get::<bool, _>("mfa_required")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
 
-    let updated_description = body
-        .description
-        .map(normalize_optional_org_field)
-        .unwrap_or_else(|| current_description.clone());
-    let updated_website = body
-        .website
-        .map(normalize_optional_org_field)
-        .unwrap_or_else(|| current_website.clone());
-    let updated_email = body
-        .email
-        .map(normalize_optional_org_field)
-        .unwrap_or_else(|| current_email.clone());
-
-    let mut changes = serde_json::Map::new();
-
-    if current_description != updated_description {
-        changes.insert(
-            "description".into(),
-            serde_json::json!({
-                "before": current_description,
-                "after": updated_description,
-            }),
-        );
-    }
-
-    if current_website != updated_website {
-        changes.insert(
-            "website".into(),
-            serde_json::json!({
-                "before": current_website,
-                "after": updated_website,
-            }),
-        );
-    }
-
-    if current_email != updated_email {
-        changes.insert(
-            "email".into(),
-            serde_json::json!({
-                "before": current_email,
-                "after": updated_email,
-            }),
-        );
-    }
+    let current_profile = ResolvedOrgProfileUpdate {
+        description: current_description,
+        website: current_website,
+        email: current_email,
+        mfa_required: current_mfa_required,
+    };
+    let updated_profile = resolve_org_profile_update(&current_profile, &body);
+    let changes = collect_org_profile_changes(&current_profile, &updated_profile);
 
     if changes.is_empty() {
         return Ok(Json(
@@ -338,14 +322,16 @@ async fn update_org(
     sqlx::query(
         "UPDATE organizations \
          SET description = $1, \
-             website     = $2, \
-             email       = $3, \
-             updated_at  = NOW() \
-         WHERE id = $4",
+              website     = $2, \
+              email       = $3, \
+              mfa_required = $4, \
+              updated_at   = NOW() \
+         WHERE id = $5",
     )
-    .bind(&updated_description)
-    .bind(&updated_website)
-    .bind(&updated_email)
+    .bind(&updated_profile.description)
+    .bind(&updated_profile.website)
+    .bind(&updated_profile.email)
+    .bind(updated_profile.mfa_required)
     .bind(org_id)
     .execute(&mut *tx)
     .await
@@ -387,6 +373,79 @@ fn normalize_optional_org_field(value: Option<String>) -> Option<String> {
             Some(trimmed.to_owned())
         }
     })
+}
+
+fn resolve_org_profile_update(
+    current: &ResolvedOrgProfileUpdate,
+    body: &UpdateOrgRequest,
+) -> ResolvedOrgProfileUpdate {
+    ResolvedOrgProfileUpdate {
+        description: body
+            .description
+            .clone()
+            .map(normalize_optional_org_field)
+            .unwrap_or_else(|| current.description.clone()),
+        website: body
+            .website
+            .clone()
+            .map(normalize_optional_org_field)
+            .unwrap_or_else(|| current.website.clone()),
+        email: body
+            .email
+            .clone()
+            .map(normalize_optional_org_field)
+            .unwrap_or_else(|| current.email.clone()),
+        mfa_required: body.mfa_required.unwrap_or(current.mfa_required),
+    }
+}
+
+fn collect_org_profile_changes(
+    current: &ResolvedOrgProfileUpdate,
+    updated: &ResolvedOrgProfileUpdate,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut changes = serde_json::Map::new();
+
+    if current.description != updated.description {
+        changes.insert(
+            "description".into(),
+            serde_json::json!({
+                "before": current.description,
+                "after": updated.description,
+            }),
+        );
+    }
+
+    if current.website != updated.website {
+        changes.insert(
+            "website".into(),
+            serde_json::json!({
+                "before": current.website,
+                "after": updated.website,
+            }),
+        );
+    }
+
+    if current.email != updated.email {
+        changes.insert(
+            "email".into(),
+            serde_json::json!({
+                "before": current.email,
+                "after": updated.email,
+            }),
+        );
+    }
+
+    if current.mfa_required != updated.mfa_required {
+        changes.insert(
+            "mfa_required".into(),
+            serde_json::json!({
+                "before": current.mfa_required,
+                "after": updated.mfa_required,
+            }),
+        );
+    }
+
+    changes
 }
 
 async fn list_org_audit_logs(
@@ -2432,10 +2491,8 @@ async fn list_org_packages(
         .try_get("id")
         .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
     let actor_user_id = identity.user_id();
-    let can_view_non_public = match actor_user_id {
-        Some(actor_user_id) => is_org_member(&state.db, org_id, actor_user_id).await?,
-        None => false,
-    };
+    let can_view_non_public =
+        actor_can_access_org_member_directory_by_id(&state.db, org_id, actor_user_id).await?;
 
     let rows = sqlx::query(
         "SELECT p.id, p.name, p.ecosystem, p.description, p.download_count, p.created_at \
@@ -2500,10 +2557,8 @@ async fn list_org_repositories(
         .try_get("id")
         .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
     let actor_user_id = identity.user_id();
-    let can_view_non_public = match actor_user_id {
-        Some(actor_user_id) => is_org_member(&state.db, org_id, actor_user_id).await?,
-        None => false,
-    };
+    let can_view_non_public =
+        actor_can_access_org_member_directory_by_id(&state.db, org_id, actor_user_id).await?;
 
     let rows = sqlx::query(
         "SELECT r.id, r.name, r.slug, r.description, r.kind::text AS kind, \
@@ -2567,10 +2622,8 @@ async fn resolve_org_security_scope(
     let org_id: Uuid = org_row
         .try_get("id")
         .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
-    let can_view_non_public = match actor_user_id {
-        Some(actor_user_id) => is_org_member(db, org_id, actor_user_id).await?,
-        None => false,
-    };
+    let can_view_non_public =
+        actor_can_access_org_member_directory_by_id(db, org_id, actor_user_id).await?;
 
     Ok((org_id, can_view_non_public))
 }
@@ -3408,9 +3461,10 @@ mod tests {
     use publaryn_core::domain::{organization::OrgRole, team::TeamPermission};
 
     use super::{
-        normalize_namespace_team_permissions, normalize_optional_org_field,
-        normalize_team_permissions, resolve_org_security_filters, validate_ownership_transfer,
-        OrgSecurityFindingsQuery,
+        collect_org_profile_changes, normalize_namespace_team_permissions,
+        normalize_optional_org_field, normalize_team_permissions, resolve_org_profile_update,
+        resolve_org_security_filters, validate_ownership_transfer, OrgSecurityFindingsQuery,
+        ResolvedOrgProfileUpdate, UpdateOrgRequest,
     };
 
     #[test]
@@ -3421,6 +3475,62 @@ mod tests {
         );
         assert_eq!(normalize_optional_org_field(Some("   ".into())), None);
         assert_eq!(normalize_optional_org_field(None), None);
+    }
+
+    #[test]
+    fn resolve_org_profile_update_preserves_existing_fields_and_normalizes_mfa_policy() {
+        let current = ResolvedOrgProfileUpdate {
+            description: Some("Current description".into()),
+            website: Some("https://packages.example.com".into()),
+            email: Some("team@example.com".into()),
+            mfa_required: false,
+        };
+
+        let updated = resolve_org_profile_update(
+            &current,
+            &UpdateOrgRequest {
+                description: Some(Some("  Updated description  ".into())),
+                website: None,
+                email: Some(Some("   ".into())),
+                mfa_required: Some(true),
+            },
+        );
+
+        assert_eq!(
+            updated,
+            ResolvedOrgProfileUpdate {
+                description: Some("Updated description".into()),
+                website: Some("https://packages.example.com".into()),
+                email: None,
+                mfa_required: true,
+            }
+        );
+    }
+
+    #[test]
+    fn collect_org_profile_changes_tracks_mfa_policy_changes() {
+        let current = ResolvedOrgProfileUpdate {
+            description: Some("Current description".into()),
+            website: Some("https://packages.example.com".into()),
+            email: Some("team@example.com".into()),
+            mfa_required: false,
+        };
+        let updated = ResolvedOrgProfileUpdate {
+            description: Some("Current description".into()),
+            website: Some("https://packages.example.com".into()),
+            email: Some("team@example.com".into()),
+            mfa_required: true,
+        };
+
+        let changes = collect_org_profile_changes(&current, &updated);
+
+        assert_eq!(
+            changes.get("mfa_required"),
+            Some(&serde_json::json!({
+                "before": false,
+                "after": true,
+            }))
+        );
     }
 
     #[test]

@@ -3,15 +3,29 @@ import { collectPaginatedItems } from './pagination';
 
 type NullableString = string | null;
 
+export interface OrganizationCapabilities {
+  can_manage?: boolean | null;
+  can_manage_invitations?: boolean | null;
+  can_manage_members?: boolean | null;
+  can_manage_teams?: boolean | null;
+  can_manage_repositories?: boolean | null;
+  can_manage_namespaces?: boolean | null;
+  can_view_member_directory?: boolean | null;
+  can_view_audit_log?: boolean | null;
+  can_transfer_ownership?: boolean | null;
+}
+
 export interface OrganizationDetail {
   id?: NullableString;
   name?: NullableString;
   slug?: NullableString;
   description?: NullableString;
   is_verified?: boolean;
+  mfa_required?: boolean;
   website?: NullableString;
   email?: NullableString;
   created_at?: NullableString;
+  capabilities?: OrganizationCapabilities | null;
 }
 
 export interface OrganizationMembership extends OrganizationDetail {
@@ -327,6 +341,7 @@ export interface UpdateOrgInput {
   description?: NullableString;
   website?: NullableString;
   email?: NullableString;
+  mfaRequired?: boolean;
 }
 
 export interface AddMemberInput {
@@ -427,7 +442,13 @@ export async function updateOrg(
   const { data } = await api.patch<OrganizationDetail>(
     `/v1/orgs/${enc(slug)}`,
     {
-      body: updates,
+      body: {
+        name: updates.name,
+        description: updates.description,
+        website: updates.website,
+        email: updates.email,
+        mfa_required: updates.mfaRequired,
+      },
     }
   );
 

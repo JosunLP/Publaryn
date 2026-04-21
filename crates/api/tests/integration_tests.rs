@@ -2983,7 +2983,9 @@ async fn test_get_nonexistent_user_returns_404(pool: PgPool) {
 async fn test_create_and_get_org(pool: PgPool) {
     let app = app(pool);
     register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
     let jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let admin_jwt = login_user(&app, "bob", "super_secret_pw!").await;
 
     // Create org
     let req = Request::builder()
@@ -2999,14 +3001,109 @@ async fn test_create_and_get_org(pool: PgPool) {
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
 
-    // Get org
+    let (status, body) = add_org_member(&app, &jwt, "acme-corp", "bob", "admin").await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected add member response: {body}"
+    );
+
+    // Get org anonymously
     let req = Request::get("/v1/orgs/acme-corp")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["slug"], "acme-corp");
+    assert_eq!(body["capabilities"]["can_manage"], false);
+    assert_eq!(body["capabilities"]["can_manage_invitations"], false);
+    assert_eq!(body["capabilities"]["can_manage_members"], false);
+    assert_eq!(body["capabilities"]["can_manage_teams"], false);
+    assert_eq!(body["capabilities"]["can_manage_repositories"], false);
+    assert_eq!(body["capabilities"]["can_manage_namespaces"], false);
+    assert_eq!(body["capabilities"]["can_view_member_directory"], false);
+    assert_eq!(body["capabilities"]["can_view_audit_log"], false);
+    assert_eq!(body["capabilities"]["can_transfer_ownership"], false);
+
+    // Get org as the owner
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/v1/orgs/acme-corp")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["capabilities"]["can_manage"], true);
+    assert_eq!(body["capabilities"]["can_manage_invitations"], true);
+    assert_eq!(body["capabilities"]["can_manage_members"], true);
+    assert_eq!(body["capabilities"]["can_manage_teams"], true);
+    assert_eq!(body["capabilities"]["can_manage_repositories"], true);
+    assert_eq!(body["capabilities"]["can_manage_namespaces"], true);
+    assert_eq!(body["capabilities"]["can_view_member_directory"], true);
+    assert_eq!(body["capabilities"]["can_view_audit_log"], true);
+    assert_eq!(body["capabilities"]["can_transfer_ownership"], true);
+
+    // Get org as an admin member
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/v1/orgs/acme-corp")
+        .header(header::AUTHORIZATION, format!("Bearer {admin_jwt}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["capabilities"]["can_manage"], true);
+    assert_eq!(body["capabilities"]["can_manage_invitations"], true);
+    assert_eq!(body["capabilities"]["can_manage_members"], true);
+    assert_eq!(body["capabilities"]["can_manage_teams"], true);
+    assert_eq!(body["capabilities"]["can_manage_repositories"], true);
+    assert_eq!(body["capabilities"]["can_manage_namespaces"], true);
+    assert_eq!(body["capabilities"]["can_view_member_directory"], true);
+    assert_eq!(body["capabilities"]["can_view_audit_log"], true);
+    assert_eq!(body["capabilities"]["can_transfer_ownership"], false);
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/v1/users/me/organizations")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
         .body(Body::empty())
         .unwrap();
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    assert_eq!(body["slug"], "acme-corp");
+    let organizations = body["organizations"]
+        .as_array()
+        .expect("organizations response should be an array");
+    assert_eq!(organizations.len(), 1);
+    assert_eq!(organizations[0]["slug"], "acme-corp");
+    assert_eq!(organizations[0]["capabilities"]["can_manage"], true);
+    assert_eq!(
+        organizations[0]["capabilities"]["can_manage_invitations"],
+        true
+    );
+    assert_eq!(organizations[0]["capabilities"]["can_manage_members"], true);
+    assert_eq!(organizations[0]["capabilities"]["can_manage_teams"], true);
+    assert_eq!(
+        organizations[0]["capabilities"]["can_manage_repositories"],
+        true
+    );
+    assert_eq!(
+        organizations[0]["capabilities"]["can_manage_namespaces"],
+        true
+    );
+    assert_eq!(
+        organizations[0]["capabilities"]["can_view_member_directory"],
+        true
+    );
+    assert_eq!(organizations[0]["capabilities"]["can_view_audit_log"], true);
+    assert_eq!(
+        organizations[0]["capabilities"]["can_transfer_ownership"],
+        true
+    );
 }
 
 #[sqlx::test(migrations = "../../migrations")]
@@ -6046,7 +6143,7 @@ async fn test_namespace_claim_delete_requires_owner_or_org_admin(pool: PgPool) {
         forbidden_body["error"]
             .as_str()
             .expect("error should be present")
-            .contains("manage this namespace claim"),
+            .contains("This organization requires MFA for elevated members before write actions are allowed"),
         "unexpected error response: {forbidden_body}"
     );
 
@@ -6252,7 +6349,7 @@ async fn test_namespace_claim_transfer_requires_source_and_target_org_control(po
         forbidden_body["error"]
             .as_str()
             .expect("error should be present")
-            .contains("transfer this namespace claim"),
+            .contains("This organization requires MFA for elevated members before write actions are allowed"),
         "unexpected error response: {forbidden_body}"
     );
 
@@ -7200,7 +7297,7 @@ async fn test_team_namespace_access_rejects_claims_outside_org(pool: PgPool) {
 
 #[sqlx::test(migrations = "../../migrations")]
 async fn test_team_namespace_admin_permission_allows_namespace_delete(pool: PgPool) {
-    let app = app(pool);
+    let app = app(pool.clone());
     register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
     register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
     let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
@@ -7256,6 +7353,16 @@ async fn test_team_namespace_admin_permission_allows_namespace_delete(pool: PgPo
     .await;
     assert_eq!(status, StatusCode::OK);
 
+    let (status, updated_org_body) = update_org_profile(
+        &app,
+        &alice_jwt,
+        "acme-corp",
+        json!({ "mfa_required": true }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(updated_org_body["mfa_required"], true);
+
     let (status, after_grant_body) = list_namespace_claims_authenticated(
         &app,
         &bob_jwt,
@@ -7264,6 +7371,34 @@ async fn test_team_namespace_admin_permission_allows_namespace_delete(pool: PgPo
     .await;
     assert_eq!(status, StatusCode::OK);
     let claims = after_grant_body["namespaces"]
+        .as_array()
+        .expect("namespace response should be an array");
+    assert_eq!(claims[0]["can_manage"], false);
+    assert_eq!(claims[0]["can_transfer"], false);
+
+    let (status, forbidden_body) = delete_namespace_claim(&app, &bob_jwt, claim_id).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(
+        forbidden_body["error"]
+            .as_str()
+            .expect("error should be present")
+            .contains("manage this namespace claim"),
+        "unexpected error response: {forbidden_body}"
+    );
+
+    sqlx::query("UPDATE users SET mfa_enabled = true WHERE username = 'bob'")
+        .execute(&pool)
+        .await
+        .expect("should enable MFA for bob");
+
+    let (status, after_mfa_body) = list_namespace_claims_authenticated(
+        &app,
+        &bob_jwt,
+        Some(&format!("owner_org_id={org_id}")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let claims = after_mfa_body["namespaces"]
         .as_array()
         .expect("namespace response should be an array");
     assert_eq!(claims[0]["can_manage"], true);
@@ -7347,6 +7482,16 @@ async fn test_team_namespace_transfer_permission_allows_namespace_transfer(pool:
         "unexpected team namespace access response: {grant_body}"
     );
 
+    let (status, updated_org_body) = update_org_profile(
+        &app,
+        &alice_jwt,
+        "source-org",
+        json!({ "mfa_required": true }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(updated_org_body["mfa_required"], true);
+
     let grants_before_transfer: i64 = sqlx::query_scalar(
         "SELECT COUNT(*)::BIGINT FROM team_namespace_access WHERE namespace_claim_id = $1",
     )
@@ -7364,6 +7509,35 @@ async fn test_team_namespace_transfer_permission_allows_namespace_transfer(pool:
     .await;
     assert_eq!(status, StatusCode::OK);
     let claims = after_grant_body["namespaces"]
+        .as_array()
+        .expect("namespace response should be an array");
+    assert_eq!(claims[0]["can_manage"], false);
+    assert_eq!(claims[0]["can_transfer"], false);
+
+    let (status, forbidden_body) =
+        transfer_namespace_claim(&app, &bob_jwt, claim_id, "target-org").await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(
+        forbidden_body["error"]
+            .as_str()
+            .expect("error should be present")
+            .contains("transfer this namespace claim"),
+        "unexpected error response: {forbidden_body}"
+    );
+
+    sqlx::query("UPDATE users SET mfa_enabled = true WHERE username = 'bob'")
+        .execute(&pool)
+        .await
+        .expect("should enable MFA for bob");
+
+    let (status, after_mfa_body) = list_namespace_claims_authenticated(
+        &app,
+        &bob_jwt,
+        Some(&format!("owner_org_id={source_org_id}")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let claims = after_mfa_body["namespaces"]
         .as_array()
         .expect("namespace response should be an array");
     assert_eq!(claims[0]["can_transfer"], true);
@@ -7425,7 +7599,7 @@ async fn test_team_namespace_transfer_permission_allows_namespace_transfer(pool:
 async fn test_team_repository_write_metadata_permission_allows_package_creation_and_metadata_updates_but_not_repository_settings(
     pool: PgPool,
 ) {
-    let app = app(pool);
+    let app = app(pool.clone());
     register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
     register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
     let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
@@ -7489,6 +7663,50 @@ async fn test_team_repository_write_metadata_permission_allows_package_creation_
     assert_eq!(status, StatusCode::OK);
     assert_eq!(repository_detail_before["can_manage"], false);
     assert_eq!(repository_detail_before["can_create_packages"], true);
+
+    let (status, updated_org_body) = update_org_profile(
+        &app,
+        &alice_jwt,
+        "source-org",
+        json!({ "mfa_required": true }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(updated_org_body["mfa_required"], true);
+
+    let (status, repository_detail_mfa_required) =
+        get_repository_detail(&app, Some(&bob_jwt), "source-packages").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(repository_detail_mfa_required["can_manage"], false);
+    assert_eq!(repository_detail_mfa_required["can_create_packages"], false);
+
+    let (status, mfa_forbidden_body) = create_package(
+        &app,
+        &bob_jwt,
+        "npm",
+        "repo-metadata-widget",
+        "source-packages",
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(
+        mfa_forbidden_body["error"]
+            .as_str()
+            .expect("error should be present")
+            .contains("This organization requires MFA for elevated members before write actions are allowed"),
+        "unexpected error response: {mfa_forbidden_body}"
+    );
+
+    sqlx::query("UPDATE users SET mfa_enabled = true WHERE username = 'bob'")
+        .execute(&pool)
+        .await
+        .expect("should enable MFA for bob");
+
+    let (status, repository_detail_after_mfa) =
+        get_repository_detail(&app, Some(&bob_jwt), "source-packages").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(repository_detail_after_mfa["can_manage"], false);
+    assert_eq!(repository_detail_after_mfa["can_create_packages"], true);
 
     let (status, create_body) = create_package(
         &app,
@@ -7844,6 +8062,52 @@ async fn test_team_repository_admin_permission_allows_repository_updates_and_tea
     assert_eq!(status, StatusCode::OK);
     assert_eq!(repository_detail_before["can_manage"], true);
     assert_eq!(repository_detail_before["can_create_packages"], true);
+
+    let (status, updated_org_body) = update_org_profile(
+        &app,
+        &alice_jwt,
+        "source-org",
+        json!({ "mfa_required": true }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(updated_org_body["mfa_required"], true);
+
+    let (status, repository_detail_mfa_required) =
+        get_repository_detail(&app, Some(&bob_jwt), "source-packages").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(repository_detail_mfa_required["can_manage"], false);
+    assert_eq!(repository_detail_mfa_required["can_create_packages"], false);
+
+    let (status, mfa_forbidden_body) = update_repository_detail(
+        &app,
+        &bob_jwt,
+        "source-packages",
+        json!({
+            "description": "Managed by the repository-admins team.",
+            "upstream_url": "https://github.com/acme/source-packages",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(
+        mfa_forbidden_body["error"]
+            .as_str()
+            .expect("error should be present")
+            .contains("This organization requires MFA for elevated members before write actions are allowed"),
+        "unexpected error response: {mfa_forbidden_body}"
+    );
+
+    sqlx::query("UPDATE users SET mfa_enabled = true WHERE username = 'bob'")
+        .execute(&pool)
+        .await
+        .expect("should enable MFA for bob");
+
+    let (status, repository_detail_after_mfa) =
+        get_repository_detail(&app, Some(&bob_jwt), "source-packages").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(repository_detail_after_mfa["can_manage"], true);
+    assert_eq!(repository_detail_after_mfa["can_create_packages"], true);
 
     let (status, update_body) = update_repository_detail(
         &app,
@@ -8348,6 +8612,42 @@ async fn test_team_repository_transfer_permission_allows_repository_transfer(poo
         get_repository_detail(&app, Some(&bob_jwt), "source-packages").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(detail_after_grant["can_transfer"], true);
+
+    let (status, updated_org_body) = update_org_profile(
+        &app,
+        &alice_jwt,
+        "source-org",
+        json!({ "mfa_required": true }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(updated_org_body["mfa_required"], true);
+
+    let (status, detail_mfa_required) =
+        get_repository_detail(&app, Some(&bob_jwt), "source-packages").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail_mfa_required["can_transfer"], false);
+
+    let (status, mfa_forbidden_body) =
+        transfer_repository_ownership(&app, &bob_jwt, "source-packages", "target-org").await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(
+        mfa_forbidden_body["error"]
+            .as_str()
+            .expect("error should be present")
+            .contains("This organization requires MFA for elevated members before write actions are allowed"),
+        "unexpected error response: {mfa_forbidden_body}"
+    );
+
+    sqlx::query("UPDATE users SET mfa_enabled = true WHERE username = 'bob'")
+        .execute(&pool)
+        .await
+        .expect("should enable MFA for bob");
+
+    let (status, detail_after_mfa) =
+        get_repository_detail(&app, Some(&bob_jwt), "source-packages").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail_after_mfa["can_transfer"], true);
 
     let (status, transfer_body) =
         transfer_repository_ownership(&app, &bob_jwt, "source-packages", "target-org").await;

@@ -33,12 +33,13 @@ use crate::{
         enqueue_package_reindex_job, enqueue_release_scan_jobs, enqueue_scan_artifact_job,
     },
     request_auth::{
-        actor_can_admin_package_by_id, actor_can_publish_package_by_id,
-        actor_can_security_review_package_by_id, actor_can_transfer_package_by_id,
-        actor_can_write_package_by_id, actor_can_write_package_metadata_by_id,
-        ensure_package_admin_access, ensure_package_metadata_write_access,
-        ensure_package_publish_access, ensure_package_read_access, ensure_package_transfer_access,
-        ensure_repository_package_creation_access, is_org_member, AuthenticatedIdentity,
+        actor_can_access_org_member_directory_by_id, actor_can_admin_package_by_id,
+        actor_can_publish_package_by_id, actor_can_security_review_package_by_id,
+        actor_can_transfer_package_by_id, actor_can_write_package_by_id,
+        actor_can_write_package_metadata_by_id, ensure_package_admin_access,
+        ensure_package_metadata_write_access, ensure_package_publish_access,
+        ensure_package_read_access, ensure_package_transfer_access,
+        ensure_repository_package_creation_access, AuthenticatedIdentity,
         OptionalAuthenticatedIdentity,
     },
     routes::parse_ecosystem,
@@ -512,7 +513,12 @@ async fn get_package(
         .flatten();
     let team_access = match (owner_org_id, identity.user_id()) {
         (Some(owner_org_id), Some(actor_user_id))
-            if is_org_member(&state.db, owner_org_id, actor_user_id).await? =>
+            if actor_can_access_org_member_directory_by_id(
+                &state.db,
+                owner_org_id,
+                Some(actor_user_id),
+            )
+            .await? =>
         {
             let rows = sqlx::query(
                 "SELECT t.id, t.slug, t.name, \

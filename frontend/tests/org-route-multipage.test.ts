@@ -34,8 +34,16 @@ interface SearchCall {
 }
 
 interface FetchScenario {
+  canManageInvitations: boolean;
+  canManageMembers: boolean;
+  canManageTeams: boolean;
+  canManageRepositories: boolean;
+  canManageNamespaces: boolean;
   repositoryPageRequests: number[];
   packagePageRequests: number[];
+  invitationRequests: string[];
+  orgUpdateCalls: MutationCall[];
+  orgMfaRequired: boolean;
   teamRepositoryAccessUpdates: MutationCall[];
   teamPackageAccessUpdates: MutationCall[];
   repositoryTransfers: MutationCall[];
@@ -89,6 +97,17 @@ const currentOrgMembership = {
   role: 'owner',
   package_count: packages.length,
   team_count: 1,
+  capabilities: {
+    can_manage: true,
+    can_manage_invitations: true,
+    can_manage_members: true,
+    can_manage_teams: true,
+    can_manage_repositories: true,
+    can_manage_namespaces: true,
+    can_view_member_directory: true,
+    can_view_audit_log: true,
+    can_transfer_ownership: true,
+  },
 };
 
 const targetOrgMembership = {
@@ -96,6 +115,17 @@ const targetOrgMembership = {
   slug: TARGET_ORG_SLUG,
   name: 'Target Org',
   role: 'admin',
+  capabilities: {
+    can_manage: true,
+    can_manage_invitations: true,
+    can_manage_members: true,
+    can_manage_teams: true,
+    can_manage_repositories: true,
+    can_manage_namespaces: true,
+    can_view_member_directory: true,
+    can_view_audit_log: true,
+    can_transfer_ownership: false,
+  },
 };
 
 const members = [
@@ -231,6 +261,146 @@ describe('route-level multi-page org dataset coverage', () => {
         expect(optionValues(repositoryTransferSelect)).toContain(finalRepository?.slug);
         expect(optionValues(packageTransferSelect)).toContain(finalPackageKey);
       });
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace saves and reloads the organization MFA policy', async () => {
+    const scenario = createFetchScenario();
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Organization profile');
+      });
+
+      const profileCheckbox = queryCheckbox(target, '#org-profile-mfa-required');
+      expect(profileCheckbox.checked).toBe(false);
+
+      const profileForm = queryRequiredForm(profileCheckbox.closest('form'));
+      setChecked(profileCheckbox, true);
+      submitForm(profileForm);
+
+      await waitFor(() => {
+        expect(scenario.orgUpdateCalls).toHaveLength(1);
+        expect(target.textContent).toContain('Organization profile updated.');
+        expect(target.textContent).toContain('MFA required');
+      });
+
+      expect(scenario.orgUpdateCalls[0]).toEqual({
+        path: `/v1/orgs/${ORG_SLUG}`,
+        body: {
+          description: 'Source organization',
+          website: null,
+          email: null,
+          mfa_required: true,
+        },
+      });
+      expect(queryCheckbox(target, '#org-profile-mfa-required').checked).toBe(true);
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace does not load invitation management UI when the explicit invitation capability is absent', async () => {
+    const scenario = createFetchScenario();
+    scenario.canManageInvitations = false;
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Organization profile');
+        expect(target.textContent).toContain('Add member directly');
+      });
+
+      expect(scenario.invitationRequests).toEqual([]);
+      expect(target.textContent).not.toContain('Invite a member');
+      expect(target.textContent).not.toContain('Invitations');
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace hides member mutation controls when the explicit member-management capability is absent', async () => {
+    const scenario = createFetchScenario();
+    scenario.canManageMembers = false;
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Invite a member');
+        expect(target.textContent).toContain('Members');
+      });
+
+      expect(target.textContent).not.toContain('Add member directly');
+      expect(target.querySelector('#org-member-username')).toBeNull();
+      expect(target.querySelector('[id^="member-role-"]')).toBeNull();
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace hides team management controls when the explicit team-management capability is absent', async () => {
+    const scenario = createFetchScenario();
+    scenario.canManageTeams = false;
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Members');
+        expect(target.textContent).toContain('Teams');
+      });
+
+      expect(target.textContent).toContain('Add member directly');
+      expect(target.querySelector('#team-create-name')).toBeNull();
+      expect(target.querySelector(`#team-package-${TEAM_SLUG}`)).toBeNull();
+      expect(target.querySelector(`#team-repository-${TEAM_SLUG}`)).toBeNull();
+      expect(target.querySelector(`#team-namespace-${TEAM_SLUG}`)).toBeNull();
+      expect(target.textContent).not.toContain('Create team');
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace hides repository management controls when the explicit repository-management capability is absent', async () => {
+    const scenario = createFetchScenario();
+    scenario.canManageRepositories = false;
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Repositories');
+        expect(target.textContent).toContain('Teams');
+      });
+
+      expect(target.querySelector(`#team-package-${TEAM_SLUG}`)).not.toBeNull();
+      expect(target.querySelector(`#team-repository-${TEAM_SLUG}`)).toBeNull();
+      expect(target.querySelector('#repository-create-name')).toBeNull();
+      expect(target.querySelector('#org-repository-transfer-repository')).toBeNull();
+      expect(target.querySelector('#repository-visibility-repo-001')).toBeNull();
+      expect(target.textContent).not.toContain('Create repository');
+      expect(target.textContent).not.toContain('Transfer repository ownership');
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace hides namespace management controls when the explicit namespace-management capability is absent', async () => {
+    const scenario = createFetchScenario();
+    scenario.canManageNamespaces = false;
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Namespace claims');
+        expect(target.textContent).toContain('Teams');
+      });
+
+      expect(target.querySelector(`#team-repository-${TEAM_SLUG}`)).not.toBeNull();
+      expect(target.querySelector(`#team-namespace-${TEAM_SLUG}`)).toBeNull();
+      expect(target.querySelector('#namespace-value')).toBeNull();
+      expect(target.textContent).not.toContain('Create namespace claim');
     } finally {
       unmount();
     }
@@ -488,8 +658,16 @@ function buildPageState(
 
 function createFetchScenario(): FetchScenario {
   return {
+    canManageInvitations: true,
+    canManageMembers: true,
+    canManageTeams: true,
+    canManageRepositories: true,
+    canManageNamespaces: true,
     repositoryPageRequests: [],
     packagePageRequests: [],
+    invitationRequests: [],
+    orgUpdateCalls: [],
+    orgMfaRequired: false,
     teamRepositoryAccessUpdates: [],
     teamPackageAccessUpdates: [],
     repositoryTransfers: [],
@@ -519,20 +697,45 @@ async function handleApiRequest(
 
   if (method === 'GET' && requestPath === `/v1/orgs/${ORG_SLUG}`) {
     return apiResponse({
-        id: ORG_ID,
-        name: 'Source Org',
-        slug: ORG_SLUG,
-        description: 'Source organization',
-        is_verified: true,
-        website: null,
-        email: null,
-        created_at: '2026-04-01T00:00:00Z',
-      });
+      id: ORG_ID,
+      name: 'Source Org',
+      slug: ORG_SLUG,
+      description: 'Source organization',
+      is_verified: true,
+      mfa_required: scenario.orgMfaRequired,
+      website: null,
+      email: null,
+      created_at: '2026-04-01T00:00:00Z',
+      capabilities: {
+        can_manage: true,
+        can_manage_invitations: scenario.canManageInvitations,
+        can_manage_members: scenario.canManageMembers,
+        can_manage_teams: scenario.canManageTeams,
+        can_manage_repositories: scenario.canManageRepositories,
+        can_manage_namespaces: scenario.canManageNamespaces,
+        can_view_member_directory: true,
+        can_view_audit_log: true,
+        can_transfer_ownership: true,
+      },
+    });
   }
 
   if (method === 'GET' && requestPath === '/v1/users/me/organizations') {
     return apiResponse({
-      organizations: [currentOrgMembership, targetOrgMembership],
+      organizations: [
+        {
+          ...currentOrgMembership,
+          capabilities: {
+            ...currentOrgMembership.capabilities,
+            can_manage_invitations: scenario.canManageInvitations,
+            can_manage_members: scenario.canManageMembers,
+            can_manage_teams: scenario.canManageTeams,
+            can_manage_repositories: scenario.canManageRepositories,
+            can_manage_namespaces: scenario.canManageNamespaces,
+          },
+        },
+        targetOrgMembership,
+      ],
     });
   }
 
@@ -575,6 +778,7 @@ async function handleApiRequest(
   }
 
   if (method === 'GET' && requestPath === `/v1/orgs/${ORG_SLUG}/invitations`) {
+    scenario.invitationRequests.push(url.toString());
     return apiResponse({ invitations: [] });
   }
 
@@ -642,6 +846,15 @@ async function handleApiRequest(
     requestPath.endsWith('/packages')
   ) {
     return apiResponse({ packages: [] });
+  }
+
+  if (
+    method === 'PATCH' &&
+    requestPath === `/v1/orgs/${ORG_SLUG}`
+  ) {
+    scenario.orgUpdateCalls.push({ path: requestPath, body });
+    scenario.orgMfaRequired = body.mfa_required === true;
+    return apiResponse({ message: 'Organization updated' });
   }
 
   if (

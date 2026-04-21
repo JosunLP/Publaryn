@@ -3,6 +3,7 @@ use axum::{
     http::{header::AUTHORIZATION, request::Parts},
 };
 use chrono::Utc;
+use serde::Serialize;
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
@@ -15,6 +16,15 @@ use crate::{
 
 const ORG_ADMIN_ROLES: &[&str] = &["owner", "admin"];
 const ORG_AUDIT_ROLES: &[&str] = &["owner", "admin", "auditor"];
+const ORG_MFA_REQUIRED_WRITE_ROLES: &[&str] = &[
+    "owner",
+    "admin",
+    "maintainer",
+    "publisher",
+    "security_manager",
+];
+const ORG_MFA_REQUIRED_WRITE_ERROR_MESSAGE: &str =
+    "This organization requires MFA for elevated members before write actions are allowed";
 const PACKAGE_METADATA_ROLES: &[&str] = &["owner", "admin", "maintainer"];
 const PACKAGE_PUBLISH_ROLES: &[&str] = &["owner", "admin", "maintainer", "publisher"];
 const PACKAGE_ADMIN_ROLES: &[&str] = &["owner", "admin"];
@@ -57,6 +67,48 @@ enum PackageAccessRequirement {
     Admin,
     TransferOwnership,
     SecurityReview,
+    ManagementVisibility,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RepositoryAccessRequirement {
+    Admin,
+    PackageCreation,
+    TransferOwnership,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OrgAccessRequirement {
+    Admin,
+    MemberDirectory,
+    AuditLog,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NamespaceClaimAccessRequirement {
+    Admin,
+    TransferOwnership,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OrgWriteRoleAccess {
+    Allowed,
+    MissingRole,
+    MfaRequired,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TeamWriteAccess {
+    Allowed,
+    MissingPermission,
+    MfaRequired,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OrgAccessOutcome {
+    Allowed,
+    MissingPermission,
+    MfaRequired,
 }
 
 impl PackageAccessRequirement {
@@ -67,6 +119,7 @@ impl PackageAccessRequirement {
             Self::Admin => PACKAGE_ADMIN_ROLES,
             Self::TransferOwnership => PACKAGE_ADMIN_ROLES,
             Self::SecurityReview => PACKAGE_ADMIN_ROLES,
+            Self::ManagementVisibility => PACKAGE_MANAGEMENT_VISIBILITY_ROLES,
         }
     }
 
@@ -77,6 +130,7 @@ impl PackageAccessRequirement {
             Self::Admin => TEAM_PACKAGE_ADMIN_PERMISSIONS,
             Self::TransferOwnership => TEAM_PACKAGE_TRANSFER_PERMISSIONS,
             Self::SecurityReview => TEAM_PACKAGE_SECURITY_REVIEW_PERMISSIONS,
+            Self::ManagementVisibility => TEAM_PACKAGE_MANAGEMENT_VISIBILITY_PERMISSIONS,
         }
     }
 
@@ -87,6 +141,7 @@ impl PackageAccessRequirement {
             Self::Admin => TEAM_REPOSITORY_ADMIN_PERMISSIONS,
             Self::TransferOwnership => TEAM_REPOSITORY_PACKAGE_TRANSFER_PERMISSIONS,
             Self::SecurityReview => TEAM_REPOSITORY_PACKAGE_SECURITY_REVIEW_PERMISSIONS,
+            Self::ManagementVisibility => TEAM_REPOSITORY_PACKAGE_MANAGEMENT_VISIBILITY_PERMISSIONS,
         }
     }
 
@@ -102,6 +157,73 @@ impl PackageAccessRequirement {
             }
             Self::SecurityReview => {
                 "You do not have permission to manage security findings for this package"
+            }
+            Self::ManagementVisibility => "You do not have permission to manage this package",
+        }
+    }
+}
+
+impl OrgAccessRequirement {
+    fn org_roles(self) -> Option<&'static [&'static str]> {
+        match self {
+            Self::Admin => Some(ORG_ADMIN_ROLES),
+            Self::AuditLog => Some(ORG_AUDIT_ROLES),
+            Self::MemberDirectory => None,
+        }
+    }
+
+    fn requires_write_role_mfa(self) -> bool {
+        matches!(self, Self::Admin)
+    }
+
+    fn denial_message(self) -> &'static str {
+        match self {
+            Self::Admin => "Organization administration requires owner or admin membership",
+            Self::MemberDirectory => {
+                "Organization member and team directories require organization membership"
+            }
+            Self::AuditLog => {
+                "Organization activity log requires owner, admin, or auditor membership"
+            }
+        }
+    }
+}
+
+impl RepositoryAccessRequirement {
+    fn team_permissions(self) -> &'static [&'static str] {
+        match self {
+            Self::Admin => TEAM_REPOSITORY_ADMIN_PERMISSIONS,
+            Self::PackageCreation => TEAM_REPOSITORY_PACKAGE_CREATION_PERMISSIONS,
+            Self::TransferOwnership => TEAM_REPOSITORY_TRANSFER_PERMISSIONS,
+        }
+    }
+
+    fn denial_message(self) -> &'static str {
+        match self {
+            Self::Admin => "You do not have permission to modify this repository",
+            Self::PackageCreation => {
+                "You do not have permission to create packages in this repository"
+            }
+            Self::TransferOwnership => {
+                "You do not have permission to transfer ownership of this repository"
+            }
+        }
+    }
+}
+
+impl NamespaceClaimAccessRequirement {
+    fn team_permissions(self) -> &'static [&'static str] {
+        match self {
+            Self::Admin => TEAM_NAMESPACE_ADMIN_PERMISSIONS,
+            Self::TransferOwnership => TEAM_NAMESPACE_TRANSFER_PERMISSIONS,
+        }
+    }
+
+    fn denial_message(self) -> &'static str {
+        match self {
+            Self::Admin => "You do not have permission to manage this namespace claim",
+            Self::TransferOwnership => {
+                "You do not have permission to transfer this namespace claim"
             }
         }
     }
@@ -342,6 +464,204 @@ async fn actor_has_org_roles(
     .map_err(|e| ApiError(Error::Database(e)))
 }
 
+fn does_org_role_require_mfa_for_write(role: &str) -> bool {
+    ORG_MFA_REQUIRED_WRITE_ROLES.contains(&role)
+}
+
+fn resolve_org_write_role_access(
+    role: Option<&str>,
+    mfa_required: bool,
+    mfa_enabled: bool,
+) -> OrgWriteRoleAccess {
+    let Some(role) = role else {
+        return OrgWriteRoleAccess::MissingRole;
+    };
+
+    if mfa_required && does_org_role_require_mfa_for_write(role) && !mfa_enabled {
+        return OrgWriteRoleAccess::MfaRequired;
+    }
+
+    OrgWriteRoleAccess::Allowed
+}
+
+fn resolve_team_write_access(
+    has_permission: bool,
+    mfa_required: bool,
+    mfa_enabled: bool,
+) -> TeamWriteAccess {
+    if !has_permission {
+        return TeamWriteAccess::MissingPermission;
+    }
+
+    if mfa_required && !mfa_enabled {
+        return TeamWriteAccess::MfaRequired;
+    }
+
+    TeamWriteAccess::Allowed
+}
+
+fn is_write_access_allowed(access: TeamWriteAccess) -> bool {
+    matches!(access, TeamWriteAccess::Allowed)
+}
+
+fn org_mfa_required_for_write_error() -> ApiError {
+    ApiError(Error::Forbidden(
+        ORG_MFA_REQUIRED_WRITE_ERROR_MESSAGE.into(),
+    ))
+}
+
+fn is_org_access_allowed(outcome: OrgAccessOutcome) -> bool {
+    matches!(outcome, OrgAccessOutcome::Allowed)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct OrgActorCapabilities {
+    pub can_manage: bool,
+    pub can_manage_invitations: bool,
+    pub can_manage_members: bool,
+    pub can_manage_teams: bool,
+    pub can_manage_repositories: bool,
+    pub can_manage_namespaces: bool,
+    pub can_view_member_directory: bool,
+    pub can_view_audit_log: bool,
+    pub can_transfer_ownership: bool,
+}
+
+async fn authorize_org_write_roles(
+    db: &PgPool,
+    org_id: Uuid,
+    actor_user_id: Uuid,
+    allowed_roles: &[&str],
+) -> ApiResult<OrgWriteRoleAccess> {
+    let allowed_roles = allowed_roles
+        .iter()
+        .map(|role| (*role).to_owned())
+        .collect::<Vec<_>>();
+
+    let row = sqlx::query(
+        "SELECT om.role::text AS role, o.mfa_required, u.mfa_enabled \
+         FROM org_memberships om \
+         JOIN organizations o ON o.id = om.org_id \
+         JOIN users u ON u.id = om.user_id \
+         WHERE om.org_id = $1 \
+           AND om.user_id = $2 \
+           AND om.role::text = ANY($3)",
+    )
+    .bind(org_id)
+    .bind(actor_user_id)
+    .bind(&allowed_roles)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let role = row
+        .as_ref()
+        .map(|row| row.try_get::<String, _>("role"))
+        .transpose()
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let mfa_required = row
+        .as_ref()
+        .map(|row| row.try_get::<bool, _>("mfa_required"))
+        .transpose()
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?
+        .unwrap_or(false);
+    let mfa_enabled = row
+        .as_ref()
+        .map(|row| row.try_get::<bool, _>("mfa_enabled"))
+        .transpose()
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?
+        .unwrap_or(false);
+
+    Ok(resolve_org_write_role_access(
+        role.as_deref(),
+        mfa_required,
+        mfa_enabled,
+    ))
+}
+
+async fn authorize_org_access_by_requirement(
+    db: &PgPool,
+    org_id: Uuid,
+    actor_user_id: Uuid,
+    requirement: OrgAccessRequirement,
+) -> ApiResult<OrgAccessOutcome> {
+    if requirement.requires_write_role_mfa() {
+        return Ok(
+            match authorize_org_write_roles(
+                db,
+                org_id,
+                actor_user_id,
+                requirement
+                    .org_roles()
+                    .expect("write-role org access must define allowed roles"),
+            )
+            .await?
+            {
+                OrgWriteRoleAccess::Allowed => OrgAccessOutcome::Allowed,
+                OrgWriteRoleAccess::MfaRequired => OrgAccessOutcome::MfaRequired,
+                OrgWriteRoleAccess::MissingRole => OrgAccessOutcome::MissingPermission,
+            },
+        );
+    }
+
+    if let Some(roles) = requirement.org_roles() {
+        return Ok(
+            if actor_has_org_roles(db, org_id, actor_user_id, roles).await? {
+                OrgAccessOutcome::Allowed
+            } else {
+                OrgAccessOutcome::MissingPermission
+            },
+        );
+    }
+
+    Ok(if is_org_member(db, org_id, actor_user_id).await? {
+        OrgAccessOutcome::Allowed
+    } else {
+        OrgAccessOutcome::MissingPermission
+    })
+}
+
+async fn ensure_org_access_by_requirement(
+    db: &PgPool,
+    org_id: Uuid,
+    actor_user_id: Uuid,
+    requirement: OrgAccessRequirement,
+) -> ApiResult<()> {
+    match authorize_org_access_by_requirement(db, org_id, actor_user_id, requirement).await? {
+        OrgAccessOutcome::Allowed => Ok(()),
+        OrgAccessOutcome::MfaRequired => Err(org_mfa_required_for_write_error()),
+        OrgAccessOutcome::MissingPermission => Err(ApiError(Error::Forbidden(
+            requirement.denial_message().into(),
+        ))),
+    }
+}
+
+async fn ensure_org_access_by_slug_and_requirement(
+    db: &PgPool,
+    slug: &str,
+    actor_user_id: Uuid,
+    requirement: OrgAccessRequirement,
+) -> ApiResult<Uuid> {
+    let org_id = fetch_org_id_by_slug(db, slug).await?;
+    ensure_org_access_by_requirement(db, org_id, actor_user_id, requirement).await?;
+    Ok(org_id)
+}
+
+async fn actor_can_org_by_id_and_requirement(
+    db: &PgPool,
+    org_id: Uuid,
+    actor_user_id: Option<Uuid>,
+    requirement: OrgAccessRequirement,
+) -> ApiResult<bool> {
+    let Some(actor_user_id) = actor_user_id else {
+        return Ok(false);
+    };
+
+    authorize_org_access_by_requirement(db, org_id, actor_user_id, requirement)
+        .await
+        .map(is_org_access_allowed)
+}
+
 pub async fn is_org_member(db: &PgPool, org_id: Uuid, actor_user_id: Uuid) -> ApiResult<bool> {
     sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS (\
@@ -390,88 +710,65 @@ async fn actor_can_read_owned_resource(
     Ok(false)
 }
 
-async fn actor_can_manage_owned_repository(
+async fn authorize_repository_write_access(
     db: &PgPool,
     repository_id: Uuid,
     owner_user_id: Option<Uuid>,
     owner_org_id: Option<Uuid>,
     actor_user_id: Uuid,
-) -> ApiResult<bool> {
+    allowed_permissions: &[&str],
+) -> ApiResult<TeamWriteAccess> {
     if owner_user_id == Some(actor_user_id) {
-        return Ok(true);
+        return Ok(TeamWriteAccess::Allowed);
     }
 
     match owner_org_id {
         Some(owner_org_id) => {
-            if actor_has_org_roles(db, owner_org_id, actor_user_id, ORG_ADMIN_ROLES).await? {
-                return Ok(true);
+            match authorize_org_write_roles(db, owner_org_id, actor_user_id, ORG_ADMIN_ROLES)
+                .await?
+            {
+                OrgWriteRoleAccess::Allowed => return Ok(TeamWriteAccess::Allowed),
+                OrgWriteRoleAccess::MfaRequired => return Ok(TeamWriteAccess::MfaRequired),
+                OrgWriteRoleAccess::MissingRole => {}
             }
 
             actor_has_team_repository_permissions(
                 db,
                 repository_id,
                 actor_user_id,
-                TEAM_REPOSITORY_ADMIN_PERMISSIONS,
+                allowed_permissions,
             )
             .await
         }
-        None => Ok(false),
+        None => Ok(TeamWriteAccess::MissingPermission),
     }
 }
 
-async fn actor_can_create_packages_in_owned_repository(
+async fn ensure_repository_access_by_requirement(
     db: &PgPool,
-    repository_id: Uuid,
-    owner_user_id: Option<Uuid>,
-    owner_org_id: Option<Uuid>,
+    slug: &str,
     actor_user_id: Uuid,
-) -> ApiResult<bool> {
-    if owner_user_id == Some(actor_user_id) {
-        return Ok(true);
-    }
+    requirement: RepositoryAccessRequirement,
+) -> ApiResult<Uuid> {
+    let (repository_id, owner_user_id, owner_org_id) =
+        fetch_repository_access_fields_by_slug(db, slug).await?;
 
-    match owner_org_id {
-        Some(owner_org_id) => {
-            if actor_has_org_roles(db, owner_org_id, actor_user_id, ORG_ADMIN_ROLES).await? {
-                return Ok(true);
-            }
-
-            actor_has_team_repository_permissions(
-                db,
-                repository_id,
-                actor_user_id,
-                TEAM_REPOSITORY_PACKAGE_CREATION_PERMISSIONS,
-            )
-            .await
-        }
-        None => Ok(false),
-    }
-}
-
-async fn actor_can_transfer_owned_repository(
-    db: &PgPool,
-    repository_id: Uuid,
-    owner_user_id: Option<Uuid>,
-    owner_org_id: Option<Uuid>,
-    actor_user_id: Uuid,
-) -> ApiResult<bool> {
-    if owner_user_id == Some(actor_user_id) {
-        return Ok(true);
-    }
-
-    if let Some(owner_org_id) = owner_org_id {
-        if actor_has_org_roles(db, owner_org_id, actor_user_id, ORG_ADMIN_ROLES).await? {
-            return Ok(true);
-        }
-    }
-
-    actor_has_team_repository_permissions(
+    match authorize_repository_write_access(
         db,
         repository_id,
+        owner_user_id,
+        owner_org_id,
         actor_user_id,
-        TEAM_REPOSITORY_TRANSFER_PERMISSIONS,
+        requirement.team_permissions(),
     )
-    .await
+    .await?
+    {
+        TeamWriteAccess::Allowed => Ok(repository_id),
+        TeamWriteAccess::MfaRequired => Err(org_mfa_required_for_write_error()),
+        TeamWriteAccess::MissingPermission => Err(ApiError(Error::Forbidden(
+            requirement.denial_message().into(),
+        ))),
+    }
 }
 
 async fn actor_has_any_team_package_access(
@@ -503,31 +800,52 @@ async fn actor_has_team_package_permissions(
     package_id: Uuid,
     actor_user_id: Uuid,
     allowed_permissions: &[&str],
-) -> ApiResult<bool> {
+) -> ApiResult<TeamWriteAccess> {
     let allowed_permissions = allowed_permissions
         .iter()
         .map(|permission| (*permission).to_owned())
         .collect::<Vec<_>>();
 
-    sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS (\
-             SELECT 1 \
-             FROM team_package_access tpa \
-             JOIN team_memberships tm ON tm.team_id = tpa.team_id \
-             JOIN teams t ON t.id = tpa.team_id \
-             JOIN packages p ON p.id = tpa.package_id \
-             WHERE tpa.package_id = $1 \
-               AND tm.user_id = $2 \
-               AND t.org_id = p.owner_org_id \
-               AND tpa.permission::text = ANY($3)\
-         )",
+    let row = sqlx::query(
+        "SELECT TRUE AS has_permission, o.mfa_required, u.mfa_enabled \
+         FROM team_package_access tpa \
+         JOIN team_memberships tm ON tm.team_id = tpa.team_id \
+         JOIN teams t ON t.id = tpa.team_id \
+         JOIN packages p ON p.id = tpa.package_id \
+         JOIN organizations o ON o.id = t.org_id \
+         JOIN users u ON u.id = tm.user_id \
+         WHERE tpa.package_id = $1 \
+           AND tm.user_id = $2 \
+           AND t.org_id = p.owner_org_id \
+           AND tpa.permission::text = ANY($3) \
+         LIMIT 1",
     )
     .bind(package_id)
     .bind(actor_user_id)
     .bind(&allowed_permissions)
-    .fetch_one(db)
+    .fetch_optional(db)
     .await
-    .map_err(|e| ApiError(Error::Database(e)))
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let has_permission = row.is_some();
+    let mfa_required = row
+        .as_ref()
+        .map(|row| row.try_get::<bool, _>("mfa_required"))
+        .transpose()
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?
+        .unwrap_or(false);
+    let mfa_enabled = row
+        .as_ref()
+        .map(|row| row.try_get::<bool, _>("mfa_enabled"))
+        .transpose()
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?
+        .unwrap_or(false);
+
+    Ok(resolve_team_write_access(
+        has_permission,
+        mfa_required,
+        mfa_enabled,
+    ))
 }
 
 async fn actor_has_team_repository_permissions(
@@ -535,31 +853,52 @@ async fn actor_has_team_repository_permissions(
     repository_id: Uuid,
     actor_user_id: Uuid,
     allowed_permissions: &[&str],
-) -> ApiResult<bool> {
+) -> ApiResult<TeamWriteAccess> {
     let allowed_permissions = allowed_permissions
         .iter()
         .map(|permission| (*permission).to_owned())
         .collect::<Vec<_>>();
 
-    sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS (\
-             SELECT 1 \
-             FROM team_repository_access tra \
-             JOIN team_memberships tm ON tm.team_id = tra.team_id \
-             JOIN teams t ON t.id = tra.team_id \
-             JOIN repositories r ON r.id = tra.repository_id \
-             WHERE tra.repository_id = $1 \
-               AND tm.user_id = $2 \
-               AND t.org_id = r.owner_org_id \
-               AND tra.permission::text = ANY($3)\
-         )",
+    let row = sqlx::query(
+        "SELECT TRUE AS has_permission, o.mfa_required, u.mfa_enabled \
+         FROM team_repository_access tra \
+         JOIN team_memberships tm ON tm.team_id = tra.team_id \
+         JOIN teams t ON t.id = tra.team_id \
+         JOIN repositories r ON r.id = tra.repository_id \
+         JOIN organizations o ON o.id = t.org_id \
+         JOIN users u ON u.id = tm.user_id \
+         WHERE tra.repository_id = $1 \
+           AND tm.user_id = $2 \
+           AND t.org_id = r.owner_org_id \
+           AND tra.permission::text = ANY($3) \
+         LIMIT 1",
     )
     .bind(repository_id)
     .bind(actor_user_id)
     .bind(&allowed_permissions)
-    .fetch_one(db)
+    .fetch_optional(db)
     .await
-    .map_err(|e| ApiError(Error::Database(e)))
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let has_permission = row.is_some();
+    let mfa_required = row
+        .as_ref()
+        .map(|row| row.try_get::<bool, _>("mfa_required"))
+        .transpose()
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?
+        .unwrap_or(false);
+    let mfa_enabled = row
+        .as_ref()
+        .map(|row| row.try_get::<bool, _>("mfa_enabled"))
+        .transpose()
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?
+        .unwrap_or(false);
+
+    Ok(resolve_team_write_access(
+        has_permission,
+        mfa_required,
+        mfa_enabled,
+    ))
 }
 
 async fn actor_has_team_namespace_permissions(
@@ -567,31 +906,52 @@ async fn actor_has_team_namespace_permissions(
     namespace_claim_id: Uuid,
     actor_user_id: Uuid,
     allowed_permissions: &[&str],
-) -> ApiResult<bool> {
+) -> ApiResult<TeamWriteAccess> {
     let allowed_permissions = allowed_permissions
         .iter()
         .map(|permission| (*permission).to_owned())
         .collect::<Vec<_>>();
 
-    sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS (\
-             SELECT 1 \
-             FROM team_namespace_access tna \
-             JOIN team_memberships tm ON tm.team_id = tna.team_id \
-             JOIN teams t ON t.id = tna.team_id \
-             JOIN namespace_claims nc ON nc.id = tna.namespace_claim_id \
-             WHERE tna.namespace_claim_id = $1 \
-               AND tm.user_id = $2 \
-               AND t.org_id = nc.owner_org_id \
-               AND tna.permission::text = ANY($3)\
-         )",
+    let row = sqlx::query(
+        "SELECT TRUE AS has_permission, o.mfa_required, u.mfa_enabled \
+         FROM team_namespace_access tna \
+         JOIN team_memberships tm ON tm.team_id = tna.team_id \
+         JOIN teams t ON t.id = tna.team_id \
+         JOIN namespace_claims nc ON nc.id = tna.namespace_claim_id \
+         JOIN organizations o ON o.id = t.org_id \
+         JOIN users u ON u.id = tm.user_id \
+         WHERE tna.namespace_claim_id = $1 \
+           AND tm.user_id = $2 \
+           AND t.org_id = nc.owner_org_id \
+           AND tna.permission::text = ANY($3) \
+         LIMIT 1",
     )
     .bind(namespace_claim_id)
     .bind(actor_user_id)
     .bind(&allowed_permissions)
-    .fetch_one(db)
+    .fetch_optional(db)
     .await
-    .map_err(|e| ApiError(Error::Database(e)))
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let has_permission = row.is_some();
+    let mfa_required = row
+        .as_ref()
+        .map(|row| row.try_get::<bool, _>("mfa_required"))
+        .transpose()
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?
+        .unwrap_or(false);
+    let mfa_enabled = row
+        .as_ref()
+        .map(|row| row.try_get::<bool, _>("mfa_enabled"))
+        .transpose()
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?
+        .unwrap_or(false);
+
+    Ok(resolve_team_write_access(
+        has_permission,
+        mfa_required,
+        mfa_enabled,
+    ))
 }
 
 async fn fetch_package_ownership(
@@ -637,34 +997,23 @@ async fn ensure_package_access_by_requirement(
     let (package_id, repository_id, owner_user_id, owner_org_id) =
         fetch_package_ownership(db, ecosystem, normalized_name).await?;
 
-    if owner_user_id == Some(actor_user_id) {
-        return Ok(package_id);
+    match authorize_package_write_access(
+        db,
+        package_id,
+        repository_id,
+        owner_user_id,
+        owner_org_id,
+        actor_user_id,
+        requirement,
+    )
+    .await?
+    {
+        TeamWriteAccess::Allowed => Ok(package_id),
+        TeamWriteAccess::MfaRequired => Err(org_mfa_required_for_write_error()),
+        TeamWriteAccess::MissingPermission => Err(ApiError(Error::Forbidden(
+            requirement.denial_message().into(),
+        ))),
     }
-
-    if let Some(owner_org_id) = owner_org_id {
-        if actor_has_org_roles(db, owner_org_id, actor_user_id, requirement.org_roles()).await?
-            || actor_has_team_package_permissions(
-                db,
-                package_id,
-                actor_user_id,
-                requirement.team_permissions(),
-            )
-            .await?
-            || actor_has_team_repository_permissions(
-                db,
-                repository_id,
-                actor_user_id,
-                requirement.repository_permissions(),
-            )
-            .await?
-        {
-            return Ok(package_id);
-        }
-    }
-
-    Err(ApiError(Error::Forbidden(
-        requirement.denial_message().into(),
-    )))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -804,13 +1153,7 @@ pub async fn ensure_org_admin_by_id(
     org_id: Uuid,
     actor_user_id: Uuid,
 ) -> ApiResult<()> {
-    if actor_has_org_roles(db, org_id, actor_user_id, ORG_ADMIN_ROLES).await? {
-        return Ok(());
-    }
-
-    Err(ApiError(Error::Forbidden(
-        "Organization administration requires owner or admin membership".into(),
-    )))
+    ensure_org_access_by_requirement(db, org_id, actor_user_id, OrgAccessRequirement::Admin).await
 }
 
 pub async fn ensure_org_admin_by_slug(
@@ -818,9 +1161,8 @@ pub async fn ensure_org_admin_by_slug(
     slug: &str,
     actor_user_id: Uuid,
 ) -> ApiResult<Uuid> {
-    let org_id = fetch_org_id_by_slug(db, slug).await?;
-    ensure_org_admin_by_id(db, org_id, actor_user_id).await?;
-    Ok(org_id)
+    ensure_org_access_by_slug_and_requirement(db, slug, actor_user_id, OrgAccessRequirement::Admin)
+        .await
 }
 
 pub async fn ensure_org_member_by_slug(
@@ -828,15 +1170,13 @@ pub async fn ensure_org_member_by_slug(
     slug: &str,
     actor_user_id: Uuid,
 ) -> ApiResult<Uuid> {
-    let org_id = fetch_org_id_by_slug(db, slug).await?;
-
-    if is_org_member(db, org_id, actor_user_id).await? {
-        return Ok(org_id);
-    }
-
-    Err(ApiError(Error::Forbidden(
-        "Organization member and team directories require organization membership".into(),
-    )))
+    ensure_org_access_by_slug_and_requirement(
+        db,
+        slug,
+        actor_user_id,
+        OrgAccessRequirement::MemberDirectory,
+    )
+    .await
 }
 
 pub async fn ensure_org_audit_access_by_slug(
@@ -844,15 +1184,135 @@ pub async fn ensure_org_audit_access_by_slug(
     slug: &str,
     actor_user_id: Uuid,
 ) -> ApiResult<Uuid> {
-    let org_id = fetch_org_id_by_slug(db, slug).await?;
+    ensure_org_access_by_slug_and_requirement(
+        db,
+        slug,
+        actor_user_id,
+        OrgAccessRequirement::AuditLog,
+    )
+    .await
+}
 
-    if actor_has_org_roles(db, org_id, actor_user_id, ORG_AUDIT_ROLES).await? {
-        return Ok(org_id);
-    }
+pub async fn actor_can_manage_org_by_id(
+    db: &PgPool,
+    org_id: Uuid,
+    actor_user_id: Option<Uuid>,
+) -> ApiResult<bool> {
+    actor_can_org_by_id_and_requirement(db, org_id, actor_user_id, OrgAccessRequirement::Admin)
+        .await
+}
 
-    Err(ApiError(Error::Forbidden(
-        "Organization activity log requires owner, admin, or auditor membership".into(),
-    )))
+pub async fn actor_can_access_org_member_directory_by_id(
+    db: &PgPool,
+    org_id: Uuid,
+    actor_user_id: Option<Uuid>,
+) -> ApiResult<bool> {
+    actor_can_org_by_id_and_requirement(
+        db,
+        org_id,
+        actor_user_id,
+        OrgAccessRequirement::MemberDirectory,
+    )
+    .await
+}
+
+pub async fn actor_can_access_org_audit_log_by_id(
+    db: &PgPool,
+    org_id: Uuid,
+    actor_user_id: Option<Uuid>,
+) -> ApiResult<bool> {
+    actor_can_org_by_id_and_requirement(db, org_id, actor_user_id, OrgAccessRequirement::AuditLog)
+        .await
+}
+
+pub async fn actor_can_manage_org_invitations_by_id(
+    db: &PgPool,
+    org_id: Uuid,
+    actor_user_id: Option<Uuid>,
+) -> ApiResult<bool> {
+    actor_can_manage_org_by_id(db, org_id, actor_user_id).await
+}
+
+pub async fn actor_can_manage_org_members_by_id(
+    db: &PgPool,
+    org_id: Uuid,
+    actor_user_id: Option<Uuid>,
+) -> ApiResult<bool> {
+    actor_can_manage_org_by_id(db, org_id, actor_user_id).await
+}
+
+pub async fn actor_can_manage_org_teams_by_id(
+    db: &PgPool,
+    org_id: Uuid,
+    actor_user_id: Option<Uuid>,
+) -> ApiResult<bool> {
+    actor_can_manage_org_by_id(db, org_id, actor_user_id).await
+}
+
+pub async fn actor_can_manage_org_repositories_by_id(
+    db: &PgPool,
+    org_id: Uuid,
+    actor_user_id: Option<Uuid>,
+) -> ApiResult<bool> {
+    actor_can_manage_org_by_id(db, org_id, actor_user_id).await
+}
+
+pub async fn actor_can_manage_org_namespaces_by_id(
+    db: &PgPool,
+    org_id: Uuid,
+    actor_user_id: Option<Uuid>,
+) -> ApiResult<bool> {
+    actor_can_manage_org_by_id(db, org_id, actor_user_id).await
+}
+
+pub async fn actor_can_transfer_org_ownership_by_id(
+    db: &PgPool,
+    org_id: Uuid,
+    actor_user_id: Option<Uuid>,
+) -> ApiResult<bool> {
+    let Some(actor_user_id) = actor_user_id else {
+        return Ok(false);
+    };
+
+    sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(\
+             SELECT 1 \
+             FROM org_memberships \
+             WHERE org_id = $1 AND user_id = $2 AND role::text = 'owner'\
+         )",
+    )
+    .bind(org_id)
+    .bind(actor_user_id)
+    .fetch_one(db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))
+}
+
+pub async fn actor_org_capabilities_by_id(
+    db: &PgPool,
+    org_id: Uuid,
+    actor_user_id: Option<Uuid>,
+) -> ApiResult<OrgActorCapabilities> {
+    Ok(OrgActorCapabilities {
+        can_manage: actor_can_manage_org_by_id(db, org_id, actor_user_id).await?,
+        can_manage_invitations: actor_can_manage_org_invitations_by_id(db, org_id, actor_user_id)
+            .await?,
+        can_manage_members: actor_can_manage_org_members_by_id(db, org_id, actor_user_id).await?,
+        can_manage_teams: actor_can_manage_org_teams_by_id(db, org_id, actor_user_id).await?,
+        can_manage_repositories: actor_can_manage_org_repositories_by_id(db, org_id, actor_user_id)
+            .await?,
+        can_manage_namespaces: actor_can_manage_org_namespaces_by_id(db, org_id, actor_user_id)
+            .await?,
+        can_view_member_directory: actor_can_access_org_member_directory_by_id(
+            db,
+            org_id,
+            actor_user_id,
+        )
+        .await?,
+        can_view_audit_log: actor_can_access_org_audit_log_by_id(db, org_id, actor_user_id).await?,
+        can_transfer_ownership: actor_can_transfer_org_ownership_by_id(db, org_id, actor_user_id)
+            .await?,
+    })
 }
 
 pub async fn is_platform_admin(db: &PgPool, actor_user_id: Uuid) -> ApiResult<bool> {
@@ -909,24 +1369,13 @@ pub async fn ensure_repository_admin_access(
     slug: &str,
     actor_user_id: Uuid,
 ) -> ApiResult<Uuid> {
-    let (repository_id, owner_user_id, owner_org_id) =
-        fetch_repository_access_fields_by_slug(db, slug).await?;
-
-    if actor_can_manage_owned_repository(
+    ensure_repository_access_by_requirement(
         db,
-        repository_id,
-        owner_user_id,
-        owner_org_id,
+        slug,
         actor_user_id,
+        RepositoryAccessRequirement::Admin,
     )
-    .await?
-    {
-        return Ok(repository_id);
-    }
-
-    Err(ApiError(Error::Forbidden(
-        "You do not have permission to modify this repository".into(),
-    )))
+    .await
 }
 
 pub async fn ensure_repository_package_creation_access(
@@ -934,24 +1383,13 @@ pub async fn ensure_repository_package_creation_access(
     slug: &str,
     actor_user_id: Uuid,
 ) -> ApiResult<Uuid> {
-    let (repository_id, owner_user_id, owner_org_id) =
-        fetch_repository_access_fields_by_slug(db, slug).await?;
-
-    if actor_can_create_packages_in_owned_repository(
+    ensure_repository_access_by_requirement(
         db,
-        repository_id,
-        owner_user_id,
-        owner_org_id,
+        slug,
         actor_user_id,
+        RepositoryAccessRequirement::PackageCreation,
     )
-    .await?
-    {
-        return Ok(repository_id);
-    }
-
-    Err(ApiError(Error::Forbidden(
-        "You do not have permission to create packages in this repository".into(),
-    )))
+    .await
 }
 
 pub async fn ensure_repository_write_access(
@@ -967,24 +1405,13 @@ pub async fn ensure_repository_transfer_access(
     slug: &str,
     actor_user_id: Uuid,
 ) -> ApiResult<Uuid> {
-    let (repository_id, owner_user_id, owner_org_id) =
-        fetch_repository_access_fields_by_slug(db, slug).await?;
-
-    if actor_can_transfer_owned_repository(
+    ensure_repository_access_by_requirement(
         db,
-        repository_id,
-        owner_user_id,
-        owner_org_id,
+        slug,
         actor_user_id,
+        RepositoryAccessRequirement::TransferOwnership,
     )
-    .await?
-    {
-        return Ok(repository_id);
-    }
-
-    Err(ApiError(Error::Forbidden(
-        "You do not have permission to transfer ownership of this repository".into(),
-    )))
+    .await
 }
 
 pub async fn ensure_package_metadata_write_access(
@@ -1067,6 +1494,53 @@ pub async fn ensure_package_security_review_access(
     .await
 }
 
+async fn authorize_package_write_access(
+    db: &PgPool,
+    package_id: Uuid,
+    repository_id: Uuid,
+    owner_user_id: Option<Uuid>,
+    owner_org_id: Option<Uuid>,
+    actor_user_id: Uuid,
+    requirement: PackageAccessRequirement,
+) -> ApiResult<TeamWriteAccess> {
+    if owner_user_id == Some(actor_user_id) {
+        return Ok(TeamWriteAccess::Allowed);
+    }
+
+    let Some(owner_org_id) = owner_org_id else {
+        return Ok(TeamWriteAccess::MissingPermission);
+    };
+
+    match authorize_org_write_roles(db, owner_org_id, actor_user_id, requirement.org_roles())
+        .await?
+    {
+        OrgWriteRoleAccess::Allowed => return Ok(TeamWriteAccess::Allowed),
+        OrgWriteRoleAccess::MfaRequired => return Ok(TeamWriteAccess::MfaRequired),
+        OrgWriteRoleAccess::MissingRole => {}
+    }
+
+    match actor_has_team_package_permissions(
+        db,
+        package_id,
+        actor_user_id,
+        requirement.team_permissions(),
+    )
+    .await?
+    {
+        TeamWriteAccess::Allowed => return Ok(TeamWriteAccess::Allowed),
+        TeamWriteAccess::MfaRequired => return Ok(TeamWriteAccess::MfaRequired),
+        TeamWriteAccess::MissingPermission => {}
+    }
+
+    actor_has_team_repository_permissions(
+        db,
+        repository_id,
+        actor_user_id,
+        requirement.repository_permissions(),
+    )
+    .await
+}
+
 async fn fetch_package_owner_fields_by_id(
     db: &PgPool,
     package_id: Uuid,
@@ -1090,6 +1564,32 @@ async fn fetch_package_owner_fields_by_id(
         row.try_get::<Uuid, _>("repository_id")
             .map_err(|e| ApiError(Error::Internal(e.to_string())))?,
     ))
+}
+
+async fn actor_can_package_by_id_and_requirement(
+    db: &PgPool,
+    package_id: Uuid,
+    actor_user_id: Option<Uuid>,
+    requirement: PackageAccessRequirement,
+) -> ApiResult<bool> {
+    let Some(actor_user_id) = actor_user_id else {
+        return Ok(false);
+    };
+
+    let (owner_user_id, owner_org_id, repository_id) =
+        fetch_package_owner_fields_by_id(db, package_id).await?;
+
+    authorize_package_write_access(
+        db,
+        package_id,
+        repository_id,
+        owner_user_id,
+        owner_org_id,
+        actor_user_id,
+        requirement,
+    )
+    .await
+    .map(is_write_access_allowed)
 }
 
 async fn fetch_repository_owner_fields_by_id(
@@ -1159,19 +1659,11 @@ pub async fn actor_can_manage_repository_by_id(
     repository_id: Uuid,
     actor_user_id: Option<Uuid>,
 ) -> ApiResult<bool> {
-    let Some(actor_user_id) = actor_user_id else {
-        return Ok(false);
-    };
-
-    let (owner_user_id, owner_org_id) =
-        fetch_repository_owner_fields_by_id(db, repository_id).await?;
-
-    actor_can_manage_owned_repository(
+    actor_can_repository_by_id_and_requirement(
         db,
         repository_id,
-        owner_user_id,
-        owner_org_id,
         actor_user_id,
+        RepositoryAccessRequirement::Admin,
     )
     .await
 }
@@ -1181,19 +1673,11 @@ pub async fn actor_can_create_packages_in_repository_by_id(
     repository_id: Uuid,
     actor_user_id: Option<Uuid>,
 ) -> ApiResult<bool> {
-    let Some(actor_user_id) = actor_user_id else {
-        return Ok(false);
-    };
-
-    let (owner_user_id, owner_org_id) =
-        fetch_repository_owner_fields_by_id(db, repository_id).await?;
-
-    actor_can_create_packages_in_owned_repository(
+    actor_can_repository_by_id_and_requirement(
         db,
         repository_id,
-        owner_user_id,
-        owner_org_id,
         actor_user_id,
+        RepositoryAccessRequirement::PackageCreation,
     )
     .await
 }
@@ -1203,6 +1687,21 @@ pub async fn actor_can_transfer_repository_by_id(
     repository_id: Uuid,
     actor_user_id: Option<Uuid>,
 ) -> ApiResult<bool> {
+    actor_can_repository_by_id_and_requirement(
+        db,
+        repository_id,
+        actor_user_id,
+        RepositoryAccessRequirement::TransferOwnership,
+    )
+    .await
+}
+
+async fn actor_can_repository_by_id_and_requirement(
+    db: &PgPool,
+    repository_id: Uuid,
+    actor_user_id: Option<Uuid>,
+    requirement: RepositoryAccessRequirement,
+) -> ApiResult<bool> {
     let Some(actor_user_id) = actor_user_id else {
         return Ok(false);
     };
@@ -1210,12 +1709,95 @@ pub async fn actor_can_transfer_repository_by_id(
     let (owner_user_id, owner_org_id) =
         fetch_repository_owner_fields_by_id(db, repository_id).await?;
 
-    actor_can_transfer_owned_repository(
+    authorize_repository_write_access(
         db,
         repository_id,
         owner_user_id,
         owner_org_id,
         actor_user_id,
+        requirement.team_permissions(),
+    )
+    .await
+    .map(is_write_access_allowed)
+}
+
+async fn authorize_namespace_claim_write_access_by_id(
+    db: &PgPool,
+    namespace_claim_id: Uuid,
+    actor_user_id: Uuid,
+    requirement: NamespaceClaimAccessRequirement,
+) -> ApiResult<TeamWriteAccess> {
+    let (owner_user_id, owner_org_id) =
+        fetch_namespace_claim_owner_fields_by_id(db, namespace_claim_id).await?;
+
+    if owner_user_id == Some(actor_user_id) {
+        return Ok(TeamWriteAccess::Allowed);
+    }
+
+    if let Some(owner_org_id) = owner_org_id {
+        match authorize_org_write_roles(db, owner_org_id, actor_user_id, ORG_ADMIN_ROLES).await? {
+            OrgWriteRoleAccess::Allowed => return Ok(TeamWriteAccess::Allowed),
+            OrgWriteRoleAccess::MfaRequired => return Ok(TeamWriteAccess::MfaRequired),
+            OrgWriteRoleAccess::MissingRole => {}
+        }
+    }
+
+    actor_has_team_namespace_permissions(
+        db,
+        namespace_claim_id,
+        actor_user_id,
+        requirement.team_permissions(),
+    )
+    .await
+}
+
+async fn ensure_namespace_claim_access_by_requirement(
+    db: &PgPool,
+    namespace_claim_id: Uuid,
+    actor_user_id: Uuid,
+    requirement: NamespaceClaimAccessRequirement,
+) -> ApiResult<()> {
+    match authorize_namespace_claim_write_access_by_id(
+        db,
+        namespace_claim_id,
+        actor_user_id,
+        requirement,
+    )
+    .await?
+    {
+        TeamWriteAccess::Allowed => Ok(()),
+        TeamWriteAccess::MfaRequired => Err(org_mfa_required_for_write_error()),
+        TeamWriteAccess::MissingPermission => Err(ApiError(Error::Forbidden(
+            requirement.denial_message().into(),
+        ))),
+    }
+}
+
+async fn actor_can_namespace_claim_by_id_and_requirement(
+    db: &PgPool,
+    namespace_claim_id: Uuid,
+    actor_user_id: Option<Uuid>,
+    requirement: NamespaceClaimAccessRequirement,
+) -> ApiResult<bool> {
+    let Some(actor_user_id) = actor_user_id else {
+        return Ok(false);
+    };
+
+    authorize_namespace_claim_write_access_by_id(db, namespace_claim_id, actor_user_id, requirement)
+        .await
+        .map(is_write_access_allowed)
+}
+
+pub async fn ensure_namespace_claim_admin_access_by_id(
+    db: &PgPool,
+    namespace_claim_id: Uuid,
+    actor_user_id: Uuid,
+) -> ApiResult<()> {
+    ensure_namespace_claim_access_by_requirement(
+        db,
+        namespace_claim_id,
+        actor_user_id,
+        NamespaceClaimAccessRequirement::Admin,
     )
     .await
 }
@@ -1225,28 +1807,25 @@ pub async fn actor_can_manage_namespace_claim_by_id(
     namespace_claim_id: Uuid,
     actor_user_id: Option<Uuid>,
 ) -> ApiResult<bool> {
-    let Some(actor_user_id) = actor_user_id else {
-        return Ok(false);
-    };
-
-    let (owner_user_id, owner_org_id) =
-        fetch_namespace_claim_owner_fields_by_id(db, namespace_claim_id).await?;
-
-    if owner_user_id == Some(actor_user_id) {
-        return Ok(true);
-    }
-
-    if let Some(owner_org_id) = owner_org_id {
-        if actor_has_org_roles(db, owner_org_id, actor_user_id, ORG_ADMIN_ROLES).await? {
-            return Ok(true);
-        }
-    }
-
-    actor_has_team_namespace_permissions(
+    actor_can_namespace_claim_by_id_and_requirement(
         db,
         namespace_claim_id,
         actor_user_id,
-        TEAM_NAMESPACE_ADMIN_PERMISSIONS,
+        NamespaceClaimAccessRequirement::Admin,
+    )
+    .await
+}
+
+pub async fn ensure_namespace_claim_transfer_access_by_id(
+    db: &PgPool,
+    namespace_claim_id: Uuid,
+    actor_user_id: Uuid,
+) -> ApiResult<()> {
+    ensure_namespace_claim_access_by_requirement(
+        db,
+        namespace_claim_id,
+        actor_user_id,
+        NamespaceClaimAccessRequirement::TransferOwnership,
     )
     .await
 }
@@ -1256,28 +1835,11 @@ pub async fn actor_can_transfer_namespace_claim_by_id(
     namespace_claim_id: Uuid,
     actor_user_id: Option<Uuid>,
 ) -> ApiResult<bool> {
-    let Some(actor_user_id) = actor_user_id else {
-        return Ok(false);
-    };
-
-    let (owner_user_id, owner_org_id) =
-        fetch_namespace_claim_owner_fields_by_id(db, namespace_claim_id).await?;
-
-    if owner_user_id == Some(actor_user_id) {
-        return Ok(true);
-    }
-
-    if let Some(owner_org_id) = owner_org_id {
-        if actor_has_org_roles(db, owner_org_id, actor_user_id, ORG_ADMIN_ROLES).await? {
-            return Ok(true);
-        }
-    }
-
-    actor_has_team_namespace_permissions(
+    actor_can_namespace_claim_by_id_and_requirement(
         db,
         namespace_claim_id,
         actor_user_id,
-        TEAM_NAMESPACE_TRANSFER_PERMISSIONS,
+        NamespaceClaimAccessRequirement::TransferOwnership,
     )
     .await
 }
@@ -1287,39 +1849,11 @@ pub async fn actor_can_transfer_package_by_id(
     package_id: Uuid,
     actor_user_id: Option<Uuid>,
 ) -> ApiResult<bool> {
-    let Some(actor_user_id) = actor_user_id else {
-        return Ok(false);
-    };
-
-    let (owner_user_id, owner_org_id, repository_id) =
-        fetch_package_owner_fields_by_id(db, package_id).await?;
-
-    if owner_user_id == Some(actor_user_id) {
-        return Ok(true);
-    }
-
-    if let Some(owner_org_id) = owner_org_id {
-        if actor_has_org_roles(db, owner_org_id, actor_user_id, PACKAGE_ADMIN_ROLES).await? {
-            return Ok(true);
-        }
-    }
-
-    if actor_has_team_package_permissions(
+    actor_can_package_by_id_and_requirement(
         db,
         package_id,
         actor_user_id,
-        TEAM_PACKAGE_TRANSFER_PERMISSIONS,
-    )
-    .await?
-    {
-        return Ok(true);
-    }
-
-    actor_has_team_repository_permissions(
-        db,
-        repository_id,
-        actor_user_id,
-        TEAM_REPOSITORY_PACKAGE_TRANSFER_PERMISSIONS,
+        PackageAccessRequirement::TransferOwnership,
     )
     .await
 }
@@ -1329,39 +1863,11 @@ pub async fn actor_can_security_review_package_by_id(
     package_id: Uuid,
     actor_user_id: Option<Uuid>,
 ) -> ApiResult<bool> {
-    let Some(actor_user_id) = actor_user_id else {
-        return Ok(false);
-    };
-
-    let (owner_user_id, owner_org_id, repository_id) =
-        fetch_package_owner_fields_by_id(db, package_id).await?;
-
-    if owner_user_id == Some(actor_user_id) {
-        return Ok(true);
-    }
-
-    if let Some(owner_org_id) = owner_org_id {
-        if actor_has_org_roles(db, owner_org_id, actor_user_id, PACKAGE_ADMIN_ROLES).await? {
-            return Ok(true);
-        }
-    }
-
-    if actor_has_team_package_permissions(
+    actor_can_package_by_id_and_requirement(
         db,
         package_id,
         actor_user_id,
-        TEAM_PACKAGE_SECURITY_REVIEW_PERMISSIONS,
-    )
-    .await?
-    {
-        return Ok(true);
-    }
-
-    actor_has_team_repository_permissions(
-        db,
-        repository_id,
-        actor_user_id,
-        TEAM_REPOSITORY_PACKAGE_SECURITY_REVIEW_PERMISSIONS,
+        PackageAccessRequirement::SecurityReview,
     )
     .await
 }
@@ -1371,39 +1877,11 @@ pub async fn actor_can_publish_package_by_id(
     package_id: Uuid,
     actor_user_id: Option<Uuid>,
 ) -> ApiResult<bool> {
-    let Some(actor_user_id) = actor_user_id else {
-        return Ok(false);
-    };
-
-    let (owner_user_id, owner_org_id, repository_id) =
-        fetch_package_owner_fields_by_id(db, package_id).await?;
-
-    if owner_user_id == Some(actor_user_id) {
-        return Ok(true);
-    }
-
-    if let Some(owner_org_id) = owner_org_id {
-        if actor_has_org_roles(db, owner_org_id, actor_user_id, PACKAGE_PUBLISH_ROLES).await? {
-            return Ok(true);
-        }
-    }
-
-    if actor_has_team_package_permissions(
+    actor_can_package_by_id_and_requirement(
         db,
         package_id,
         actor_user_id,
-        TEAM_PACKAGE_PUBLISH_PERMISSIONS,
-    )
-    .await?
-    {
-        return Ok(true);
-    }
-
-    actor_has_team_repository_permissions(
-        db,
-        repository_id,
-        actor_user_id,
-        TEAM_REPOSITORY_PACKAGE_PUBLISH_PERMISSIONS,
+        PackageAccessRequirement::Publish,
     )
     .await
 }
@@ -1413,39 +1891,11 @@ pub async fn actor_can_write_package_metadata_by_id(
     package_id: Uuid,
     actor_user_id: Option<Uuid>,
 ) -> ApiResult<bool> {
-    let Some(actor_user_id) = actor_user_id else {
-        return Ok(false);
-    };
-
-    let (owner_user_id, owner_org_id, repository_id) =
-        fetch_package_owner_fields_by_id(db, package_id).await?;
-
-    if owner_user_id == Some(actor_user_id) {
-        return Ok(true);
-    }
-
-    if let Some(owner_org_id) = owner_org_id {
-        if actor_has_org_roles(db, owner_org_id, actor_user_id, PACKAGE_METADATA_ROLES).await? {
-            return Ok(true);
-        }
-    }
-
-    if actor_has_team_package_permissions(
+    actor_can_package_by_id_and_requirement(
         db,
         package_id,
         actor_user_id,
-        TEAM_PACKAGE_METADATA_PERMISSIONS,
-    )
-    .await?
-    {
-        return Ok(true);
-    }
-
-    actor_has_team_repository_permissions(
-        db,
-        repository_id,
-        actor_user_id,
-        TEAM_REPOSITORY_PACKAGE_METADATA_PERMISSIONS,
+        PackageAccessRequirement::MetadataWrite,
     )
     .await
 }
@@ -1455,39 +1905,11 @@ pub async fn actor_can_admin_package_by_id(
     package_id: Uuid,
     actor_user_id: Option<Uuid>,
 ) -> ApiResult<bool> {
-    let Some(actor_user_id) = actor_user_id else {
-        return Ok(false);
-    };
-
-    let (owner_user_id, owner_org_id, repository_id) =
-        fetch_package_owner_fields_by_id(db, package_id).await?;
-
-    if owner_user_id == Some(actor_user_id) {
-        return Ok(true);
-    }
-
-    if let Some(owner_org_id) = owner_org_id {
-        if actor_has_org_roles(db, owner_org_id, actor_user_id, PACKAGE_ADMIN_ROLES).await? {
-            return Ok(true);
-        }
-    }
-
-    if actor_has_team_package_permissions(
+    actor_can_package_by_id_and_requirement(
         db,
         package_id,
         actor_user_id,
-        TEAM_PACKAGE_ADMIN_PERMISSIONS,
-    )
-    .await?
-    {
-        return Ok(true);
-    }
-
-    actor_has_team_repository_permissions(
-        db,
-        repository_id,
-        actor_user_id,
-        TEAM_REPOSITORY_ADMIN_PERMISSIONS,
+        PackageAccessRequirement::Admin,
     )
     .await
 }
@@ -1497,46 +1919,11 @@ pub async fn actor_can_write_package_by_id(
     package_id: Uuid,
     actor_user_id: Option<Uuid>,
 ) -> ApiResult<bool> {
-    let Some(actor_user_id) = actor_user_id else {
-        return Ok(false);
-    };
-
-    let (owner_user_id, owner_org_id, repository_id) =
-        fetch_package_owner_fields_by_id(db, package_id).await?;
-
-    if owner_user_id == Some(actor_user_id) {
-        return Ok(true);
-    }
-
-    if let Some(owner_org_id) = owner_org_id {
-        if actor_has_org_roles(
-            db,
-            owner_org_id,
-            actor_user_id,
-            PACKAGE_MANAGEMENT_VISIBILITY_ROLES,
-        )
-        .await?
-        {
-            return Ok(true);
-        }
-    }
-
-    if actor_has_team_package_permissions(
+    actor_can_package_by_id_and_requirement(
         db,
         package_id,
         actor_user_id,
-        TEAM_PACKAGE_MANAGEMENT_VISIBILITY_PERMISSIONS,
-    )
-    .await?
-    {
-        return Ok(true);
-    }
-
-    actor_has_team_repository_permissions(
-        db,
-        repository_id,
-        actor_user_id,
-        TEAM_REPOSITORY_PACKAGE_MANAGEMENT_VISIBILITY_PERMISSIONS,
+        PackageAccessRequirement::ManagementVisibility,
     )
     .await
 }
@@ -1553,8 +1940,10 @@ mod tests {
     use crate::{config::Config, state::AppState};
 
     use super::{
+        is_org_access_allowed, resolve_org_write_role_access, resolve_team_write_access,
         visibility_allows_read, visibility_is_discoverable, AuthenticatedIdentity, CredentialKind,
-        OptionalAuthenticatedIdentity,
+        OptionalAuthenticatedIdentity, OrgAccessOutcome, OrgAccessRequirement, OrgWriteRoleAccess,
+        TeamWriteAccess, ORG_ADMIN_ROLES, ORG_AUDIT_ROLES,
     };
 
     fn test_state() -> AppState {
@@ -1666,6 +2055,94 @@ mod tests {
             .expect("identity should be extracted");
 
         assert_eq!(identity.user_id(), Some(user_id));
+    }
+
+    #[test]
+    fn org_write_role_access_requires_mfa_for_elevated_publishers() {
+        assert_eq!(
+            resolve_org_write_role_access(Some("publisher"), true, false),
+            OrgWriteRoleAccess::MfaRequired
+        );
+        assert_eq!(
+            resolve_org_write_role_access(Some("publisher"), true, true),
+            OrgWriteRoleAccess::Allowed
+        );
+    }
+
+    #[test]
+    fn org_write_role_access_preserves_non_elevated_members_and_missing_roles() {
+        assert_eq!(
+            resolve_org_write_role_access(Some("auditor"), true, false),
+            OrgWriteRoleAccess::Allowed
+        );
+        assert_eq!(
+            resolve_org_write_role_access(None, true, false),
+            OrgWriteRoleAccess::MissingRole
+        );
+    }
+
+    #[test]
+    fn org_access_requirements_define_stable_roles_and_denials() {
+        assert_eq!(
+            OrgAccessRequirement::Admin.org_roles(),
+            Some(ORG_ADMIN_ROLES)
+        );
+        assert_eq!(
+            OrgAccessRequirement::AuditLog.org_roles(),
+            Some(ORG_AUDIT_ROLES)
+        );
+        assert_eq!(OrgAccessRequirement::MemberDirectory.org_roles(), None);
+
+        assert_eq!(
+            OrgAccessRequirement::Admin.denial_message(),
+            "Organization administration requires owner or admin membership"
+        );
+        assert_eq!(
+            OrgAccessRequirement::MemberDirectory.denial_message(),
+            "Organization member and team directories require organization membership"
+        );
+        assert_eq!(
+            OrgAccessRequirement::AuditLog.denial_message(),
+            "Organization activity log requires owner, admin, or auditor membership"
+        );
+    }
+
+    #[test]
+    fn org_access_requirement_mfa_is_only_enforced_for_admin_writes() {
+        assert!(OrgAccessRequirement::Admin.requires_write_role_mfa());
+        assert!(!OrgAccessRequirement::MemberDirectory.requires_write_role_mfa());
+        assert!(!OrgAccessRequirement::AuditLog.requires_write_role_mfa());
+    }
+
+    #[test]
+    fn org_access_allowed_only_accepts_allowed_outcome() {
+        assert!(is_org_access_allowed(OrgAccessOutcome::Allowed));
+        assert!(!is_org_access_allowed(OrgAccessOutcome::MissingPermission));
+        assert!(!is_org_access_allowed(OrgAccessOutcome::MfaRequired));
+    }
+
+    #[test]
+    fn team_write_access_requires_mfa_when_permission_exists_and_org_policy_is_enabled() {
+        assert_eq!(
+            resolve_team_write_access(true, true, false),
+            TeamWriteAccess::MfaRequired
+        );
+        assert_eq!(
+            resolve_team_write_access(true, true, true),
+            TeamWriteAccess::Allowed
+        );
+    }
+
+    #[test]
+    fn team_write_access_preserves_missing_permission_and_orgs_without_mfa_policy() {
+        assert_eq!(
+            resolve_team_write_access(false, true, false),
+            TeamWriteAccess::MissingPermission
+        );
+        assert_eq!(
+            resolve_team_write_access(true, false, false),
+            TeamWriteAccess::Allowed
+        );
     }
 
     #[test]
