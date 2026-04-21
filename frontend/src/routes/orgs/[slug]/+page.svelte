@@ -5,25 +5,20 @@
   import { ApiError, getAuthToken } from '../../../api/client';
   import type {
     NamespaceClaim,
-    NamespaceListResponse,
     NamespaceTransferOwnershipResult,
   } from '../../../api/namespaces';
   import {
     createNamespaceClaim,
     deleteNamespaceClaim,
-    listOrgNamespaces,
     transferNamespaceClaim,
   } from '../../../api/namespaces';
   import type {
-    MemberListResponse,
     OrgAuditListResponse,
     OrgAuditLog,
     OrgInvitation,
     OrgInvitationListResponse,
     OrgMember,
-    OrgPackageListResponse,
     OrgPackageSummary,
-    OrgRepositoryListResponse,
     OrgRepositorySummary,
     OrgSecurityFindingsResponse,
     OrgSecurityPackageSummary,
@@ -52,12 +47,9 @@
     exportOrgAuditLogsCsv,
     exportOrgSecurityFindingsCsv,
     getOrg,
-    listMembers,
     listMyOrganizations,
     listOrgAuditLogs,
     listOrgInvitations,
-    listOrgPackages,
-    listOrgRepositories,
     listOrgSecurityFindings,
     listTeamNamespaceAccess,
     listTeamMembers,
@@ -99,7 +91,11 @@
   import OrgAuditFilterControls from '../../../lib/components/OrgAuditFilterControls.svelte';
   import OrgSecurityFindingTriageControls from '../../../lib/components/OrgSecurityFindingTriageControls.svelte';
   import OrgSecurityFilterControls from '../../../lib/components/OrgSecurityFilterControls.svelte';
-  import TeamAccessGrantForm from '../../../lib/components/TeamAccessGrantForm.svelte';
+  import TeamMembersEditor from '../../../lib/components/TeamMembersEditor.svelte';
+  import TeamNamespaceAccessEditor from '../../../lib/components/TeamNamespaceAccessEditor.svelte';
+  import TeamPackageAccessEditor from '../../../lib/components/TeamPackageAccessEditor.svelte';
+  import TeamRepositoryAccessEditor from '../../../lib/components/TeamRepositoryAccessEditor.svelte';
+  import TeamSettingsEditor from '../../../lib/components/TeamSettingsEditor.svelte';
   import type { OrgAuditActorOption } from '../../../pages/org-audit-actors';
   import {
     buildAuditActorOptions,
@@ -153,6 +149,24 @@
     resolveTeamPackageAccessSubmission,
     resolveTeamRepositoryAccessSubmission,
   } from '../../../pages/org-workspace-actions';
+  import {
+    buildEligibleTeamMemberOptions,
+    buildNamespaceGrantOptions,
+    buildPackageGrantOptions,
+    buildRepositoryGrantOptions,
+    createTeamManagementController,
+    loadOrgMembersState,
+    loadOrgNamespacesState,
+    loadOrgPackagesState,
+    loadOrgRepositoriesState,
+    loadTeamManagementStateMaps,
+    type TeamMemberState,
+    type TeamNamespaceAccessState,
+    type TeamPackageAccessState,
+    type TeamRepositoryAccessState,
+    TEAM_NAMESPACE_PERMISSION_OPTIONS,
+    TEAM_PERMISSION_OPTIONS,
+  } from '../../../pages/team-management';
   import {
     buildOrgSecurityPackageKey,
     mergeUpdatedOrgSecurityFinding,
@@ -214,50 +228,6 @@
     { value: 'billing_manager', label: 'Billing manager' },
     { value: 'viewer', label: 'Viewer' },
   ] as const;
-  const TEAM_PERMISSION_OPTIONS = [
-    {
-      value: 'admin',
-      label: 'Admin',
-      description: 'Manage package administration workflows.',
-    },
-    {
-      value: 'publish',
-      label: 'Publish',
-      description: 'Create releases and publish artifacts.',
-    },
-    {
-      value: 'write_metadata',
-      label: 'Write metadata',
-      description: 'Update package readmes and metadata.',
-    },
-    {
-      value: 'read_private',
-      label: 'Read private',
-      description: 'Read non-public package data.',
-    },
-    {
-      value: 'security_review',
-      label: 'Security review',
-      description: 'Reserved for future security workflows.',
-    },
-    {
-      value: 'transfer_ownership',
-      label: 'Transfer ownership',
-      description: 'Transfer a package to another owner.',
-    },
-  ] as const;
-  const TEAM_NAMESPACE_PERMISSION_OPTIONS = [
-    {
-      value: 'admin',
-      label: 'Admin',
-      description: 'Delete organization-owned namespace claims.',
-    },
-    {
-      value: 'transfer_ownership',
-      label: 'Transfer ownership',
-      description: 'Transfer a namespace claim into another controlled organization.',
-    },
-  ] as const;
   let transferableNamespaceClaims: NamespaceClaim[] = [];
   const SECURITY_FILTER_ECOSYSTEM_OPTIONS = [
     { value: 'npm', label: 'npm / Bun' },
@@ -279,36 +249,9 @@
   }));
   let securityPackageOptions: Array<{ value: string; label: string }> = [];
 
-  $: repositoryGrantOptions = [...repositories]
-    .sort((left, right) =>
-      `${left.name || left.slug || ''}`.localeCompare(
-        `${right.name || right.slug || ''}`
-      )
-    )
-    .map((repository) => ({
-      value: repository.slug || '',
-      label: `${repository.name || repository.slug || ''} · ${formatRepositoryKindLabel(repository.kind)} · ${formatRepositoryVisibilityLabel(repository.visibility)}`,
-    }));
-
-  $: packageGrantOptions = [...packages]
-    .sort((left, right) =>
-      `${left.ecosystem || ''}:${left.name || ''}`.localeCompare(
-        `${right.ecosystem || ''}:${right.name || ''}`
-      )
-    )
-    .map((pkg) => ({
-      value: renderPackageSelectionValue(pkg.ecosystem, pkg.name),
-      label: `${pkg.ecosystem || ''} · ${pkg.name || ''}`,
-    }));
-  $: namespaceGrantOptions = sortNamespaceClaims(namespaceClaims)
-    .filter(
-      (claim): claim is NamespaceClaim & { id: string } =>
-        typeof claim.id === 'string' && claim.id.trim().length > 0
-    )
-    .map((claim) => ({
-      value: claim.id,
-      label: `${claim.namespace || 'Unnamed claim'} · ${ecosystemLabel(claim.ecosystem)}`,
-    }));
+  $: repositoryGrantOptions = buildRepositoryGrantOptions(repositories);
+  $: packageGrantOptions = buildPackageGrantOptions(packages);
+  $: namespaceGrantOptions = buildNamespaceGrantOptions(namespaceClaims);
   $: transferableNamespaceClaims = sortNamespaceClaims(
     namespaceClaims.filter((claim) => claim.can_transfer)
   );
@@ -322,26 +265,6 @@
       value: pkg.name || '',
       label: `${pkg.ecosystem || ''} · ${pkg.name || ''}`,
     }));
-
-  interface TeamMemberState {
-    members: TeamMember[];
-    load_error: string | null;
-  }
-
-  interface TeamPackageAccessState {
-    grants: TeamPackageAccessGrant[];
-    load_error: string | null;
-  }
-
-  interface TeamRepositoryAccessState {
-    grants: TeamRepositoryAccessGrant[];
-    load_error: string | null;
-  }
-
-  interface TeamNamespaceAccessState {
-    grants: TeamNamespaceAccessGrant[];
-    load_error: string | null;
-  }
 
   interface RepositoryPackageState {
     packages: RepositoryPackageSummary[];
@@ -692,21 +615,16 @@
         myOrganizationsData,
       ] = await Promise.all([
         getOrg(slug),
-        listOrgRepositories(slug).catch(
-          (caughtError: unknown): OrgRepositoryListResponse => ({
-            repositories: [],
-            load_error: toErrorMessage(
-              caughtError,
-              'Failed to load repositories.'
-            ),
-          })
-        ),
-        listOrgPackages(slug).catch(
-          (caughtError: unknown): OrgPackageListResponse => ({
-            packages: [],
-            load_error: toErrorMessage(caughtError, 'Failed to load packages.'),
-          })
-        ),
+        loadOrgRepositoriesState(slug, {
+          include: true,
+          errorMessage: 'Failed to load repositories.',
+          toErrorMessage,
+        }),
+        loadOrgPackagesState(slug, {
+          include: true,
+          errorMessage: 'Failed to load packages.',
+          toErrorMessage,
+        }),
         listOrgSecurityFindings(slug, securityQuery).catch(
           (caughtError: unknown): OrgSecurityFindingsResponse => ({
             summary: null,
@@ -760,9 +678,9 @@
 
       const [
         invitationData,
-        memberData,
+        memberState,
         teamData,
-        namespaceData,
+        namespaceState,
         auditData,
         repositoryPackageData,
       ] = await Promise.all([
@@ -780,20 +698,11 @@
               invitations: [],
               load_error: null,
             }),
-        canViewPeopleWorkspace
-          ? listMembers(slug).catch(
-              (caughtError: unknown): MemberListResponse => ({
-                members: [],
-                load_error: toErrorMessage(
-                  caughtError,
-                  'Failed to load members.'
-                ),
-              })
-            )
-          : Promise.resolve<MemberListResponse>({
-              members: [],
-              load_error: null,
-            }),
+        loadOrgMembersState(slug, {
+          include: canViewPeopleWorkspace,
+          errorMessage: 'Failed to load members.',
+          toErrorMessage,
+        }),
         canViewPeopleWorkspace
           ? listTeams(slug).catch(
               (caughtError: unknown): TeamListResponse => ({
@@ -808,21 +717,14 @@
               teams: [],
               load_error: null,
             }),
-        org?.id
-          ? listOrgNamespaces(org.id).catch(
-              (caughtError: unknown): NamespaceListResponse => ({
-                namespaces: [],
-                load_error: toErrorMessage(
-                  caughtError,
-                  'Failed to load namespace claims.'
-                ),
-              })
-            )
-          : Promise.resolve<NamespaceListResponse>({
-              namespaces: [],
-              load_error:
-                'Failed to load namespace claims because the organization id is unavailable.',
-            }),
+        loadOrgNamespacesState({
+          orgId: org?.id,
+          include: true,
+          errorMessage: 'Failed to load namespace claims.',
+          missingOrgIdMessage:
+            'Failed to load namespace claims because the organization id is unavailable.',
+          toErrorMessage,
+        }),
         canViewAudit
           ? listOrgAuditLogs(slug, {
               action: resolvedAuditAction || undefined,
@@ -855,36 +757,23 @@
 
       invitations = invitationData.invitations || [];
       invitationsError = invitationData.load_error || null;
-      members = memberData.members || [];
-      membersError = memberData.load_error || null;
+      members = memberState.members;
+      membersError = memberState.load_error;
       teams = teamData.teams || [];
       teamsError = teamData.load_error || null;
-      const [
-        teamMembersData,
-        teamPackageAccessData,
-        teamRepositoryAccessData,
-        teamNamespaceAccessData,
-      ] =
-        await Promise.all([
-          canManageTeams
-            ? loadTeamMembers(slug, teams)
-            : Promise.resolve<Record<string, TeamMemberState>>({}),
-          canManageTeams
-            ? loadTeamPackageAccess(slug, teams)
-            : Promise.resolve<Record<string, TeamPackageAccessState>>({}),
-          canManageRepositories
-            ? loadTeamRepositoryAccess(slug, teams)
-            : Promise.resolve<Record<string, TeamRepositoryAccessState>>({}),
-          canManageNamespaces
-            ? loadTeamNamespaceAccess(slug, teams)
-            : Promise.resolve<Record<string, TeamNamespaceAccessState>>({}),
-        ]);
-      teamMembersBySlug = teamMembersData;
-      teamPackageAccessBySlug = teamPackageAccessData;
-      teamRepositoryAccessBySlug = teamRepositoryAccessData;
-      teamNamespaceAccessBySlug = teamNamespaceAccessData;
-      namespaceClaims = namespaceData.namespaces || [];
-      namespaceError = namespaceData.load_error || null;
+      const teamManagementStateMaps = await loadTeamManagementStateMaps(slug, teams, {
+        includeMembers: canManageTeams,
+        includePackageAccess: canManageTeams,
+        includeRepositoryAccess: canManageRepositories,
+        includeNamespaceAccess: canManageNamespaces,
+        toErrorMessage,
+      });
+      teamMembersBySlug = teamManagementStateMaps.teamMembersBySlug;
+      teamPackageAccessBySlug = teamManagementStateMaps.teamPackageAccessBySlug;
+      teamRepositoryAccessBySlug = teamManagementStateMaps.teamRepositoryAccessBySlug;
+      teamNamespaceAccessBySlug = teamManagementStateMaps.teamNamespaceAccessBySlug;
+      namespaceClaims = namespaceState.namespaces;
+      namespaceError = namespaceState.load_error;
       auditLogs = auditData.logs || [];
       auditError = auditData.load_error || null;
       auditHasNext = auditData.has_next === true;
@@ -921,129 +810,6 @@
         'Failed to load security overview.'
       );
     }
-  }
-
-  async function loadTeamMembers(
-    currentSlug: string,
-    teamList: Team[]
-  ): Promise<Record<string, TeamMemberState>> {
-    const entries = await Promise.all(
-      teamList.filter(hasTeamSlug).map(async (team) => {
-        try {
-          const data = await listTeamMembers(currentSlug, team.slug);
-          return [
-            team.slug,
-            { members: data.members || [], load_error: null },
-          ] as const;
-        } catch (caughtError: unknown) {
-          return [
-            team.slug,
-            {
-              members: [],
-              load_error: toErrorMessage(
-                caughtError,
-                `Failed to load members for ${team.name || team.slug}.`
-              ),
-            },
-          ] as const;
-        }
-      })
-    );
-
-    return Object.fromEntries(entries);
-  }
-
-  async function loadTeamPackageAccess(
-    currentSlug: string,
-    teamList: Team[]
-  ): Promise<Record<string, TeamPackageAccessState>> {
-    const entries = await Promise.all(
-      teamList.filter(hasTeamSlug).map(async (team) => {
-        try {
-          const data: TeamPackageAccessListResponse =
-            await listTeamPackageAccess(currentSlug, team.slug);
-          return [
-            team.slug,
-            { grants: data.package_access || [], load_error: null },
-          ] as const;
-        } catch (caughtError: unknown) {
-          return [
-            team.slug,
-            {
-              grants: [],
-              load_error: toErrorMessage(
-                caughtError,
-                `Failed to load package access for ${team.name || team.slug}.`
-              ),
-            },
-          ] as const;
-        }
-      })
-    );
-
-    return Object.fromEntries(entries);
-  }
-
-  async function loadTeamRepositoryAccess(
-    currentSlug: string,
-    teamList: Team[]
-  ): Promise<Record<string, TeamRepositoryAccessState>> {
-    const entries = await Promise.all(
-      teamList.filter(hasTeamSlug).map(async (team) => {
-        try {
-          const data: TeamRepositoryAccessListResponse =
-            await listTeamRepositoryAccess(currentSlug, team.slug);
-          return [
-            team.slug,
-            { grants: data.repository_access || [], load_error: null },
-          ] as const;
-        } catch (caughtError: unknown) {
-          return [
-            team.slug,
-            {
-              grants: [],
-              load_error: toErrorMessage(
-                caughtError,
-                `Failed to load repository access for ${team.name || team.slug}.`
-              ),
-            },
-          ] as const;
-        }
-      })
-    );
-
-    return Object.fromEntries(entries);
-  }
-
-  async function loadTeamNamespaceAccess(
-    currentSlug: string,
-    teamList: Team[]
-  ): Promise<Record<string, TeamNamespaceAccessState>> {
-    const entries = await Promise.all(
-      teamList.filter(hasTeamSlug).map(async (team) => {
-        try {
-          const data: TeamNamespaceAccessListResponse =
-            await listTeamNamespaceAccess(currentSlug, team.slug);
-          return [
-            team.slug,
-            { grants: data.namespace_access || [], load_error: null },
-          ] as const;
-        } catch (caughtError: unknown) {
-          return [
-            team.slug,
-            {
-              grants: [],
-              load_error: toErrorMessage(
-                caughtError,
-                `Failed to load namespace access for ${team.name || team.slug}.`
-              ),
-            },
-          ] as const;
-        }
-      })
-    );
-
-    return Object.fromEntries(entries);
   }
 
   async function loadRepositoryPackages(
@@ -1482,27 +1248,6 @@
     }
   }
 
-  async function handleUpdateTeam(
-    event: SubmitEvent,
-    teamSlug: string
-  ): Promise<void> {
-    event.preventDefault();
-    const formData = new FormData(event.currentTarget as HTMLFormElement);
-
-    try {
-      await updateTeam(slug, teamSlug, {
-        name: formData.get('name')?.toString().trim() || '',
-        description: formData.get('description')?.toString().trim() || '',
-      });
-
-      await loadOrganizationPage({ notice: `Saved changes to ${teamSlug}.` });
-    } catch (caughtError: unknown) {
-      await loadOrganizationPage({
-        error: toErrorMessage(caughtError, 'Failed to update team.'),
-      });
-    }
-  }
-
   async function handleDeleteTeam(teamSlug: string): Promise<void> {
     try {
       await deleteTeam(slug, teamSlug);
@@ -1510,219 +1255,6 @@
     } catch (caughtError: unknown) {
       await loadOrganizationPage({
         error: toErrorMessage(caughtError, 'Failed to delete team.'),
-      });
-    }
-  }
-
-  async function handleAddTeamMember(
-    event: SubmitEvent,
-    teamSlug: string
-  ): Promise<void> {
-    event.preventDefault();
-    const formData = new FormData(event.currentTarget as HTMLFormElement);
-    const username = resolveOrgMemberPickerInput(
-      formData.get('username')?.toString() || '',
-      getEligibleTeamMemberOptions(teamSlug)
-    );
-
-    try {
-      await addTeamMember(slug, teamSlug, {
-        username,
-      });
-
-      (event.currentTarget as HTMLFormElement).reset();
-      await loadOrganizationPage({ notice: `Added a member to ${teamSlug}.` });
-    } catch (caughtError: unknown) {
-      await loadOrganizationPage({
-        error: toErrorMessage(caughtError, 'Failed to add team member.'),
-      });
-    }
-  }
-
-  async function handleRemoveTeamMember(
-    teamSlug: string,
-    username: string
-  ): Promise<void> {
-    try {
-      await removeTeamMember(slug, teamSlug, username);
-      await loadOrganizationPage({
-        notice: `Removed @${username} from ${teamSlug}.`,
-      });
-    } catch (caughtError: unknown) {
-      await loadOrganizationPage({
-        error: toErrorMessage(caughtError, 'Failed to remove team member.'),
-      });
-    }
-  }
-
-  async function handleReplaceTeamPackageAccess(
-    event: SubmitEvent,
-    teamSlug: string
-  ): Promise<void> {
-    event.preventDefault();
-    const resolution = resolveTeamPackageAccessSubmission(
-      new FormData(event.currentTarget as HTMLFormElement)
-    );
-
-    if (!resolution.ok) {
-      await loadOrganizationPage({
-        error: resolution.error,
-      });
-      return;
-    }
-
-    try {
-      await replaceTeamPackageAccess(
-        slug,
-        teamSlug,
-        resolution.value.ecosystem,
-        resolution.value.name,
-        {
-          permissions: resolution.value.permissions,
-        }
-      );
-
-      await loadOrganizationPage({
-        notice: `Saved package access for ${resolution.value.name}.`,
-      });
-    } catch (caughtError: unknown) {
-      await loadOrganizationPage({
-        error: toErrorMessage(caughtError, 'Failed to update package access.'),
-      });
-    }
-  }
-
-  async function handleRemoveTeamPackageAccess(
-    teamSlug: string,
-    ecosystem: string,
-    packageName: string
-  ): Promise<void> {
-    try {
-      await removeTeamPackageAccess(slug, teamSlug, ecosystem, packageName);
-      await loadOrganizationPage({
-        notice: `Revoked package access for ${packageName}.`,
-      });
-    } catch (caughtError: unknown) {
-      await loadOrganizationPage({
-        error: toErrorMessage(caughtError, 'Failed to revoke package access.'),
-      });
-    }
-  }
-
-  async function handleReplaceTeamRepositoryAccess(
-    event: SubmitEvent,
-    teamSlug: string
-  ): Promise<void> {
-    event.preventDefault();
-    const resolution = resolveTeamRepositoryAccessSubmission(
-      new FormData(event.currentTarget as HTMLFormElement)
-    );
-
-    if (!resolution.ok) {
-      await loadOrganizationPage({
-        error: resolution.error,
-      });
-      return;
-    }
-
-    try {
-      await replaceTeamRepositoryAccess(
-        slug,
-        teamSlug,
-        resolution.value.repositorySlug,
-        {
-          permissions: resolution.value.permissions,
-        }
-      );
-
-      await loadOrganizationPage({
-        notice: `Saved repository access for ${resolution.value.repositorySlug}.`,
-      });
-    } catch (caughtError: unknown) {
-      await loadOrganizationPage({
-        error: toErrorMessage(
-          caughtError,
-          'Failed to update repository access.'
-        ),
-      });
-    }
-  }
-
-  async function handleRemoveTeamRepositoryAccess(
-    teamSlug: string,
-    repositorySlug: string
-  ): Promise<void> {
-    try {
-      await removeTeamRepositoryAccess(slug, teamSlug, repositorySlug);
-      await loadOrganizationPage({
-        notice: `Revoked repository access for ${repositorySlug}.`,
-      });
-    } catch (caughtError: unknown) {
-      await loadOrganizationPage({
-        error: toErrorMessage(
-          caughtError,
-          'Failed to revoke repository access.'
-        ),
-      });
-    }
-  }
-
-  async function handleReplaceTeamNamespaceAccess(
-    event: SubmitEvent,
-    teamSlug: string
-  ): Promise<void> {
-    event.preventDefault();
-    const resolution = resolveTeamNamespaceAccessSubmission(
-      new FormData(event.currentTarget as HTMLFormElement)
-    );
-
-    if (!resolution.ok) {
-      await loadOrganizationPage({
-        error: resolution.error,
-      });
-      return;
-    }
-
-    try {
-      const result: TeamNamespaceAccessMutationResult =
-        await replaceTeamNamespaceAccess(
-          slug,
-          teamSlug,
-          resolution.value.claimId,
-          {
-            permissions: resolution.value.permissions,
-          }
-        );
-
-      await loadOrganizationPage({
-        notice: `Saved namespace access for ${result.namespace_claim?.namespace || 'the selected claim'}.`,
-      });
-    } catch (caughtError: unknown) {
-      await loadOrganizationPage({
-        error: toErrorMessage(
-          caughtError,
-          'Failed to update namespace access.'
-        ),
-      });
-    }
-  }
-
-  async function handleRemoveTeamNamespaceAccess(
-    teamSlug: string,
-    claimId: string,
-    namespace: string
-  ): Promise<void> {
-    try {
-      await removeTeamNamespaceAccess(slug, teamSlug, claimId);
-      await loadOrganizationPage({
-        notice: `Revoked namespace access for ${namespace}.`,
-      });
-    } catch (caughtError: unknown) {
-      await loadOrganizationPage({
-        error: toErrorMessage(
-          caughtError,
-          'Failed to revoke namespace access.'
-        ),
       });
     }
   }
@@ -2049,18 +1581,11 @@
     }
   }
 
-  function hasTeamSlug(team: Team): team is Team & { slug: string } {
-    return typeof team.slug === 'string' && team.slug.trim().length > 0;
-  }
-
   function getEligibleTeamMemberOptions(
     teamSlug: string
   ): OrgMemberPickerOption[] {
     const teamMembers = teamMembersBySlug[teamSlug]?.members || [];
-    return buildOrgMemberPickerOptions(
-      members,
-      teamMembers.map((member) => member.username?.trim() || '').filter(Boolean)
-    );
+    return buildEligibleTeamMemberOptions(members, teamMembers);
   }
 
   function hasRepositorySlug(
@@ -2088,6 +1613,13 @@
       : fallback;
   }
 
+  const teamManagement = createTeamManagementController({
+    getOrgSlug: () => slug,
+    reload: loadOrganizationPage,
+    resolveEligibleTeamMemberOptions: getEligibleTeamMemberOptions,
+    toErrorMessage,
+  });
+
   function formatRole(role: string): string {
     return role
       .split('_')
@@ -2102,10 +1634,6 @@
       .filter(Boolean)
       .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
       .join(' ');
-  }
-
-  function formatPermission(permission: string): string {
-    return formatIdentifierLabel(permission);
   }
 
   function formatAuditActor(log: OrgAuditLog): string | null {
@@ -3037,7 +2565,7 @@
                   teamPackageAccessBySlug[teamSlug]?.load_error || null}
                 {@const eligibleTeamMemberOptions =
                   getEligibleTeamMemberOptions(teamSlug)}
-                <div class="settings-subsection">
+                <div class="settings-subsection" id={teamSlug ? `team-${teamSlug}` : undefined}>
                   <div class="org-section-header">
                     <div>
                       <h3>{team.name || team.slug || 'Team'}</h3>
@@ -3050,134 +2578,49 @@
                       </div>
                     </div>
                     {#if canManageTeams && teamSlug}
-                      <button
-                        class="btn btn-danger btn-sm"
-                        type="button"
-                        on:click={() => handleDeleteTeam(teamSlug)}
-                        >Delete</button
-                      >
+                      <div class="token-row__actions">
+                        <a
+                          class="btn btn-secondary btn-sm"
+                          href={`/orgs/${encodeURIComponent(slug)}/teams/${encodeURIComponent(teamSlug)}`}
+                          data-sveltekit-preload-data="hover">Open workspace</a
+                        >
+                        <button
+                          class="btn btn-danger btn-sm"
+                          type="button"
+                          on:click={() => handleDeleteTeam(teamSlug)}
+                          >Delete</button
+                        >
+                      </div>
                     {/if}
                   </div>
 
                   {#if canManageTeams && teamSlug}
                     <div class="grid gap-6 xl:grid-cols-2">
-                      <form
-                        on:submit={(event) => handleUpdateTeam(event, teamSlug)}
-                      >
-                        <div class="form-group">
-                          <label for={`team-name-${teamSlug}`}>Team name</label>
-                          <input
-                            id={`team-name-${teamSlug}`}
-                            name="name"
-                            class="form-input"
-                            value={team.name || ''}
-                            required
-                          />
-                        </div>
-                        <div class="form-group">
-                          <label for={`team-description-${teamSlug}`}
-                            >Description</label
-                          >
-                          <textarea
-                            id={`team-description-${teamSlug}`}
-                            name="description"
-                            class="form-input"
-                            rows="3">{team.description || ''}</textarea
-                          >
-                        </div>
-                        <button type="submit" class="btn btn-secondary"
-                          >Save changes</button
-                        >
-                      </form>
+                      <TeamSettingsEditor
+                        {team}
+                        {teamSlug}
+                        nameFieldId={`team-name-${teamSlug}`}
+                        descriptionFieldId={`team-description-${teamSlug}`}
+                        submitLabel="Save changes"
+                        submitClass="btn btn-secondary"
+                        handleSubmit={(event) => teamManagement.updateTeam(teamSlug, event)}
+                      />
 
                       <div>
                         <h4>Team members</h4>
-                        {#if teamMembersError}
-                          <div class="alert alert-error">
-                            {teamMembersError}
-                          </div>
-                        {:else if teamMembers.length === 0}
-                          <p class="settings-copy">
-                            No members in this team yet.
-                          </p>
-                        {:else}
-                          <div class="token-list">
-                            {#each teamMembers as teamMember}
-                              <div class="token-row">
-                                <div class="token-row__main">
-                                  <div class="token-row__title">
-                                    {teamMember.display_name ||
-                                      teamMember.username ||
-                                      'Unknown member'}
-                                  </div>
-                                  <div class="token-row__meta">
-                                    <span
-                                      >@{teamMember.username || 'unknown'}</span
-                                    >
-                                    <span
-                                      >added {formatDate(
-                                        teamMember.added_at
-                                      )}</span
-                                    >
-                                  </div>
-                                </div>
-                                {#if teamMember.username}
-                                  <div class="token-row__actions">
-                                    <button
-                                      class="btn btn-secondary btn-sm"
-                                      type="button"
-                                      on:click={() =>
-                                        handleRemoveTeamMember(
-                                          teamSlug,
-                                          teamMember.username || ''
-                                        )}>Remove</button
-                                    >
-                                  </div>
-                                {/if}
-                              </div>
-                            {/each}
-                          </div>
-                        {/if}
-
-                        {#if eligibleTeamMemberOptions.length === 0}
-                          <p class="settings-copy">
-                            Every current organization member is already part of
-                            this team.
-                          </p>
-                        {:else}
-                          <form
-                            on:submit={(event) =>
-                              handleAddTeamMember(event, teamSlug)}
-                          >
-                            <div class="form-group">
-                              <label for={`team-member-${teamSlug}`}
-                                >Add organization member</label
-                              >
-                              <input
-                                id={`team-member-${teamSlug}`}
-                                name="username"
-                                class="form-input"
-                                list={`team-member-options-${teamSlug}`}
-                                placeholder="Search username or paste user id"
-                                autocomplete="off"
-                                required
-                              />
-                              <datalist id={`team-member-options-${teamSlug}`}>
-                                {#each eligibleTeamMemberOptions as option}
-                                  <option value={option.username}
-                                    >{option.label}</option
-                                  >
-                                  <option value={option.userId}
-                                    >{option.label}</option
-                                  >
-                                {/each}
-                              </datalist>
-                            </div>
-                            <button type="submit" class="btn btn-primary"
-                              >Add member</button
-                            >
-                          </form>
-                        {/if}
+                        <TeamMembersEditor
+                          members={teamMembers}
+                          membersError={teamMembersError}
+                          eligibleOptions={eligibleTeamMemberOptions}
+                          inputId={`team-member-${teamSlug}`}
+                          datalistId={`team-member-options-${teamSlug}`}
+                          emptyMembersMessage="No members in this team yet."
+                          eligibleOptionsError={null}
+                          handleSubmit={(event) =>
+                            teamManagement.addTeamMember(teamSlug, event)}
+                          handleRemoveMember={(username) =>
+                            teamManagement.removeTeamMember(teamSlug, username)}
+                        />
                       </div>
                     </div>
 
@@ -3191,157 +2634,43 @@
                         >
                         permission also unlocks repository setting updates.
                       </p>
-                      {#if teamRepositoryGrantsError}
-                        <div class="alert alert-error">
-                          {teamRepositoryGrantsError}
-                        </div>
-                      {:else if teamRepositoryGrants.length === 0}
-                        <p class="settings-copy">
-                          No repository grants assigned yet.
-                        </p>
-                      {:else}
-                        <div class="token-list">
-                          {#each teamRepositoryGrants as grant}
-                            <div class="token-row">
-                              <div class="token-row__main">
-                                <div class="token-row__title">
-                                  {#if grant.slug}
-                                    <a
-                                      href={`/repositories/${encodeURIComponent(grant.slug || '')}`}
-                                      data-sveltekit-preload-data="hover"
-                                      >{grant.name || grant.slug}</a
-                                    >
-                                  {:else}
-                                    {grant.name || 'Unnamed repository'}
-                                  {/if}
-                                </div>
-                                <div class="token-row__meta">
-                                  <span>@{grant.slug || 'no-slug'}</span>
-                                  <span
-                                    >{formatRepositoryKindLabel(
-                                      grant.kind
-                                    )}</span
-                                  >
-                                  <span
-                                    >{formatRepositoryVisibilityLabel(
-                                      grant.visibility
-                                    )}</span
-                                  >
-                                  <span
-                                    >granted {formatDate(
-                                      grant.granted_at
-                                    )}</span
-                                  >
-                                </div>
-                                <div class="token-row__scopes">
-                                  {#each grant.permissions || [] as permission}
-                                    <span class="badge badge-ecosystem"
-                                      >{formatPermission(permission)}</span
-                                    >
-                                  {/each}
-                                </div>
-                              </div>
-                              {#if grant.slug}
-                                <div class="token-row__actions">
-                                  <button
-                                    class="btn btn-secondary btn-sm"
-                                    type="button"
-                                    on:click={() =>
-                                      handleRemoveTeamRepositoryAccess(
-                                        teamSlug,
-                                        grant.slug || ''
-                                      )}>Revoke</button
-                                  >
-                                </div>
-                              {/if}
-                            </div>
-                          {/each}
-                        </div>
-                      {/if}
-
-                      <TeamAccessGrantForm
-                        fieldId={`team-repository-${teamSlug}`}
-                        selectLabel="Organization repository"
-                        selectName="repository_slug"
-                        placeholderLabel="Select a repository"
-                        emptyMessage="Create a repository before delegating repository-wide access."
-                        submitLabel="Save repository access"
-                        error={repositoriesError}
+                      <TeamRepositoryAccessEditor
+                        grants={teamRepositoryGrants}
+                        grantsError={teamRepositoryGrantsError}
+                        optionsError={repositoriesError}
                         options={repositoryGrantOptions}
                         permissionOptions={TEAM_PERMISSION_OPTIONS}
+                        fieldId={`team-repository-${teamSlug}`}
+                        emptyGrantsMessage="No repository grants assigned yet."
                         handleSubmit={(event) =>
-                          handleReplaceTeamRepositoryAccess(event, teamSlug)}
+                          teamManagement.replaceTeamRepositoryAccess(teamSlug, event)}
+                        handleRevoke={(repositorySlug) =>
+                          teamManagement.removeTeamRepositoryAccess(
+                            teamSlug,
+                            repositorySlug
+                          )}
                       />
                       </div>
                     {/if}
 
                     <div class="mt-6">
                       <h4>Package access</h4>
-                      {#if teamGrantsError}
-                        <div class="alert alert-error">{teamGrantsError}</div>
-                      {:else if teamGrants.length === 0}
-                        <p class="settings-copy">
-                          No package grants assigned yet.
-                        </p>
-                      {:else}
-                        <div class="token-list">
-                          {#each teamGrants as grant}
-                            <div class="token-row">
-                              <div class="token-row__main">
-                                <div class="token-row__title">
-                                  <a
-                                    href={`/packages/${encodeURIComponent(grant.ecosystem || 'unknown')}/${encodeURIComponent(grant.name || '')}`}
-                                    data-sveltekit-preload-data="hover"
-                                    >{grant.name || 'Unnamed package'}</a
-                                  >
-                                </div>
-                                <div class="token-row__meta">
-                                  <span>{grant.ecosystem || 'unknown'}</span>
-                                  <span
-                                    >granted {formatDate(
-                                      grant.granted_at
-                                    )}</span
-                                  >
-                                </div>
-                                <div class="token-row__scopes">
-                                  {#each grant.permissions || [] as permission}
-                                    <span class="badge badge-ecosystem"
-                                      >{formatPermission(permission)}</span
-                                    >
-                                  {/each}
-                                </div>
-                              </div>
-                              {#if grant.ecosystem && grant.name}
-                                <div class="token-row__actions">
-                                  <button
-                                    class="btn btn-secondary btn-sm"
-                                    type="button"
-                                    on:click={() =>
-                                      handleRemoveTeamPackageAccess(
-                                        teamSlug,
-                                        grant.ecosystem || '',
-                                        grant.name || ''
-                                      )}>Revoke</button
-                                  >
-                                </div>
-                              {/if}
-                            </div>
-                          {/each}
-                        </div>
-                      {/if}
-
-                      <TeamAccessGrantForm
-                        fieldId={`team-package-${teamSlug}`}
-                        selectLabel="Organization package"
-                        selectName="package_key"
-                        placeholderLabel="Select a package"
-                        emptyMessage="Create or transfer a package before delegating access."
-                        submitLabel="Save package access"
-                        error={packagesError}
+                      <TeamPackageAccessEditor
+                        grants={teamGrants}
+                        grantsError={teamGrantsError}
+                        optionsError={packagesError}
                         options={packageGrantOptions}
                         permissionOptions={TEAM_PERMISSION_OPTIONS}
+                        fieldId={`team-package-${teamSlug}`}
+                        emptyGrantsMessage="No package grants assigned yet."
                         handleSubmit={(event) =>
-                          handleReplaceTeamPackageAccess(event, teamSlug)}
+                          teamManagement.replaceTeamPackageAccess(teamSlug, event)}
+                        handleRevoke={(ecosystem, packageName) =>
+                          teamManagement.removeTeamPackageAccess(
+                            teamSlug,
+                            ecosystem,
+                            packageName
+                          )}
                       />
                     </div>
 
@@ -3353,74 +2682,22 @@
                         organization-owned namespace claims without broader
                         organization roles.
                       </p>
-                      {#if teamNamespaceGrantsError}
-                        <div class="alert alert-error">
-                          {teamNamespaceGrantsError}
-                        </div>
-                      {:else if teamNamespaceGrants.length === 0}
-                        <p class="settings-copy">
-                          No namespace grants assigned yet.
-                        </p>
-                      {:else}
-                        <div class="token-list">
-                          {#each teamNamespaceGrants as grant}
-                            <div class="token-row">
-                              <div class="token-row__main">
-                                <div class="token-row__title">
-                                  {grant.namespace || 'Unnamed namespace claim'}
-                                </div>
-                                <div class="token-row__meta">
-                                  <span>{ecosystemLabel(grant.ecosystem)}</span>
-                                  <span
-                                    >granted {formatDate(
-                                      grant.granted_at
-                                    )}</span
-                                  >
-                                  <span
-                                    >{grant.is_verified
-                                      ? 'verified'
-                                      : 'pending verification'}</span
-                                  >
-                                </div>
-                                <div class="token-row__scopes">
-                                  {#each grant.permissions || [] as permission}
-                                    <span class="badge badge-ecosystem"
-                                      >{formatPermission(permission)}</span
-                                    >
-                                  {/each}
-                                </div>
-                              </div>
-                              {#if grant.namespace_claim_id}
-                                <div class="token-row__actions">
-                                  <button
-                                    class="btn btn-secondary btn-sm"
-                                    type="button"
-                                    on:click={() =>
-                                      handleRemoveTeamNamespaceAccess(
-                                        teamSlug,
-                                        grant.namespace_claim_id || '',
-                                        grant.namespace || 'this namespace claim'
-                                      )}>Revoke</button
-                                  >
-                                </div>
-                              {/if}
-                            </div>
-                          {/each}
-                        </div>
-                      {/if}
-
-                      <TeamAccessGrantForm
-                        fieldId={`team-namespace-${teamSlug}`}
-                        selectLabel="Organization namespace claim"
-                        selectName="claim_id"
-                        placeholderLabel="Select a namespace claim"
-                        emptyMessage="Create or transfer a namespace claim before delegating access."
-                        submitLabel="Save namespace access"
-                        error={namespaceError}
+                      <TeamNamespaceAccessEditor
+                        grants={teamNamespaceGrants}
+                        grantsError={teamNamespaceGrantsError}
+                        optionsError={namespaceError}
                         options={namespaceGrantOptions}
                         permissionOptions={TEAM_NAMESPACE_PERMISSION_OPTIONS}
+                        fieldId={`team-namespace-${teamSlug}`}
+                        emptyGrantsMessage="No namespace grants assigned yet."
                         handleSubmit={(event) =>
-                          handleReplaceTeamNamespaceAccess(event, teamSlug)}
+                          teamManagement.replaceTeamNamespaceAccess(teamSlug, event)}
+                        handleRevoke={(claimId, namespace) =>
+                          teamManagement.removeTeamNamespaceAccess(
+                            teamSlug,
+                            claimId,
+                            namespace
+                          )}
                       />
                       </div>
                     {/if}

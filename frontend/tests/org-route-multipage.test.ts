@@ -260,6 +260,11 @@ describe('route-level multi-page org dataset coverage', () => {
         expect(optionValues(packageGrantSelect)).toContain(finalPackageKey);
         expect(optionValues(repositoryTransferSelect)).toContain(finalRepository?.slug);
         expect(optionValues(packageTransferSelect)).toContain(finalPackageKey);
+        expect(
+          target.querySelector(
+            `a[href="/orgs/${ORG_SLUG}/teams/${TEAM_SLUG}"]`
+          )
+        ).not.toBeNull();
       });
     } finally {
       unmount();
