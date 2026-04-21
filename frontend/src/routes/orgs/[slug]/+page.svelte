@@ -786,7 +786,7 @@
       membersError = memberData.load_error || null;
       teams = teamData.teams || [];
       teamsError = teamData.load_error || null;
-      const [
+      const {
         teamMembersBySlug,
         teamPackageAccessBySlug,
         teamRepositoryAccessBySlug,
