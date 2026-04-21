@@ -13,5 +13,12 @@ declare module 'bun:test' {
     callback: () => void | Promise<void>
   ): void;
 
+  export const mock: {
+    module(
+      specifier: string,
+      factory: () => Record<string, unknown>
+    ): void;
+  };
+
   export function expect<T = unknown>(actual: T): any;
 }
