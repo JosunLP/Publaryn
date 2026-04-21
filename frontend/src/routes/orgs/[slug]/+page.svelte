@@ -150,6 +150,7 @@
     buildAuditExportQuery,
     buildSecurityExportQuery,
     decodePackageSelection,
+    renderPackageSelectionValue,
     resolveAuditFilterSubmission,
     resolveSecurityFilterSubmission,
     resolveTeamNamespaceAccessSubmission,
