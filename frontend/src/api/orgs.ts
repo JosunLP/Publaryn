@@ -9,6 +9,7 @@ export interface OrganizationDetail {
   slug?: NullableString;
   description?: NullableString;
   is_verified?: boolean;
+  mfa_required?: boolean;
   website?: NullableString;
   email?: NullableString;
   created_at?: NullableString;
@@ -327,6 +328,7 @@ export interface UpdateOrgInput {
   description?: NullableString;
   website?: NullableString;
   email?: NullableString;
+  mfaRequired?: boolean;
 }
 
 export interface AddMemberInput {
@@ -427,7 +429,13 @@ export async function updateOrg(
   const { data } = await api.patch<OrganizationDetail>(
     `/v1/orgs/${enc(slug)}`,
     {
-      body: updates,
+      body: {
+        name: updates.name,
+        description: updates.description,
+        website: updates.website,
+        email: updates.email,
+        mfa_required: updates.mfaRequired,
+      },
     }
   );
 

@@ -36,6 +36,8 @@ interface SearchCall {
 interface FetchScenario {
   repositoryPageRequests: number[];
   packagePageRequests: number[];
+  orgUpdateCalls: MutationCall[];
+  orgMfaRequired: boolean;
   teamRepositoryAccessUpdates: MutationCall[];
   teamPackageAccessUpdates: MutationCall[];
   repositoryTransfers: MutationCall[];
@@ -231,6 +233,43 @@ describe('route-level multi-page org dataset coverage', () => {
         expect(optionValues(repositoryTransferSelect)).toContain(finalRepository?.slug);
         expect(optionValues(packageTransferSelect)).toContain(finalPackageKey);
       });
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace saves and reloads the organization MFA policy', async () => {
+    const scenario = createFetchScenario();
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Organization profile');
+      });
+
+      const profileCheckbox = queryCheckbox(target, '#org-profile-mfa-required');
+      expect(profileCheckbox.checked).toBe(false);
+
+      const profileForm = queryRequiredForm(profileCheckbox.closest('form'));
+      setChecked(profileCheckbox, true);
+      submitForm(profileForm);
+
+      await waitFor(() => {
+        expect(scenario.orgUpdateCalls).toHaveLength(1);
+        expect(target.textContent).toContain('Organization profile updated.');
+        expect(target.textContent).toContain('MFA required');
+      });
+
+      expect(scenario.orgUpdateCalls[0]).toEqual({
+        path: `/v1/orgs/${ORG_SLUG}`,
+        body: {
+          description: 'Source organization',
+          website: null,
+          email: null,
+          mfa_required: true,
+        },
+      });
+      expect(queryCheckbox(target, '#org-profile-mfa-required').checked).toBe(true);
     } finally {
       unmount();
     }
@@ -490,6 +529,8 @@ function createFetchScenario(): FetchScenario {
   return {
     repositoryPageRequests: [],
     packagePageRequests: [],
+    orgUpdateCalls: [],
+    orgMfaRequired: false,
     teamRepositoryAccessUpdates: [],
     teamPackageAccessUpdates: [],
     repositoryTransfers: [],
@@ -524,6 +565,7 @@ async function handleApiRequest(
         slug: ORG_SLUG,
         description: 'Source organization',
         is_verified: true,
+        mfa_required: scenario.orgMfaRequired,
         website: null,
         email: null,
         created_at: '2026-04-01T00:00:00Z',
@@ -642,6 +684,15 @@ async function handleApiRequest(
     requestPath.endsWith('/packages')
   ) {
     return apiResponse({ packages: [] });
+  }
+
+  if (
+    method === 'PATCH' &&
+    requestPath === `/v1/orgs/${ORG_SLUG}`
+  ) {
+    scenario.orgUpdateCalls.push({ path: requestPath, body });
+    scenario.orgMfaRequired = body.mfa_required === true;
+    return apiResponse({ message: 'Organization updated' });
   }
 
   if (

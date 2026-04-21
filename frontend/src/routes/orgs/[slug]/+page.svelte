@@ -1304,6 +1304,7 @@
         description: normalizeFormOptionalText(formData.get('description')),
         website: normalizeFormOptionalText(formData.get('website')),
         email: normalizeFormOptionalText(formData.get('email')),
+        mfaRequired: formData.has('mfa_required'),
       });
       await loadOrganizationPage({ notice: 'Organization profile updated.' });
     } catch (caughtError: unknown) {
@@ -2359,6 +2360,9 @@
             {#if org.is_verified}<span class="badge badge-verified"
                 >Verified</span
               >{/if}
+            {#if org.mfa_required}<span class="badge badge-ecosystem"
+                >MFA required</span
+              >{/if}
           </div>
           <p class="text-muted">@{org.slug || slug}</p>
           <p class="settings-copy">
@@ -2549,9 +2553,9 @@
               rows="3">{org.description || ''}</textarea
             >
           </div>
-          <div class="grid gap-4 xl:grid-cols-2">
-            <div class="form-group">
-              <label for="org-profile-website">Website</label>
+           <div class="grid gap-4 xl:grid-cols-2">
+             <div class="form-group">
+               <label for="org-profile-website">Website</label>
               <input
                 id="org-profile-website"
                 name="website"
@@ -2569,9 +2573,32 @@
                 class="form-input"
                 type="email"
                 value={org.email || ''}
-                placeholder="registry@example.com"
+               placeholder="registry@example.com"
+             />
+           </div>
+         </div>
+          <div class="form-group">
+            <label for="org-profile-mfa-required"
+              >Organization security policy</label
+            >
+            <label
+              for="org-profile-mfa-required"
+              class="settings-copy"
+              style="display:flex; gap:12px; align-items:flex-start; margin-top:0;"
+            >
+              <input
+                id="org-profile-mfa-required"
+                name="mfa_required"
+                type="checkbox"
+                checked={Boolean(org.mfa_required)}
               />
-            </div>
+              <span>
+                <strong>Require MFA for maintainers</strong><br />
+                Record an organization-level MFA requirement for elevated roles
+                including owners, admins, maintainers, publishers, and security
+                managers.
+              </span>
+            </label>
           </div>
           <button type="submit" class="btn btn-primary">Save profile</button>
         </form>
