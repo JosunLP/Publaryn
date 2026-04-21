@@ -3071,7 +3071,10 @@ async fn test_create_and_get_org(pool: PgPool) {
         true
     );
     assert_eq!(organizations[0]["capabilities"]["can_view_audit_log"], true);
-    assert_eq!(organizations[0]["capabilities"]["can_transfer_ownership"], true);
+    assert_eq!(
+        organizations[0]["capabilities"]["can_transfer_ownership"],
+        true
+    );
 }
 
 #[sqlx::test(migrations = "../../migrations")]

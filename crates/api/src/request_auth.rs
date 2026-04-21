@@ -1257,12 +1257,8 @@ pub async fn actor_org_capabilities_by_id(
         )
         .await?,
         can_view_audit_log: actor_can_access_org_audit_log_by_id(db, org_id, actor_user_id).await?,
-        can_transfer_ownership: actor_can_transfer_org_ownership_by_id(
-            db,
-            org_id,
-            actor_user_id,
-        )
-        .await?,
+        can_transfer_ownership: actor_can_transfer_org_ownership_by_id(db, org_id, actor_user_id)
+            .await?,
     })
 }
 
