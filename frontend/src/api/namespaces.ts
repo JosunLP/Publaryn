@@ -10,6 +10,8 @@ export interface NamespaceClaim {
   owner_org_id?: NullableString;
   is_verified?: boolean | null;
   created_at?: NullableString;
+  can_manage?: boolean | null;
+  can_transfer?: boolean | null;
 }
 
 export interface NamespaceListResponse {

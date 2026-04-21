@@ -28,6 +28,11 @@ export interface TeamRepositoryAccessSubmission {
   permissions: string[];
 }
 
+export interface TeamNamespaceAccessSubmission {
+  claimId: string;
+  permissions: string[];
+}
+
 type SubmissionResult<T> = { ok: true; value: T } | { ok: false; error: string };
 
 export function resolveAuditFilterSubmission(
@@ -189,6 +194,36 @@ export function resolveTeamRepositoryAccessSubmission(
     ok: true,
     value: {
       repositorySlug,
+      permissions,
+    },
+  };
+}
+
+export function resolveTeamNamespaceAccessSubmission(
+  formData: FormData
+): SubmissionResult<TeamNamespaceAccessSubmission> {
+  const claimId = formData.get('claim_id')?.toString().trim() || '';
+
+  if (!claimId) {
+    return {
+      ok: false,
+      error: 'Select a namespace claim to manage access.',
+    };
+  }
+
+  const permissions = resolveSelectedPermissions(formData);
+
+  if (permissions.length === 0) {
+    return {
+      ok: false,
+      error: 'Select at least one delegated namespace permission.',
+    };
+  }
+
+  return {
+    ok: true,
+    value: {
+      claimId,
       permissions,
     },
   };

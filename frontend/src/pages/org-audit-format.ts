@@ -33,6 +33,7 @@ const ORG_AUDIT_ACTION_LABELS: Record<string, string> = {
   team_member_remove: 'Team member removed',
   team_package_access_update: 'Package access updated',
   team_repository_access_update: 'Repository access updated',
+  team_namespace_access_update: 'Namespace access updated',
 };
 
 type AuditMetadata = Record<string, unknown>;
@@ -371,6 +372,17 @@ export function formatAuditSummary(log: OrgAuditLog): string | null {
       return permissions.length > 0
         ? `Updated repository-wide access for ${repositoryName}: ${permissions.map((permission) => formatPermission(permission)).join(', ')}.`
         : `Removed repository-wide access for ${repositoryName}.`;
+    }
+    case 'team_namespace_access_update': {
+      const permissions = Array.isArray(metadata.permissions)
+        ? metadata.permissions.filter(
+            (item): item is string => typeof item === 'string'
+          )
+        : [];
+      const namespace = stringField(metadata.namespace) || 'selected namespace claim';
+      return permissions.length > 0
+        ? `Updated namespace access for ${namespace}: ${permissions.map((permission) => formatPermission(permission)).join(', ')}.`
+        : `Removed namespace access for ${namespace}.`;
     }
     default:
       return null;

@@ -9,6 +9,7 @@ import {
   decodePackageSelection,
   renderPackageSelectionValue,
   resolveAuditFilterSubmission,
+  resolveTeamNamespaceAccessSubmission,
   resolveSecurityFilterSubmission,
   resolveTeamPackageAccessSubmission,
   resolveTeamRepositoryAccessSubmission,
@@ -216,6 +217,39 @@ describe('org workspace action helpers', () => {
     ).toEqual({
       ok: false,
       error: 'Select at least one delegated repository permission.',
+    });
+  });
+
+  test('validates delegated namespace access submissions', () => {
+    expect(
+      resolveTeamNamespaceAccessSubmission(
+        buildFormData({
+          claim_id: ' 123e4567-e89b-42d3-a456-426614174000 ',
+          permissions: [' transfer_ownership ', 'admin'],
+        })
+      )
+    ).toEqual({
+      ok: true,
+      value: {
+        claimId: '123e4567-e89b-42d3-a456-426614174000',
+        permissions: ['transfer_ownership', 'admin'],
+      },
+    });
+
+    expect(resolveTeamNamespaceAccessSubmission(buildFormData({}))).toEqual({
+      ok: false,
+      error: 'Select a namespace claim to manage access.',
+    });
+
+    expect(
+      resolveTeamNamespaceAccessSubmission(
+        buildFormData({
+          claim_id: '123e4567-e89b-42d3-a456-426614174000',
+        })
+      )
+    ).toEqual({
+      ok: false,
+      error: 'Select at least one delegated namespace permission.',
     });
   });
 });

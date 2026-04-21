@@ -9,6 +9,7 @@ use std::{net::ToSocketAddrs, sync::Arc};
 use tokio::time::Duration;
 use tower::ServiceExt;
 use url::Url;
+use uuid::Uuid;
 
 use publaryn_api::{
     config::Config, router::build_router, state::AppState, storage::ArtifactStoreReaderAdapter,
@@ -545,6 +546,30 @@ async fn list_namespace_claims(app: &axum::Router, query: Option<&str>) -> (Stat
     let req = Request::builder()
         .method(Method::GET)
         .uri(uri)
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// List namespace claims with authentication and return the response.
+async fn list_namespace_claims_authenticated(
+    app: &axum::Router,
+    jwt: &str,
+    query: Option<&str>,
+) -> (StatusCode, Value) {
+    let uri = match query {
+        Some(query) if !query.trim().is_empty() => format!("/v1/namespaces?{query}"),
+        _ => "/v1/namespaces".to_owned(),
+    };
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri(uri)
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
         .body(Body::empty())
         .unwrap();
 
@@ -1183,6 +1208,81 @@ async fn remove_team_repository_access(
         .method(Method::DELETE)
         .uri(format!(
             "/v1/orgs/{org_slug}/teams/{team_slug}/repository-access/{repository_slug}"
+        ))
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// List delegated team namespace access and return the response.
+async fn list_team_namespace_access(
+    app: &axum::Router,
+    jwt: &str,
+    org_slug: &str,
+    team_slug: &str,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri(format!(
+            "/v1/orgs/{org_slug}/teams/{team_slug}/namespace-access"
+        ))
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// Replace delegated team namespace access and return the response.
+async fn grant_team_namespace_access(
+    app: &axum::Router,
+    jwt: &str,
+    org_slug: &str,
+    team_slug: &str,
+    claim_id: &str,
+    permissions: &[&str],
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::PUT)
+        .uri(format!(
+            "/v1/orgs/{org_slug}/teams/{team_slug}/namespace-access/{claim_id}"
+        ))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::from(
+            json!({
+                "permissions": permissions,
+            })
+            .to_string(),
+        ))
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// Remove delegated team namespace access and return the response.
+async fn remove_team_namespace_access(
+    app: &axum::Router,
+    jwt: &str,
+    org_slug: &str,
+    team_slug: &str,
+    claim_id: &str,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::DELETE)
+        .uri(format!(
+            "/v1/orgs/{org_slug}/teams/{team_slug}/namespace-access/{claim_id}"
         ))
         .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
         .body(Body::empty())
@@ -5946,7 +6046,7 @@ async fn test_namespace_claim_delete_requires_owner_or_org_admin(pool: PgPool) {
         forbidden_body["error"]
             .as_str()
             .expect("error should be present")
-            .contains("admin"),
+            .contains("manage this namespace claim"),
         "unexpected error response: {forbidden_body}"
     );
 
@@ -6152,7 +6252,7 @@ async fn test_namespace_claim_transfer_requires_source_and_target_org_control(po
         forbidden_body["error"]
             .as_str()
             .expect("error should be present")
-            .contains("current owning organization"),
+            .contains("transfer this namespace claim"),
         "unexpected error response: {forbidden_body}"
     );
 
@@ -6942,6 +7042,383 @@ async fn test_team_repository_access_rejects_repositories_outside_org(pool: PgPo
         .as_str()
         .expect("error should be present")
         .contains("same organization"));
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_team_namespace_access_roundtrip_and_audit_filter(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &jwt, "Acme Corp", "acme-corp").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id = org_body["id"].as_str().expect("org id should be returned");
+
+    let (status, claim_body) =
+        create_namespace_claim(&app, &jwt, "npm", "@acme", Some(org_id)).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let claim_id = claim_body["id"]
+        .as_str()
+        .expect("namespace claim id should be returned");
+
+    let (status, _) = create_team(
+        &app,
+        &jwt,
+        "acme-corp",
+        "Release Engineering",
+        "release-engineering",
+        Some("Owns delegated namespace workflows."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, grant_body) = grant_team_namespace_access(
+        &app,
+        &jwt,
+        "acme-corp",
+        "release-engineering",
+        claim_id,
+        &["admin", "transfer_ownership"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team namespace access response: {grant_body}"
+    );
+    assert_eq!(grant_body["message"], "Team namespace access updated");
+    assert_eq!(
+        grant_body["permissions"],
+        json!(["admin", "transfer_ownership"])
+    );
+
+    let (status, audit_body) = list_org_audit(
+        &app,
+        &jwt,
+        "acme-corp",
+        Some("action=team_namespace_access_update&per_page=10"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let logs = audit_body["logs"]
+        .as_array()
+        .expect("logs response should be an array");
+    assert_eq!(logs.len(), 1, "response: {audit_body}");
+    assert_eq!(logs[0]["action"], "team_namespace_access_update");
+    assert_eq!(logs[0]["metadata"]["team_slug"], "release-engineering");
+    assert_eq!(logs[0]["metadata"]["namespace"], "@acme");
+    assert_eq!(
+        logs[0]["metadata"]["permissions"],
+        json!(["admin", "transfer_ownership"])
+    );
+
+    let (status, list_body) =
+        list_team_namespace_access(&app, &jwt, "acme-corp", "release-engineering").await;
+    assert_eq!(status, StatusCode::OK);
+    let namespace_access = list_body["namespace_access"]
+        .as_array()
+        .expect("namespace access response should be an array");
+    assert_eq!(list_body["team"]["slug"], "release-engineering");
+    assert_eq!(namespace_access.len(), 1);
+    assert_eq!(namespace_access[0]["namespace"], "@acme");
+    assert_eq!(namespace_access[0]["ecosystem"], "npm");
+    assert_eq!(
+        namespace_access[0]["permissions"],
+        json!(["admin", "transfer_ownership"])
+    );
+
+    let (status, update_body) = grant_team_namespace_access(
+        &app,
+        &jwt,
+        "acme-corp",
+        "release-engineering",
+        claim_id,
+        &["admin"],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(update_body["permissions"], json!(["admin"]));
+
+    let (status, remove_body) =
+        remove_team_namespace_access(&app, &jwt, "acme-corp", "release-engineering", claim_id)
+            .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(remove_body["message"], "Team namespace access removed");
+
+    let (status, final_list_body) =
+        list_team_namespace_access(&app, &jwt, "acme-corp", "release-engineering").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(final_list_body["namespace_access"], json!([]));
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_team_namespace_access_rejects_claims_outside_org(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &jwt, "Acme Corp", "acme-corp").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id = org_body["id"].as_str().expect("org id should be returned");
+
+    let (status, _) = create_namespace_claim(&app, &jwt, "npm", "@acme", Some(org_id)).await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, personal_claim_body) =
+        create_namespace_claim(&app, &jwt, "pypi", "alice", None).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let personal_claim_id = personal_claim_body["id"]
+        .as_str()
+        .expect("namespace claim id should be returned");
+
+    let (status, _) = create_team(
+        &app,
+        &jwt,
+        "acme-corp",
+        "Release Engineering",
+        "release-engineering",
+        Some("Owns delegated namespace workflows."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = grant_team_namespace_access(
+        &app,
+        &jwt,
+        "acme-corp",
+        "release-engineering",
+        personal_claim_id,
+        &["admin"],
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(body["error"]
+        .as_str()
+        .expect("error should be present")
+        .contains("same organization"));
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_team_namespace_admin_permission_allows_namespace_delete(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &alice_jwt, "Acme Corp", "acme-corp").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id = org_body["id"].as_str().expect("org id should be returned");
+
+    let (status, claim_body) =
+        create_namespace_claim(&app, &alice_jwt, "npm", "@acme", Some(org_id)).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let claim_id = claim_body["id"]
+        .as_str()
+        .expect("namespace claim id should be returned");
+
+    let (status, _) = add_org_member(&app, &alice_jwt, "acme-corp", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "acme-corp",
+        "Namespace Team",
+        "namespace-team",
+        Some("Can manage namespace claims."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) =
+        add_team_member_to_team(&app, &alice_jwt, "acme-corp", "namespace-team", "bob").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, before_grant_body) = list_namespace_claims_authenticated(
+        &app,
+        &bob_jwt,
+        Some(&format!("owner_org_id={org_id}")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let claims = before_grant_body["namespaces"]
+        .as_array()
+        .expect("namespace response should be an array");
+    assert_eq!(claims[0]["can_manage"], false);
+
+    let (status, _) = grant_team_namespace_access(
+        &app,
+        &alice_jwt,
+        "acme-corp",
+        "namespace-team",
+        claim_id,
+        &["admin"],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, after_grant_body) = list_namespace_claims_authenticated(
+        &app,
+        &bob_jwt,
+        Some(&format!("owner_org_id={org_id}")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let claims = after_grant_body["namespaces"]
+        .as_array()
+        .expect("namespace response should be an array");
+    assert_eq!(claims[0]["can_manage"], true);
+    assert_eq!(claims[0]["can_transfer"], true);
+
+    let (status, delete_body) = delete_namespace_claim(&app, &bob_jwt, claim_id).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected namespace delete response: {delete_body}"
+    );
+    assert_eq!(delete_body["message"], "Namespace claim deleted");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_team_namespace_transfer_permission_allows_namespace_transfer(pool: PgPool) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+
+    let (status, source_org_body) = create_org(&app, &alice_jwt, "Source Org", "source-org").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let source_org_id = source_org_body["id"].as_str().expect("source org id");
+    let source_org_uuid = Uuid::parse_str(source_org_id).expect("source org id should parse");
+
+    let (status, target_org_body) = create_org(&app, &bob_jwt, "Target Org", "target-org").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let target_org_id = target_org_body["id"].as_str().expect("target org id");
+    let target_org_uuid = Uuid::parse_str(target_org_id).expect("target org id should parse");
+
+    let (status, claim_body) =
+        create_namespace_claim(&app, &alice_jwt, "npm", "@source", Some(source_org_id)).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let claim_id = claim_body["id"]
+        .as_str()
+        .expect("namespace claim id should be returned");
+    let claim_uuid = Uuid::parse_str(claim_id).expect("claim id should parse");
+
+    let (status, _) = add_org_member(&app, &alice_jwt, "source-org", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "Transfer Team",
+        "transfer-team",
+        Some("Can transfer namespace ownership into controlled organizations."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) =
+        add_team_member_to_team(&app, &alice_jwt, "source-org", "transfer-team", "bob").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, before_grant_body) = list_namespace_claims_authenticated(
+        &app,
+        &bob_jwt,
+        Some(&format!("owner_org_id={source_org_id}")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let claims = before_grant_body["namespaces"]
+        .as_array()
+        .expect("namespace response should be an array");
+    assert_eq!(claims[0]["can_transfer"], false);
+
+    let (status, grant_body) = grant_team_namespace_access(
+        &app,
+        &alice_jwt,
+        "source-org",
+        "transfer-team",
+        claim_id,
+        &["transfer_ownership"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team namespace access response: {grant_body}"
+    );
+
+    let grants_before_transfer: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::BIGINT FROM team_namespace_access WHERE namespace_claim_id = $1",
+    )
+    .bind(claim_uuid)
+    .fetch_one(&pool)
+    .await
+    .expect("team namespace access count before transfer");
+    assert_eq!(grants_before_transfer, 1);
+
+    let (status, after_grant_body) = list_namespace_claims_authenticated(
+        &app,
+        &bob_jwt,
+        Some(&format!("owner_org_id={source_org_id}")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let claims = after_grant_body["namespaces"]
+        .as_array()
+        .expect("namespace response should be an array");
+    assert_eq!(claims[0]["can_transfer"], true);
+
+    let (status, transfer_body) =
+        transfer_namespace_claim(&app, &bob_jwt, claim_id, "target-org").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected namespace transfer response: {transfer_body}"
+    );
+    assert_eq!(transfer_body["owner"]["slug"], "target-org");
+
+    let grants_after_transfer: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::BIGINT FROM team_namespace_access WHERE namespace_claim_id = $1",
+    )
+    .bind(claim_uuid)
+    .fetch_one(&pool)
+    .await
+    .expect("team namespace access count after transfer");
+    assert_eq!(grants_after_transfer, 0);
+
+    let (status, target_list_body) =
+        list_namespace_claims(&app, Some(&format!("owner_org_id={target_org_id}"))).await;
+    assert_eq!(status, StatusCode::OK);
+    let claims = target_list_body["namespaces"]
+        .as_array()
+        .expect("namespace response should be an array");
+    assert_eq!(claims.len(), 1);
+    assert_eq!(claims[0]["namespace"], "@source");
+
+    let audit_row = sqlx::query(
+        "SELECT target_org_id, metadata \
+         FROM audit_logs \
+         WHERE action = 'namespace_claim_transfer'::audit_action \
+         ORDER BY occurred_at DESC \
+         LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("namespace transfer audit row should exist");
+    let audit_target_org_id: Option<Uuid> = audit_row
+        .try_get("target_org_id")
+        .expect("audit target org id should be readable");
+    let audit_metadata: Value = audit_row
+        .try_get("metadata")
+        .expect("audit metadata should be readable");
+
+    assert_eq!(audit_target_org_id, Some(target_org_uuid));
+    assert_eq!(
+        audit_metadata["previous_owner_org_id"],
+        json!(source_org_uuid)
+    );
+    assert_eq!(audit_metadata["new_owner_org_id"], json!(target_org_uuid));
+    assert_eq!(audit_metadata["revoked_team_grants"], 1);
 }
 
 #[sqlx::test(migrations = "../../migrations")]

@@ -12,7 +12,10 @@ use publaryn_core::{domain::namespace::NamespaceClaim, error::Error, validation}
 
 use crate::{
     error::{ApiError, ApiResult},
-    request_auth::{ensure_org_admin_by_id, AuthenticatedIdentity},
+    request_auth::{
+        actor_can_manage_namespace_claim_by_id, actor_can_transfer_namespace_claim_by_id,
+        ensure_org_admin_by_id, AuthenticatedIdentity, OptionalAuthenticatedIdentity,
+    },
     routes::parse_ecosystem,
     scopes::{ensure_scope, SCOPE_NAMESPACES_TRANSFER, SCOPE_NAMESPACES_WRITE},
     state::AppState,
@@ -169,6 +172,7 @@ async fn create_namespace(
 
 async fn list_namespaces(
     State(state): State<AppState>,
+    identity: OptionalAuthenticatedIdentity,
     Query(query): Query<NamespaceListQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let mut builder = QueryBuilder::<Postgres>::new(
@@ -206,20 +210,29 @@ async fn list_namespaces(
         .await
         .map_err(|e| ApiError(Error::Database(e)))?;
 
-    let namespaces: Vec<serde_json::Value> = rows
-        .iter()
-        .map(|row| {
-            serde_json::json!({
-                "id": row.try_get::<Uuid, _>("id").ok(),
-                "ecosystem": row.try_get::<String, _>("ecosystem").ok(),
-                "namespace": row.try_get::<String, _>("namespace").ok(),
-                "owner_user_id": row.try_get::<Option<Uuid>, _>("owner_user_id").ok().flatten(),
-                "owner_org_id": row.try_get::<Option<Uuid>, _>("owner_org_id").ok().flatten(),
-                "is_verified": row.try_get::<bool, _>("is_verified").ok(),
-                "created_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at").ok(),
-            })
-        })
-        .collect();
+    let mut namespaces = Vec::with_capacity(rows.len());
+    for row in rows {
+        let claim_id = row
+            .try_get::<Uuid, _>("id")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+        let can_manage =
+            actor_can_manage_namespace_claim_by_id(&state.db, claim_id, identity.user_id()).await?;
+        let can_transfer =
+            actor_can_transfer_namespace_claim_by_id(&state.db, claim_id, identity.user_id())
+                .await?;
+
+        namespaces.push(serde_json::json!({
+            "id": claim_id,
+            "ecosystem": row.try_get::<String, _>("ecosystem").ok(),
+            "namespace": row.try_get::<String, _>("namespace").ok(),
+            "owner_user_id": row.try_get::<Option<Uuid>, _>("owner_user_id").ok().flatten(),
+            "owner_org_id": row.try_get::<Option<Uuid>, _>("owner_org_id").ok().flatten(),
+            "is_verified": row.try_get::<bool, _>("is_verified").ok(),
+            "created_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at").ok(),
+            "can_manage": can_manage,
+            "can_transfer": can_transfer,
+        }));
+    }
 
     Ok(Json(serde_json::json!({ "namespaces": namespaces })))
 }
@@ -272,9 +285,7 @@ async fn delete_namespace(
                 "You can only delete user-owned namespace claims for your own account".into(),
             )));
         }
-        (None, Some(owner_org_id)) => {
-            ensure_org_admin_by_id(&state.db, owner_org_id, identity.user_id).await?;
-        }
+        (None, Some(_)) => {}
         (None, None) => {
             return Err(ApiError(Error::Internal(
                 "Namespace claim is missing an owner".into(),
@@ -285,6 +296,12 @@ async fn delete_namespace(
                 "Namespace claim has multiple owners".into(),
             )));
         }
+    }
+
+    if !actor_can_manage_namespace_claim_by_id(&state.db, claim_id, Some(identity.user_id)).await? {
+        return Err(ApiError(Error::Forbidden(
+            "You do not have permission to manage this namespace claim".into(),
+        )));
     }
 
     sqlx::query("DELETE FROM namespace_claims WHERE id = $1")
@@ -410,25 +427,19 @@ async fn transfer_namespace_ownership(
             )));
         }
         NamespaceClaimOwner::Organization(owner_org_id) => {
-            let actor_controls_source = sqlx::query_scalar::<_, bool>(
-                "SELECT EXISTS (\
-                     SELECT 1 \
-                     FROM org_memberships \
-                     WHERE org_id = $1 AND user_id = $2 AND role::text = ANY($3)\
-                 )",
+            if !actor_can_transfer_namespace_claim_by_id(
+                &state.db,
+                claim_id,
+                Some(identity.user_id),
             )
-            .bind(owner_org_id)
-            .bind(identity.user_id)
-            .bind(NAMESPACE_TRANSFER_ADMIN_ROLES)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(|e| ApiError(Error::Database(e)))?;
-
-            if !actor_controls_source {
+            .await?
+            {
                 return Err(ApiError(Error::Forbidden(
-                    "Transferring an organization-owned namespace claim requires owner or admin membership in the current owning organization".into(),
+                    "You do not have permission to transfer this namespace claim".into(),
                 )));
             }
+
+            let _ = owner_org_id;
         }
     }
 
@@ -482,6 +493,22 @@ async fn transfer_namespace_ownership(
 
     validate_namespace_transfer_target(&current_owner, target_org.id)?;
 
+    let revoked_team_grants: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::BIGINT \
+         FROM team_namespace_access \
+         WHERE namespace_claim_id = $1",
+    )
+    .bind(claim_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    sqlx::query("DELETE FROM team_namespace_access WHERE namespace_claim_id = $1")
+        .bind(claim_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
     let (previous_owner_type, previous_owner_user_id, previous_owner_org_id) = match current_owner {
         NamespaceClaimOwner::User(user_id) => ("user", Some(user_id), None),
         NamespaceClaimOwner::Organization(org_id) => ("organization", None, Some(org_id)),
@@ -519,6 +546,7 @@ async fn transfer_namespace_ownership(
         "new_owner_org_id": target_org.id,
         "new_owner_org_slug": &target_org.slug,
         "new_owner_org_name": &target_org.name,
+        "revoked_team_grants": revoked_team_grants,
     }))
     .execute(&mut *tx)
     .await

@@ -142,6 +142,56 @@ describe('team access grant form', () => {
     unmount();
   });
 
+  test('submits selected namespace grants from the rendered form', async () => {
+    const submissions: Record<string, string[]>[] = [];
+    const { target, unmount } = await renderSvelte(TeamAccessGrantForm, {
+      fieldId: 'team-namespace-core',
+      selectLabel: 'Organization namespace claim',
+      selectName: 'claim_id',
+      placeholderLabel: 'Select a namespace claim',
+      emptyMessage: 'Create or transfer a namespace claim before delegating access.',
+      submitLabel: 'Save namespace access',
+      permissionOptions: PERMISSION_OPTIONS,
+      options: [
+        {
+          value: '123e4567-e89b-42d3-a456-426614174000',
+          label: 'npm · @scope',
+        },
+      ],
+      handleSubmit(event: SubmitEvent) {
+        event.preventDefault();
+        submissions.push(
+          collectFormValues(event.currentTarget as HTMLFormElement)
+        );
+      },
+    });
+
+    const select = target.querySelector('select');
+    const publish = target.querySelector('input[value="publish"]');
+    const form = target.querySelector('form');
+
+    if (
+      !(select instanceof HTMLSelectElement) ||
+      !(publish instanceof HTMLInputElement) ||
+      !(form instanceof HTMLFormElement)
+    ) {
+      throw new Error('Failed to render namespace grant form controls.');
+    }
+
+    changeValue(select, '123e4567-e89b-42d3-a456-426614174000');
+    setChecked(publish, true);
+    submitForm(form);
+
+    expect(submissions).toEqual([
+      {
+        claim_id: ['123e4567-e89b-42d3-a456-426614174000'],
+        permissions: ['publish'],
+      },
+    ]);
+
+    unmount();
+  });
+
   test('shows the empty state and disables submission when no targets are available', async () => {
     const { target, unmount } = await renderSvelte(TeamAccessGrantForm, {
       fieldId: 'team-package-empty',

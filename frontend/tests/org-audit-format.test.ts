@@ -43,6 +43,9 @@ describe('org audit formatting helpers', () => {
     expect(formatAuditActionLabel('namespace_claim_transfer')).toBe(
       'Namespace claim transferred'
     );
+    expect(formatAuditActionLabel('team_namespace_access_update')).toBe(
+      'Namespace access updated'
+    );
   });
 
   test('formats team creation summaries', () => {
@@ -182,5 +185,16 @@ describe('org audit formatting helpers', () => {
         })
       )
     ).toBe('Transferred namespace @acme to organization Acme Platform.');
+  });
+
+  test('formats namespace delegation summaries as a regression', () => {
+    expect(
+      formatAuditSummary(
+        makeLog('team_namespace_access_update', {
+          namespace: '@acme',
+          permissions: ['admin', 'transfer_ownership'],
+        })
+      )
+    ).toBe('Updated namespace access for @acme: Admin, Transfer Ownership.');
   });
 });
