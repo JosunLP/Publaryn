@@ -3069,7 +3069,10 @@ async fn test_create_and_get_org(pool: PgPool) {
     assert_eq!(organizations.len(), 1);
     assert_eq!(organizations[0]["slug"], "acme-corp");
     assert_eq!(organizations[0]["capabilities"]["can_manage"], true);
-    assert_eq!(organizations[0]["capabilities"]["can_manage_invitations"], true);
+    assert_eq!(
+        organizations[0]["capabilities"]["can_manage_invitations"],
+        true
+    );
     assert_eq!(
         organizations[0]["capabilities"]["can_view_member_directory"],
         true
