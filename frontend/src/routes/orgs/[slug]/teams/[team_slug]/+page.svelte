@@ -13,34 +13,16 @@
     OrgRepositorySummary,
     Team,
     TeamMember,
-    TeamMemberListResponse,
     TeamNamespaceAccessGrant,
-    TeamNamespaceAccessListResponse,
-    TeamNamespaceAccessMutationResult,
     TeamPackageAccessGrant,
-    TeamPackageAccessListResponse,
     TeamRepositoryAccessGrant,
-    TeamRepositoryAccessListResponse,
   } from '../../../../../api/orgs';
   import {
-    addTeamMember,
     getOrg,
     listMembers,
     listOrgPackages,
     listOrgRepositories,
-    listTeamMembers,
-    listTeamNamespaceAccess,
-    listTeamPackageAccess,
-    listTeamRepositoryAccess,
     listTeams,
-    removeTeamMember,
-    removeTeamNamespaceAccess,
-    removeTeamPackageAccess,
-    removeTeamRepositoryAccess,
-    replaceTeamNamespaceAccess,
-    replaceTeamPackageAccess,
-    replaceTeamRepositoryAccess,
-    updateTeam,
   } from '../../../../../api/orgs';
   import TeamMembersEditor from '../../../../../lib/components/TeamMembersEditor.svelte';
   import TeamNamespaceAccessEditor from '../../../../../lib/components/TeamNamespaceAccessEditor.svelte';
@@ -48,18 +30,12 @@
   import TeamRepositoryAccessEditor from '../../../../../lib/components/TeamRepositoryAccessEditor.svelte';
   import TeamSettingsEditor from '../../../../../lib/components/TeamSettingsEditor.svelte';
   import {
-    resolveOrgMemberPickerInput,
-  } from '../../../../../pages/org-member-picker';
-  import {
-    resolveTeamNamespaceAccessSubmission,
-    resolveTeamPackageAccessSubmission,
-    resolveTeamRepositoryAccessSubmission,
-  } from '../../../../../pages/org-workspace-actions';
-  import {
     buildEligibleTeamMemberOptions,
     buildNamespaceGrantOptions,
     buildPackageGrantOptions,
     buildRepositoryGrantOptions,
+    createTeamManagementController,
+    loadSingleTeamManagementState,
     TEAM_NAMESPACE_PERMISSION_OPTIONS,
     TEAM_PERMISSION_OPTIONS,
   } from '../../../../../pages/team-management';
@@ -160,63 +136,13 @@
         return;
       }
 
-      const [
-        memberData,
-        packageData,
-        repositoryData,
-        namespaceData,
-        orgMemberData,
-        orgPackageData,
-        orgRepositoryData,
-        orgNamespaceData,
-      ] =
+      const [teamManagementState, orgMemberData, orgPackageData, orgRepositoryData, orgNamespaceData] =
         await Promise.all([
-          listTeamMembers(slug, teamSlug).catch(
-            (caughtError: unknown): TeamMemberListResponse => ({
-              members: [],
-              load_error: toErrorMessage(
-                caughtError,
-                `Failed to load members for ${team?.name || teamSlug}.`
-              ),
-            })
-          ),
-          listTeamPackageAccess(slug, teamSlug).catch(
-            (caughtError: unknown): TeamPackageAccessListResponse => ({
-              package_access: [],
-              load_error: toErrorMessage(
-                caughtError,
-                `Failed to load package access for ${team?.name || teamSlug}.`
-              ),
-            })
-          ),
-          canManageOrgRepositories(loadedOrg)
-            ? listTeamRepositoryAccess(slug, teamSlug).catch(
-                (caughtError: unknown): TeamRepositoryAccessListResponse => ({
-                  repository_access: [],
-                  load_error: toErrorMessage(
-                    caughtError,
-                    `Failed to load repository access for ${team?.name || teamSlug}.`
-                  ),
-                })
-              )
-            : Promise.resolve<TeamRepositoryAccessListResponse>({
-                repository_access: [],
-                load_error: null,
-              }),
-          canManageOrgNamespaces(loadedOrg)
-            ? listTeamNamespaceAccess(slug, teamSlug).catch(
-                (caughtError: unknown): TeamNamespaceAccessListResponse => ({
-                  namespace_access: [],
-                  load_error: toErrorMessage(
-                    caughtError,
-                    `Failed to load namespace access for ${team?.name || teamSlug}.`
-                  ),
-                })
-              )
-            : Promise.resolve<TeamNamespaceAccessListResponse>({
-                namespace_access: [],
-                load_error: null,
-              }),
+          loadSingleTeamManagementState(slug, team, {
+            includeRepositoryAccess: canManageOrgRepositories(loadedOrg),
+            includeNamespaceAccess: canManageOrgNamespaces(loadedOrg),
+            toErrorMessage,
+          }),
           listMembers(slug).catch((caughtError: unknown): MemberListResponse => ({
             members: [],
             load_error: toErrorMessage(
@@ -277,14 +203,14 @@
       orgRepositoriesError = orgRepositoryData.load_error || null;
       orgNamespaces = orgNamespaceData.namespaces || [];
       orgNamespacesError = orgNamespaceData.load_error || null;
-      members = memberData.members || [];
-      membersError = memberData.load_error || null;
-      packageAccess = packageData.package_access || [];
-      packageAccessError = packageData.load_error || null;
-      repositoryAccess = repositoryData.repository_access || [];
-      repositoryAccessError = repositoryData.load_error || null;
-      namespaceAccess = namespaceData.namespace_access || [];
-      namespaceAccessError = namespaceData.load_error || null;
+      members = teamManagementState.members;
+      membersError = teamManagementState.membersError;
+      packageAccess = teamManagementState.packageAccess;
+      packageAccessError = teamManagementState.packageAccessError;
+      repositoryAccess = teamManagementState.repositoryAccess;
+      repositoryAccessError = teamManagementState.repositoryAccessError;
+      namespaceAccess = teamManagementState.namespaceAccess;
+      namespaceAccessError = teamManagementState.namespaceAccessError;
     } catch (caughtError: unknown) {
       if (caughtError instanceof ApiError && caughtError.status === 404) {
         notFound = true;
@@ -299,198 +225,18 @@
     }
   }
 
-  async function handleUpdateTeam(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
-
-    const formData = new FormData(event.currentTarget as HTMLFormElement);
-
-    try {
-      await updateTeam(slug, teamSlug, {
-        name: formData.get('name')?.toString().trim() || '',
-        description: formData.get('description')?.toString().trim() || '',
-      });
-      await loadTeamWorkspace({
-        notice: `Saved changes to ${teamSlug}.`,
-      });
-    } catch (caughtError: unknown) {
-      await loadTeamWorkspace({
-        error: toErrorMessage(caughtError, 'Failed to update team.'),
-      });
-    }
-  }
-
-  async function handleAddTeamMember(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
-    const form = event.currentTarget as HTMLFormElement;
-    const formData = new FormData(form);
-    const username = resolveOrgMemberPickerInput(
-      formData.get('username')?.toString() || '',
-      eligibleTeamMemberOptions
-    );
-
-    try {
-      await addTeamMember(slug, teamSlug, { username });
-      form.reset();
-      await loadTeamWorkspace({
-        notice: `Added a member to ${teamSlug}.`,
-      });
-    } catch (caughtError: unknown) {
-      await loadTeamWorkspace({
-        error: toErrorMessage(caughtError, 'Failed to add team member.'),
-      });
-    }
-  }
-
-  async function handleRemoveMember(username: string): Promise<void> {
-    try {
-      await removeTeamMember(slug, teamSlug, username);
-      await loadTeamWorkspace({
-        notice: `Removed @${username} from ${teamSlug}.`,
-      });
-    } catch (caughtError: unknown) {
-      await loadTeamWorkspace({
-        error: toErrorMessage(caughtError, 'Failed to remove team member.'),
-      });
-    }
-  }
-
-  async function handleReplacePackageAccess(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
-    const resolution = resolveTeamPackageAccessSubmission(
-      new FormData(event.currentTarget as HTMLFormElement)
-    );
-
-    if (!resolution.ok) {
-      await loadTeamWorkspace({ error: resolution.error });
-      return;
-    }
-
-    try {
-      await replaceTeamPackageAccess(
-        slug,
-        teamSlug,
-        resolution.value.ecosystem,
-        resolution.value.name,
-        {
-          permissions: resolution.value.permissions,
-        }
-      );
-      await loadTeamWorkspace({
-        notice: `Saved package access for ${resolution.value.name}.`,
-      });
-    } catch (caughtError: unknown) {
-      await loadTeamWorkspace({
-        error: toErrorMessage(caughtError, 'Failed to update package access.'),
-      });
-    }
-  }
-
-  async function handleRemovePackageAccess(
-    ecosystem: string,
-    packageName: string
-  ): Promise<void> {
-    try {
-      await removeTeamPackageAccess(slug, teamSlug, ecosystem, packageName);
-      await loadTeamWorkspace({
-        notice: `Revoked package access for ${packageName}.`,
-      });
-    } catch (caughtError: unknown) {
-      await loadTeamWorkspace({
-        error: toErrorMessage(caughtError, 'Failed to revoke package access.'),
-      });
-    }
-  }
-
-  async function handleReplaceRepositoryAccess(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
-    const resolution = resolveTeamRepositoryAccessSubmission(
-      new FormData(event.currentTarget as HTMLFormElement)
-    );
-
-    if (!resolution.ok) {
-      await loadTeamWorkspace({ error: resolution.error });
-      return;
-    }
-
-    try {
-      await replaceTeamRepositoryAccess(
-        slug,
-        teamSlug,
-        resolution.value.repositorySlug,
-        {
-          permissions: resolution.value.permissions,
-        }
-      );
-      await loadTeamWorkspace({
-        notice: `Saved repository access for ${resolution.value.repositorySlug}.`,
-      });
-    } catch (caughtError: unknown) {
-      await loadTeamWorkspace({
-        error: toErrorMessage(caughtError, 'Failed to update repository access.'),
-      });
-    }
-  }
-
-  async function handleRemoveRepositoryAccess(repositorySlug: string): Promise<void> {
-    try {
-      await removeTeamRepositoryAccess(slug, teamSlug, repositorySlug);
-      await loadTeamWorkspace({
-        notice: `Revoked repository access for ${repositorySlug}.`,
-      });
-    } catch (caughtError: unknown) {
-      await loadTeamWorkspace({
-        error: toErrorMessage(caughtError, 'Failed to revoke repository access.'),
-      });
-    }
-  }
-
-  async function handleReplaceNamespaceAccess(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
-    const resolution = resolveTeamNamespaceAccessSubmission(
-      new FormData(event.currentTarget as HTMLFormElement)
-    );
-
-    if (!resolution.ok) {
-      await loadTeamWorkspace({ error: resolution.error });
-      return;
-    }
-
-    try {
-      const result: TeamNamespaceAccessMutationResult =
-        await replaceTeamNamespaceAccess(slug, teamSlug, resolution.value.claimId, {
-          permissions: resolution.value.permissions,
-        });
-      await loadTeamWorkspace({
-        notice: `Saved namespace access for ${result.namespace_claim?.namespace || 'the selected claim'}.`,
-      });
-    } catch (caughtError: unknown) {
-      await loadTeamWorkspace({
-        error: toErrorMessage(caughtError, 'Failed to update namespace access.'),
-      });
-    }
-  }
-
-  async function handleRemoveNamespaceAccess(
-    claimId: string,
-    namespace: string
-  ): Promise<void> {
-    try {
-      await removeTeamNamespaceAccess(slug, teamSlug, claimId);
-      await loadTeamWorkspace({
-        notice: `Revoked namespace access for ${namespace}.`,
-      });
-    } catch (caughtError: unknown) {
-      await loadTeamWorkspace({
-        error: toErrorMessage(caughtError, 'Failed to revoke namespace access.'),
-      });
-    }
-  }
-
   function toErrorMessage(caughtError: unknown, fallback: string): string {
     return caughtError instanceof Error && caughtError.message
       ? caughtError.message
       : fallback;
   }
+
+  const teamManagement = createTeamManagementController({
+    getOrgSlug: () => slug,
+    reload: loadTeamWorkspace,
+    resolveEligibleTeamMemberOptions: () => eligibleTeamMemberOptions,
+    toErrorMessage,
+  });
 </script>
 
 <svelte:head>
@@ -600,7 +346,7 @@
             formId="team-settings-form"
             formClass="surface-card__body"
             showSlugField={true}
-            handleSubmit={handleUpdateTeam}
+              handleSubmit={(event) => teamManagement.updateTeam(teamSlug, event)}
           />
         </section>
 
@@ -622,8 +368,9 @@
               formId="team-member-form"
               inputId="team-member-input"
               datalistId="team-member-options"
-              handleSubmit={handleAddTeamMember}
-              handleRemoveMember={handleRemoveMember}
+              handleSubmit={(event) => teamManagement.addTeamMember(teamSlug, event)}
+              handleRemoveMember={(username) =>
+                teamManagement.removeTeamMember(teamSlug, username)}
             />
           </div>
         </section>
@@ -645,8 +392,14 @@
               options={packageGrantOptions}
               permissionOptions={TEAM_PERMISSION_OPTIONS}
               fieldId="team-package-access"
-              handleSubmit={handleReplacePackageAccess}
-              handleRevoke={handleRemovePackageAccess}
+              handleSubmit={(event) =>
+                teamManagement.replaceTeamPackageAccess(teamSlug, event)}
+              handleRevoke={(ecosystem, packageName) =>
+                teamManagement.removeTeamPackageAccess(
+                  teamSlug,
+                  ecosystem,
+                  packageName
+                )}
             />
           </div>
         </section>
@@ -669,8 +422,13 @@
                 options={repositoryGrantOptions}
                 permissionOptions={TEAM_PERMISSION_OPTIONS}
                 fieldId="team-repository-access"
-                handleSubmit={handleReplaceRepositoryAccess}
-                handleRevoke={handleRemoveRepositoryAccess}
+                handleSubmit={(event) =>
+                  teamManagement.replaceTeamRepositoryAccess(teamSlug, event)}
+                handleRevoke={(repositorySlug) =>
+                  teamManagement.removeTeamRepositoryAccess(
+                    teamSlug,
+                    repositorySlug
+                  )}
               />
             </div>
           </section>
@@ -694,8 +452,14 @@
                 options={namespaceGrantOptions}
                 permissionOptions={TEAM_NAMESPACE_PERMISSION_OPTIONS}
                 fieldId="team-namespace-access"
-                handleSubmit={handleReplaceNamespaceAccess}
-                handleRevoke={handleRemoveNamespaceAccess}
+                handleSubmit={(event) =>
+                  teamManagement.replaceTeamNamespaceAccess(teamSlug, event)}
+                handleRevoke={(claimId, namespace) =>
+                  teamManagement.removeTeamNamespaceAccess(
+                    teamSlug,
+                    claimId,
+                    namespace
+                  )}
               />
             </div>
           </section>
