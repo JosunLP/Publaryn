@@ -3,13 +3,9 @@
 
   import { ApiError } from '../../../../../api/client';
   import type { NamespaceClaim, NamespaceListResponse } from '../../../../../api/namespaces';
-  import { listOrgNamespaces } from '../../../../../api/namespaces';
   import type {
-    MemberListResponse,
     OrgMember,
-    OrgPackageListResponse,
     OrgPackageSummary,
-    OrgRepositoryListResponse,
     OrgRepositorySummary,
     Team,
     TeamMember,
@@ -19,9 +15,6 @@
   } from '../../../../../api/orgs';
   import {
     getOrg,
-    listMembers,
-    listOrgPackages,
-    listOrgRepositories,
     listTeams,
   } from '../../../../../api/orgs';
   import TeamMembersEditor from '../../../../../lib/components/TeamMembersEditor.svelte';
@@ -35,6 +28,7 @@
     buildPackageGrantOptions,
     buildRepositoryGrantOptions,
     createTeamManagementController,
+    loadOrgTeamReferenceData,
     loadSingleTeamManagementState,
     TEAM_NAMESPACE_PERMISSION_OPTIONS,
     TEAM_PERMISSION_OPTIONS,
@@ -136,73 +130,37 @@
         return;
       }
 
-      const [singleTeamState, orgMemberData, orgPackageData, orgRepositoryData, orgNamespaceData] =
+      const [singleTeamState, orgReferenceData] =
         await Promise.all([
           loadSingleTeamManagementState(slug, team, {
             includeRepositoryAccess: canManageOrgRepositories(loadedOrg),
             includeNamespaceAccess: canManageOrgNamespaces(loadedOrg),
             toErrorMessage,
           }),
-          listMembers(slug).catch((caughtError: unknown): MemberListResponse => ({
-            members: [],
-            load_error: toErrorMessage(
-              caughtError,
-              'Failed to load organization members.'
-            ),
-          })),
-          listOrgPackages(slug).catch(
-            (caughtError: unknown): OrgPackageListResponse => ({
-              packages: [],
-              load_error: toErrorMessage(
-                caughtError,
-                'Failed to load organization packages.'
-              ),
-            })
-          ),
-          canManageOrgRepositories(loadedOrg)
-            ? listOrgRepositories(slug).catch(
-                (caughtError: unknown): OrgRepositoryListResponse => ({
-                  repositories: [],
-                  load_error: toErrorMessage(
-                    caughtError,
-                    'Failed to load organization repositories.'
-                  ),
-                })
-              )
-            : Promise.resolve<OrgRepositoryListResponse>({
-                repositories: [],
-                load_error: null,
-              }),
-          canManageOrgNamespaces(loadedOrg)
-            ? loadedOrg.id?.trim()
-              ? listOrgNamespaces(loadedOrg.id).catch(
-                  (caughtError: unknown): NamespaceListResponse => ({
-                    namespaces: [],
-                    load_error: toErrorMessage(
-                      caughtError,
-                      'Failed to load organization namespace claims.'
-                    ),
-                  })
-                )
-              : Promise.resolve<NamespaceListResponse>({
-                  namespaces: [],
-                  load_error:
-                    'Failed to load namespace claims because the organization id is unavailable.',
-                })
-            : Promise.resolve<NamespaceListResponse>({
-                namespaces: [],
-                load_error: null,
-              }),
+          loadOrgTeamReferenceData(slug, {
+            orgId: loadedOrg.id,
+            includeMembers: true,
+            includePackages: true,
+            includeRepositories: canManageOrgRepositories(loadedOrg),
+            includeNamespaces: canManageOrgNamespaces(loadedOrg),
+            memberErrorMessage: 'Failed to load organization members.',
+            packageErrorMessage: 'Failed to load organization packages.',
+            repositoryErrorMessage: 'Failed to load organization repositories.',
+            namespaceErrorMessage: 'Failed to load organization namespace claims.',
+            missingNamespaceOrgIdMessage:
+              'Failed to load namespace claims because the organization id is unavailable.',
+            toErrorMessage,
+          }),
         ]);
 
-      orgMembers = orgMemberData.members || [];
-      orgMembersError = orgMemberData.load_error || null;
-      orgPackages = orgPackageData.packages || [];
-      orgPackagesError = orgPackageData.load_error || null;
-      orgRepositories = orgRepositoryData.repositories || [];
-      orgRepositoriesError = orgRepositoryData.load_error || null;
-      orgNamespaces = orgNamespaceData.namespaces || [];
-      orgNamespacesError = orgNamespaceData.load_error || null;
+      orgMembers = orgReferenceData.members;
+      orgMembersError = orgReferenceData.membersError;
+      orgPackages = orgReferenceData.packages;
+      orgPackagesError = orgReferenceData.packagesError;
+      orgRepositories = orgReferenceData.repositories;
+      orgRepositoriesError = orgReferenceData.repositoriesError;
+      orgNamespaces = orgReferenceData.namespaces;
+      orgNamespacesError = orgReferenceData.namespacesError;
       members = singleTeamState.members;
       membersError = singleTeamState.membersError;
       packageAccess = singleTeamState.packageAccess;

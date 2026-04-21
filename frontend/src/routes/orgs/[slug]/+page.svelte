@@ -5,25 +5,20 @@
   import { ApiError, getAuthToken } from '../../../api/client';
   import type {
     NamespaceClaim,
-    NamespaceListResponse,
     NamespaceTransferOwnershipResult,
   } from '../../../api/namespaces';
   import {
     createNamespaceClaim,
     deleteNamespaceClaim,
-    listOrgNamespaces,
     transferNamespaceClaim,
   } from '../../../api/namespaces';
   import type {
-    MemberListResponse,
     OrgAuditListResponse,
     OrgAuditLog,
     OrgInvitation,
     OrgInvitationListResponse,
     OrgMember,
-    OrgPackageListResponse,
     OrgPackageSummary,
-    OrgRepositoryListResponse,
     OrgRepositorySummary,
     OrgSecurityFindingsResponse,
     OrgSecurityPackageSummary,
@@ -52,12 +47,9 @@
     exportOrgAuditLogsCsv,
     exportOrgSecurityFindingsCsv,
     getOrg,
-    listMembers,
     listMyOrganizations,
     listOrgAuditLogs,
     listOrgInvitations,
-    listOrgPackages,
-    listOrgRepositories,
     listOrgSecurityFindings,
     listTeamNamespaceAccess,
     listTeamMembers,
@@ -163,6 +155,10 @@
     buildPackageGrantOptions,
     buildRepositoryGrantOptions,
     createTeamManagementController,
+    loadOrgMembersState,
+    loadOrgNamespacesState,
+    loadOrgPackagesState,
+    loadOrgRepositoriesState,
     loadTeamManagementStateMaps,
     type TeamMemberState,
     type TeamNamespaceAccessState,
@@ -619,21 +615,16 @@
         myOrganizationsData,
       ] = await Promise.all([
         getOrg(slug),
-        listOrgRepositories(slug).catch(
-          (caughtError: unknown): OrgRepositoryListResponse => ({
-            repositories: [],
-            load_error: toErrorMessage(
-              caughtError,
-              'Failed to load repositories.'
-            ),
-          })
-        ),
-        listOrgPackages(slug).catch(
-          (caughtError: unknown): OrgPackageListResponse => ({
-            packages: [],
-            load_error: toErrorMessage(caughtError, 'Failed to load packages.'),
-          })
-        ),
+        loadOrgRepositoriesState(slug, {
+          include: true,
+          errorMessage: 'Failed to load repositories.',
+          toErrorMessage,
+        }),
+        loadOrgPackagesState(slug, {
+          include: true,
+          errorMessage: 'Failed to load packages.',
+          toErrorMessage,
+        }),
         listOrgSecurityFindings(slug, securityQuery).catch(
           (caughtError: unknown): OrgSecurityFindingsResponse => ({
             summary: null,
@@ -687,9 +678,9 @@
 
       const [
         invitationData,
-        memberData,
+        memberState,
         teamData,
-        namespaceData,
+        namespaceState,
         auditData,
         repositoryPackageData,
       ] = await Promise.all([
@@ -707,20 +698,11 @@
               invitations: [],
               load_error: null,
             }),
-        canViewPeopleWorkspace
-          ? listMembers(slug).catch(
-              (caughtError: unknown): MemberListResponse => ({
-                members: [],
-                load_error: toErrorMessage(
-                  caughtError,
-                  'Failed to load members.'
-                ),
-              })
-            )
-          : Promise.resolve<MemberListResponse>({
-              members: [],
-              load_error: null,
-            }),
+        loadOrgMembersState(slug, {
+          include: canViewPeopleWorkspace,
+          errorMessage: 'Failed to load members.',
+          toErrorMessage,
+        }),
         canViewPeopleWorkspace
           ? listTeams(slug).catch(
               (caughtError: unknown): TeamListResponse => ({
@@ -735,21 +717,14 @@
               teams: [],
               load_error: null,
             }),
-        org?.id
-          ? listOrgNamespaces(org.id).catch(
-              (caughtError: unknown): NamespaceListResponse => ({
-                namespaces: [],
-                load_error: toErrorMessage(
-                  caughtError,
-                  'Failed to load namespace claims.'
-                ),
-              })
-            )
-          : Promise.resolve<NamespaceListResponse>({
-              namespaces: [],
-              load_error:
-                'Failed to load namespace claims because the organization id is unavailable.',
-            }),
+        loadOrgNamespacesState({
+          orgId: org?.id,
+          include: true,
+          errorMessage: 'Failed to load namespace claims.',
+          missingOrgIdMessage:
+            'Failed to load namespace claims because the organization id is unavailable.',
+          toErrorMessage,
+        }),
         canViewAudit
           ? listOrgAuditLogs(slug, {
               action: resolvedAuditAction || undefined,
@@ -782,8 +757,8 @@
 
       invitations = invitationData.invitations || [];
       invitationsError = invitationData.load_error || null;
-      members = memberData.members || [];
-      membersError = memberData.load_error || null;
+      members = memberState.members;
+      membersError = memberState.load_error;
       teams = teamData.teams || [];
       teamsError = teamData.load_error || null;
       const teamManagementStateMaps = await loadTeamManagementStateMaps(slug, teams, {
@@ -797,8 +772,8 @@
       teamPackageAccessBySlug = teamManagementStateMaps.teamPackageAccessBySlug;
       teamRepositoryAccessBySlug = teamManagementStateMaps.teamRepositoryAccessBySlug;
       teamNamespaceAccessBySlug = teamManagementStateMaps.teamNamespaceAccessBySlug;
-      namespaceClaims = namespaceData.namespaces || [];
-      namespaceError = namespaceData.load_error || null;
+      namespaceClaims = namespaceState.namespaces;
+      namespaceError = namespaceState.load_error;
       auditLogs = auditData.logs || [];
       auditError = auditData.load_error || null;
       auditHasNext = auditData.has_next === true;

@@ -1,7 +1,11 @@
-import type { NamespaceClaim } from '../api/namespaces';
+import type { NamespaceClaim, NamespaceListResponse } from '../api/namespaces';
+import { listOrgNamespaces } from '../api/namespaces';
 import type {
+  MemberListResponse,
   OrgMember,
+  OrgPackageListResponse,
   OrgPackageSummary,
+  OrgRepositoryListResponse,
   OrgRepositorySummary,
   Team,
   TeamMember,
@@ -17,6 +21,9 @@ import type {
 import type { OrgMemberPickerOption } from './org-member-picker';
 import {
   addTeamMember,
+  listMembers,
+  listOrgPackages,
+  listOrgRepositories,
   listTeamMembers,
   listTeamNamespaceAccess,
   listTeamPackageAccess,
@@ -96,11 +103,49 @@ export interface TeamManagementStateMaps {
   teamNamespaceAccessBySlug: Record<string, TeamNamespaceAccessState>;
 }
 
+export interface OrgMembersState {
+  members: OrgMember[];
+  load_error: string | null;
+}
+
+export interface OrgPackagesState {
+  packages: OrgPackageSummary[];
+  load_error: string | null;
+}
+
+export interface OrgRepositoriesState {
+  repositories: OrgRepositorySummary[];
+  load_error: string | null;
+}
+
+export interface OrgNamespacesState {
+  namespaces: NamespaceClaim[];
+  load_error: string | null;
+}
+
+export interface OrgTeamReferenceData {
+  members: OrgMember[];
+  membersError: string | null;
+  packages: OrgPackageSummary[];
+  packagesError: string | null;
+  repositories: OrgRepositorySummary[];
+  repositoriesError: string | null;
+  namespaces: NamespaceClaim[];
+  namespacesError: string | null;
+}
+
 export interface TeamManagementLoaders {
   listTeamMembers: typeof listTeamMembers;
   listTeamPackageAccess: typeof listTeamPackageAccess;
   listTeamRepositoryAccess: typeof listTeamRepositoryAccess;
   listTeamNamespaceAccess: typeof listTeamNamespaceAccess;
+}
+
+export interface OrgTeamReferenceLoaders {
+  listMembers: typeof listMembers;
+  listOrgPackages: typeof listOrgPackages;
+  listOrgRepositories: typeof listOrgRepositories;
+  listOrgNamespaces: typeof listOrgNamespaces;
 }
 
 export interface TeamManagementMutations {
@@ -133,6 +178,13 @@ const DEFAULT_TEAM_MANAGEMENT_LOADERS: TeamManagementLoaders = {
   listTeamPackageAccess,
   listTeamRepositoryAccess,
   listTeamNamespaceAccess,
+};
+
+const DEFAULT_ORG_TEAM_REFERENCE_LOADERS: OrgTeamReferenceLoaders = {
+  listMembers,
+  listOrgPackages,
+  listOrgRepositories,
+  listOrgNamespaces,
 };
 
 const DEFAULT_TEAM_MANAGEMENT_MUTATIONS: TeamManagementMutations = {
@@ -259,6 +311,182 @@ export function formatTeamPermission(permission: string): string {
 
 export function hasTeamManagementSlug(team: Team): team is Team & { slug: string } {
   return typeof team.slug === 'string' && team.slug.trim().length > 0;
+}
+
+export async function loadOrgMembersState(
+  orgSlug: string,
+  options: {
+    include: boolean;
+    errorMessage: string;
+    toErrorMessage: (caughtError: unknown, fallback: string) => string;
+    loaders?: OrgTeamReferenceLoaders;
+  }
+): Promise<OrgMembersState> {
+  if (!options.include) {
+    return { members: [], load_error: null };
+  }
+
+  const loaders = options.loaders || DEFAULT_ORG_TEAM_REFERENCE_LOADERS;
+
+  try {
+    const data: MemberListResponse = await loaders.listMembers(orgSlug);
+    return { members: data.members || [], load_error: data.load_error || null };
+  } catch (caughtError: unknown) {
+    return {
+      members: [],
+      load_error: options.toErrorMessage(caughtError, options.errorMessage),
+    };
+  }
+}
+
+export async function loadOrgPackagesState(
+  orgSlug: string,
+  options: {
+    include: boolean;
+    errorMessage: string;
+    toErrorMessage: (caughtError: unknown, fallback: string) => string;
+    loaders?: OrgTeamReferenceLoaders;
+  }
+): Promise<OrgPackagesState> {
+  if (!options.include) {
+    return { packages: [], load_error: null };
+  }
+
+  const loaders = options.loaders || DEFAULT_ORG_TEAM_REFERENCE_LOADERS;
+
+  try {
+    const data: OrgPackageListResponse = await loaders.listOrgPackages(orgSlug);
+    return { packages: data.packages || [], load_error: data.load_error || null };
+  } catch (caughtError: unknown) {
+    return {
+      packages: [],
+      load_error: options.toErrorMessage(caughtError, options.errorMessage),
+    };
+  }
+}
+
+export async function loadOrgRepositoriesState(
+  orgSlug: string,
+  options: {
+    include: boolean;
+    errorMessage: string;
+    toErrorMessage: (caughtError: unknown, fallback: string) => string;
+    loaders?: OrgTeamReferenceLoaders;
+  }
+): Promise<OrgRepositoriesState> {
+  if (!options.include) {
+    return { repositories: [], load_error: null };
+  }
+
+  const loaders = options.loaders || DEFAULT_ORG_TEAM_REFERENCE_LOADERS;
+
+  try {
+    const data: OrgRepositoryListResponse = await loaders.listOrgRepositories(orgSlug);
+    return {
+      repositories: data.repositories || [],
+      load_error: data.load_error || null,
+    };
+  } catch (caughtError: unknown) {
+    return {
+      repositories: [],
+      load_error: options.toErrorMessage(caughtError, options.errorMessage),
+    };
+  }
+}
+
+export async function loadOrgNamespacesState(
+  options: {
+    orgId?: string | null;
+    include: boolean;
+    errorMessage: string;
+    missingOrgIdMessage: string;
+    toErrorMessage: (caughtError: unknown, fallback: string) => string;
+    loaders?: OrgTeamReferenceLoaders;
+  }
+): Promise<OrgNamespacesState> {
+  if (!options.include) {
+    return { namespaces: [], load_error: null };
+  }
+
+  if (!options.orgId?.trim()) {
+    return {
+      namespaces: [],
+      load_error: options.missingOrgIdMessage,
+    };
+  }
+
+  const loaders = options.loaders || DEFAULT_ORG_TEAM_REFERENCE_LOADERS;
+
+  try {
+    const data: NamespaceListResponse = await loaders.listOrgNamespaces(options.orgId);
+    return { namespaces: data.namespaces || [], load_error: data.load_error || null };
+  } catch (caughtError: unknown) {
+    return {
+      namespaces: [],
+      load_error: options.toErrorMessage(caughtError, options.errorMessage),
+    };
+  }
+}
+
+export async function loadOrgTeamReferenceData(
+  orgSlug: string,
+  options: {
+    orgId?: string | null;
+    includeMembers: boolean;
+    includePackages: boolean;
+    includeRepositories: boolean;
+    includeNamespaces: boolean;
+    memberErrorMessage: string;
+    packageErrorMessage: string;
+    repositoryErrorMessage: string;
+    namespaceErrorMessage: string;
+    missingNamespaceOrgIdMessage: string;
+    toErrorMessage: (caughtError: unknown, fallback: string) => string;
+    loaders?: OrgTeamReferenceLoaders;
+  }
+): Promise<OrgTeamReferenceData> {
+  const loaders = options.loaders || DEFAULT_ORG_TEAM_REFERENCE_LOADERS;
+
+  const [membersState, packagesState, repositoriesState, namespacesState] =
+    await Promise.all([
+      loadOrgMembersState(orgSlug, {
+        include: options.includeMembers,
+        errorMessage: options.memberErrorMessage,
+        toErrorMessage: options.toErrorMessage,
+        loaders,
+      }),
+      loadOrgPackagesState(orgSlug, {
+        include: options.includePackages,
+        errorMessage: options.packageErrorMessage,
+        toErrorMessage: options.toErrorMessage,
+        loaders,
+      }),
+      loadOrgRepositoriesState(orgSlug, {
+        include: options.includeRepositories,
+        errorMessage: options.repositoryErrorMessage,
+        toErrorMessage: options.toErrorMessage,
+        loaders,
+      }),
+      loadOrgNamespacesState({
+        orgId: options.orgId,
+        include: options.includeNamespaces,
+        errorMessage: options.namespaceErrorMessage,
+        missingOrgIdMessage: options.missingNamespaceOrgIdMessage,
+        toErrorMessage: options.toErrorMessage,
+        loaders,
+      }),
+    ]);
+
+  return {
+    members: membersState.members,
+    membersError: membersState.load_error,
+    packages: packagesState.packages,
+    packagesError: packagesState.load_error,
+    repositories: repositoriesState.repositories,
+    repositoriesError: repositoriesState.load_error,
+    namespaces: namespacesState.namespaces,
+    namespacesError: namespacesState.load_error,
+  };
 }
 
 async function loadSingleTeamMemberState(

@@ -9,8 +9,14 @@ import {
   buildRepositoryGrantOptions,
   createTeamManagementController,
   formatTeamPermission,
+  loadOrgMembersState,
+  loadOrgNamespacesState,
+  loadOrgPackagesState,
+  loadOrgRepositoriesState,
+  loadOrgTeamReferenceData,
   loadSingleTeamManagementState,
   loadTeamManagementStateMaps,
+  type OrgTeamReferenceLoaders,
   type TeamManagementMutations,
 } from '../src/pages/team-management';
 
@@ -160,6 +166,110 @@ describe('team management helpers', () => {
     expect(stateMaps.teamPackageAccessBySlug['release-engineering'].grants).toHaveLength(1);
     expect(stateMaps.teamRepositoryAccessBySlug).toEqual({});
     expect(stateMaps.teamNamespaceAccessBySlug.security.grants).toHaveLength(1);
+  });
+
+  test('loads shared org reference data with consistent safe-load wrappers', async () => {
+    const loaders = {
+      async listMembers(_orgSlug: string) {
+        throw new Error('members failed');
+      },
+      async listOrgPackages(_orgSlug: string) {
+        return {
+          packages: [{ ecosystem: 'npm', name: 'source-package' }],
+          load_error: null,
+        };
+      },
+      async listOrgRepositories(_orgSlug: string) {
+        return {
+          repositories: [{ slug: 'repo-alpha', name: 'Repository Alpha' }],
+          load_error: null,
+        };
+      },
+      async listOrgNamespaces(orgId: string) {
+        if (orgId === 'org-1') {
+          return {
+            namespaces: [{ id: 'claim-1', ecosystem: 'npm', namespace: '@source' }],
+            load_error: null,
+          };
+        }
+
+        throw new Error('namespaces failed');
+      },
+    } as unknown as OrgTeamReferenceLoaders;
+
+    const membersState = await loadOrgMembersState('source-org', {
+      include: true,
+      errorMessage: 'Failed to load organization members.',
+      toErrorMessage: (caughtError, fallback) =>
+        caughtError instanceof Error ? caughtError.message : fallback,
+      loaders,
+    });
+
+    const packagesState = await loadOrgPackagesState('source-org', {
+      include: true,
+      errorMessage: 'Failed to load organization packages.',
+      toErrorMessage: (caughtError, fallback) =>
+        caughtError instanceof Error ? caughtError.message : fallback,
+      loaders,
+    });
+
+    const repositoriesState = await loadOrgRepositoriesState('source-org', {
+      include: false,
+      errorMessage: 'Failed to load organization repositories.',
+      toErrorMessage: (caughtError, fallback) =>
+        caughtError instanceof Error ? caughtError.message : fallback,
+      loaders,
+    });
+
+    const namespacesState = await loadOrgNamespacesState({
+      orgId: null,
+      include: true,
+      errorMessage: 'Failed to load organization namespace claims.',
+      missingOrgIdMessage:
+        'Failed to load namespace claims because the organization id is unavailable.',
+      toErrorMessage: (caughtError, fallback) =>
+        caughtError instanceof Error ? caughtError.message : fallback,
+      loaders,
+    });
+
+    const orgReferenceData = await loadOrgTeamReferenceData('source-org', {
+      orgId: 'org-1',
+      includeMembers: true,
+      includePackages: true,
+      includeRepositories: true,
+      includeNamespaces: true,
+      memberErrorMessage: 'Failed to load organization members.',
+      packageErrorMessage: 'Failed to load organization packages.',
+      repositoryErrorMessage: 'Failed to load organization repositories.',
+      namespaceErrorMessage: 'Failed to load organization namespace claims.',
+      missingNamespaceOrgIdMessage:
+        'Failed to load namespace claims because the organization id is unavailable.',
+      toErrorMessage: (caughtError, fallback) =>
+        caughtError instanceof Error ? caughtError.message : fallback,
+      loaders,
+    });
+
+    expect(membersState).toEqual({
+      members: [],
+      load_error: 'members failed',
+    });
+    expect(packagesState.packages).toEqual([{ ecosystem: 'npm', name: 'source-package' }]);
+    expect(repositoriesState).toEqual({ repositories: [], load_error: null });
+    expect(namespacesState).toEqual({
+      namespaces: [],
+      load_error:
+        'Failed to load namespace claims because the organization id is unavailable.',
+    });
+    expect(orgReferenceData).toMatchObject({
+      members: [],
+      membersError: 'members failed',
+      packages: [{ name: 'source-package' }],
+      packagesError: null,
+      repositories: [{ slug: 'repo-alpha' }],
+      repositoriesError: null,
+      namespaces: [{ namespace: '@source' }],
+      namespacesError: null,
+    });
   });
 
   test('controller centralizes team mutation flows and reload messaging', async () => {
