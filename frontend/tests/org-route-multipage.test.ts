@@ -35,6 +35,7 @@ interface SearchCall {
 
 interface FetchScenario {
   canManageInvitations: boolean;
+  canManageMembers: boolean;
   repositoryPageRequests: number[];
   packagePageRequests: number[];
   invitationRequests: string[];
@@ -96,6 +97,7 @@ const currentOrgMembership = {
   capabilities: {
     can_manage: true,
     can_manage_invitations: true,
+    can_manage_members: true,
     can_view_member_directory: true,
     can_view_audit_log: true,
     can_transfer_ownership: true,
@@ -110,6 +112,7 @@ const targetOrgMembership = {
   capabilities: {
     can_manage: true,
     can_manage_invitations: true,
+    can_manage_members: true,
     can_view_member_directory: true,
     can_view_audit_log: true,
     can_transfer_ownership: false,
@@ -305,6 +308,25 @@ describe('route-level multi-page org dataset coverage', () => {
       expect(scenario.invitationRequests).toEqual([]);
       expect(target.textContent).not.toContain('Invite a member');
       expect(target.textContent).not.toContain('Invitations');
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace hides member mutation controls when the explicit member-management capability is absent', async () => {
+    const scenario = createFetchScenario();
+    scenario.canManageMembers = false;
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Invite a member');
+        expect(target.textContent).toContain('Members');
+      });
+
+      expect(target.textContent).not.toContain('Add member directly');
+      expect(target.querySelector('#org-member-username')).toBeNull();
+      expect(target.querySelector('[id^="member-role-"]')).toBeNull();
     } finally {
       unmount();
     }
@@ -563,6 +585,7 @@ function buildPageState(
 function createFetchScenario(): FetchScenario {
   return {
     canManageInvitations: true,
+    canManageMembers: true,
     repositoryPageRequests: [],
     packagePageRequests: [],
     invitationRequests: [],
@@ -609,6 +632,7 @@ async function handleApiRequest(
       capabilities: {
         can_manage: true,
         can_manage_invitations: scenario.canManageInvitations,
+        can_manage_members: scenario.canManageMembers,
         can_view_member_directory: true,
         can_view_audit_log: true,
         can_transfer_ownership: true,
@@ -624,6 +648,7 @@ async function handleApiRequest(
           capabilities: {
             ...currentOrgMembership.capabilities,
             can_manage_invitations: scenario.canManageInvitations,
+            can_manage_members: scenario.canManageMembers,
           },
         },
         targetOrgMembership,

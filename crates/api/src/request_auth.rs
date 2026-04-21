@@ -518,6 +518,7 @@ fn is_org_access_allowed(outcome: OrgAccessOutcome) -> bool {
 pub struct OrgActorCapabilities {
     pub can_manage: bool,
     pub can_manage_invitations: bool,
+    pub can_manage_members: bool,
     pub can_view_member_directory: bool,
     pub can_view_audit_log: bool,
     pub can_transfer_ownership: bool,
@@ -1229,6 +1230,14 @@ pub async fn actor_can_manage_org_invitations_by_id(
     actor_can_manage_org_by_id(db, org_id, actor_user_id).await
 }
 
+pub async fn actor_can_manage_org_members_by_id(
+    db: &PgPool,
+    org_id: Uuid,
+    actor_user_id: Option<Uuid>,
+) -> ApiResult<bool> {
+    actor_can_manage_org_by_id(db, org_id, actor_user_id).await
+}
+
 pub async fn actor_can_transfer_org_ownership_by_id(
     db: &PgPool,
     org_id: Uuid,
@@ -1260,6 +1269,8 @@ pub async fn actor_org_capabilities_by_id(
     Ok(OrgActorCapabilities {
         can_manage: actor_can_manage_org_by_id(db, org_id, actor_user_id).await?,
         can_manage_invitations: actor_can_manage_org_invitations_by_id(db, org_id, actor_user_id)
+            .await?,
+        can_manage_members: actor_can_manage_org_members_by_id(db, org_id, actor_user_id)
             .await?,
         can_view_member_directory: actor_can_access_org_member_directory_by_id(
             db,

@@ -160,6 +160,7 @@
   } from '../../../pages/org-security-triage';
   import {
     canManageOrgInvitations,
+    canManageOrgMembers,
     canManageOrgWorkspace,
     canTransferOrgOwnership,
     canViewOrgAuditWorkspace,
@@ -369,6 +370,7 @@
   let isAuthenticated = false;
   let canAdminister = false;
   let canManageInvitations = false;
+  let canManageMembers = false;
   let canViewAudit = false;
   let canViewPeopleWorkspace = false;
   let canTransferOwnership = false;
@@ -723,6 +725,7 @@
       canViewPeopleWorkspace = canViewOrgPeopleWorkspace(org);
       canAdminister = canManageOrgWorkspace(org);
       canManageInvitations = canManageOrgInvitations(org);
+      canManageMembers = canManageOrgMembers(org);
       canViewAudit = canViewOrgAuditWorkspace(org);
       canTransferOwnership = canTransferOrgOwnership(org);
 
@@ -2611,7 +2614,7 @@
       </section>
     {/if}
 
-    {#if canManageInvitations || canAdminister}
+    {#if canManageInvitations || canManageMembers}
       <div class="settings-grid">
         {#if canManageInvitations}
           <section class="card settings-section">
@@ -2656,7 +2659,7 @@
           </section>
         {/if}
 
-        {#if canAdminister}
+        {#if canManageMembers}
           <section class="card settings-section">
             <h2>Add member directly</h2>
             <form on:submit={handleAddMember}>
@@ -2906,7 +2909,7 @@
                     <span>joined {formatDate(member.joined_at)}</span>
                   </div>
                 </div>
-                {#if canAdminister && member.role !== 'owner' && member.username}
+                {#if canManageMembers && member.role !== 'owner' && member.username}
                   <div class="token-row__actions">
                     <form
                       class="flex flex-wrap items-center gap-2"
