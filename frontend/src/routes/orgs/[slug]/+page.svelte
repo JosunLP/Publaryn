@@ -717,12 +717,9 @@
       membership = myOrganizationsData.organizations.find(
         (item) => item.slug === slug
       );
-      canViewPeopleWorkspace =
-        canViewOrgPeopleWorkspace(org) || canViewOrgPeopleWorkspace(membership);
-      canAdminister =
-        canManageOrgWorkspace(org) || canManageOrgWorkspace(membership);
-      canViewAudit =
-        canViewOrgAuditWorkspace(org) || canViewOrgAuditWorkspace(membership);
+      canViewPeopleWorkspace = canViewOrgPeopleWorkspace(org);
+      canAdminister = canManageOrgWorkspace(org);
+      canViewAudit = canViewOrgAuditWorkspace(org);
       isOwner = membership?.role === 'owner';
 
       repositories = repositoryData.repositories || [];
