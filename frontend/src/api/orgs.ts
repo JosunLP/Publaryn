@@ -1,4 +1,5 @@
 import { api } from './client';
+import { collectPaginatedItems } from './pagination';
 
 type NullableString = string | null;
 
@@ -728,21 +729,57 @@ export async function removeTeamNamespaceAccess(
 export async function listOrgPackages(
   slug: string
 ): Promise<OrgPackageListResponse> {
-  const { data } = await api.get<OrgPackageListResponse>(
-    `/v1/orgs/${enc(slug)}/packages`
-  );
+  let loadError: NullableString | undefined;
+  const packages = await collectPaginatedItems(async (page, perPage) => {
+    const { data } = await api.get<OrgPackageListResponse>(
+      `/v1/orgs/${enc(slug)}/packages`,
+      {
+        query: {
+          page,
+          per_page: perPage,
+        },
+      }
+    );
 
-  return data;
+    if (typeof data.load_error === 'string' && data.load_error.length > 0) {
+      loadError = data.load_error;
+    }
+
+    return data.packages || [];
+  });
+
+  return {
+    packages,
+    load_error: loadError,
+  };
 }
 
 export async function listOrgRepositories(
   slug: string
 ): Promise<OrgRepositoryListResponse> {
-  const { data } = await api.get<OrgRepositoryListResponse>(
-    `/v1/orgs/${enc(slug)}/repositories`
-  );
+  let loadError: NullableString | undefined;
+  const repositories = await collectPaginatedItems(async (page, perPage) => {
+    const { data } = await api.get<OrgRepositoryListResponse>(
+      `/v1/orgs/${enc(slug)}/repositories`,
+      {
+        query: {
+          page,
+          per_page: perPage,
+        },
+      }
+    );
 
-  return data;
+    if (typeof data.load_error === 'string' && data.load_error.length > 0) {
+      loadError = data.load_error;
+    }
+
+    return data.repositories || [];
+  });
+
+  return {
+    repositories,
+    load_error: loadError,
+  };
 }
 
 export async function listOrgSecurityFindings(
