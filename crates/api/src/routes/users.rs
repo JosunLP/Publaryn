@@ -11,7 +11,9 @@ use publaryn_core::error::Error;
 
 use crate::{
     error::{ApiError, ApiResult},
-    request_auth::{actor_org_capabilities_by_id, AuthenticatedIdentity, OptionalAuthenticatedIdentity},
+    request_auth::{
+        actor_org_capabilities_by_id, AuthenticatedIdentity, OptionalAuthenticatedIdentity,
+    },
     scopes::{ensure_scope, SCOPE_PROFILE_WRITE},
     state::AppState,
 };
