@@ -21,3 +21,9 @@ export function canViewOrgAuditWorkspace(
 ): boolean {
   return resolveCapabilities(source)?.can_view_audit_log === true;
 }
+
+export function canTransferOrgOwnership(
+  source: OrganizationDetail | null | undefined
+): boolean {
+  return resolveCapabilities(source)?.can_transfer_ownership === true;
+}

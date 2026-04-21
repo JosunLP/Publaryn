@@ -160,6 +160,7 @@
   } from '../../../pages/org-security-triage';
   import {
     canManageOrgWorkspace,
+    canTransferOrgOwnership,
     canViewOrgAuditWorkspace,
     canViewOrgPeopleWorkspace,
   } from '../../../pages/org-workspace-access';
@@ -368,7 +369,7 @@
   let canAdminister = false;
   let canViewAudit = false;
   let canViewPeopleWorkspace = false;
-  let isOwner = false;
+  let canTransferOwnership = false;
 
   let members: OrgMember[] = [];
   let membersError: string | null = null;
@@ -720,7 +721,7 @@
       canViewPeopleWorkspace = canViewOrgPeopleWorkspace(org);
       canAdminister = canManageOrgWorkspace(org);
       canViewAudit = canViewOrgAuditWorkspace(org);
-      isOwner = membership?.role === 'owner';
+      canTransferOwnership = canTransferOrgOwnership(org);
 
       repositories = repositoryData.repositories || [];
       repositoriesError = repositoryData.load_error || null;
@@ -2674,7 +2675,7 @@
         </section>
       </div>
 
-      {#if isOwner}
+      {#if canTransferOwnership}
         <section class="card settings-section">
           <h2>Transfer ownership</h2>
           <div class="alert alert-warning">

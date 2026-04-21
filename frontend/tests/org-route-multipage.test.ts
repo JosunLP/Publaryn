@@ -95,6 +95,7 @@ const currentOrgMembership = {
     can_manage: true,
     can_view_member_directory: true,
     can_view_audit_log: true,
+    can_transfer_ownership: true,
   },
 };
 
@@ -107,6 +108,7 @@ const targetOrgMembership = {
     can_manage: true,
     can_view_member_directory: true,
     can_view_audit_log: true,
+    can_transfer_ownership: false,
   },
 };
 
@@ -583,6 +585,7 @@ async function handleApiRequest(
         can_manage: true,
         can_view_member_directory: true,
         can_view_audit_log: true,
+        can_transfer_ownership: true,
       },
     });
   }

@@ -2983,7 +2983,9 @@ async fn test_get_nonexistent_user_returns_404(pool: PgPool) {
 async fn test_create_and_get_org(pool: PgPool) {
     let app = app(pool);
     register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
     let jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let admin_jwt = login_user(&app, "bob", "super_secret_pw!").await;
 
     // Create org
     let req = Request::builder()
@@ -2999,6 +3001,13 @@ async fn test_create_and_get_org(pool: PgPool) {
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
 
+    let (status, body) = add_org_member(&app, &jwt, "acme-corp", "bob", "admin").await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected add member response: {body}"
+    );
+
     // Get org anonymously
     let req = Request::get("/v1/orgs/acme-corp")
         .body(Body::empty())
@@ -3010,6 +3019,7 @@ async fn test_create_and_get_org(pool: PgPool) {
     assert_eq!(body["capabilities"]["can_manage"], false);
     assert_eq!(body["capabilities"]["can_view_member_directory"], false);
     assert_eq!(body["capabilities"]["can_view_audit_log"], false);
+    assert_eq!(body["capabilities"]["can_transfer_ownership"], false);
 
     // Get org as the owner
     let req = Request::builder()
@@ -3024,6 +3034,22 @@ async fn test_create_and_get_org(pool: PgPool) {
     assert_eq!(body["capabilities"]["can_manage"], true);
     assert_eq!(body["capabilities"]["can_view_member_directory"], true);
     assert_eq!(body["capabilities"]["can_view_audit_log"], true);
+    assert_eq!(body["capabilities"]["can_transfer_ownership"], true);
+
+    // Get org as an admin member
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/v1/orgs/acme-corp")
+        .header(header::AUTHORIZATION, format!("Bearer {admin_jwt}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["capabilities"]["can_manage"], true);
+    assert_eq!(body["capabilities"]["can_view_member_directory"], true);
+    assert_eq!(body["capabilities"]["can_view_audit_log"], true);
+    assert_eq!(body["capabilities"]["can_transfer_ownership"], false);
 
     let req = Request::builder()
         .method(Method::GET)
@@ -3045,6 +3071,7 @@ async fn test_create_and_get_org(pool: PgPool) {
         true
     );
     assert_eq!(organizations[0]["capabilities"]["can_view_audit_log"], true);
+    assert_eq!(organizations[0]["capabilities"]["can_transfer_ownership"], true);
 }
 
 #[sqlx::test(migrations = "../../migrations")]

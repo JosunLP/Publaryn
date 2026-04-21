@@ -7,6 +7,7 @@ export interface OrganizationCapabilities {
   can_manage?: boolean | null;
   can_view_member_directory?: boolean | null;
   can_view_audit_log?: boolean | null;
+  can_transfer_ownership?: boolean | null;
 }
 
 export interface OrganizationDetail {

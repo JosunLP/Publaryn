@@ -519,6 +519,7 @@ pub struct OrgActorCapabilities {
     pub can_manage: bool,
     pub can_view_member_directory: bool,
     pub can_view_audit_log: bool,
+    pub can_transfer_ownership: bool,
 }
 
 async fn authorize_org_write_roles(
@@ -1219,6 +1220,29 @@ pub async fn actor_can_access_org_audit_log_by_id(
         .await
 }
 
+pub async fn actor_can_transfer_org_ownership_by_id(
+    db: &PgPool,
+    org_id: Uuid,
+    actor_user_id: Option<Uuid>,
+) -> ApiResult<bool> {
+    let Some(actor_user_id) = actor_user_id else {
+        return Ok(false);
+    };
+
+    sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(\
+             SELECT 1 \
+             FROM org_memberships \
+             WHERE org_id = $1 AND user_id = $2 AND role::text = 'owner'\
+         )",
+    )
+    .bind(org_id)
+    .bind(actor_user_id)
+    .fetch_one(db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))
+}
+
 pub async fn actor_org_capabilities_by_id(
     db: &PgPool,
     org_id: Uuid,
@@ -1233,6 +1257,12 @@ pub async fn actor_org_capabilities_by_id(
         )
         .await?,
         can_view_audit_log: actor_can_access_org_audit_log_by_id(db, org_id, actor_user_id).await?,
+        can_transfer_ownership: actor_can_transfer_org_ownership_by_id(
+            db,
+            org_id,
+            actor_user_id,
+        )
+        .await?,
     })
 }
 

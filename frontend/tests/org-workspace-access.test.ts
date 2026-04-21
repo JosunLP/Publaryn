@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 
 import {
   canManageOrgWorkspace,
+  canTransferOrgOwnership,
   canViewOrgAuditWorkspace,
   canViewOrgPeopleWorkspace,
 } from '../src/pages/org-workspace-access';
@@ -32,6 +33,14 @@ describe('org workspace access helpers', () => {
         },
       })
     ).toBe(true);
+    expect(
+      canTransferOrgOwnership({
+        slug: 'acme',
+        capabilities: {
+          can_transfer_ownership: true,
+        },
+      })
+    ).toBe(true);
   });
 
   test('hides people and team sections for visitors and unknown memberships', () => {
@@ -58,6 +67,14 @@ describe('org workspace access helpers', () => {
         slug: 'acme',
         capabilities: {
           can_view_audit_log: false,
+        },
+      })
+    ).toBe(false);
+    expect(
+      canTransferOrgOwnership({
+        slug: 'acme',
+        capabilities: {
+          can_transfer_ownership: false,
         },
       })
     ).toBe(false);
