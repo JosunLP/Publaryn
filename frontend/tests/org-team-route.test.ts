@@ -182,9 +182,21 @@ describe('organization team workspace route', () => {
         expect(target.textContent).toContain('@source');
         expect(queryRequiredForm(target, '#team-settings-form')).toBeDefined();
         expect(queryRequiredForm(target, '#team-member-form')).toBeDefined();
-        expect(queryRequiredSelect(target, '#team-package-access')).toBeDefined();
-        expect(queryRequiredSelect(target, '#team-repository-access')).toBeDefined();
-        expect(queryRequiredSelect(target, '#team-namespace-access')).toBeDefined();
+        expect(queryRequiredInput(target, '#team-name').value).toBe(
+          'Release Engineering'
+        );
+        expect(queryRequiredTextArea(target, '#team-description').value).toBe(
+          'Manages publish and release flows.'
+        );
+        expect(optionValues(queryRequiredSelect(target, '#team-package-access'))).toContain(
+          'npm:new-package'
+        );
+        expect(optionValues(queryRequiredSelect(target, '#team-repository-access'))).toContain(
+          'repo-beta'
+        );
+        expect(optionValues(queryRequiredSelect(target, '#team-namespace-access'))).toContain(
+          'namespace-2'
+        );
       });
 
       expect(currentScenario?.requests).toEqual([
@@ -882,6 +894,10 @@ function queryClosestForm(element: Element): HTMLFormElement {
     throw new Error('Expected element to belong to a form.');
   }
   return form;
+}
+
+function optionValues(select: HTMLSelectElement): string[] {
+  return Array.from(select.options).map((option) => option.value);
 }
 
 async function waitFor(
