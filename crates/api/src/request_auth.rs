@@ -70,6 +70,13 @@ enum PackageAccessRequirement {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RepositoryAccessRequirement {
+    Admin,
+    PackageCreation,
+    TransferOwnership,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NamespaceClaimAccessRequirement {
     Admin,
     TransferOwnership,
@@ -137,6 +144,28 @@ impl PackageAccessRequirement {
                 "You do not have permission to manage security findings for this package"
             }
             Self::ManagementVisibility => "You do not have permission to manage this package",
+        }
+    }
+}
+
+impl RepositoryAccessRequirement {
+    fn team_permissions(self) -> &'static [&'static str] {
+        match self {
+            Self::Admin => TEAM_REPOSITORY_ADMIN_PERMISSIONS,
+            Self::PackageCreation => TEAM_REPOSITORY_PACKAGE_CREATION_PERMISSIONS,
+            Self::TransferOwnership => TEAM_REPOSITORY_TRANSFER_PERMISSIONS,
+        }
+    }
+
+    fn denial_message(self) -> &'static str {
+        match self {
+            Self::Admin => "You do not have permission to modify this repository",
+            Self::PackageCreation => {
+                "You do not have permission to create packages in this repository"
+            }
+            Self::TransferOwnership => {
+                "You do not have permission to transfer ownership of this repository"
+            }
         }
     }
 }
@@ -574,64 +603,31 @@ async fn authorize_repository_write_access(
     }
 }
 
-async fn actor_can_manage_owned_repository(
+async fn ensure_repository_access_by_requirement(
     db: &PgPool,
-    repository_id: Uuid,
-    owner_user_id: Option<Uuid>,
-    owner_org_id: Option<Uuid>,
+    slug: &str,
     actor_user_id: Uuid,
-) -> ApiResult<bool> {
-    let access = authorize_repository_write_access(
+    requirement: RepositoryAccessRequirement,
+) -> ApiResult<Uuid> {
+    let (repository_id, owner_user_id, owner_org_id) =
+        fetch_repository_access_fields_by_slug(db, slug).await?;
+
+    match authorize_repository_write_access(
         db,
         repository_id,
         owner_user_id,
         owner_org_id,
         actor_user_id,
-        TEAM_REPOSITORY_ADMIN_PERMISSIONS,
+        requirement.team_permissions(),
     )
-    .await?;
-
-    Ok(write_access_allows_capability(access))
-}
-
-async fn actor_can_create_packages_in_owned_repository(
-    db: &PgPool,
-    repository_id: Uuid,
-    owner_user_id: Option<Uuid>,
-    owner_org_id: Option<Uuid>,
-    actor_user_id: Uuid,
-) -> ApiResult<bool> {
-    let access = authorize_repository_write_access(
-        db,
-        repository_id,
-        owner_user_id,
-        owner_org_id,
-        actor_user_id,
-        TEAM_REPOSITORY_PACKAGE_CREATION_PERMISSIONS,
-    )
-    .await?;
-
-    Ok(write_access_allows_capability(access))
-}
-
-async fn actor_can_transfer_owned_repository(
-    db: &PgPool,
-    repository_id: Uuid,
-    owner_user_id: Option<Uuid>,
-    owner_org_id: Option<Uuid>,
-    actor_user_id: Uuid,
-) -> ApiResult<bool> {
-    let access = authorize_repository_write_access(
-        db,
-        repository_id,
-        owner_user_id,
-        owner_org_id,
-        actor_user_id,
-        TEAM_REPOSITORY_TRANSFER_PERMISSIONS,
-    )
-    .await?;
-
-    Ok(write_access_allows_capability(access))
+    .await?
+    {
+        TeamWriteAccess::Allowed => Ok(repository_id),
+        TeamWriteAccess::MfaRequired => Err(org_mfa_required_for_write_error()),
+        TeamWriteAccess::MissingPermission => Err(ApiError(Error::Forbidden(
+            requirement.denial_message().into(),
+        ))),
+    }
 }
 
 async fn actor_has_any_team_package_access(
@@ -1123,25 +1119,13 @@ pub async fn ensure_repository_admin_access(
     slug: &str,
     actor_user_id: Uuid,
 ) -> ApiResult<Uuid> {
-    let (repository_id, owner_user_id, owner_org_id) =
-        fetch_repository_access_fields_by_slug(db, slug).await?;
-
-    match authorize_repository_write_access(
+    ensure_repository_access_by_requirement(
         db,
-        repository_id,
-        owner_user_id,
-        owner_org_id,
+        slug,
         actor_user_id,
-        TEAM_REPOSITORY_ADMIN_PERMISSIONS,
+        RepositoryAccessRequirement::Admin,
     )
-    .await?
-    {
-        TeamWriteAccess::Allowed => Ok(repository_id),
-        TeamWriteAccess::MfaRequired => Err(org_mfa_required_for_write_error()),
-        TeamWriteAccess::MissingPermission => Err(ApiError(Error::Forbidden(
-            "You do not have permission to modify this repository".into(),
-        ))),
-    }
+    .await
 }
 
 pub async fn ensure_repository_package_creation_access(
@@ -1149,25 +1133,13 @@ pub async fn ensure_repository_package_creation_access(
     slug: &str,
     actor_user_id: Uuid,
 ) -> ApiResult<Uuid> {
-    let (repository_id, owner_user_id, owner_org_id) =
-        fetch_repository_access_fields_by_slug(db, slug).await?;
-
-    match authorize_repository_write_access(
+    ensure_repository_access_by_requirement(
         db,
-        repository_id,
-        owner_user_id,
-        owner_org_id,
+        slug,
         actor_user_id,
-        TEAM_REPOSITORY_PACKAGE_CREATION_PERMISSIONS,
+        RepositoryAccessRequirement::PackageCreation,
     )
-    .await?
-    {
-        TeamWriteAccess::Allowed => Ok(repository_id),
-        TeamWriteAccess::MfaRequired => Err(org_mfa_required_for_write_error()),
-        TeamWriteAccess::MissingPermission => Err(ApiError(Error::Forbidden(
-            "You do not have permission to create packages in this repository".into(),
-        ))),
-    }
+    .await
 }
 
 pub async fn ensure_repository_write_access(
@@ -1183,25 +1155,13 @@ pub async fn ensure_repository_transfer_access(
     slug: &str,
     actor_user_id: Uuid,
 ) -> ApiResult<Uuid> {
-    let (repository_id, owner_user_id, owner_org_id) =
-        fetch_repository_access_fields_by_slug(db, slug).await?;
-
-    match authorize_repository_write_access(
+    ensure_repository_access_by_requirement(
         db,
-        repository_id,
-        owner_user_id,
-        owner_org_id,
+        slug,
         actor_user_id,
-        TEAM_REPOSITORY_TRANSFER_PERMISSIONS,
+        RepositoryAccessRequirement::TransferOwnership,
     )
-    .await?
-    {
-        TeamWriteAccess::Allowed => Ok(repository_id),
-        TeamWriteAccess::MfaRequired => Err(org_mfa_required_for_write_error()),
-        TeamWriteAccess::MissingPermission => Err(ApiError(Error::Forbidden(
-            "You do not have permission to transfer ownership of this repository".into(),
-        ))),
-    }
+    .await
 }
 
 pub async fn ensure_package_metadata_write_access(
@@ -1449,19 +1409,11 @@ pub async fn actor_can_manage_repository_by_id(
     repository_id: Uuid,
     actor_user_id: Option<Uuid>,
 ) -> ApiResult<bool> {
-    let Some(actor_user_id) = actor_user_id else {
-        return Ok(false);
-    };
-
-    let (owner_user_id, owner_org_id) =
-        fetch_repository_owner_fields_by_id(db, repository_id).await?;
-
-    actor_can_manage_owned_repository(
+    actor_can_repository_by_id_and_requirement(
         db,
         repository_id,
-        owner_user_id,
-        owner_org_id,
         actor_user_id,
+        RepositoryAccessRequirement::Admin,
     )
     .await
 }
@@ -1471,19 +1423,11 @@ pub async fn actor_can_create_packages_in_repository_by_id(
     repository_id: Uuid,
     actor_user_id: Option<Uuid>,
 ) -> ApiResult<bool> {
-    let Some(actor_user_id) = actor_user_id else {
-        return Ok(false);
-    };
-
-    let (owner_user_id, owner_org_id) =
-        fetch_repository_owner_fields_by_id(db, repository_id).await?;
-
-    actor_can_create_packages_in_owned_repository(
+    actor_can_repository_by_id_and_requirement(
         db,
         repository_id,
-        owner_user_id,
-        owner_org_id,
         actor_user_id,
+        RepositoryAccessRequirement::PackageCreation,
     )
     .await
 }
@@ -1493,6 +1437,21 @@ pub async fn actor_can_transfer_repository_by_id(
     repository_id: Uuid,
     actor_user_id: Option<Uuid>,
 ) -> ApiResult<bool> {
+    actor_can_repository_by_id_and_requirement(
+        db,
+        repository_id,
+        actor_user_id,
+        RepositoryAccessRequirement::TransferOwnership,
+    )
+    .await
+}
+
+async fn actor_can_repository_by_id_and_requirement(
+    db: &PgPool,
+    repository_id: Uuid,
+    actor_user_id: Option<Uuid>,
+    requirement: RepositoryAccessRequirement,
+) -> ApiResult<bool> {
     let Some(actor_user_id) = actor_user_id else {
         return Ok(false);
     };
@@ -1500,14 +1459,16 @@ pub async fn actor_can_transfer_repository_by_id(
     let (owner_user_id, owner_org_id) =
         fetch_repository_owner_fields_by_id(db, repository_id).await?;
 
-    actor_can_transfer_owned_repository(
+    authorize_repository_write_access(
         db,
         repository_id,
         owner_user_id,
         owner_org_id,
         actor_user_id,
+        requirement.team_permissions(),
     )
     .await
+    .map(write_access_allows_capability)
 }
 
 async fn authorize_namespace_claim_write_access_by_id(
