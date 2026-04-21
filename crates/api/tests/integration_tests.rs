@@ -6046,7 +6046,7 @@ async fn test_namespace_claim_delete_requires_owner_or_org_admin(pool: PgPool) {
         forbidden_body["error"]
             .as_str()
             .expect("error should be present")
-            .contains("manage this namespace claim"),
+            .contains("This organization requires MFA for elevated members before write actions are allowed"),
         "unexpected error response: {forbidden_body}"
     );
 
@@ -6252,7 +6252,7 @@ async fn test_namespace_claim_transfer_requires_source_and_target_org_control(po
         forbidden_body["error"]
             .as_str()
             .expect("error should be present")
-            .contains("transfer this namespace claim"),
+            .contains("This organization requires MFA for elevated members before write actions are allowed"),
         "unexpected error response: {forbidden_body}"
     );
 

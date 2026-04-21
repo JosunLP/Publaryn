@@ -1439,6 +1439,51 @@ pub async fn actor_can_transfer_repository_by_id(
     .await
 }
 
+async fn authorize_namespace_claim_write_access_by_id(
+    db: &PgPool,
+    namespace_claim_id: Uuid,
+    actor_user_id: Uuid,
+    allowed_permissions: &[&str],
+) -> ApiResult<TeamWriteAccess> {
+    let (owner_user_id, owner_org_id) =
+        fetch_namespace_claim_owner_fields_by_id(db, namespace_claim_id).await?;
+
+    if owner_user_id == Some(actor_user_id) {
+        return Ok(TeamWriteAccess::Allowed);
+    }
+
+    if let Some(owner_org_id) = owner_org_id {
+        match authorize_org_write_roles(db, owner_org_id, actor_user_id, ORG_ADMIN_ROLES).await? {
+            OrgWriteRoleAccess::Allowed => return Ok(TeamWriteAccess::Allowed),
+            OrgWriteRoleAccess::MfaRequired => return Ok(TeamWriteAccess::MfaRequired),
+            OrgWriteRoleAccess::MissingRole => {}
+        }
+    }
+
+    actor_has_team_namespace_permissions(db, namespace_claim_id, actor_user_id, allowed_permissions).await
+}
+
+pub async fn ensure_namespace_claim_admin_access_by_id(
+    db: &PgPool,
+    namespace_claim_id: Uuid,
+    actor_user_id: Uuid,
+) -> ApiResult<()> {
+    match authorize_namespace_claim_write_access_by_id(
+        db,
+        namespace_claim_id,
+        actor_user_id,
+        TEAM_NAMESPACE_ADMIN_PERMISSIONS,
+    )
+    .await?
+    {
+        TeamWriteAccess::Allowed => Ok(()),
+        TeamWriteAccess::MfaRequired => Err(org_mfa_required_for_write_error()),
+        TeamWriteAccess::MissingPermission => Err(ApiError(Error::Forbidden(
+            "You do not have permission to manage this namespace claim".into(),
+        ))),
+    }
+}
+
 pub async fn actor_can_manage_namespace_claim_by_id(
     db: &PgPool,
     namespace_claim_id: Uuid,
@@ -1448,22 +1493,7 @@ pub async fn actor_can_manage_namespace_claim_by_id(
         return Ok(false);
     };
 
-    let (owner_user_id, owner_org_id) =
-        fetch_namespace_claim_owner_fields_by_id(db, namespace_claim_id).await?;
-
-    if owner_user_id == Some(actor_user_id) {
-        return Ok(true);
-    }
-
-    if let Some(owner_org_id) = owner_org_id {
-        match authorize_org_write_roles(db, owner_org_id, actor_user_id, ORG_ADMIN_ROLES).await? {
-            OrgWriteRoleAccess::Allowed => return Ok(true),
-            OrgWriteRoleAccess::MfaRequired => return Ok(false),
-            OrgWriteRoleAccess::MissingRole => {}
-        }
-    }
-
-    match actor_has_team_namespace_permissions(
+    match authorize_namespace_claim_write_access_by_id(
         db,
         namespace_claim_id,
         actor_user_id,
@@ -1476,6 +1506,27 @@ pub async fn actor_can_manage_namespace_claim_by_id(
     }
 }
 
+pub async fn ensure_namespace_claim_transfer_access_by_id(
+    db: &PgPool,
+    namespace_claim_id: Uuid,
+    actor_user_id: Uuid,
+) -> ApiResult<()> {
+    match authorize_namespace_claim_write_access_by_id(
+        db,
+        namespace_claim_id,
+        actor_user_id,
+        TEAM_NAMESPACE_TRANSFER_PERMISSIONS,
+    )
+    .await?
+    {
+        TeamWriteAccess::Allowed => Ok(()),
+        TeamWriteAccess::MfaRequired => Err(org_mfa_required_for_write_error()),
+        TeamWriteAccess::MissingPermission => Err(ApiError(Error::Forbidden(
+            "You do not have permission to transfer this namespace claim".into(),
+        ))),
+    }
+}
+
 pub async fn actor_can_transfer_namespace_claim_by_id(
     db: &PgPool,
     namespace_claim_id: Uuid,
@@ -1485,22 +1536,7 @@ pub async fn actor_can_transfer_namespace_claim_by_id(
         return Ok(false);
     };
 
-    let (owner_user_id, owner_org_id) =
-        fetch_namespace_claim_owner_fields_by_id(db, namespace_claim_id).await?;
-
-    if owner_user_id == Some(actor_user_id) {
-        return Ok(true);
-    }
-
-    if let Some(owner_org_id) = owner_org_id {
-        match authorize_org_write_roles(db, owner_org_id, actor_user_id, ORG_ADMIN_ROLES).await? {
-            OrgWriteRoleAccess::Allowed => return Ok(true),
-            OrgWriteRoleAccess::MfaRequired => return Ok(false),
-            OrgWriteRoleAccess::MissingRole => {}
-        }
-    }
-
-    match actor_has_team_namespace_permissions(
+    match authorize_namespace_claim_write_access_by_id(
         db,
         namespace_claim_id,
         actor_user_id,

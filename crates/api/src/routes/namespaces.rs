@@ -14,6 +14,7 @@ use crate::{
     error::{ApiError, ApiResult},
     request_auth::{
         actor_can_manage_namespace_claim_by_id, actor_can_transfer_namespace_claim_by_id,
+        ensure_namespace_claim_admin_access_by_id, ensure_namespace_claim_transfer_access_by_id,
         ensure_org_admin_by_id, AuthenticatedIdentity, OptionalAuthenticatedIdentity,
     },
     routes::parse_ecosystem,
@@ -298,11 +299,7 @@ async fn delete_namespace(
         }
     }
 
-    if !actor_can_manage_namespace_claim_by_id(&state.db, claim_id, Some(identity.user_id)).await? {
-        return Err(ApiError(Error::Forbidden(
-            "You do not have permission to manage this namespace claim".into(),
-        )));
-    }
+    ensure_namespace_claim_admin_access_by_id(&state.db, claim_id, identity.user_id).await?;
 
     sqlx::query("DELETE FROM namespace_claims WHERE id = $1")
         .bind(claim_id)
@@ -427,17 +424,8 @@ async fn transfer_namespace_ownership(
             )));
         }
         NamespaceClaimOwner::Organization(owner_org_id) => {
-            if !actor_can_transfer_namespace_claim_by_id(
-                &state.db,
-                claim_id,
-                Some(identity.user_id),
-            )
-            .await?
-            {
-                return Err(ApiError(Error::Forbidden(
-                    "You do not have permission to transfer this namespace claim".into(),
-                )));
-            }
+            ensure_namespace_claim_transfer_access_by_id(&state.db, claim_id, identity.user_id)
+                .await?;
 
             let _ = owner_org_id;
         }
