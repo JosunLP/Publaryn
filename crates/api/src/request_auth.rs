@@ -534,8 +534,8 @@ async fn actor_can_manage_owned_repository(
                 actor_user_id,
                 TEAM_REPOSITORY_ADMIN_PERMISSIONS,
             )
-            .await
-            ? {
+            .await?
+            {
                 TeamWriteAccess::Allowed => Ok(true),
                 TeamWriteAccess::MfaRequired | TeamWriteAccess::MissingPermission => Ok(false),
             }
@@ -571,8 +571,8 @@ async fn actor_can_create_packages_in_owned_repository(
                 actor_user_id,
                 TEAM_REPOSITORY_PACKAGE_CREATION_PERMISSIONS,
             )
-            .await
-            ? {
+            .await?
+            {
                 TeamWriteAccess::Allowed => Ok(true),
                 TeamWriteAccess::MfaRequired | TeamWriteAccess::MissingPermission => Ok(false),
             }
@@ -606,8 +606,8 @@ async fn actor_can_transfer_owned_repository(
         actor_user_id,
         TEAM_REPOSITORY_TRANSFER_PERMISSIONS,
     )
-    .await
-    ? {
+    .await?
+    {
         TeamWriteAccess::Allowed => Ok(true),
         TeamWriteAccess::MfaRequired | TeamWriteAccess::MissingPermission => Ok(false),
     }
@@ -845,12 +845,12 @@ async fn ensure_package_access_by_requirement(
         }
 
         match actor_has_team_repository_permissions(
-                db,
-                repository_id,
-                actor_user_id,
-                requirement.repository_permissions(),
-            )
-            .await?
+            db,
+            repository_id,
+            actor_user_id,
+            requirement.repository_permissions(),
+        )
+        .await?
         {
             TeamWriteAccess::Allowed => return Ok(package_id),
             TeamWriteAccess::MfaRequired => return Err(org_mfa_required_for_write_error()),
@@ -1528,8 +1528,8 @@ pub async fn actor_can_transfer_package_by_id(
         actor_user_id,
         TEAM_REPOSITORY_PACKAGE_TRANSFER_PERMISSIONS,
     )
-    .await
-    ? {
+    .await?
+    {
         TeamWriteAccess::Allowed => Ok(true),
         TeamWriteAccess::MfaRequired | TeamWriteAccess::MissingPermission => Ok(false),
     }
@@ -1579,8 +1579,8 @@ pub async fn actor_can_security_review_package_by_id(
         actor_user_id,
         TEAM_REPOSITORY_PACKAGE_SECURITY_REVIEW_PERMISSIONS,
     )
-    .await
-    ? {
+    .await?
+    {
         TeamWriteAccess::Allowed => Ok(true),
         TeamWriteAccess::MfaRequired | TeamWriteAccess::MissingPermission => Ok(false),
     }
@@ -1630,8 +1630,8 @@ pub async fn actor_can_publish_package_by_id(
         actor_user_id,
         TEAM_REPOSITORY_PACKAGE_PUBLISH_PERMISSIONS,
     )
-    .await
-    ? {
+    .await?
+    {
         TeamWriteAccess::Allowed => Ok(true),
         TeamWriteAccess::MfaRequired | TeamWriteAccess::MissingPermission => Ok(false),
     }
@@ -1681,8 +1681,8 @@ pub async fn actor_can_write_package_metadata_by_id(
         actor_user_id,
         TEAM_REPOSITORY_PACKAGE_METADATA_PERMISSIONS,
     )
-    .await
-    ? {
+    .await?
+    {
         TeamWriteAccess::Allowed => Ok(true),
         TeamWriteAccess::MfaRequired | TeamWriteAccess::MissingPermission => Ok(false),
     }
@@ -1732,8 +1732,8 @@ pub async fn actor_can_admin_package_by_id(
         actor_user_id,
         TEAM_REPOSITORY_ADMIN_PERMISSIONS,
     )
-    .await
-    ? {
+    .await?
+    {
         TeamWriteAccess::Allowed => Ok(true),
         TeamWriteAccess::MfaRequired | TeamWriteAccess::MissingPermission => Ok(false),
     }
@@ -1788,8 +1788,8 @@ pub async fn actor_can_write_package_by_id(
         actor_user_id,
         TEAM_REPOSITORY_PACKAGE_MANAGEMENT_VISIBILITY_PERMISSIONS,
     )
-    .await
-    ? {
+    .await?
+    {
         TeamWriteAccess::Allowed => Ok(true),
         TeamWriteAccess::MfaRequired | TeamWriteAccess::MissingPermission => Ok(false),
     }
