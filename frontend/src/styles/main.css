@@ -631,7 +631,6 @@ a:hover {
 :focus-visible {
   outline: none;
   box-shadow: 0 0 0 3px var(--color-primary-ring);
-  border-radius: var(--radius-sm);
 }
 img,
 svg {
@@ -723,6 +722,8 @@ main.container {
 .site-header nav {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 8px;
   margin-left: auto;
 }
@@ -1011,6 +1012,26 @@ bq-badge {
 @media (max-width: 900px) {
   .pkg-detail {
     grid-template-columns: 1fr;
+  }
+
+  .site-header {
+    height: auto;
+    padding: 12px 0;
+  }
+
+  .site-header .container {
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  .site-header .search-bar {
+    order: 3;
+    flex: 1 1 100%;
+    max-width: none;
+  }
+
+  .site-header nav {
+    flex: 1 1 auto;
   }
 }
 .pkg-detail__main {
@@ -1456,6 +1477,86 @@ bq-badge {
     border-top: 1px solid var(--color-border);
     padding-top: 12px;
     margin-top: 4px;
+  }
+}
+
+@media (max-width: 640px) {
+  .container {
+    padding: 0 16px;
+  }
+
+  main.container {
+    padding-top: 24px;
+    padding-bottom: 48px;
+  }
+
+  .page-shell {
+    margin-top: 16px;
+  }
+
+  .page-shell > * + * {
+    margin-top: 16px;
+  }
+
+  .page-hero,
+  .toolbar,
+  .auth-hero,
+  .auth-card,
+  .detail-summary {
+    padding: 20px;
+  }
+
+  .page-hero,
+  .toolbar,
+  .auth-card,
+  .auth-hero,
+  .surface-card,
+  .detail-summary,
+  .search-result-shell {
+    border-radius: 20px;
+  }
+
+  .page-hero__header {
+    gap: 16px;
+  }
+
+  .page-hero__title {
+    font-size: 2rem;
+  }
+
+  .page-hero__subtitle,
+  .auth-hero__copy {
+    font-size: 0.9375rem;
+    line-height: 1.65;
+  }
+
+  .auth-shell {
+    margin-top: 24px;
+    gap: 16px;
+  }
+
+  .auth-hero__title {
+    margin-top: 16px;
+    font-size: 2rem;
+    line-height: 1.1;
+  }
+
+  .auth-benefits {
+    margin-top: 20px;
+    grid-template-columns: 1fr;
+  }
+
+  .surface-card__header {
+    padding: 14px 16px;
+  }
+
+  .surface-card__body {
+    padding: 16px;
+  }
+
+  #search-form .btn {
+    width: 100%;
+    justify-content: center;
   }
 }
 .stat__value {
