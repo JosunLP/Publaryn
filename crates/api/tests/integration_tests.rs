@@ -3084,7 +3084,10 @@ async fn test_create_and_get_org(pool: PgPool) {
     );
     assert_eq!(organizations[0]["capabilities"]["can_manage_members"], true);
     assert_eq!(organizations[0]["capabilities"]["can_manage_teams"], true);
-    assert_eq!(organizations[0]["capabilities"]["can_manage_repositories"], true);
+    assert_eq!(
+        organizations[0]["capabilities"]["can_manage_repositories"],
+        true
+    );
     assert_eq!(
         organizations[0]["capabilities"]["can_view_member_directory"],
         true
