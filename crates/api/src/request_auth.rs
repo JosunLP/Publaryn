@@ -1469,8 +1469,8 @@ pub async fn actor_can_manage_namespace_claim_by_id(
         actor_user_id,
         TEAM_NAMESPACE_ADMIN_PERMISSIONS,
     )
-    .await
-    ? {
+    .await?
+    {
         TeamWriteAccess::Allowed => Ok(true),
         TeamWriteAccess::MfaRequired | TeamWriteAccess::MissingPermission => Ok(false),
     }
@@ -1506,8 +1506,8 @@ pub async fn actor_can_transfer_namespace_claim_by_id(
         actor_user_id,
         TEAM_NAMESPACE_TRANSFER_PERMISSIONS,
     )
-    .await
-    ? {
+    .await?
+    {
         TeamWriteAccess::Allowed => Ok(true),
         TeamWriteAccess::MfaRequired | TeamWriteAccess::MissingPermission => Ok(false),
     }
