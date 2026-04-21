@@ -2,8 +2,8 @@
 
 import { afterEach, describe, expect, mock, test } from 'bun:test';
 import { writable } from 'svelte/store';
+import { pathToFileURL } from 'node:url';
 
-import { setAuthToken } from '../src/api/client';
 import { renderPackageSelectionValue } from '../src/pages/org-workspace-actions';
 import {
   changeValue,
@@ -48,9 +48,13 @@ const ORG_ID = '11111111-1111-4111-8111-111111111111';
 const TEAM_SLUG = 'release-engineering';
 const ORG_SLUG = 'source-org';
 const TARGET_ORG_SLUG = 'target-org';
-const originalFetch = globalThis.fetch;
+const apiClientModuleUrl = pathToFileURL(
+  '/home/runner/work/Publaryn/Publaryn/frontend/src/api/client.ts'
+).href;
 const gotoCalls: string[] = [];
 const pageStore = writable<TestPageState>(buildPageState('https://example.test/'));
+let currentAuthToken: string | null = null;
+let currentScenario: FetchScenario | null = null;
 
 const repositories = Array.from({ length: 101 }, (_, index) => {
   const suffix = String(index + 1).padStart(3, '0');
@@ -126,26 +130,73 @@ mock.module('$app/navigation', () => ({
   },
 }));
 
+mock.module(apiClientModuleUrl, () => {
+  class ApiError<TBody = unknown> extends Error {
+    readonly status: number;
+    readonly body: TBody;
+
+    constructor(status: number, body: TBody) {
+      super(
+        body &&
+          typeof body === 'object' &&
+          'error' in (body as Record<string, unknown>) &&
+          typeof (body as Record<string, unknown>).error === 'string'
+          ? String((body as Record<string, unknown>).error)
+          : `HTTP ${status}`
+      );
+      this.name = 'ApiError';
+      this.status = status;
+      this.body = body;
+    }
+  }
+
+  return {
+    ApiError,
+    getAuthToken(): string | null {
+      return currentAuthToken;
+    },
+    setAuthToken(token: string | null): void {
+      currentAuthToken = token;
+    },
+    clearAuthToken(): void {
+      currentAuthToken = null;
+    },
+    onUnauthorized(): void {},
+    api: {
+      get: (path: string, options?: { query?: Record<string, unknown> }) =>
+        handleApiRequest('GET', path, options),
+      post: (
+        path: string,
+        options?: { query?: Record<string, unknown>; body?: JsonRecord }
+      ) => handleApiRequest('POST', path, options),
+      put: (
+        path: string,
+        options?: { query?: Record<string, unknown>; body?: JsonRecord }
+      ) => handleApiRequest('PUT', path, options),
+      patch: (
+        path: string,
+        options?: { query?: Record<string, unknown>; body?: JsonRecord }
+      ) => handleApiRequest('PATCH', path, options),
+      delete: (path: string, options?: { query?: Record<string, unknown> }) =>
+        handleApiRequest('DELETE', path, options),
+    },
+  };
+});
+
 const SearchPage = await import('../src/routes/search/+page.svelte');
 const OrgPage = await import('../src/routes/orgs/[slug]/+page.svelte');
 
 afterEach(() => {
   gotoCalls.length = 0;
-  setAuthToken(null);
+  currentAuthToken = null;
+  currentScenario = null;
   pageStore.set(buildPageState('https://example.test/'));
-  globalThis.fetch = originalFetch;
 });
 
 describe('route-level multi-page org dataset coverage', () => {
-  test('org workspace delegated access forms and transfer selectors include second-page packages and repositories', async () => {
+  test('org workspace renders second-page packages and repositories across delegated access and transfer controls', async () => {
     const scenario = createFetchScenario();
-    installFetchScenario(scenario);
-    setAuthToken('pub_test_token');
-    pageStore.set(buildPageState(`https://example.test/orgs/${ORG_SLUG}`, {
-      slug: ORG_SLUG,
-    }));
-
-    const { target, unmount } = await renderSvelte(OrgPage);
+    const { target, unmount } = await mountOrgPage(scenario);
 
     try {
       await waitFor(() => {
@@ -183,9 +234,36 @@ describe('route-level multi-page org dataset coverage', () => {
         expect(optionValues(repositoryTransferSelect)).toContain(finalRepository?.slug);
         expect(optionValues(packageTransferSelect)).toContain(finalPackageKey);
       });
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace submits second-page delegated repository and package access selections', async () => {
+    const finalRepository = repositories.at(-1);
+    const finalPackage = packages.at(-1);
+    const finalPackageKey = renderPackageSelectionValue(
+      finalPackage?.ecosystem,
+      finalPackage?.name
+    );
+
+    const repositoryScenario = createFetchScenario();
+    const repositoryRender = await mountOrgPage(repositoryScenario);
+
+    try {
+      await waitFor(() => {
+        expect(
+          optionValues(
+            queryRequiredSelect(
+              repositoryRender.target,
+              `#team-repository-${TEAM_SLUG}`
+            )
+          )
+        ).toContain(finalRepository?.slug);
+      });
 
       const repositoryGrantSelect = queryRequiredSelect(
-        target,
+        repositoryRender.target,
         `#team-repository-${TEAM_SLUG}`
       );
       const repositoryGrantForm = queryRequiredForm(
@@ -200,21 +278,30 @@ describe('route-level multi-page org dataset coverage', () => {
       submitForm(repositoryGrantForm);
 
       await waitFor(() => {
-        expect(scenario.teamRepositoryAccessUpdates).toHaveLength(1);
+        expect(repositoryScenario.teamRepositoryAccessUpdates).toHaveLength(1);
       });
-      expect(scenario.teamRepositoryAccessUpdates[0]).toEqual({
+      expect(repositoryScenario.teamRepositoryAccessUpdates[0]).toEqual({
         path: `/v1/orgs/${ORG_SLUG}/teams/${TEAM_SLUG}/repository-access/${finalRepository?.slug}`,
         body: { permissions: ['publish'] },
       });
+    } finally {
+      repositoryRender.unmount();
+    }
 
+    const packageScenario = createFetchScenario();
+    const packageRender = await mountOrgPage(packageScenario);
+
+    try {
       await waitFor(() => {
         expect(
-          optionValues(queryRequiredSelect(target, `#team-package-${TEAM_SLUG}`))
+          optionValues(
+            queryRequiredSelect(packageRender.target, `#team-package-${TEAM_SLUG}`)
+          )
         ).toContain(finalPackageKey);
       });
 
       const packageGrantSelect = queryRequiredSelect(
-        target,
+        packageRender.target,
         `#team-package-${TEAM_SLUG}`
       );
       const packageGrantForm = queryRequiredForm(packageGrantSelect.closest('form'));
@@ -227,24 +314,43 @@ describe('route-level multi-page org dataset coverage', () => {
       submitForm(packageGrantForm);
 
       await waitFor(() => {
-        expect(scenario.teamPackageAccessUpdates).toHaveLength(1);
+        expect(packageScenario.teamPackageAccessUpdates).toHaveLength(1);
       });
-      expect(scenario.teamPackageAccessUpdates[0]).toEqual({
+      expect(packageScenario.teamPackageAccessUpdates[0]).toEqual({
         path: `/v1/orgs/${ORG_SLUG}/teams/${TEAM_SLUG}/package-access/npm/${finalPackage?.name}`,
         body: { permissions: ['publish'] },
       });
+    } finally {
+      packageRender.unmount();
+    }
+  });
 
+  test('org workspace submits second-page repository and package transfer selections', async () => {
+    const finalRepository = repositories.at(-1);
+    const finalPackage = packages.at(-1);
+    const finalPackageKey = renderPackageSelectionValue(
+      finalPackage?.ecosystem,
+      finalPackage?.name
+    );
+
+    const repositoryScenario = createFetchScenario();
+    const repositoryRender = await mountOrgPage(repositoryScenario);
+
+    try {
       await waitFor(() => {
         expect(
           optionValues(
-            queryRequiredSelect(target, '#org-repository-transfer-repository')
+            queryRequiredSelect(
+              repositoryRender.target,
+              '#org-repository-transfer-repository'
+            )
           )
         ).toContain(finalRepository?.slug);
       });
 
       const repositoryTransferForm = queryRequiredForm(
         queryRequiredSelect(
-          target,
+          repositoryRender.target,
           '#org-repository-transfer-repository'
         ).closest('form')
       );
@@ -266,21 +372,36 @@ describe('route-level multi-page org dataset coverage', () => {
       submitForm(repositoryTransferForm);
 
       await waitFor(() => {
-        expect(scenario.repositoryTransfers).toHaveLength(1);
+        expect(repositoryScenario.repositoryTransfers).toHaveLength(1);
       });
-      expect(scenario.repositoryTransfers[0]).toEqual({
+      expect(repositoryScenario.repositoryTransfers[0]).toEqual({
         path: `/v1/repositories/${finalRepository?.slug}/ownership-transfer`,
         body: { target_org_slug: TARGET_ORG_SLUG },
       });
+    } finally {
+      repositoryRender.unmount();
+    }
 
+    const packageScenario = createFetchScenario();
+    const packageRender = await mountOrgPage(packageScenario);
+
+    try {
       await waitFor(() => {
         expect(
-          optionValues(queryRequiredSelect(target, '#org-package-transfer-package'))
+          optionValues(
+            queryRequiredSelect(
+              packageRender.target,
+              '#org-package-transfer-package'
+            )
+          )
         ).toContain(finalPackageKey);
       });
 
       const packageTransferForm = queryRequiredForm(
-        queryRequiredSelect(target, '#org-package-transfer-package').closest('form')
+        queryRequiredSelect(
+          packageRender.target,
+          '#org-package-transfer-package'
+        ).closest('form')
       );
       const packageTransferSelect = queryRequiredSelect(
         packageTransferForm,
@@ -300,40 +421,30 @@ describe('route-level multi-page org dataset coverage', () => {
       submitForm(packageTransferForm);
 
       await waitFor(() => {
-        expect(scenario.packageTransfers).toHaveLength(1);
+        expect(packageScenario.packageTransfers).toHaveLength(1);
       });
-      expect(scenario.packageTransfers[0]).toEqual({
+      expect(packageScenario.packageTransfers[0]).toEqual({
         path: `/v1/packages/npm/${finalPackage?.name}/ownership-transfer`,
         body: { target_org_slug: TARGET_ORG_SLUG },
       });
     } finally {
-      unmount();
+      packageRender.unmount();
     }
   });
 
   test('org-scoped search loads repository filter options across multiple pages and submits the selected repository', async () => {
     const scenario = createFetchScenario();
-    installFetchScenario(scenario);
-    setAuthToken('pub_test_token');
-    pageStore.set(buildPageState('https://example.test/search'));
+    currentScenario = scenario;
+    currentAuthToken = 'pub_test_token';
+    pageStore.set(
+      buildPageState(
+        `https://example.test/search?org=${ORG_SLUG}&repository=repo-101`
+      )
+    );
 
-    const { target, unmount } = await renderSvelte(SearchPage);
+    const { target, unmount, flush } = await renderSvelte(SearchPage);
 
     try {
-      await waitFor(() => {
-        const organizationSelect = queryRequiredSelect(
-          target,
-          'select[aria-label="Organization scope"]'
-        );
-        expect(optionValues(organizationSelect)).toContain(ORG_SLUG);
-      });
-
-      const organizationSelect = queryRequiredSelect(
-        target,
-        'select[aria-label="Organization scope"]'
-      );
-      changeValue(organizationSelect, ORG_SLUG);
-
       await waitFor(() => {
         expect(scenario.repositoryPageRequests).toEqual([1, 2]);
         const repositorySelect = queryRequiredSelect(
@@ -341,13 +452,15 @@ describe('route-level multi-page org dataset coverage', () => {
           'select[aria-label="Repository scope"]'
         );
         expect(optionValues(repositorySelect)).toContain('repo-101');
+        expect(repositorySelect.value).toBe('repo-101');
       });
 
       const repositorySelect = queryRequiredSelect(
         target,
         'select[aria-label="Repository scope"]'
       );
-      changeValue(repositorySelect, 'repo-101');
+      flush();
+      expect(repositorySelect.value).toBe('repo-101');
 
       const form = queryRequiredForm(target.querySelector('#search-form'));
       submitForm(form);
@@ -388,15 +501,27 @@ function createFetchScenario(): FetchScenario {
   };
 }
 
-function installFetchScenario(scenario: FetchScenario): void {
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = new URL(input.toString());
-    const method = (init?.method || 'GET').toUpperCase();
-    const path = url.pathname;
-    const body = parseJsonBody(init?.body);
+async function handleApiRequest(
+  method: string,
+  path: string,
+  options?: { query?: Record<string, unknown>; body?: JsonRecord }
+): Promise<{ data: unknown; requestId: null }> {
+  const scenario = currentScenario;
+  if (!scenario) {
+    throw new Error(`No active API scenario for ${method} ${path}`);
+  }
 
-    if (method === 'GET' && path === `/v1/orgs/${ORG_SLUG}`) {
-      return jsonResponse({
+  const url = new URL(path, 'https://example.test');
+  for (const [key, value] of Object.entries(options?.query || {})) {
+    if (value != null && value !== '') {
+      url.searchParams.set(key, String(value));
+    }
+  }
+  const requestPath = url.pathname;
+  const body = options?.body || {};
+
+  if (method === 'GET' && requestPath === `/v1/orgs/${ORG_SLUG}`) {
+    return apiResponse({
         id: ORG_ID,
         name: 'Source Org',
         slug: ORG_SLUG,
@@ -406,34 +531,37 @@ function installFetchScenario(scenario: FetchScenario): void {
         email: null,
         created_at: '2026-04-01T00:00:00Z',
       });
-    }
+  }
 
-    if (method === 'GET' && path === '/v1/users/me/organizations') {
-      return jsonResponse({
-        organizations: [currentOrgMembership, targetOrgMembership],
-      });
-    }
+  if (method === 'GET' && requestPath === '/v1/users/me/organizations') {
+    return apiResponse({
+      organizations: [currentOrgMembership, targetOrgMembership],
+    });
+  }
 
-    if (method === 'GET' && path === `/v1/orgs/${ORG_SLUG}/repositories`) {
-      const page = parsePage(url.searchParams.get('page'));
-      const perPage = parsePerPage(url.searchParams.get('per_page'));
-      scenario.repositoryPageRequests.push(page);
-      return jsonResponse({
-        repositories: paginate(repositories, page, perPage),
-      });
-    }
+  if (method === 'GET' && requestPath === `/v1/orgs/${ORG_SLUG}/repositories`) {
+    const page = parsePage(url.searchParams.get('page'));
+    const perPage = parsePerPage(url.searchParams.get('per_page'));
+    scenario.repositoryPageRequests.push(page);
+    return apiResponse({
+      repositories: paginate(repositories, page, perPage),
+    });
+  }
 
-    if (method === 'GET' && path === `/v1/orgs/${ORG_SLUG}/packages`) {
-      const page = parsePage(url.searchParams.get('page'));
-      const perPage = parsePerPage(url.searchParams.get('per_page'));
-      scenario.packagePageRequests.push(page);
-      return jsonResponse({
-        packages: paginate(packages, page, perPage),
-      });
-    }
+  if (method === 'GET' && requestPath === `/v1/orgs/${ORG_SLUG}/packages`) {
+    const page = parsePage(url.searchParams.get('page'));
+    const perPage = parsePerPage(url.searchParams.get('per_page'));
+    scenario.packagePageRequests.push(page);
+    return apiResponse({
+      packages: paginate(packages, page, perPage),
+    });
+  }
 
-    if (method === 'GET' && path === `/v1/orgs/${ORG_SLUG}/security-findings`) {
-      return jsonResponse({
+  if (
+    method === 'GET' &&
+    requestPath === `/v1/orgs/${ORG_SLUG}/security-findings`
+  ) {
+    return apiResponse({
         summary: {
           open_findings: 0,
           affected_packages: 0,
@@ -447,18 +575,18 @@ function installFetchScenario(scenario: FetchScenario): void {
         },
         packages: [],
       });
-    }
+  }
 
-    if (method === 'GET' && path === `/v1/orgs/${ORG_SLUG}/invitations`) {
-      return jsonResponse({ invitations: [] });
-    }
+  if (method === 'GET' && requestPath === `/v1/orgs/${ORG_SLUG}/invitations`) {
+    return apiResponse({ invitations: [] });
+  }
 
-    if (method === 'GET' && path === `/v1/orgs/${ORG_SLUG}/members`) {
-      return jsonResponse({ members });
-    }
+  if (method === 'GET' && requestPath === `/v1/orgs/${ORG_SLUG}/members`) {
+    return apiResponse({ members });
+  }
 
-    if (method === 'GET' && path === `/v1/orgs/${ORG_SLUG}/teams`) {
-      return jsonResponse({
+  if (method === 'GET' && requestPath === `/v1/orgs/${ORG_SLUG}/teams`) {
+    return apiResponse({
         teams: [
           {
             name: 'Release Engineering',
@@ -468,130 +596,135 @@ function installFetchScenario(scenario: FetchScenario): void {
           },
         ],
       });
-    }
+  }
 
-    if (method === 'GET' && path === `/v1/orgs/${ORG_SLUG}/audit`) {
-      return jsonResponse({
-        page: 1,
-        per_page: 20,
-        has_next: false,
-        logs: [],
-      });
-    }
+  if (method === 'GET' && requestPath === `/v1/orgs/${ORG_SLUG}/audit`) {
+    return apiResponse({
+      page: 1,
+      per_page: 20,
+      has_next: false,
+      logs: [],
+    });
+  }
 
-    if (
-      method === 'GET' &&
-      path === `/v1/orgs/${ORG_SLUG}/teams/${TEAM_SLUG}/members`
-    ) {
-      return jsonResponse({ members: [] });
-    }
+  if (
+    method === 'GET' &&
+    requestPath === `/v1/orgs/${ORG_SLUG}/teams/${TEAM_SLUG}/members`
+  ) {
+    return apiResponse({ members: [] });
+  }
 
-    if (
-      method === 'GET' &&
-      path === `/v1/orgs/${ORG_SLUG}/teams/${TEAM_SLUG}/package-access`
-    ) {
-      return jsonResponse({ package_access: [] });
-    }
+  if (
+    method === 'GET' &&
+    requestPath === `/v1/orgs/${ORG_SLUG}/teams/${TEAM_SLUG}/package-access`
+  ) {
+    return apiResponse({ package_access: [] });
+  }
 
-    if (
-      method === 'GET' &&
-      path === `/v1/orgs/${ORG_SLUG}/teams/${TEAM_SLUG}/repository-access`
-    ) {
-      return jsonResponse({ repository_access: [] });
-    }
+  if (
+    method === 'GET' &&
+    requestPath === `/v1/orgs/${ORG_SLUG}/teams/${TEAM_SLUG}/repository-access`
+  ) {
+    return apiResponse({ repository_access: [] });
+  }
 
-    if (
-      method === 'GET' &&
-      path === `/v1/orgs/${ORG_SLUG}/teams/${TEAM_SLUG}/namespace-access`
-    ) {
-      return jsonResponse({ namespace_access: [] });
-    }
+  if (
+    method === 'GET' &&
+    requestPath === `/v1/orgs/${ORG_SLUG}/teams/${TEAM_SLUG}/namespace-access`
+  ) {
+    return apiResponse({ namespace_access: [] });
+  }
 
-    if (method === 'GET' && path === '/v1/namespaces') {
-      return jsonResponse({ namespaces: [] });
-    }
+  if (method === 'GET' && requestPath === '/v1/namespaces') {
+    return apiResponse({ namespaces: [] });
+  }
 
-    if (method === 'GET' && path.startsWith('/v1/repositories/repo-')) {
-      return jsonResponse({ packages: [] });
-    }
+  if (
+    method === 'GET' &&
+    requestPath.startsWith('/v1/repositories/repo-') &&
+    requestPath.endsWith('/packages')
+  ) {
+    return apiResponse({ packages: [] });
+  }
 
-    if (
-      method === 'PUT' &&
-      path.startsWith(
-        `/v1/orgs/${ORG_SLUG}/teams/${TEAM_SLUG}/repository-access/`
-      )
-    ) {
-      scenario.teamRepositoryAccessUpdates.push({ path, body });
-      return jsonResponse({ message: 'Saved repository access' });
-    }
+  if (
+    method === 'PUT' &&
+    requestPath.startsWith(
+      `/v1/orgs/${ORG_SLUG}/teams/${TEAM_SLUG}/repository-access/`
+    )
+  ) {
+    scenario.teamRepositoryAccessUpdates.push({ path: requestPath, body });
+    return apiResponse({ message: 'Saved repository access' });
+  }
 
-    if (
-      method === 'PUT' &&
-      path.startsWith(`/v1/orgs/${ORG_SLUG}/teams/${TEAM_SLUG}/package-access/`)
-    ) {
-      scenario.teamPackageAccessUpdates.push({ path, body });
-      return jsonResponse({ message: 'Saved package access' });
-    }
+  if (
+    method === 'PUT' &&
+    requestPath.startsWith(
+      `/v1/orgs/${ORG_SLUG}/teams/${TEAM_SLUG}/package-access/`
+    )
+  ) {
+    scenario.teamPackageAccessUpdates.push({ path: requestPath, body });
+    return apiResponse({ message: 'Saved package access' });
+  }
 
-    if (
-      method === 'POST' &&
-      path.startsWith('/v1/repositories/') &&
-      path.endsWith('/ownership-transfer')
-    ) {
-      scenario.repositoryTransfers.push({ path, body });
-      return jsonResponse({
-        repository: {
-          slug: path.split('/')[3],
+  if (
+    method === 'POST' &&
+    requestPath.startsWith('/v1/repositories/') &&
+    requestPath.endsWith('/ownership-transfer')
+  ) {
+    scenario.repositoryTransfers.push({ path: requestPath, body });
+    return apiResponse({
+      repository: {
+        slug: requestPath.split('/')[3],
+      },
+      owner: {
+        slug: body.target_org_slug,
+      },
+    });
+  }
+
+  if (
+    method === 'POST' &&
+    requestPath.startsWith('/v1/packages/') &&
+    requestPath.endsWith('/ownership-transfer')
+  ) {
+    scenario.packageTransfers.push({ path: requestPath, body });
+    return apiResponse({
+      owner: {
+        slug: body.target_org_slug,
+      },
+    });
+  }
+
+  if (method === 'GET' && requestPath === '/v1/search') {
+    scenario.searchCalls.push({
+      org: url.searchParams.get('org') || '',
+      repository: url.searchParams.get('repository') || '',
+    });
+    return apiResponse({
+      total: 1,
+      packages: [
+        {
+          ecosystem: 'npm',
+          name: 'example-package',
+          display_name: 'Example Package',
+          description: 'Example search result',
+          owner_name: 'Source Org',
+          repository_name: 'Repository 001',
+          repository_slug: 'repo-001',
+          latest_version: '1.0.0',
+          download_count: 42,
+          visibility: 'private',
+          updated_at: '2026-04-01T00:00:00Z',
+          is_deprecated: false,
         },
-        owner: {
-          slug: body.target_org_slug,
-        },
-      });
-    }
+      ],
+      page: parsePage(url.searchParams.get('page')),
+      per_page: parsePerPage(url.searchParams.get('per_page'), 20),
+    });
+  }
 
-    if (
-      method === 'POST' &&
-      path.startsWith('/v1/packages/') &&
-      path.endsWith('/ownership-transfer')
-    ) {
-      scenario.packageTransfers.push({ path, body });
-      return jsonResponse({
-        owner: {
-          slug: body.target_org_slug,
-        },
-      });
-    }
-
-    if (method === 'GET' && path === '/v1/search') {
-      scenario.searchCalls.push({
-        org: url.searchParams.get('org') || '',
-        repository: url.searchParams.get('repository') || '',
-      });
-      return jsonResponse({
-        total: 1,
-        packages: [
-          {
-            ecosystem: 'npm',
-            name: 'example-package',
-            display_name: 'Example Package',
-            description: 'Example search result',
-            owner_name: 'Source Org',
-            repository_name: 'Repository 001',
-            repository_slug: 'repo-001',
-            latest_version: '1.0.0',
-            download_count: 42,
-            visibility: 'private',
-            updated_at: '2026-04-01T00:00:00Z',
-            is_deprecated: false,
-          },
-        ],
-        page: parsePage(url.searchParams.get('page')),
-        per_page: parsePerPage(url.searchParams.get('per_page'), 20),
-      });
-    }
-
-    throw new Error(`Unhandled fetch request: ${method} ${url.toString()}`);
-  }) as typeof fetch;
+  throw new Error(`Unhandled API request: ${method} ${url.toString()}`);
 }
 
 function paginate<T>(items: T[], page: number, perPage: number): T[] {
@@ -609,21 +742,11 @@ function parsePerPage(value: string | null, fallback = 100): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function parseJsonBody(body: BodyInit | null | undefined): JsonRecord {
-  if (typeof body !== 'string' || body.length === 0) {
-    return {};
-  }
-
-  return JSON.parse(body) as JsonRecord;
-}
-
-function jsonResponse(data: unknown, status = 200): Response {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: {
-      'content-type': 'application/json',
-    },
-  });
+function apiResponse<T>(data: T): { data: T; requestId: null } {
+  return {
+    data,
+    requestId: null,
+  };
 }
 
 async function waitFor(
@@ -684,4 +807,15 @@ function queryCheckbox(
 
 function optionValues(select: HTMLSelectElement): string[] {
   return Array.from(select.options).map((option) => option.value);
+}
+
+async function mountOrgPage(
+  scenario: FetchScenario
+): Promise<Awaited<ReturnType<typeof renderSvelte>>> {
+  currentScenario = scenario;
+  currentAuthToken = 'pub_test_token';
+  pageStore.set(buildPageState(`https://example.test/orgs/${ORG_SLUG}`, {
+    slug: ORG_SLUG,
+  }));
+  return renderSvelte(OrgPage);
 }

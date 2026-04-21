@@ -45,6 +45,9 @@ export async function renderSvelte(
   return {
     target,
     instance,
+    flush() {
+      runtime.flushSync();
+    },
     unmount() {
       runtime.unmount(instance);
       runtime.flushSync();
