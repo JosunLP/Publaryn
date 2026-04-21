@@ -748,31 +748,52 @@ async fn actor_has_team_namespace_permissions(
     namespace_claim_id: Uuid,
     actor_user_id: Uuid,
     allowed_permissions: &[&str],
-) -> ApiResult<bool> {
+) -> ApiResult<TeamWriteAccess> {
     let allowed_permissions = allowed_permissions
         .iter()
         .map(|permission| (*permission).to_owned())
         .collect::<Vec<_>>();
 
-    sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS (\
-             SELECT 1 \
-             FROM team_namespace_access tna \
-             JOIN team_memberships tm ON tm.team_id = tna.team_id \
-             JOIN teams t ON t.id = tna.team_id \
-             JOIN namespace_claims nc ON nc.id = tna.namespace_claim_id \
-             WHERE tna.namespace_claim_id = $1 \
-               AND tm.user_id = $2 \
-               AND t.org_id = nc.owner_org_id \
-               AND tna.permission::text = ANY($3)\
-         )",
+    let row = sqlx::query(
+        "SELECT TRUE AS has_permission, o.mfa_required, u.mfa_enabled \
+         FROM team_namespace_access tna \
+         JOIN team_memberships tm ON tm.team_id = tna.team_id \
+         JOIN teams t ON t.id = tna.team_id \
+         JOIN namespace_claims nc ON nc.id = tna.namespace_claim_id \
+         JOIN organizations o ON o.id = t.org_id \
+         JOIN users u ON u.id = tm.user_id \
+         WHERE tna.namespace_claim_id = $1 \
+           AND tm.user_id = $2 \
+           AND t.org_id = nc.owner_org_id \
+           AND tna.permission::text = ANY($3) \
+         LIMIT 1",
     )
     .bind(namespace_claim_id)
     .bind(actor_user_id)
     .bind(&allowed_permissions)
-    .fetch_one(db)
+    .fetch_optional(db)
     .await
-    .map_err(|e| ApiError(Error::Database(e)))
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let has_permission = row.is_some();
+    let mfa_required = row
+        .as_ref()
+        .map(|row| row.try_get::<bool, _>("mfa_required"))
+        .transpose()
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?
+        .unwrap_or(false);
+    let mfa_enabled = row
+        .as_ref()
+        .map(|row| row.try_get::<bool, _>("mfa_enabled"))
+        .transpose()
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?
+        .unwrap_or(false);
+
+    Ok(resolve_team_write_access(
+        has_permission,
+        mfa_required,
+        mfa_enabled,
+    ))
 }
 
 async fn fetch_package_ownership(
@@ -1442,13 +1463,17 @@ pub async fn actor_can_manage_namespace_claim_by_id(
         }
     }
 
-    actor_has_team_namespace_permissions(
+    match actor_has_team_namespace_permissions(
         db,
         namespace_claim_id,
         actor_user_id,
         TEAM_NAMESPACE_ADMIN_PERMISSIONS,
     )
     .await
+    ? {
+        TeamWriteAccess::Allowed => Ok(true),
+        TeamWriteAccess::MfaRequired | TeamWriteAccess::MissingPermission => Ok(false),
+    }
 }
 
 pub async fn actor_can_transfer_namespace_claim_by_id(
@@ -1475,13 +1500,17 @@ pub async fn actor_can_transfer_namespace_claim_by_id(
         }
     }
 
-    actor_has_team_namespace_permissions(
+    match actor_has_team_namespace_permissions(
         db,
         namespace_claim_id,
         actor_user_id,
         TEAM_NAMESPACE_TRANSFER_PERMISSIONS,
     )
     .await
+    ? {
+        TeamWriteAccess::Allowed => Ok(true),
+        TeamWriteAccess::MfaRequired | TeamWriteAccess::MissingPermission => Ok(false),
+    }
 }
 
 pub async fn actor_can_transfer_package_by_id(

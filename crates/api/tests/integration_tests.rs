@@ -7200,7 +7200,7 @@ async fn test_team_namespace_access_rejects_claims_outside_org(pool: PgPool) {
 
 #[sqlx::test(migrations = "../../migrations")]
 async fn test_team_namespace_admin_permission_allows_namespace_delete(pool: PgPool) {
-    let app = app(pool);
+    let app = app(pool.clone());
     register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
     register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
     let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
@@ -7256,6 +7256,16 @@ async fn test_team_namespace_admin_permission_allows_namespace_delete(pool: PgPo
     .await;
     assert_eq!(status, StatusCode::OK);
 
+    let (status, updated_org_body) = update_org_profile(
+        &app,
+        &alice_jwt,
+        "acme-corp",
+        json!({ "mfa_required": true }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(updated_org_body["mfa_required"], true);
+
     let (status, after_grant_body) = list_namespace_claims_authenticated(
         &app,
         &bob_jwt,
@@ -7264,6 +7274,34 @@ async fn test_team_namespace_admin_permission_allows_namespace_delete(pool: PgPo
     .await;
     assert_eq!(status, StatusCode::OK);
     let claims = after_grant_body["namespaces"]
+        .as_array()
+        .expect("namespace response should be an array");
+    assert_eq!(claims[0]["can_manage"], false);
+    assert_eq!(claims[0]["can_transfer"], false);
+
+    let (status, forbidden_body) = delete_namespace_claim(&app, &bob_jwt, claim_id).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(
+        forbidden_body["error"]
+            .as_str()
+            .expect("error should be present")
+            .contains("manage this namespace claim"),
+        "unexpected error response: {forbidden_body}"
+    );
+
+    sqlx::query("UPDATE users SET mfa_enabled = true WHERE username = 'bob'")
+        .execute(&pool)
+        .await
+        .expect("should enable MFA for bob");
+
+    let (status, after_mfa_body) = list_namespace_claims_authenticated(
+        &app,
+        &bob_jwt,
+        Some(&format!("owner_org_id={org_id}")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let claims = after_mfa_body["namespaces"]
         .as_array()
         .expect("namespace response should be an array");
     assert_eq!(claims[0]["can_manage"], true);
@@ -7347,6 +7385,16 @@ async fn test_team_namespace_transfer_permission_allows_namespace_transfer(pool:
         "unexpected team namespace access response: {grant_body}"
     );
 
+    let (status, updated_org_body) = update_org_profile(
+        &app,
+        &alice_jwt,
+        "source-org",
+        json!({ "mfa_required": true }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(updated_org_body["mfa_required"], true);
+
     let grants_before_transfer: i64 = sqlx::query_scalar(
         "SELECT COUNT(*)::BIGINT FROM team_namespace_access WHERE namespace_claim_id = $1",
     )
@@ -7364,6 +7412,35 @@ async fn test_team_namespace_transfer_permission_allows_namespace_transfer(pool:
     .await;
     assert_eq!(status, StatusCode::OK);
     let claims = after_grant_body["namespaces"]
+        .as_array()
+        .expect("namespace response should be an array");
+    assert_eq!(claims[0]["can_manage"], false);
+    assert_eq!(claims[0]["can_transfer"], false);
+
+    let (status, forbidden_body) =
+        transfer_namespace_claim(&app, &bob_jwt, claim_id, "target-org").await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(
+        forbidden_body["error"]
+            .as_str()
+            .expect("error should be present")
+            .contains("transfer this namespace claim"),
+        "unexpected error response: {forbidden_body}"
+    );
+
+    sqlx::query("UPDATE users SET mfa_enabled = true WHERE username = 'bob'")
+        .execute(&pool)
+        .await
+        .expect("should enable MFA for bob");
+
+    let (status, after_mfa_body) = list_namespace_claims_authenticated(
+        &app,
+        &bob_jwt,
+        Some(&format!("owner_org_id={source_org_id}")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let claims = after_mfa_body["namespaces"]
         .as_array()
         .expect("namespace response should be an array");
     assert_eq!(claims[0]["can_transfer"], true);
