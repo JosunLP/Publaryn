@@ -1460,7 +1460,8 @@ async fn authorize_namespace_claim_write_access_by_id(
         }
     }
 
-    actor_has_team_namespace_permissions(db, namespace_claim_id, actor_user_id, allowed_permissions).await
+    actor_has_team_namespace_permissions(db, namespace_claim_id, actor_user_id, allowed_permissions)
+        .await
 }
 
 pub async fn ensure_namespace_claim_admin_access_by_id(
