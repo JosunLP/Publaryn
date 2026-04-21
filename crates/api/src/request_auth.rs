@@ -1270,8 +1270,7 @@ pub async fn actor_org_capabilities_by_id(
         can_manage: actor_can_manage_org_by_id(db, org_id, actor_user_id).await?,
         can_manage_invitations: actor_can_manage_org_invitations_by_id(db, org_id, actor_user_id)
             .await?,
-        can_manage_members: actor_can_manage_org_members_by_id(db, org_id, actor_user_id)
-            .await?,
+        can_manage_members: actor_can_manage_org_members_by_id(db, org_id, actor_user_id).await?,
         can_view_member_directory: actor_can_access_org_member_directory_by_id(
             db,
             org_id,
