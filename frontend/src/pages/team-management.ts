@@ -283,6 +283,9 @@ export const TEAM_PERMISSION_OPTIONS: readonly TeamAccessPermissionOption[] = [
   },
 ] as const;
 
+export const TEAM_DELETE_CONFIRMATION_MESSAGE =
+  'Please confirm that you understand deleting this team revokes its delegated access.';
+
 export const TEAM_NAMESPACE_PERMISSION_OPTIONS: readonly TeamAccessPermissionOption[] =
   [
     {

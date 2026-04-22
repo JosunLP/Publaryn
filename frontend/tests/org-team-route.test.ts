@@ -33,6 +33,7 @@ interface Scenario {
   canManageRepositories: boolean;
   canManageNamespaces: boolean;
   requests: string[];
+  gotoCalls: string[];
   patchCalls: MutationCall[];
   postCalls: MutationCall[];
   putCalls: MutationCall[];
@@ -112,6 +113,16 @@ let currentScenario: Scenario | null = null;
 mock.module('$app/stores', () => ({
   page: {
     subscribe: pageStore.subscribe,
+  },
+}));
+
+mock.module('$app/navigation', () => ({
+  async goto(href: string | URL): Promise<void> {
+    if (!currentScenario) {
+      return;
+    }
+
+    currentScenario.gotoCalls.push(href.toString());
   },
 }));
 
@@ -420,6 +431,40 @@ describe('organization team workspace route', () => {
       unmount();
     }
   });
+
+  test('deletes the team from the dedicated workspace after explicit confirmation', async () => {
+    currentScenario = createScenario();
+
+    const { target, unmount } = await renderSvelte(TeamPage.default);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Danger zone');
+      });
+
+      submitForm(queryRequiredForm(target, '#team-delete-form'));
+
+      await waitFor(() => {
+        expect(target.textContent).toContain(
+          'Please confirm that you understand deleting this team revokes its delegated access.'
+        );
+      });
+
+      setChecked(queryRequiredCheckbox(target, '#team-delete-confirm'), true);
+      submitForm(queryRequiredForm(target, '#team-delete-form'));
+
+      await waitFor(() => {
+        expect(currentScenario?.deleteCalls).toContainEqual({
+          path: `/v1/orgs/${ORG_SLUG}/teams/${TEAM_SLUG}`,
+        });
+        expect(currentScenario?.gotoCalls).toEqual([
+          `/orgs/${ORG_SLUG}?notice=Deleted+team+${TEAM_SLUG}.`,
+        ]);
+      });
+    } finally {
+      unmount();
+    }
+  });
 });
 
 interface ApiRequestOptions {
@@ -433,6 +478,7 @@ function createScenario(overrides: Partial<Scenario> = {}): Scenario {
     canManageRepositories: true,
     canManageNamespaces: true,
     requests: [],
+    gotoCalls: [],
     patchCalls: [],
     postCalls: [],
     putCalls: [],
@@ -593,6 +639,11 @@ async function handleApiRequest(
       description: String(options?.body?.description || ''),
     };
     return apiResponse({ message: 'Team updated' });
+  }
+
+  if (method === 'DELETE' && path === `/v1/orgs/${ORG_SLUG}/teams/${TEAM_SLUG}`) {
+    currentScenario.deleteCalls.push({ path });
+    return apiResponse({ message: 'Team deleted' });
   }
 
   if (method === 'GET' && path === `/v1/orgs/${ORG_SLUG}/teams/${TEAM_SLUG}/members`) {

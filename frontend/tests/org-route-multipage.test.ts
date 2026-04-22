@@ -6,12 +6,32 @@ import { writable } from 'svelte/store';
 import { renderPackageSelectionValue } from '../src/pages/org-workspace-actions';
 import {
   changeValue,
+  click,
   renderSvelte,
   setChecked,
   submitForm,
 } from './svelte-dom';
 
 type JsonRecord = Record<string, unknown>;
+
+class TestApiError<TBody = unknown> extends Error {
+  readonly status: number;
+  readonly body: TBody;
+
+  constructor(status: number, body: TBody) {
+    super(
+      body &&
+        typeof body === 'object' &&
+        'error' in (body as Record<string, unknown>) &&
+        typeof (body as Record<string, unknown>).error === 'string'
+        ? String((body as Record<string, unknown>).error)
+        : `HTTP ${status}`
+    );
+    this.name = 'ApiError';
+    this.status = status;
+    this.body = body;
+  }
+}
 
 interface TestPageState {
   url: URL;
@@ -39,6 +59,51 @@ interface FetchScenario {
   canManageTeams: boolean;
   canManageRepositories: boolean;
   canManageNamespaces: boolean;
+  teamDeleteError: string | null;
+  namespaceDeleteError: string | null;
+  invitationRevokeError: string | null;
+  memberRemoveError: string | null;
+  ownershipTransferError: string | null;
+  namespaceTransferError: string | null;
+  repositoryTransferError: string | null;
+  packageTransferError: string | null;
+  members: Array<{
+    user_id: string;
+    username: string;
+    display_name: string;
+    role: string;
+    joined_at: string;
+  }>;
+  invitations: Array<{
+    id?: string | null;
+    status?: string | null;
+    role?: string | null;
+    invited_user?: {
+      username?: string | null;
+      email?: string | null;
+    } | null;
+    invited_by?: {
+      username?: string | null;
+    } | null;
+    created_at?: string | null;
+    expires_at?: string | null;
+  }>;
+  teams: Array<{
+    name: string;
+    slug: string;
+    description: string;
+    created_at: string;
+  }>;
+  namespaces: Array<{
+    id?: string | null;
+    ecosystem?: string | null;
+    namespace?: string | null;
+    owner_org_id?: string | null;
+    is_verified?: boolean | null;
+    created_at?: string | null;
+    can_manage?: boolean | null;
+    can_transfer?: boolean | null;
+  }>;
   workspaceBootstrapRequests: string[];
   teamMemberRequests: string[];
   teamPackageAccessRequests: string[];
@@ -48,10 +113,16 @@ interface FetchScenario {
   repositoryPackageCoverageRequests: string[];
   packagePageRequests: number[];
   invitationRequests: string[];
+  invitationRevokeCalls: string[];
+  memberRemoveCalls: string[];
   orgUpdateCalls: MutationCall[];
+  ownershipTransfers: MutationCall[];
   orgMfaRequired: boolean;
   teamRepositoryAccessUpdates: MutationCall[];
   teamPackageAccessUpdates: MutationCall[];
+  teamDeleteCalls: string[];
+  namespaceDeleteCalls: string[];
+  namespaceTransfers: MutationCall[];
   repositoryTransfers: MutationCall[];
   packageTransfers: MutationCall[];
   searchCalls: SearchCall[];
@@ -61,6 +132,10 @@ const ORG_ID = '11111111-1111-4111-8111-111111111111';
 const TEAM_SLUG = 'release-engineering';
 const ORG_SLUG = 'source-org';
 const TARGET_ORG_SLUG = 'target-org';
+const NAMESPACE_CLAIM_ID = 'claim-001';
+const NAMESPACE_CLAIM_VALUE = '@source-org';
+const ACTIVE_INVITATION_ID = 'invite-001';
+const ACTIVE_INVITEE_EMAIL = 'new-maintainer@example.test';
 const apiClientModuleUrl = new URL('../src/api/client.ts', import.meta.url).href;
 const gotoCalls: string[] = [];
 const pageStore = writable<TestPageState>(buildPageState('https://example.test/'));
@@ -164,27 +239,8 @@ mock.module('$app/navigation', () => ({
 }));
 
 mock.module(apiClientModuleUrl, () => {
-  class ApiError<TBody = unknown> extends Error {
-    readonly status: number;
-    readonly body: TBody;
-
-    constructor(status: number, body: TBody) {
-      super(
-        body &&
-          typeof body === 'object' &&
-          'error' in (body as Record<string, unknown>) &&
-          typeof (body as Record<string, unknown>).error === 'string'
-          ? String((body as Record<string, unknown>).error)
-          : `HTTP ${status}`
-      );
-      this.name = 'ApiError';
-      this.status = status;
-      this.body = body;
-    }
-  }
-
   return {
-    ApiError,
+    ApiError: TestApiError,
     getAuthToken(): string | null {
       return currentAuthToken;
     },
@@ -215,9 +271,6 @@ mock.module(apiClientModuleUrl, () => {
     },
   };
 });
-
-const SearchPage = await import('../src/routes/search/+page.svelte');
-const OrgPage = await import('../src/routes/orgs/[slug]/+page.svelte');
 
 afterEach(() => {
   gotoCalls.length = 0;
@@ -375,6 +428,875 @@ describe('route-level multi-page org dataset coverage', () => {
         },
       });
       expect(queryCheckbox(target, '#org-profile-mfa-required').checked).toBe(true);
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace surfaces redirect notices from focused team actions', async () => {
+    const scenario = createFetchScenario();
+    currentScenario = scenario;
+    currentAuthToken = 'pub_test_token';
+    pageStore.set(
+      buildPageState(
+        `https://example.test/orgs/${ORG_SLUG}?notice=${encodeURIComponent(
+          `Deleted team ${TEAM_SLUG}.`
+        )}`,
+        {
+          slug: ORG_SLUG,
+        }
+      )
+    );
+
+    const OrgPage = await import('../src/routes/orgs/[slug]/+page.svelte');
+    const { target, unmount } = await renderSvelte(OrgPage);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain(`Deleted team ${TEAM_SLUG}.`);
+      });
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace requires explicit confirmation before deleting a team', async () => {
+    const scenario = createFetchScenario();
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Release Engineering');
+      });
+
+      click(queryRequiredButton(target, `#team-delete-toggle-${TEAM_SLUG}`));
+
+      await waitFor(() => {
+        expect(queryRequiredFormBySelector(target, `#team-delete-form-${TEAM_SLUG}`)).toBeDefined();
+      });
+
+      submitForm(queryRequiredFormBySelector(target, `#team-delete-form-${TEAM_SLUG}`));
+
+      await waitFor(() => {
+        expect(target.textContent).toContain(
+          'Please confirm that you understand deleting this team revokes its delegated access.'
+        );
+      });
+
+      expect(scenario.teamDeleteCalls).toEqual([]);
+      expect(scenario.teams.map((team) => team.slug)).toContain(TEAM_SLUG);
+      expect(queryRequiredFormBySelector(target, `#team-delete-form-${TEAM_SLUG}`)).toBeDefined();
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace deletes a team after explicit confirmation', async () => {
+    const scenario = createFetchScenario();
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Release Engineering');
+      });
+
+      click(queryRequiredButton(target, `#team-delete-toggle-${TEAM_SLUG}`));
+
+      await waitFor(() => {
+        expect(queryRequiredFormBySelector(target, `#team-delete-form-${TEAM_SLUG}`)).toBeDefined();
+      });
+
+      setChecked(
+        queryCheckbox(target, `#team-delete-confirm-${TEAM_SLUG}`),
+        true
+      );
+      submitForm(queryRequiredFormBySelector(target, `#team-delete-form-${TEAM_SLUG}`));
+
+      await waitFor(() => {
+        expect(scenario.teamDeleteCalls).toEqual([
+          `/v1/orgs/${ORG_SLUG}/teams/${TEAM_SLUG}`,
+        ]);
+        expect(target.textContent).toContain(`Deleted team ${TEAM_SLUG}.`);
+      });
+
+      expect(target.textContent).not.toContain('Release Engineering');
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace keeps the confirmation surface open when team deletion fails', async () => {
+    const scenario = createFetchScenario();
+    scenario.teamDeleteError = 'Failed to delete team.';
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Release Engineering');
+      });
+
+      click(queryRequiredButton(target, `#team-delete-toggle-${TEAM_SLUG}`));
+
+      await waitFor(() => {
+        expect(queryRequiredFormBySelector(target, `#team-delete-form-${TEAM_SLUG}`)).toBeDefined();
+      });
+
+      setChecked(
+        queryCheckbox(target, `#team-delete-confirm-${TEAM_SLUG}`),
+        true
+      );
+      submitForm(queryRequiredFormBySelector(target, `#team-delete-form-${TEAM_SLUG}`));
+
+      await waitFor(() => {
+        expect(target.textContent).toContain('Failed to delete team.');
+        expect(scenario.teamDeleteCalls).toEqual([]);
+        expect(queryRequiredFormBySelector(target, `#team-delete-form-${TEAM_SLUG}`)).toBeDefined();
+      });
+
+      expect(scenario.teams.map((team) => team.slug)).toContain(TEAM_SLUG);
+      expect(target.textContent).toContain('Release Engineering');
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace requires explicit confirmation before deleting a namespace claim', async () => {
+    const scenario = createFetchScenario();
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain(NAMESPACE_CLAIM_VALUE);
+      });
+
+      click(queryRequiredButton(target, `#namespace-delete-toggle-${NAMESPACE_CLAIM_ID}`));
+
+      await waitFor(() => {
+        expect(
+          queryRequiredFormBySelector(target, `#namespace-delete-form-${NAMESPACE_CLAIM_ID}`)
+        ).toBeDefined();
+      });
+
+      submitForm(
+        queryRequiredFormBySelector(target, `#namespace-delete-form-${NAMESPACE_CLAIM_ID}`)
+      );
+
+      await waitFor(() => {
+        expect(target.textContent).toContain(
+          'Please confirm that you understand deleting this namespace claim is immediate and cannot be undone.'
+        );
+      });
+
+      expect(scenario.namespaceDeleteCalls).toEqual([]);
+      expect(scenario.namespaces.map((claim) => claim.id)).toContain(NAMESPACE_CLAIM_ID);
+      expect(
+        queryRequiredFormBySelector(target, `#namespace-delete-form-${NAMESPACE_CLAIM_ID}`)
+      ).toBeDefined();
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace deletes a namespace claim after explicit confirmation', async () => {
+    const scenario = createFetchScenario();
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain(NAMESPACE_CLAIM_VALUE);
+      });
+
+      click(queryRequiredButton(target, `#namespace-delete-toggle-${NAMESPACE_CLAIM_ID}`));
+
+      await waitFor(() => {
+        expect(
+          queryRequiredFormBySelector(target, `#namespace-delete-form-${NAMESPACE_CLAIM_ID}`)
+        ).toBeDefined();
+      });
+
+      setChecked(
+        queryCheckbox(target, `#namespace-delete-confirm-${NAMESPACE_CLAIM_ID}`),
+        true
+      );
+      submitForm(
+        queryRequiredFormBySelector(target, `#namespace-delete-form-${NAMESPACE_CLAIM_ID}`)
+      );
+
+      await waitFor(() => {
+        expect(scenario.namespaceDeleteCalls).toEqual([
+          `/v1/namespaces/${NAMESPACE_CLAIM_ID}`,
+        ]);
+        expect(target.textContent).toContain(
+          `Deleted namespace claim ${NAMESPACE_CLAIM_VALUE}.`
+        );
+      });
+
+      expect(
+        target.querySelector(`#namespace-delete-toggle-${NAMESPACE_CLAIM_ID}`)
+      ).toBeNull();
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace keeps namespace delete confirmation open when deletion fails', async () => {
+    const scenario = createFetchScenario();
+    scenario.namespaceDeleteError = 'Failed to delete namespace claim.';
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain(NAMESPACE_CLAIM_VALUE);
+      });
+
+      click(queryRequiredButton(target, `#namespace-delete-toggle-${NAMESPACE_CLAIM_ID}`));
+
+      await waitFor(() => {
+        expect(
+          queryRequiredFormBySelector(target, `#namespace-delete-form-${NAMESPACE_CLAIM_ID}`)
+        ).toBeDefined();
+      });
+
+      setChecked(
+        queryCheckbox(target, `#namespace-delete-confirm-${NAMESPACE_CLAIM_ID}`),
+        true
+      );
+      submitForm(
+        queryRequiredFormBySelector(target, `#namespace-delete-form-${NAMESPACE_CLAIM_ID}`)
+      );
+
+      await waitFor(() => {
+        expect(target.textContent).toContain('Failed to delete namespace claim.');
+        expect(scenario.namespaceDeleteCalls).toEqual([]);
+        expect(
+          queryRequiredFormBySelector(target, `#namespace-delete-form-${NAMESPACE_CLAIM_ID}`)
+        ).toBeDefined();
+      });
+
+      expect(scenario.namespaces.map((claim) => claim.id)).toContain(NAMESPACE_CLAIM_ID);
+      expect(target.textContent).toContain(NAMESPACE_CLAIM_VALUE);
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace requires explicit confirmation before revoking an invitation', async () => {
+    const scenario = createFetchScenario();
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain(ACTIVE_INVITEE_EMAIL);
+      });
+
+      click(
+        queryRequiredButton(
+          target,
+          `#invitation-revoke-toggle-${ACTIVE_INVITATION_ID}`
+        )
+      );
+
+      await waitFor(() => {
+        expect(
+          queryRequiredFormBySelector(
+            target,
+            `#invitation-revoke-form-${ACTIVE_INVITATION_ID}`
+          )
+        ).toBeDefined();
+      });
+
+      submitForm(
+        queryRequiredFormBySelector(
+          target,
+          `#invitation-revoke-form-${ACTIVE_INVITATION_ID}`
+        )
+      );
+
+      await waitFor(() => {
+        expect(target.textContent).toContain(
+          'Please confirm that you want to revoke this invitation immediately.'
+        );
+      });
+
+      expect(scenario.invitationRevokeCalls).toEqual([]);
+      expect(target.textContent).toContain(ACTIVE_INVITEE_EMAIL);
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace revokes an invitation after explicit confirmation', async () => {
+    const scenario = createFetchScenario();
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain(ACTIVE_INVITEE_EMAIL);
+      });
+
+      click(
+        queryRequiredButton(
+          target,
+          `#invitation-revoke-toggle-${ACTIVE_INVITATION_ID}`
+        )
+      );
+
+      await waitFor(() => {
+        expect(
+          queryRequiredFormBySelector(
+            target,
+            `#invitation-revoke-form-${ACTIVE_INVITATION_ID}`
+          )
+        ).toBeDefined();
+      });
+
+      setChecked(
+        queryCheckbox(
+          target,
+          `#invitation-revoke-confirm-${ACTIVE_INVITATION_ID}`
+        ),
+        true
+      );
+      submitForm(
+        queryRequiredFormBySelector(
+          target,
+          `#invitation-revoke-form-${ACTIVE_INVITATION_ID}`
+        )
+      );
+
+      await waitFor(() => {
+        expect(scenario.invitationRevokeCalls).toEqual([
+          `/v1/orgs/${ORG_SLUG}/invitations/${ACTIVE_INVITATION_ID}`,
+        ]);
+        expect(target.textContent).toContain('Invitation revoked.');
+      });
+
+      expect(target.textContent).not.toContain(ACTIVE_INVITEE_EMAIL);
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace keeps invitation revoke confirmation open when revocation fails', async () => {
+    const scenario = createFetchScenario();
+    scenario.invitationRevokeError = 'Failed to revoke invitation.';
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain(ACTIVE_INVITEE_EMAIL);
+      });
+
+      click(
+        queryRequiredButton(
+          target,
+          `#invitation-revoke-toggle-${ACTIVE_INVITATION_ID}`
+        )
+      );
+
+      await waitFor(() => {
+        expect(
+          queryRequiredFormBySelector(
+            target,
+            `#invitation-revoke-form-${ACTIVE_INVITATION_ID}`
+          )
+        ).toBeDefined();
+      });
+
+      setChecked(
+        queryCheckbox(
+          target,
+          `#invitation-revoke-confirm-${ACTIVE_INVITATION_ID}`
+        ),
+        true
+      );
+      submitForm(
+        queryRequiredFormBySelector(
+          target,
+          `#invitation-revoke-form-${ACTIVE_INVITATION_ID}`
+        )
+      );
+
+      await waitFor(() => {
+        expect(target.textContent).toContain('Failed to revoke invitation.');
+        expect(scenario.invitationRevokeCalls).toEqual([]);
+        expect(
+          queryRequiredFormBySelector(
+            target,
+            `#invitation-revoke-form-${ACTIVE_INVITATION_ID}`
+          )
+        ).toBeDefined();
+      });
+
+      expect(target.textContent).toContain(ACTIVE_INVITEE_EMAIL);
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace requires explicit confirmation before removing a member', async () => {
+    const scenario = createFetchScenario();
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Admin User');
+      });
+
+      click(queryRequiredButton(target, '#member-remove-toggle-admin-user'));
+
+      await waitFor(() => {
+        expect(
+          queryRequiredFormBySelector(target, '#member-remove-form-admin-user')
+        ).toBeDefined();
+      });
+
+      submitForm(queryRequiredFormBySelector(target, '#member-remove-form-admin-user'));
+
+      await waitFor(() => {
+        expect(target.textContent).toContain(
+          'Please confirm that you want to remove this member from the organization.'
+        );
+      });
+
+      expect(scenario.memberRemoveCalls).toEqual([]);
+      expect(target.textContent).toContain('Admin User');
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace removes a member after explicit confirmation', async () => {
+    const scenario = createFetchScenario();
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Admin User');
+      });
+
+      click(queryRequiredButton(target, '#member-remove-toggle-admin-user'));
+
+      await waitFor(() => {
+        expect(
+          queryRequiredFormBySelector(target, '#member-remove-form-admin-user')
+        ).toBeDefined();
+      });
+
+      setChecked(
+        queryCheckbox(target, '#member-remove-confirm-admin-user'),
+        true
+      );
+      submitForm(queryRequiredFormBySelector(target, '#member-remove-form-admin-user'));
+
+      await waitFor(() => {
+        expect(scenario.memberRemoveCalls).toEqual([
+          `/v1/orgs/${ORG_SLUG}/members/admin-user`,
+        ]);
+        expect(target.textContent).toContain(
+          'Removed @admin-user from the organization.'
+        );
+      });
+
+      expect(target.querySelector('#member-remove-toggle-admin-user')).toBeNull();
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace keeps member removal confirmation open when removal fails', async () => {
+    const scenario = createFetchScenario();
+    scenario.memberRemoveError = 'Failed to remove member.';
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Admin User');
+      });
+
+      click(queryRequiredButton(target, '#member-remove-toggle-admin-user'));
+
+      await waitFor(() => {
+        expect(
+          queryRequiredFormBySelector(target, '#member-remove-form-admin-user')
+        ).toBeDefined();
+      });
+
+      setChecked(
+        queryCheckbox(target, '#member-remove-confirm-admin-user'),
+        true
+      );
+      submitForm(queryRequiredFormBySelector(target, '#member-remove-form-admin-user'));
+
+      await waitFor(() => {
+        expect(target.textContent).toContain('Failed to remove member.');
+        expect(scenario.memberRemoveCalls).toEqual([]);
+        expect(
+          queryRequiredFormBySelector(target, '#member-remove-form-admin-user')
+        ).toBeDefined();
+      });
+
+      expect(target.textContent).toContain('Admin User');
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace requires explicit confirmation before transferring ownership', async () => {
+    const scenario = createFetchScenario();
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Transfer ownership');
+      });
+
+      changeValue(
+        queryRequiredInput(target, '#org-transfer-owner'),
+        members[1]?.username || 'admin-user'
+      );
+      click(queryRequiredButton(target, '#org-ownership-transfer-toggle'));
+
+      await waitFor(() => {
+        expect(
+          queryCheckbox(target, '#org-ownership-transfer-confirm')
+        ).toBeDefined();
+      });
+
+      submitForm(queryRequiredForm(queryRequiredInput(target, '#org-transfer-owner').closest('form')));
+
+      await waitFor(() => {
+        expect(target.textContent).toContain('Please confirm the ownership transfer.');
+      });
+
+      expect(scenario.ownershipTransfers).toEqual([]);
+      expect(
+        queryRequiredButton(target, '#org-ownership-transfer-submit')
+      ).toBeDefined();
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace transfers ownership after explicit confirmation', async () => {
+    const scenario = createFetchScenario();
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Transfer ownership');
+      });
+
+      const targetUsername = members[1]?.username || 'admin-user';
+      changeValue(queryRequiredInput(target, '#org-transfer-owner'), targetUsername);
+      click(queryRequiredButton(target, '#org-ownership-transfer-toggle'));
+
+      await waitFor(() => {
+        expect(
+          queryCheckbox(target, '#org-ownership-transfer-confirm')
+        ).toBeDefined();
+      });
+
+      setChecked(queryCheckbox(target, '#org-ownership-transfer-confirm'), true);
+      submitForm(queryRequiredForm(queryRequiredInput(target, '#org-transfer-owner').closest('form')));
+
+      await waitFor(() => {
+        expect(scenario.ownershipTransfers).toEqual([
+          {
+            path: `/v1/orgs/${ORG_SLUG}/ownership-transfer`,
+            body: { username: targetUsername },
+          },
+        ]);
+        expect(target.textContent).toContain(`Ownership transferred to @${targetUsername}.`);
+      });
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace keeps ownership transfer confirmation open when transfer fails', async () => {
+    const scenario = createFetchScenario();
+    scenario.ownershipTransferError = 'Failed to transfer organization ownership.';
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Transfer ownership');
+      });
+
+      changeValue(
+        queryRequiredInput(target, '#org-transfer-owner'),
+        members[1]?.username || 'admin-user'
+      );
+      click(queryRequiredButton(target, '#org-ownership-transfer-toggle'));
+
+      await waitFor(() => {
+        expect(
+          queryCheckbox(target, '#org-ownership-transfer-confirm')
+        ).toBeDefined();
+      });
+
+      setChecked(queryCheckbox(target, '#org-ownership-transfer-confirm'), true);
+      submitForm(queryRequiredForm(queryRequiredInput(target, '#org-transfer-owner').closest('form')));
+
+      await waitFor(() => {
+        expect(target.textContent).toContain('Failed to transfer organization ownership.');
+        expect(scenario.ownershipTransfers).toEqual([]);
+        expect(
+          queryRequiredButton(target, '#org-ownership-transfer-submit')
+        ).toBeDefined();
+      });
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace requires explicit confirmation before transferring a namespace claim', async () => {
+    const scenario = createFetchScenario();
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Transfer a namespace');
+      });
+
+      changeValue(queryRequiredSelect(target, '#org-namespace-transfer-claim'), NAMESPACE_CLAIM_ID);
+      changeValue(queryRequiredSelect(target, '#org-namespace-transfer-target'), TARGET_ORG_SLUG);
+      click(queryRequiredButton(target, '#org-namespace-transfer-toggle'));
+
+      await waitFor(() => {
+        expect(
+          queryCheckbox(target, '#org-namespace-transfer-confirm')
+        ).toBeDefined();
+      });
+
+      submitForm(queryRequiredForm(queryRequiredSelect(target, '#org-namespace-transfer-claim').closest('form')));
+
+      await waitFor(() => {
+        expect(target.textContent).toContain('Please confirm the namespace transfer.');
+      });
+
+      expect(scenario.namespaceTransfers).toEqual([]);
+      expect(
+        queryRequiredButton(target, '#org-namespace-transfer-submit')
+      ).toBeDefined();
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace transfers a namespace claim after explicit confirmation', async () => {
+    const scenario = createFetchScenario();
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Transfer a namespace');
+      });
+
+      changeValue(queryRequiredSelect(target, '#org-namespace-transfer-claim'), NAMESPACE_CLAIM_ID);
+      changeValue(queryRequiredSelect(target, '#org-namespace-transfer-target'), TARGET_ORG_SLUG);
+      click(queryRequiredButton(target, '#org-namespace-transfer-toggle'));
+
+      await waitFor(() => {
+        expect(
+          queryCheckbox(target, '#org-namespace-transfer-confirm')
+        ).toBeDefined();
+      });
+
+      setChecked(queryCheckbox(target, '#org-namespace-transfer-confirm'), true);
+      submitForm(queryRequiredForm(queryRequiredSelect(target, '#org-namespace-transfer-claim').closest('form')));
+
+      await waitFor(() => {
+        expect(scenario.namespaceTransfers).toEqual([
+          {
+            path: `/v1/namespaces/${NAMESPACE_CLAIM_ID}/ownership-transfer`,
+            body: { target_org_slug: TARGET_ORG_SLUG },
+          },
+        ]);
+        expect(target.textContent).toContain(
+          `Transferred ${NAMESPACE_CLAIM_VALUE} to ${TARGET_ORG_SLUG}.`
+        );
+      });
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace keeps namespace transfer confirmation open when transfer fails', async () => {
+    const scenario = createFetchScenario();
+    scenario.namespaceTransferError = 'Failed to transfer namespace claim ownership.';
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Transfer a namespace');
+      });
+
+      changeValue(queryRequiredSelect(target, '#org-namespace-transfer-claim'), NAMESPACE_CLAIM_ID);
+      changeValue(queryRequiredSelect(target, '#org-namespace-transfer-target'), TARGET_ORG_SLUG);
+      click(queryRequiredButton(target, '#org-namespace-transfer-toggle'));
+
+      await waitFor(() => {
+        expect(
+          queryCheckbox(target, '#org-namespace-transfer-confirm')
+        ).toBeDefined();
+      });
+
+      setChecked(queryCheckbox(target, '#org-namespace-transfer-confirm'), true);
+      submitForm(queryRequiredForm(queryRequiredSelect(target, '#org-namespace-transfer-claim').closest('form')));
+
+      await waitFor(() => {
+        expect(target.textContent).toContain('Failed to transfer namespace claim ownership.');
+        expect(scenario.namespaceTransfers).toEqual([]);
+        expect(
+          queryRequiredButton(target, '#org-namespace-transfer-submit')
+        ).toBeDefined();
+      });
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace requires explicit confirmation before transferring a repository', async () => {
+    const scenario = createFetchScenario();
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Transfer repository ownership');
+      });
+
+      changeValue(queryRequiredSelect(target, '#org-repository-transfer-repository'), repositories[0]?.slug || '');
+      changeValue(queryRequiredSelect(target, '#org-repository-transfer-target'), TARGET_ORG_SLUG);
+      click(queryRequiredButton(target, '#org-repository-transfer-toggle'));
+
+      await waitFor(() => {
+        expect(
+          queryCheckbox(target, '#org-repository-transfer-confirm')
+        ).toBeDefined();
+      });
+
+      submitForm(queryRequiredForm(queryRequiredSelect(target, '#org-repository-transfer-repository').closest('form')));
+
+      await waitFor(() => {
+        expect(target.textContent).toContain('Please confirm the repository transfer.');
+      });
+
+      expect(scenario.repositoryTransfers).toEqual([]);
+      expect(
+        queryRequiredButton(target, '#org-repository-transfer-submit')
+      ).toBeDefined();
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace keeps repository transfer confirmation open when transfer fails', async () => {
+    const scenario = createFetchScenario();
+    scenario.repositoryTransferError = 'Failed to transfer repository ownership.';
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Transfer repository ownership');
+      });
+
+      changeValue(queryRequiredSelect(target, '#org-repository-transfer-repository'), repositories[0]?.slug || '');
+      changeValue(queryRequiredSelect(target, '#org-repository-transfer-target'), TARGET_ORG_SLUG);
+      click(queryRequiredButton(target, '#org-repository-transfer-toggle'));
+
+      await waitFor(() => {
+        expect(
+          queryCheckbox(target, '#org-repository-transfer-confirm')
+        ).toBeDefined();
+      });
+
+      setChecked(queryCheckbox(target, '#org-repository-transfer-confirm'), true);
+      submitForm(queryRequiredForm(queryRequiredSelect(target, '#org-repository-transfer-repository').closest('form')));
+
+      await waitFor(() => {
+        expect(target.textContent).toContain('Failed to transfer repository ownership.');
+        expect(scenario.repositoryTransfers).toEqual([]);
+        expect(
+          queryRequiredButton(target, '#org-repository-transfer-submit')
+        ).toBeDefined();
+      });
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace requires explicit confirmation before transferring a package', async () => {
+    const scenario = createFetchScenario();
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Transfer package ownership');
+      });
+
+      changeValue(
+        queryRequiredSelect(target, '#org-package-transfer-package'),
+        renderPackageSelectionValue(packages[0]?.ecosystem, packages[0]?.name)
+      );
+      changeValue(queryRequiredSelect(target, '#org-package-transfer-target'), TARGET_ORG_SLUG);
+      click(queryRequiredButton(target, '#org-package-transfer-toggle'));
+
+      await waitFor(() => {
+        expect(
+          queryCheckbox(target, '#org-package-transfer-confirm')
+        ).toBeDefined();
+      });
+
+      submitForm(queryRequiredForm(queryRequiredSelect(target, '#org-package-transfer-package').closest('form')));
+
+      await waitFor(() => {
+        expect(target.textContent).toContain('Please confirm the package transfer.');
+      });
+
+      expect(scenario.packageTransfers).toEqual([]);
+      expect(
+        queryRequiredButton(target, '#org-package-transfer-submit')
+      ).toBeDefined();
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace keeps package transfer confirmation open when transfer fails', async () => {
+    const scenario = createFetchScenario();
+    scenario.packageTransferError = 'Failed to transfer package ownership.';
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Transfer package ownership');
+      });
+
+      changeValue(
+        queryRequiredSelect(target, '#org-package-transfer-package'),
+        renderPackageSelectionValue(packages[0]?.ecosystem, packages[0]?.name)
+      );
+      changeValue(queryRequiredSelect(target, '#org-package-transfer-target'), TARGET_ORG_SLUG);
+      click(queryRequiredButton(target, '#org-package-transfer-toggle'));
+
+      await waitFor(() => {
+        expect(
+          queryCheckbox(target, '#org-package-transfer-confirm')
+        ).toBeDefined();
+      });
+
+      setChecked(queryCheckbox(target, '#org-package-transfer-confirm'), true);
+      submitForm(queryRequiredForm(queryRequiredSelect(target, '#org-package-transfer-package').closest('form')));
+
+      await waitFor(() => {
+        expect(target.textContent).toContain('Failed to transfer package ownership.');
+        expect(scenario.packageTransfers).toEqual([]);
+        expect(
+          queryRequiredButton(target, '#org-package-transfer-submit')
+        ).toBeDefined();
+      });
     } finally {
       unmount();
     }
@@ -606,12 +1528,18 @@ describe('route-level multi-page org dataset coverage', () => {
         repositoryTransferForm,
         '#org-repository-transfer-target'
       );
-      const repositoryTransferConfirm = queryCheckbox(
-        repositoryTransferForm,
-        'input[name="confirm"]'
-      );
       changeValue(repositoryTransferSelect, finalRepository?.slug || '');
       changeValue(repositoryTransferTarget, TARGET_ORG_SLUG);
+      click(queryRequiredButton(repositoryTransferForm, '#org-repository-transfer-toggle'));
+      await waitFor(() => {
+        expect(
+          queryCheckbox(repositoryTransferForm, '#org-repository-transfer-confirm')
+        ).toBeDefined();
+      });
+      const repositoryTransferConfirm = queryCheckbox(
+        repositoryTransferForm,
+        '#org-repository-transfer-confirm'
+      );
       setChecked(repositoryTransferConfirm, true);
       submitForm(repositoryTransferForm);
 
@@ -655,12 +1583,18 @@ describe('route-level multi-page org dataset coverage', () => {
         packageTransferForm,
         '#org-package-transfer-target'
       );
-      const packageTransferConfirm = queryCheckbox(
-        packageTransferForm,
-        'input[name="confirm"]'
-      );
       changeValue(packageTransferSelect, finalPackageKey);
       changeValue(packageTransferTarget, TARGET_ORG_SLUG);
+      click(queryRequiredButton(packageTransferForm, '#org-package-transfer-toggle'));
+      await waitFor(() => {
+        expect(
+          queryCheckbox(packageTransferForm, '#org-package-transfer-confirm')
+        ).toBeDefined();
+      });
+      const packageTransferConfirm = queryCheckbox(
+        packageTransferForm,
+        '#org-package-transfer-confirm'
+      );
       setChecked(packageTransferConfirm, true);
       submitForm(packageTransferForm);
 
@@ -677,6 +1611,7 @@ describe('route-level multi-page org dataset coverage', () => {
   });
 
   test('org-scoped search loads repository filter options across multiple pages and submits the selected repository', async () => {
+    const SearchPage = await import('../src/routes/search/+page.svelte');
     const scenario = createFetchScenario();
     currentScenario = scenario;
     currentAuthToken = 'pub_test_token';
@@ -718,6 +1653,7 @@ describe('route-level multi-page org dataset coverage', () => {
   });
 
   test('search results expose a secondary package-details link alongside security navigation', async () => {
+    const SearchPage = await import('../src/routes/search/+page.svelte');
     const scenario = createFetchScenario();
     currentScenario = scenario;
     currentAuthToken = 'pub_test_token';
@@ -770,6 +1706,51 @@ function createFetchScenario(): FetchScenario {
     canManageTeams: true,
     canManageRepositories: true,
     canManageNamespaces: true,
+    teamDeleteError: null,
+    namespaceDeleteError: null,
+    invitationRevokeError: null,
+    memberRemoveError: null,
+    ownershipTransferError: null,
+    namespaceTransferError: null,
+    repositoryTransferError: null,
+    packageTransferError: null,
+    members: members.map((member) => ({ ...member })),
+    invitations: [
+      {
+        id: ACTIVE_INVITATION_ID,
+        status: 'pending',
+        role: 'maintainer',
+        invited_user: {
+          username: 'new-maintainer',
+          email: ACTIVE_INVITEE_EMAIL,
+        },
+        invited_by: {
+          username: 'owner-user',
+        },
+        created_at: '2026-04-03T00:00:00Z',
+        expires_at: '2026-04-10T00:00:00Z',
+      },
+    ],
+    teams: [
+      {
+        name: 'Release Engineering',
+        slug: TEAM_SLUG,
+        description: 'Owns release governance',
+        created_at: '2026-04-01T00:00:00Z',
+      },
+    ],
+    namespaces: [
+      {
+        id: NAMESPACE_CLAIM_ID,
+        ecosystem: 'npm',
+        namespace: NAMESPACE_CLAIM_VALUE,
+        owner_org_id: ORG_ID,
+        is_verified: true,
+        created_at: '2026-04-01T00:00:00Z',
+        can_manage: true,
+        can_transfer: true,
+      },
+    ],
     workspaceBootstrapRequests: [],
     teamMemberRequests: [],
     teamPackageAccessRequests: [],
@@ -779,10 +1760,16 @@ function createFetchScenario(): FetchScenario {
     repositoryPackageCoverageRequests: [],
     packagePageRequests: [],
     invitationRequests: [],
+    invitationRevokeCalls: [],
+    memberRemoveCalls: [],
     orgUpdateCalls: [],
+    ownershipTransfers: [],
     orgMfaRequired: false,
     teamRepositoryAccessUpdates: [],
     teamPackageAccessUpdates: [],
+    teamDeleteCalls: [],
+    namespaceDeleteCalls: [],
+    namespaceTransfers: [],
     repositoryTransfers: [],
     packageTransfers: [],
     searchCalls: [],
@@ -833,14 +1820,7 @@ async function handleApiRequest(
           can_transfer_ownership: true,
         },
       },
-      teams: [
-        {
-          name: 'Release Engineering',
-          slug: TEAM_SLUG,
-          description: 'Owns release governance',
-          created_at: '2026-04-01T00:00:00Z',
-        },
-      ],
+      teams: scenario.teams,
       repositories,
       repository_package_coverage: [
         {
@@ -859,8 +1839,8 @@ async function handleApiRequest(
         },
       ],
       packages,
-      namespaces: [],
-      invitations: scenario.canManageInvitations ? [] : [],
+      namespaces: scenario.namespaces,
+      invitations: scenario.canManageInvitations ? scenario.invitations : [],
       team_management: {
         members_by_team_slug: scenario.canManageTeams
           ? {
@@ -1043,11 +2023,39 @@ async function handleApiRequest(
 
   if (method === 'GET' && requestPath === `/v1/orgs/${ORG_SLUG}/invitations`) {
     scenario.invitationRequests.push(url.toString());
-    return apiResponse({ invitations: [] });
+    return apiResponse({ invitations: scenario.invitations });
   }
 
   if (method === 'GET' && requestPath === `/v1/orgs/${ORG_SLUG}/members`) {
-    return apiResponse({ members });
+    return apiResponse({ members: scenario.members });
+  }
+
+  if (
+    method === 'DELETE' &&
+    requestPath === `/v1/orgs/${ORG_SLUG}/invitations/${ACTIVE_INVITATION_ID}`
+  ) {
+    if (scenario.invitationRevokeError) {
+      throw new TestApiError(500, { error: scenario.invitationRevokeError });
+    }
+    scenario.invitationRevokeCalls.push(requestPath);
+    scenario.invitations = scenario.invitations.filter(
+      (invitation) => invitation.id !== ACTIVE_INVITATION_ID
+    );
+    return apiResponse(null);
+  }
+
+  if (
+    method === 'DELETE' &&
+    requestPath === `/v1/orgs/${ORG_SLUG}/members/admin-user`
+  ) {
+    if (scenario.memberRemoveError) {
+      throw new TestApiError(500, { error: scenario.memberRemoveError });
+    }
+    scenario.memberRemoveCalls.push(requestPath);
+    scenario.members = scenario.members.filter(
+      (member) => member.username !== 'admin-user'
+    );
+    return apiResponse(null);
   }
 
   if (method === 'GET' && requestPath === `/v1/orgs/${ORG_SLUG}/teams`) {
@@ -1118,6 +2126,21 @@ async function handleApiRequest(
   }
 
   if (
+    method === 'POST' &&
+    requestPath === `/v1/orgs/${ORG_SLUG}/ownership-transfer`
+  ) {
+    if (scenario.ownershipTransferError) {
+      throw new TestApiError(500, { error: scenario.ownershipTransferError });
+    }
+    scenario.ownershipTransfers.push({ path: requestPath, body });
+    return apiResponse({
+      new_owner: {
+        username: body.username,
+      },
+    });
+  }
+
+  if (
     method === 'PUT' &&
     requestPath.startsWith(
       `/v1/orgs/${ORG_SLUG}/teams/${TEAM_SLUG}/repository-access/`
@@ -1137,11 +2160,54 @@ async function handleApiRequest(
     return apiResponse({ message: 'Saved package access' });
   }
 
+  if (method === 'DELETE' && requestPath === `/v1/orgs/${ORG_SLUG}/teams/${TEAM_SLUG}`) {
+    if (scenario.teamDeleteError) {
+      throw new TestApiError(500, { error: scenario.teamDeleteError });
+    }
+    scenario.teamDeleteCalls.push(requestPath);
+    scenario.teams = scenario.teams.filter((team) => team.slug !== TEAM_SLUG);
+    return apiResponse({ message: 'Deleted team' });
+  }
+
+  if (method === 'DELETE' && requestPath === `/v1/namespaces/${NAMESPACE_CLAIM_ID}`) {
+    if (scenario.namespaceDeleteError) {
+      throw new TestApiError(500, { error: scenario.namespaceDeleteError });
+    }
+    scenario.namespaceDeleteCalls.push(requestPath);
+    scenario.namespaces = scenario.namespaces.filter(
+      (claim) => claim.id !== NAMESPACE_CLAIM_ID
+    );
+    return apiResponse(null);
+  }
+
+  if (
+    method === 'POST' &&
+    requestPath.startsWith('/v1/namespaces/') &&
+    requestPath.endsWith('/ownership-transfer')
+  ) {
+    if (scenario.namespaceTransferError) {
+      throw new TestApiError(500, { error: scenario.namespaceTransferError });
+    }
+    scenario.namespaceTransfers.push({ path: requestPath, body });
+    return apiResponse({
+      namespace_claim: {
+        id: requestPath.split('/')[3],
+        namespace: NAMESPACE_CLAIM_VALUE,
+      },
+      owner: {
+        slug: body.target_org_slug,
+      },
+    });
+  }
+
   if (
     method === 'POST' &&
     requestPath.startsWith('/v1/repositories/') &&
     requestPath.endsWith('/ownership-transfer')
   ) {
+    if (scenario.repositoryTransferError) {
+      throw new TestApiError(500, { error: scenario.repositoryTransferError });
+    }
     scenario.repositoryTransfers.push({ path: requestPath, body });
     return apiResponse({
       repository: {
@@ -1158,6 +2224,9 @@ async function handleApiRequest(
     requestPath.startsWith('/v1/packages/') &&
     requestPath.endsWith('/ownership-transfer')
   ) {
+    if (scenario.packageTransferError) {
+      throw new TestApiError(500, { error: scenario.packageTransferError });
+    }
     scenario.packageTransfers.push({ path: requestPath, body });
     return apiResponse({
       owner: {
@@ -1255,12 +2324,31 @@ function queryRequiredSelect(
   return element;
 }
 
+function queryRequiredInput(
+  root: ParentNode | Element | null,
+  selector: string
+): HTMLInputElement {
+  const element = root?.querySelector(selector);
+  if (!(element instanceof HTMLInputElement)) {
+    throw new Error(`Expected input for selector: ${selector}`);
+  }
+
+  return element;
+}
+
 function queryRequiredForm(root: Element | ParentNode | null): HTMLFormElement {
   if (!(root instanceof HTMLFormElement)) {
     throw new Error('Expected form element.');
   }
 
   return root;
+}
+
+function queryRequiredFormBySelector(
+  root: ParentNode | Element,
+  selector: string
+): HTMLFormElement {
+  return queryRequiredForm(root.querySelector(selector));
 }
 
 function queryCheckbox(
@@ -1275,6 +2363,18 @@ function queryCheckbox(
   return element;
 }
 
+function queryRequiredButton(
+  root: ParentNode | Element,
+  selector: string
+): HTMLButtonElement {
+  const element = root.querySelector(selector);
+  if (!(element instanceof HTMLButtonElement)) {
+    throw new Error(`Expected button for selector: ${selector}`);
+  }
+
+  return element;
+}
+
 function optionValues(select: HTMLSelectElement): string[] {
   return Array.from(select.options).map((option) => option.value);
 }
@@ -1282,6 +2382,7 @@ function optionValues(select: HTMLSelectElement): string[] {
 async function mountOrgPage(
   scenario: FetchScenario
 ): Promise<Awaited<ReturnType<typeof renderSvelte>>> {
+  const OrgPage = await import('../src/routes/orgs/[slug]/+page.svelte');
   currentScenario = scenario;
   currentAuthToken = 'pub_test_token';
   pageStore.set(buildPageState(`https://example.test/orgs/${ORG_SLUG}`, {

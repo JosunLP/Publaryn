@@ -156,6 +156,7 @@
     buildRepositoryGrantOptions,
     createTeamManagementController,
     loadOrgMembersState,
+    TEAM_DELETE_CONFIRMATION_MESSAGE,
     type TeamMemberState,
     type TeamNamespaceAccessState,
     type TeamPackageAccessState,
@@ -211,6 +212,20 @@
   const ORG_AUDIT_PAGE_SIZE = 20;
   const DEFAULT_NAMESPACE_ECOSYSTEM = 'npm';
   const DEFAULT_PACKAGE_ECOSYSTEM = 'npm';
+  const OWNERSHIP_TRANSFER_CONFIRMATION_MESSAGE =
+    'Please confirm the ownership transfer.';
+  const REPOSITORY_TRANSFER_CONFIRMATION_MESSAGE =
+    'Please confirm the repository transfer.';
+  const NAMESPACE_TRANSFER_CONFIRMATION_MESSAGE =
+    'Please confirm the namespace transfer.';
+  const PACKAGE_TRANSFER_CONFIRMATION_MESSAGE =
+    'Please confirm the package transfer.';
+  const INVITATION_REVOKE_CONFIRMATION_MESSAGE =
+    'Please confirm that you want to revoke this invitation immediately.';
+  const MEMBER_REMOVE_CONFIRMATION_MESSAGE =
+    'Please confirm that you want to remove this member from the organization.';
+  const NAMESPACE_DELETE_CONFIRMATION_MESSAGE =
+    'Please confirm that you understand deleting this namespace claim is immediate and cannot be undone.';
   const REVIEW_TEAM_FALLBACK_LABEL = 'Team (no name)';
   const SECURITY_FINDING_NOTE_PLACEHOLDER =
     'Optional note (recorded in audit log)';
@@ -356,8 +371,33 @@
   let newPackageDisplayName = '';
   let newPackageDescription = '';
   let creatingPackage = false;
+  let ownershipTransferConfirmationOpen = false;
+  let ownershipTransferConfirmed = false;
+  let transferringOwnership = false;
+  let repositoryTransferConfirmationOpen = false;
+  let repositoryTransferConfirmed = false;
+  let transferringRepositoryOwnership = false;
+  let namespaceTransferConfirmationOpen = false;
+  let namespaceTransferConfirmed = false;
+  let transferringNamespaceOwnership = false;
+  let packageTransferConfirmationOpen = false;
+  let packageTransferConfirmed = false;
+  let transferringPackageOwnershipFlow = false;
+  let invitationRevokeTargetId: string | null = null;
+  let invitationRevokeConfirmed = false;
+  let revokingInvitationId: string | null = null;
+  let memberRemoveTargetUsername: string | null = null;
+  let memberRemoveConfirmed = false;
+  let removingMemberUsername: string | null = null;
+  let teamDeleteTargetSlug: string | null = null;
+  let teamDeleteConfirmed = false;
+  let deletingTeamSlug: string | null = null;
+  let namespaceDeleteTargetId: string | null = null;
+  let namespaceDeleteConfirmed = false;
+  let deletingNamespaceClaimId: string | null = null;
 
   $: slug = $page.params.slug ?? '';
+  $: pageNotice = $page.url.searchParams.get('notice')?.trim() || null;
   $: transferCandidates = members.filter(
     (member) =>
       member.role !== 'owner' &&
@@ -575,16 +615,48 @@
     });
   }
 
+  function resolveLoadNotice(
+    options: { notice?: string | null },
+    fallbackNotice: string | null
+  ): string | null {
+    const explicitNoticeProvided = Object.hasOwn(options, 'notice');
+    return explicitNoticeProvided ? options.notice ?? null : fallbackNotice;
+  }
+
   async function loadOrganizationPage(
     options: { notice?: string | null; error?: string | null } = {}
   ): Promise<void> {
     loading = true;
     notFound = false;
     loadError = null;
-    notice = options.notice ?? null;
+    notice = resolveLoadNotice(options, pageNotice);
     error = options.error ?? null;
     canViewPeopleWorkspace = false;
     securityFindingsByPackageKey = {};
+    ownershipTransferConfirmationOpen = false;
+    ownershipTransferConfirmed = false;
+    transferringOwnership = false;
+    repositoryTransferConfirmationOpen = false;
+    repositoryTransferConfirmed = false;
+    transferringRepositoryOwnership = false;
+    namespaceTransferConfirmationOpen = false;
+    namespaceTransferConfirmed = false;
+    transferringNamespaceOwnership = false;
+    packageTransferConfirmationOpen = false;
+    packageTransferConfirmed = false;
+    transferringPackageOwnershipFlow = false;
+    invitationRevokeTargetId = null;
+    invitationRevokeConfirmed = false;
+    revokingInvitationId = null;
+    memberRemoveTargetUsername = null;
+    memberRemoveConfirmed = false;
+    removingMemberUsername = null;
+    teamDeleteTargetSlug = null;
+    teamDeleteConfirmed = false;
+    deletingTeamSlug = null;
+    namespaceDeleteTargetId = null;
+    namespaceDeleteConfirmed = false;
+    deletingNamespaceClaimId = null;
 
     isAuthenticated = Boolean(getAuthToken());
 
@@ -1066,12 +1138,15 @@
       ownershipMemberOptions
     );
 
-    if (!formData.get('confirm')) {
-      await loadOrganizationPage({
-        error: 'Please confirm the ownership transfer.',
-      });
+    if (!ownershipTransferConfirmed) {
+      notice = null;
+      error = OWNERSHIP_TRANSFER_CONFIRMATION_MESSAGE;
       return;
     }
+
+    transferringOwnership = true;
+    notice = null;
+    error = null;
 
     try {
       const result: TransferOwnershipResult = await transferOwnership(slug, {
@@ -1082,23 +1157,66 @@
         notice: `Ownership transferred to @${result.new_owner?.username || 'the selected user'}.`,
       });
     } catch (caughtError: unknown) {
-      await loadOrganizationPage({
-        error: toErrorMessage(
-          caughtError,
-          'Failed to transfer organization ownership.'
-        ),
-      });
+      error = toErrorMessage(
+        caughtError,
+        'Failed to transfer organization ownership.'
+      );
+      transferringOwnership = false;
     }
   }
 
-  async function handleRevokeInvitation(invitationId: string): Promise<void> {
+  function openOwnershipTransferConfirmation(): void {
+    ownershipTransferConfirmationOpen = true;
+    ownershipTransferConfirmed = false;
+    transferringOwnership = false;
+    notice = null;
+    error = null;
+  }
+
+  function cancelOwnershipTransferConfirmation(): void {
+    ownershipTransferConfirmationOpen = false;
+    ownershipTransferConfirmed = false;
+    transferringOwnership = false;
+    error = null;
+  }
+
+  function openInvitationRevokeConfirmation(invitationId: string): void {
+    invitationRevokeTargetId = invitationId;
+    invitationRevokeConfirmed = false;
+    revokingInvitationId = null;
+    notice = null;
+    error = null;
+  }
+
+  function cancelInvitationRevokeConfirmation(): void {
+    invitationRevokeTargetId = null;
+    invitationRevokeConfirmed = false;
+    revokingInvitationId = null;
+    error = null;
+  }
+
+  async function handleRevokeInvitation(
+    event: SubmitEvent,
+    invitationId: string
+  ): Promise<void> {
+    event.preventDefault();
+
+    if (!invitationRevokeConfirmed) {
+      notice = null;
+      error = INVITATION_REVOKE_CONFIRMATION_MESSAGE;
+      return;
+    }
+
+    revokingInvitationId = invitationId;
+    notice = null;
+    error = null;
+
     try {
       await revokeInvitation(slug, invitationId);
       await loadOrganizationPage({ notice: 'Invitation revoked.' });
     } catch (caughtError: unknown) {
-      await loadOrganizationPage({
-        error: toErrorMessage(caughtError, 'Failed to revoke invitation.'),
-      });
+      error = toErrorMessage(caughtError, 'Failed to revoke invitation.');
+      revokingInvitationId = null;
     }
   }
 
@@ -1130,16 +1248,45 @@
     }
   }
 
-  async function handleRemoveMember(username: string): Promise<void> {
+  function openMemberRemoveConfirmation(username: string): void {
+    memberRemoveTargetUsername = username;
+    memberRemoveConfirmed = false;
+    removingMemberUsername = null;
+    notice = null;
+    error = null;
+  }
+
+  function cancelMemberRemoveConfirmation(): void {
+    memberRemoveTargetUsername = null;
+    memberRemoveConfirmed = false;
+    removingMemberUsername = null;
+    error = null;
+  }
+
+  async function handleRemoveMember(
+    event: SubmitEvent,
+    username: string
+  ): Promise<void> {
+    event.preventDefault();
+
+    if (!memberRemoveConfirmed) {
+      notice = null;
+      error = MEMBER_REMOVE_CONFIRMATION_MESSAGE;
+      return;
+    }
+
+    removingMemberUsername = username;
+    notice = null;
+    error = null;
+
     try {
       await removeMember(slug, username);
       await loadOrganizationPage({
         notice: `Removed @${username} from the organization.`,
       });
     } catch (caughtError: unknown) {
-      await loadOrganizationPage({
-        error: toErrorMessage(caughtError, 'Failed to remove member.'),
-      });
+      error = toErrorMessage(caughtError, 'Failed to remove member.');
+      removingMemberUsername = null;
     }
   }
 
@@ -1164,14 +1311,40 @@
     }
   }
 
-  async function handleDeleteTeam(teamSlug: string): Promise<void> {
+  function openTeamDeleteConfirmation(teamSlug: string): void {
+    teamDeleteTargetSlug = teamSlug;
+    teamDeleteConfirmed = false;
+    deletingTeamSlug = null;
+    notice = null;
+    error = null;
+  }
+
+  function cancelTeamDeleteConfirmation(): void {
+    teamDeleteTargetSlug = null;
+    teamDeleteConfirmed = false;
+    deletingTeamSlug = null;
+    error = null;
+  }
+
+  async function handleDeleteTeam(event: SubmitEvent, teamSlug: string): Promise<void> {
+    event.preventDefault();
+
+    if (!teamDeleteConfirmed) {
+      notice = null;
+      error = TEAM_DELETE_CONFIRMATION_MESSAGE;
+      return;
+    }
+
+    deletingTeamSlug = teamSlug;
+    notice = null;
+    error = null;
+
     try {
       await deleteTeam(slug, teamSlug);
       await loadOrganizationPage({ notice: `Deleted team ${teamSlug}.` });
     } catch (caughtError: unknown) {
-      await loadOrganizationPage({
-        error: toErrorMessage(caughtError, 'Failed to delete team.'),
-      });
+      error = toErrorMessage(caughtError, 'Failed to delete team.');
+      deletingTeamSlug = null;
     }
   }
 
@@ -1211,10 +1384,28 @@
     }
   }
 
+  function openNamespaceDeleteConfirmation(claimId: string): void {
+    namespaceDeleteTargetId = claimId;
+    namespaceDeleteConfirmed = false;
+    deletingNamespaceClaimId = null;
+    notice = null;
+    error = null;
+  }
+
+  function cancelNamespaceDeleteConfirmation(): void {
+    namespaceDeleteTargetId = null;
+    namespaceDeleteConfirmed = false;
+    deletingNamespaceClaimId = null;
+    error = null;
+  }
+
   async function handleDeleteNamespace(
+    event: SubmitEvent,
     claimId: string | null | undefined,
     namespace: string
   ): Promise<void> {
+    event.preventDefault();
+
     if (!claimId) {
       await loadOrganizationPage({
         error: 'Failed to delete namespace claim because the claim id is unavailable.',
@@ -1222,15 +1413,24 @@
       return;
     }
 
+    if (!namespaceDeleteConfirmed) {
+      notice = null;
+      error = NAMESPACE_DELETE_CONFIRMATION_MESSAGE;
+      return;
+    }
+
+    deletingNamespaceClaimId = claimId;
+    notice = null;
+    error = null;
+
     try {
       await deleteNamespaceClaim(claimId);
       await loadOrganizationPage({
         notice: `Deleted namespace claim ${namespace}.`,
       });
     } catch (caughtError: unknown) {
-      await loadOrganizationPage({
-        error: toErrorMessage(caughtError, 'Failed to delete namespace claim.'),
-      });
+      error = toErrorMessage(caughtError, 'Failed to delete namespace claim.');
+      deletingNamespaceClaimId = null;
     }
   }
 
@@ -1242,25 +1442,26 @@
       formData.get('target_org_slug')?.toString().trim() || '';
 
     if (!claimId) {
-      await loadOrganizationPage({
-        error: 'Select a namespace claim to transfer.',
-      });
+      notice = null;
+      error = 'Select a namespace claim to transfer.';
       return;
     }
 
     if (!targetOrgSlug) {
-      await loadOrganizationPage({
-        error: 'Select a target organization.',
-      });
+      notice = null;
+      error = 'Select a target organization.';
       return;
     }
 
-    if (!formData.get('confirm')) {
-      await loadOrganizationPage({
-        error: 'Please confirm the namespace transfer.',
-      });
+    if (!namespaceTransferConfirmed) {
+      notice = null;
+      error = NAMESPACE_TRANSFER_CONFIRMATION_MESSAGE;
       return;
     }
+
+    transferringNamespaceOwnership = true;
+    notice = null;
+    error = null;
 
     try {
       const result: NamespaceTransferOwnershipResult = await transferNamespaceClaim(
@@ -1277,13 +1478,27 @@
         notice: `Transferred ${namespace} to ${result.owner?.name || result.owner?.slug || targetOrgSlug}.`,
       });
     } catch (caughtError: unknown) {
-      await loadOrganizationPage({
-        error: toErrorMessage(
-          caughtError,
-          'Failed to transfer namespace claim ownership.'
-        ),
-      });
+      error = toErrorMessage(
+        caughtError,
+        'Failed to transfer namespace claim ownership.'
+      );
+      transferringNamespaceOwnership = false;
     }
+  }
+
+  function openNamespaceTransferConfirmation(): void {
+    namespaceTransferConfirmationOpen = true;
+    namespaceTransferConfirmed = false;
+    transferringNamespaceOwnership = false;
+    notice = null;
+    error = null;
+  }
+
+  function cancelNamespaceTransferConfirmation(): void {
+    namespaceTransferConfirmationOpen = false;
+    namespaceTransferConfirmed = false;
+    transferringNamespaceOwnership = false;
+    error = null;
   }
 
   async function handleCreateRepository(event: SubmitEvent): Promise<void> {
@@ -1411,25 +1626,26 @@
       formData.get('target_org_slug')?.toString().trim() || '';
 
     if (!repositorySlug) {
-      await loadOrganizationPage({
-        error: 'Select a repository to transfer.',
-      });
+      notice = null;
+      error = 'Select a repository to transfer.';
       return;
     }
 
     if (!targetOrgSlug) {
-      await loadOrganizationPage({
-        error: 'Select a target organization.',
-      });
+      notice = null;
+      error = 'Select a target organization.';
       return;
     }
 
-    if (!formData.get('confirm')) {
-      await loadOrganizationPage({
-        error: 'Please confirm the repository transfer.',
-      });
+    if (!repositoryTransferConfirmed) {
+      notice = null;
+      error = REPOSITORY_TRANSFER_CONFIRMATION_MESSAGE;
       return;
     }
+
+    transferringRepositoryOwnership = true;
+    notice = null;
+    error = null;
 
     try {
       const result = await transferRepositoryOwnership(repositorySlug, {
@@ -1440,13 +1656,27 @@
         notice: `Transferred ${result.repository?.name || result.repository?.slug || repositorySlug} to ${result.owner?.name || result.owner?.slug || targetOrgSlug}.`,
       });
     } catch (caughtError: unknown) {
-      await loadOrganizationPage({
-        error: toErrorMessage(
-          caughtError,
-          'Failed to transfer repository ownership.'
-        ),
-      });
+      error = toErrorMessage(
+        caughtError,
+        'Failed to transfer repository ownership.'
+      );
+      transferringRepositoryOwnership = false;
     }
+  }
+
+  function openRepositoryTransferConfirmation(): void {
+    repositoryTransferConfirmationOpen = true;
+    repositoryTransferConfirmed = false;
+    transferringRepositoryOwnership = false;
+    notice = null;
+    error = null;
+  }
+
+  function cancelRepositoryTransferConfirmation(): void {
+    repositoryTransferConfirmationOpen = false;
+    repositoryTransferConfirmed = false;
+    transferringRepositoryOwnership = false;
+    error = null;
   }
 
   async function handlePackageTransfer(event: SubmitEvent): Promise<void> {
@@ -1459,21 +1689,26 @@
       formData.get('target_org_slug')?.toString().trim() || '';
 
     if (!packageTarget) {
-      await loadOrganizationPage({ error: 'Select a package to transfer.' });
+      notice = null;
+      error = 'Select a package to transfer.';
       return;
     }
 
     if (!targetOrgSlug) {
-      await loadOrganizationPage({ error: 'Select a target organization.' });
+      notice = null;
+      error = 'Select a target organization.';
       return;
     }
 
-    if (!formData.get('confirm')) {
-      await loadOrganizationPage({
-        error: 'Please confirm the package transfer.',
-      });
+    if (!packageTransferConfirmed) {
+      notice = null;
+      error = PACKAGE_TRANSFER_CONFIRMATION_MESSAGE;
       return;
     }
+
+    transferringPackageOwnershipFlow = true;
+    notice = null;
+    error = null;
 
     try {
       const result = await transferPackageOwnership(
@@ -1488,13 +1723,27 @@
         notice: `Transferred ${packageTarget.name} to ${result.owner?.name || result.owner?.slug || targetOrgSlug}.`,
       });
     } catch (caughtError: unknown) {
-      await loadOrganizationPage({
-        error: toErrorMessage(
-          caughtError,
-          'Failed to transfer package ownership.'
-        ),
-      });
+      error = toErrorMessage(
+        caughtError,
+        'Failed to transfer package ownership.'
+      );
+      transferringPackageOwnershipFlow = false;
     }
+  }
+
+  function openPackageTransferConfirmation(): void {
+    packageTransferConfirmationOpen = true;
+    packageTransferConfirmed = false;
+    transferringPackageOwnershipFlow = false;
+    notice = null;
+    error = null;
+  }
+
+  function cancelPackageTransferConfirmation(): void {
+    packageTransferConfirmationOpen = false;
+    packageTransferConfirmed = false;
+    transferringPackageOwnershipFlow = false;
+    error = null;
   }
 
   function getEligibleTeamMemberOptions(
@@ -2183,17 +2432,56 @@
                 {/each}
               </datalist>
             </div>
-            <div class="form-group">
-              <label class="flex items-start gap-2">
-                <input type="checkbox" name="confirm" required />
-                <span
-                  >I understand this transfer is immediate and irreversible.</span
-                >
-              </label>
-            </div>
-            <button type="submit" class="btn btn-danger"
-              >Transfer ownership</button
-            >
+            {#if ownershipTransferConfirmationOpen}
+              <div
+                class="alert alert-warning"
+                id="org-ownership-transfer-confirmation"
+                style="margin-bottom:12px;"
+              >
+                <label class="flex items-start gap-2">
+                  <input
+                    id="org-ownership-transfer-confirm"
+                    bind:checked={ownershipTransferConfirmed}
+                    type="checkbox"
+                    name="confirm"
+                    disabled={transferringOwnership}
+                  />
+                  <span
+                    >I understand this transfer is immediate and irreversible.</span
+                  >
+                </label>
+                <div class="token-row__actions" style="margin-top:12px;">
+                  <button
+                    id="org-ownership-transfer-submit"
+                    type="submit"
+                    class="btn btn-danger"
+                    disabled={transferringOwnership}
+                  >
+                    {transferringOwnership
+                      ? 'Transferring...'
+                      : 'Transfer ownership'}
+                  </button>
+                  <button
+                    type="button"
+                    class="btn btn-secondary"
+                    on:click={cancelOwnershipTransferConfirmation}
+                    disabled={transferringOwnership}
+                  >
+                    Keep current owner
+                  </button>
+                </div>
+              </div>
+            {:else}
+              <button
+                id="org-ownership-transfer-toggle"
+                type="button"
+                class="btn btn-danger"
+                aria-label="Review organization ownership transfer"
+                on:click={openOwnershipTransferConfirmation}
+              >
+                Transfer ownership...
+              </button>
+            {/if}
           </form>
         {/if}
       </section>
@@ -2256,53 +2544,113 @@
               </p>
             </div>
           {:else}
-            <div class="token-list">
-              {#each activeInvitations as invitation}
-                {@const inviteeLabel = formatOrgInvitationInvitee(invitation)}
-                {@const invitationEvent =
-                  describeOrgInvitationEvent(invitation)}
-                <div class="token-row">
-                  <div class="token-row__main">
-                    <div class="token-row__title">{inviteeLabel}</div>
-                    <div class="token-row__meta">
-                      {#if invitation.invited_user?.email}<span
-                          >{invitation.invited_user?.email}</span
-                        >{/if}
-                      <span>{formatRole(invitation.role || 'viewer')}</span>
-                      <span
-                        >sent by @{invitation.invited_by?.username ||
-                          'unknown'}</span
-                      >
-                      <span>sent {formatDate(invitation.created_at)}</span>
-                      {#if invitationEvent?.occurredAt}<span
-                          >{invitationEvent.label.toLowerCase()}
-                          {formatDate(invitationEvent.occurredAt)}</span
-                        >{/if}
+              <div class="token-list">
+                {#each activeInvitations as invitation}
+                  {@const inviteeLabel = formatOrgInvitationInvitee(invitation)}
+                  {@const invitationEvent =
+                    describeOrgInvitationEvent(invitation)}
+                  <div>
+                    <div class="token-row">
+                      <div class="token-row__main">
+                        <div class="token-row__title">{inviteeLabel}</div>
+                        <div class="token-row__meta">
+                          {#if invitation.invited_user?.email}<span
+                              >{invitation.invited_user?.email}</span
+                            >{/if}
+                          <span>{formatRole(invitation.role || 'viewer')}</span>
+                          <span
+                            >sent by @{invitation.invited_by?.username ||
+                              'unknown'}</span
+                          >
+                          <span>sent {formatDate(invitation.created_at)}</span>
+                          {#if invitationEvent?.occurredAt}<span
+                              >{invitationEvent.label.toLowerCase()}
+                              {formatDate(invitationEvent.occurredAt)}</span
+                            >{/if}
+                        </div>
+                        <div class="token-row__scopes">
+                          <span class="badge badge-ecosystem"
+                            >{formatOrgInvitationStatusLabel(
+                              invitation.status
+                            )}</span
+                          >
+                        </div>
+                      </div>
+                      {#if invitation.id}
+                        <div class="token-row__actions">
+                          {#if invitationRevokeTargetId === invitation.id}
+                            <button
+                              class="btn btn-secondary btn-sm"
+                              type="button"
+                              on:click={cancelInvitationRevokeConfirmation}
+                              disabled={revokingInvitationId === invitation.id}
+                              >Cancel</button
+                            >
+                          {:else}
+                            <button
+                              class="btn btn-secondary btn-sm"
+                              id={`invitation-revoke-toggle-${invitation.id}`}
+                              type="button"
+                              aria-label={`Revoke invitation for ${inviteeLabel}`}
+                              on:click={() =>
+                                openInvitationRevokeConfirmation(invitation.id || '')}
+                              >Revoke...</button
+                            >
+                          {/if}
+                        </div>
+                      {/if}
                     </div>
-                    <div class="token-row__scopes">
-                      <span class="badge badge-ecosystem"
-                        >{formatOrgInvitationStatusLabel(
-                          invitation.status
-                        )}</span
+                    {#if invitation.id &&
+                      invitationRevokeTargetId === invitation.id}
+                      <form
+                        class="alert alert-warning mt-4"
+                        id={`invitation-revoke-form-${invitation.id}`}
+                        on:submit={(event) =>
+                          handleRevokeInvitation(event, invitation.id || '')}
                       >
-                    </div>
+                        <p class="mb-3">
+                          Revoking this invitation immediately removes the
+                          recipient's ability to accept it.
+                        </p>
+                        <label class="mb-3 flex items-start gap-2">
+                          <input
+                            id={`invitation-revoke-confirm-${invitation.id}`}
+                            bind:checked={invitationRevokeConfirmed}
+                            type="checkbox"
+                            name="confirm_revoke"
+                            disabled={revokingInvitationId === invitation.id}
+                          />
+                          <span>
+                            I understand revoking this invitation is immediate.
+                          </span>
+                        </label>
+                        <div class="token-row__actions">
+                          <button
+                            class="btn btn-danger btn-sm"
+                            id={`invitation-revoke-submit-${invitation.id}`}
+                            type="submit"
+                            disabled={revokingInvitationId === invitation.id}
+                          >
+                            {revokingInvitationId === invitation.id
+                              ? 'Revoking…'
+                              : 'Revoke invitation'}
+                          </button>
+                          <button
+                            class="btn btn-secondary btn-sm"
+                            type="button"
+                            on:click={cancelInvitationRevokeConfirmation}
+                            disabled={revokingInvitationId === invitation.id}
+                          >
+                            Keep invitation
+                          </button>
+                        </div>
+                      </form>
+                    {/if}
                   </div>
-                  {#if invitation.id}
-                    <div class="token-row__actions">
-                      <button
-                        class="btn btn-secondary btn-sm"
-                        type="button"
-                        on:click={() =>
-                          handleRevokeInvitation(invitation.id || '')}
-                        >Revoke</button
-                      >
-                    </div>
-                  {/if}
-                </div>
-              {/each}
-            </div>
-          {/if}
-        </div>
+                {/each}
+              </div>
+            {/if}
+          </div>
 
         {#if showInvitationHistory && historicalInvitations.length > 0}
           <div class="settings-subsection">
@@ -2363,58 +2711,122 @@
         {:else}
           <div class="token-list">
             {#each members as member}
-              <div class="token-row">
-                <div class="token-row__main">
-                  <div class="token-row__title">
-                    {member.display_name || member.username || 'Unknown member'}
+              <div>
+                <div class="token-row">
+                  <div class="token-row__main">
+                    <div class="token-row__title">
+                      {member.display_name || member.username || 'Unknown member'}
+                    </div>
+                    <div class="token-row__meta">
+                      <span>@{member.username || 'unknown'}</span>
+                      <span>{formatRole(member.role || 'viewer')}</span>
+                      <span>joined {formatDate(member.joined_at)}</span>
+                    </div>
                   </div>
-                  <div class="token-row__meta">
-                    <span>@{member.username || 'unknown'}</span>
-                    <span>{formatRole(member.role || 'viewer')}</span>
-                    <span>joined {formatDate(member.joined_at)}</span>
-                  </div>
+                  {#if canManageMembers && member.role !== 'owner' && member.username}
+                    <div class="token-row__actions">
+                      <form
+                        class="flex flex-wrap items-center gap-2"
+                        on:submit={(event) =>
+                          handleUpdateMemberRole(
+                            event,
+                            member.username || '',
+                            member.role || 'viewer'
+                          )}
+                      >
+                        <label
+                          class="text-sm text-muted"
+                          for={`member-role-${member.username || 'member'}`}
+                          >Role</label
+                        >
+                        <select
+                          id={`member-role-${member.username || 'member'}`}
+                          name="role"
+                          class="form-input"
+                          style="width:auto; min-width:150px;"
+                        >
+                          {#each ORG_ROLE_OPTIONS as role}
+                            <option
+                              value={role.value}
+                              selected={role.value === (member.role || 'viewer')}
+                              >{role.label}</option
+                            >
+                          {/each}
+                        </select>
+                        <button class="btn btn-secondary btn-sm" type="submit"
+                          >Save</button
+                        >
+                      </form>
+                      {#if memberRemoveTargetUsername === member.username}
+                        <button
+                          class="btn btn-secondary btn-sm"
+                          type="button"
+                          on:click={cancelMemberRemoveConfirmation}
+                          disabled={removingMemberUsername === member.username}
+                          >Cancel</button
+                        >
+                      {:else}
+                        <button
+                          class="btn btn-danger btn-sm"
+                          id={`member-remove-toggle-${member.username}`}
+                          type="button"
+                          aria-label={`Remove member ${member.username}`}
+                          on:click={() =>
+                            openMemberRemoveConfirmation(member.username || '')}
+                          >Remove...</button
+                        >
+                      {/if}
+                    </div>
+                  {/if}
                 </div>
-                {#if canManageMembers && member.role !== 'owner' && member.username}
-                  <div class="token-row__actions">
-                    <form
-                      class="flex flex-wrap items-center gap-2"
-                      on:submit={(event) =>
-                        handleUpdateMemberRole(
-                          event,
-                          member.username || '',
-                          member.role || 'viewer'
-                        )}
-                    >
-                      <label
-                        class="text-sm text-muted"
-                        for={`member-role-${member.username || 'member'}`}
-                        >Role</label
+                {#if canManageMembers &&
+                  member.role !== 'owner' &&
+                  member.username &&
+                  memberRemoveTargetUsername === member.username}
+                  <form
+                    class="alert alert-warning mt-4"
+                    id={`member-remove-form-${member.username}`}
+                    on:submit={(event) =>
+                      handleRemoveMember(event, member.username || '')}
+                  >
+                    <p class="mb-3">
+                      Removing this member immediately revokes their
+                      organization access and delegated team access.
+                    </p>
+                    <label class="mb-3 flex items-start gap-2">
+                      <input
+                        id={`member-remove-confirm-${member.username}`}
+                        bind:checked={memberRemoveConfirmed}
+                        type="checkbox"
+                        name="confirm_remove"
+                        disabled={removingMemberUsername === member.username}
+                      />
+                      <span>
+                        I understand this member will immediately lose access to
+                        the organization.
+                      </span>
+                    </label>
+                    <div class="token-row__actions">
+                      <button
+                        class="btn btn-danger btn-sm"
+                        id={`member-remove-submit-${member.username}`}
+                        type="submit"
+                        disabled={removingMemberUsername === member.username}
                       >
-                      <select
-                        id={`member-role-${member.username || 'member'}`}
-                        name="role"
-                        class="form-input"
-                        style="width:auto; min-width:150px;"
+                        {removingMemberUsername === member.username
+                          ? 'Removing…'
+                          : 'Remove member'}
+                      </button>
+                      <button
+                        class="btn btn-secondary btn-sm"
+                        type="button"
+                        on:click={cancelMemberRemoveConfirmation}
+                        disabled={removingMemberUsername === member.username}
                       >
-                        {#each ORG_ROLE_OPTIONS as role}
-                          <option
-                            value={role.value}
-                            selected={role.value === (member.role || 'viewer')}
-                            >{role.label}</option
-                          >
-                        {/each}
-                      </select>
-                      <button class="btn btn-secondary btn-sm" type="submit"
-                        >Save</button
-                      >
-                    </form>
-                    <button
-                      class="btn btn-danger btn-sm"
-                      type="button"
-                      on:click={() => handleRemoveMember(member.username || '')}
-                      >Remove</button
-                    >
-                  </div>
+                        Keep member
+                      </button>
+                    </div>
+                  </form>
                 {/if}
               </div>
             {/each}
@@ -2512,15 +2924,70 @@
                           href={`/orgs/${encodeURIComponent(slug)}/teams/${encodeURIComponent(teamSlug)}`}
                           data-sveltekit-preload-data="hover">Open workspace</a
                         >
-                        <button
-                          class="btn btn-danger btn-sm"
-                          type="button"
-                          on:click={() => handleDeleteTeam(teamSlug)}
-                          >Delete</button
-                        >
+                        {#if teamDeleteTargetSlug === teamSlug}
+                          <button
+                            class="btn btn-secondary btn-sm"
+                            type="button"
+                            on:click={cancelTeamDeleteConfirmation}
+                            disabled={deletingTeamSlug === teamSlug}>Cancel</button
+                          >
+                        {:else}
+                          <button
+                            class="btn btn-danger btn-sm"
+                            id={`team-delete-toggle-${teamSlug}`}
+                            type="button"
+                            aria-label={`Delete team ${teamSlug}`}
+                            on:click={() => openTeamDeleteConfirmation(teamSlug)}
+                            >Delete...</button
+                          >
+                        {/if}
                       </div>
                     {/if}
                   </div>
+
+                  {#if canManageTeams && teamSlug && teamDeleteTargetSlug === teamSlug}
+                    <form
+                      class="alert alert-warning mt-4"
+                      id={`team-delete-form-${teamSlug}`}
+                      on:submit={(event) => handleDeleteTeam(event, teamSlug)}
+                    >
+                      <p class="mb-3">
+                        Deleting this team immediately removes its memberships and delegated
+                        package, repository, and namespace access.
+                      </p>
+                      <label class="mb-3 flex items-start gap-2">
+                        <input
+                          id={`team-delete-confirm-${teamSlug}`}
+                          bind:checked={teamDeleteConfirmed}
+                          type="checkbox"
+                          name="confirm_delete"
+                          disabled={deletingTeamSlug === teamSlug}
+                        />
+                        <span>
+                          I understand deleting this team revokes its delegated access and cannot be
+                          undone.
+                        </span>
+                      </label>
+                      <div class="token-row__actions">
+                        <button
+                          class="btn btn-danger btn-sm"
+                          id={`team-delete-submit-${teamSlug}`}
+                          type="submit"
+                          disabled={deletingTeamSlug === teamSlug}
+                        >
+                          {deletingTeamSlug === teamSlug ? 'Deleting…' : 'Delete team'}
+                        </button>
+                        <button
+                          class="btn btn-secondary btn-sm"
+                          type="button"
+                          on:click={cancelTeamDeleteConfirmation}
+                          disabled={deletingTeamSlug === teamSlug}
+                        >
+                          Keep team
+                        </button>
+                      </div>
+                    </form>
+                  {/if}
 
                   {#if canManageTeams && teamSlug}
                     <div class="grid gap-6 xl:grid-cols-2">
@@ -3158,18 +3625,57 @@
                     </select>
                   </div>
                 </div>
-                <div class="form-group" style="margin-bottom:12px;">
-                  <label class="flex items-start gap-2">
-                    <input type="checkbox" name="confirm" required />
-                    <span
-                      >I understand this repository transfer is immediate and
-                      existing team grants will be removed.</span
-                    >
-                  </label>
-                </div>
-                <button type="submit" class="btn btn-danger"
-                  >Transfer repository</button
-                >
+                {#if repositoryTransferConfirmationOpen}
+                  <div
+                    class="alert alert-warning"
+                    id="org-repository-transfer-confirmation"
+                    style="margin-bottom:12px;"
+                  >
+                    <label class="flex items-start gap-2">
+                      <input
+                        id="org-repository-transfer-confirm"
+                        bind:checked={repositoryTransferConfirmed}
+                        type="checkbox"
+                        name="confirm"
+                        disabled={transferringRepositoryOwnership}
+                      />
+                      <span
+                        >I understand this repository transfer is immediate and
+                        existing team grants will be removed.</span
+                      >
+                    </label>
+                    <div class="token-row__actions" style="margin-top:12px;">
+                      <button
+                        id="org-repository-transfer-submit"
+                        type="submit"
+                        class="btn btn-danger"
+                        disabled={transferringRepositoryOwnership}
+                      >
+                        {transferringRepositoryOwnership
+                          ? 'Transferring...'
+                          : 'Transfer repository'}
+                      </button>
+                      <button
+                        type="button"
+                        class="btn btn-secondary"
+                        on:click={cancelRepositoryTransferConfirmation}
+                        disabled={transferringRepositoryOwnership}
+                      >
+                        Keep repository
+                      </button>
+                    </div>
+                  </div>
+                {:else}
+                  <button
+                    id="org-repository-transfer-toggle"
+                    type="button"
+                    class="btn btn-danger"
+                    aria-label="Review repository ownership transfer"
+                    on:click={openRepositoryTransferConfirmation}
+                  >
+                    Transfer repository...
+                  </button>
+                {/if}
               </form>
             {/if}
           </div>
@@ -3419,38 +3925,100 @@
         {:else}
           <div class="token-list">
             {#each [...namespaceClaims].sort( (left, right) => `${left.ecosystem || ''}:${left.namespace || ''}`.localeCompare(`${right.ecosystem || ''}:${right.namespace || ''}`) ) as claim}
-              <div class="token-row">
-                <div class="token-row__main">
-                  <div class="token-row__title">
-                    {claim.namespace || 'Unnamed claim'}
+              <div>
+                <div class="token-row">
+                  <div class="token-row__main">
+                    <div class="token-row__title">
+                      {claim.namespace || 'Unnamed claim'}
+                    </div>
+                    <div class="token-row__meta">
+                      <span>{ecosystemLabel(claim.ecosystem)}</span>
+                      {#if claim.created_at}<span
+                          >created {formatDate(claim.created_at)}</span
+                        >{/if}
+                    </div>
                   </div>
-                  <div class="token-row__meta">
-                    <span>{ecosystemLabel(claim.ecosystem)}</span>
-                    {#if claim.created_at}<span
-                        >created {formatDate(claim.created_at)}</span
-                      >{/if}
+                  <div class="token-row__actions">
+                    {#if claim.is_verified}
+                      <span class="badge badge-verified">Verified</span>
+                    {:else}
+                      <span class="badge badge-ecosystem"
+                        >Pending verification</span
+                      >
+                    {/if}
+                    {#if claim.can_manage && claim.id}
+                      {#if namespaceDeleteTargetId === claim.id}
+                        <button
+                          class="btn btn-secondary btn-sm"
+                          type="button"
+                          on:click={cancelNamespaceDeleteConfirmation}
+                          disabled={deletingNamespaceClaimId === claim.id}
+                          >Cancel</button
+                        >
+                      {:else}
+                        <button
+                          class="btn btn-secondary btn-sm"
+                          id={`namespace-delete-toggle-${claim.id}`}
+                          type="button"
+                          aria-label={`Delete namespace claim ${claim.namespace || 'Unnamed claim'}`}
+                          on:click={() => openNamespaceDeleteConfirmation(claim.id || '')}
+                          >Delete...</button
+                        >
+                      {/if}
+                    {/if}
                   </div>
                 </div>
-                <div class="token-row__actions">
-                  {#if claim.is_verified}
-                    <span class="badge badge-verified">Verified</span>
-                  {:else}
-                    <span class="badge badge-ecosystem"
-                      >Pending verification</span
-                    >
-                  {/if}
-                  {#if claim.can_manage && claim.id}
-                    <button
-                      class="btn btn-secondary btn-sm"
-                      type="button"
-                      on:click={() =>
-                        handleDeleteNamespace(
-                          claim.id,
-                          claim.namespace || 'this claim'
-                        )}>Delete</button
-                    >
-                  {/if}
-                </div>
+
+                {#if claim.can_manage && claim.id && namespaceDeleteTargetId === claim.id}
+                  <form
+                    class="alert alert-warning mt-4"
+                    id={`namespace-delete-form-${claim.id}`}
+                    on:submit={(event) =>
+                      handleDeleteNamespace(
+                        event,
+                        claim.id,
+                        claim.namespace || 'this claim'
+                      )}
+                  >
+                    <p class="mb-3">
+                      Deleting this namespace claim immediately removes the organization's claim to
+                      this ecosystem namespace.
+                    </p>
+                    <label class="mb-3 flex items-start gap-2">
+                      <input
+                        id={`namespace-delete-confirm-${claim.id}`}
+                        bind:checked={namespaceDeleteConfirmed}
+                        type="checkbox"
+                        name="confirm_delete"
+                        disabled={deletingNamespaceClaimId === claim.id}
+                      />
+                      <span>
+                        I understand deleting this namespace claim is immediate and cannot be
+                        undone.
+                      </span>
+                    </label>
+                    <div class="token-row__actions">
+                      <button
+                        class="btn btn-danger btn-sm"
+                        id={`namespace-delete-submit-${claim.id}`}
+                        type="submit"
+                        disabled={deletingNamespaceClaimId === claim.id}
+                      >
+                        {deletingNamespaceClaimId === claim.id
+                          ? 'Deleting…'
+                          : 'Delete namespace claim'}
+                      </button>
+                      <button
+                        class="btn btn-secondary btn-sm"
+                        type="button"
+                        on:click={cancelNamespaceDeleteConfirmation}
+                        disabled={deletingNamespaceClaimId === claim.id}
+                      >
+                        Keep claim
+                      </button>
+                    </div>
+                  </form>
+                {/if}
               </div>
             {/each}
           </div>
@@ -3556,17 +4124,56 @@
                     </select>
                   </div>
                 </div>
-                <div class="form-group" style="margin-bottom:12px;">
-                  <label class="flex items-start gap-2">
-                    <input type="checkbox" name="confirm" required />
-                    <span
-                      >I understand this namespace transfer is immediate.</span
-                    >
-                  </label>
-                </div>
-                <button type="submit" class="btn btn-danger"
-                  >Transfer namespace</button
-                >
+                {#if namespaceTransferConfirmationOpen}
+                  <div
+                    class="alert alert-warning"
+                    id="org-namespace-transfer-confirmation"
+                    style="margin-bottom:12px;"
+                  >
+                    <label class="flex items-start gap-2">
+                      <input
+                        id="org-namespace-transfer-confirm"
+                        bind:checked={namespaceTransferConfirmed}
+                        type="checkbox"
+                        name="confirm"
+                        disabled={transferringNamespaceOwnership}
+                      />
+                      <span
+                        >I understand this namespace transfer is immediate.</span
+                      >
+                    </label>
+                    <div class="token-row__actions" style="margin-top:12px;">
+                      <button
+                        id="org-namespace-transfer-submit"
+                        type="submit"
+                        class="btn btn-danger"
+                        disabled={transferringNamespaceOwnership}
+                      >
+                        {transferringNamespaceOwnership
+                          ? 'Transferring...'
+                          : 'Transfer namespace'}
+                      </button>
+                      <button
+                        type="button"
+                        class="btn btn-secondary"
+                        on:click={cancelNamespaceTransferConfirmation}
+                        disabled={transferringNamespaceOwnership}
+                      >
+                        Keep namespace claim
+                      </button>
+                    </div>
+                  </div>
+                {:else}
+                  <button
+                    id="org-namespace-transfer-toggle"
+                    type="button"
+                    class="btn btn-danger"
+                    aria-label="Review namespace claim transfer"
+                    on:click={openNamespaceTransferConfirmation}
+                  >
+                    Transfer namespace...
+                  </button>
+                {/if}
               </form>
             {/if}
           </div>
@@ -3695,18 +4302,57 @@
                   </select>
                 </div>
               </div>
-              <div class="form-group" style="margin-bottom:12px;">
-                <label class="flex items-start gap-2">
-                  <input type="checkbox" name="confirm" required />
-                  <span
-                    >I understand this package transfer is immediate and
-                    existing team grants will be removed.</span
-                  >
-                </label>
-              </div>
-              <button type="submit" class="btn btn-danger"
-                >Transfer package</button
-              >
+              {#if packageTransferConfirmationOpen}
+                <div
+                  class="alert alert-warning"
+                  id="org-package-transfer-confirmation"
+                  style="margin-bottom:12px;"
+                >
+                  <label class="flex items-start gap-2">
+                    <input
+                      id="org-package-transfer-confirm"
+                      bind:checked={packageTransferConfirmed}
+                      type="checkbox"
+                      name="confirm"
+                      disabled={transferringPackageOwnershipFlow}
+                    />
+                    <span
+                      >I understand this package transfer is immediate and
+                      existing team grants will be removed.</span
+                    >
+                  </label>
+                  <div class="token-row__actions" style="margin-top:12px;">
+                    <button
+                      id="org-package-transfer-submit"
+                      type="submit"
+                      class="btn btn-danger"
+                      disabled={transferringPackageOwnershipFlow}
+                    >
+                      {transferringPackageOwnershipFlow
+                        ? 'Transferring...'
+                        : 'Transfer package'}
+                    </button>
+                    <button
+                      type="button"
+                      class="btn btn-secondary"
+                      on:click={cancelPackageTransferConfirmation}
+                      disabled={transferringPackageOwnershipFlow}
+                    >
+                      Keep package
+                    </button>
+                  </div>
+                </div>
+              {:else}
+                <button
+                  id="org-package-transfer-toggle"
+                  type="button"
+                  class="btn btn-danger"
+                  aria-label="Review package ownership transfer"
+                  on:click={openPackageTransferConfirmation}
+                >
+                  Transfer package...
+                </button>
+              {/if}
             </form>
           {/if}
         </div>
