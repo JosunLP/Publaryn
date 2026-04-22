@@ -61,10 +61,33 @@ interface FetchScenario {
   canManageNamespaces: boolean;
   teamDeleteError: string | null;
   namespaceDeleteError: string | null;
+  invitationRevokeError: string | null;
+  memberRemoveError: string | null;
   ownershipTransferError: string | null;
   namespaceTransferError: string | null;
   repositoryTransferError: string | null;
   packageTransferError: string | null;
+  members: Array<{
+    user_id: string;
+    username: string;
+    display_name: string;
+    role: string;
+    joined_at: string;
+  }>;
+  invitations: Array<{
+    id?: string | null;
+    status?: string | null;
+    role?: string | null;
+    invited_user?: {
+      username?: string | null;
+      email?: string | null;
+    } | null;
+    invited_by?: {
+      username?: string | null;
+    } | null;
+    created_at?: string | null;
+    expires_at?: string | null;
+  }>;
   teams: Array<{
     name: string;
     slug: string;
@@ -90,6 +113,8 @@ interface FetchScenario {
   repositoryPackageCoverageRequests: string[];
   packagePageRequests: number[];
   invitationRequests: string[];
+  invitationRevokeCalls: string[];
+  memberRemoveCalls: string[];
   orgUpdateCalls: MutationCall[];
   ownershipTransfers: MutationCall[];
   orgMfaRequired: boolean;
@@ -109,6 +134,8 @@ const ORG_SLUG = 'source-org';
 const TARGET_ORG_SLUG = 'target-org';
 const NAMESPACE_CLAIM_ID = 'claim-001';
 const NAMESPACE_CLAIM_VALUE = '@source-org';
+const ACTIVE_INVITATION_ID = 'invite-001';
+const ACTIVE_INVITEE_EMAIL = 'new-maintainer@example.test';
 const apiClientModuleUrl = new URL('../src/api/client.ts', import.meta.url).href;
 const gotoCalls: string[] = [];
 const pageStore = writable<TestPageState>(buildPageState('https://example.test/'));
@@ -245,7 +272,6 @@ mock.module(apiClientModuleUrl, () => {
   };
 });
 
-const SearchPage = await import('../src/routes/search/+page.svelte');
 const OrgPage = await import('../src/routes/orgs/[slug]/+page.svelte');
 
 afterEach(() => {
@@ -650,6 +676,268 @@ describe('route-level multi-page org dataset coverage', () => {
 
       expect(scenario.namespaces.map((claim) => claim.id)).toContain(NAMESPACE_CLAIM_ID);
       expect(target.textContent).toContain(NAMESPACE_CLAIM_VALUE);
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace requires explicit confirmation before revoking an invitation', async () => {
+    const scenario = createFetchScenario();
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain(ACTIVE_INVITEE_EMAIL);
+      });
+
+      click(
+        queryRequiredButton(
+          target,
+          `#invitation-revoke-toggle-${ACTIVE_INVITATION_ID}`
+        )
+      );
+
+      await waitFor(() => {
+        expect(
+          queryRequiredFormBySelector(
+            target,
+            `#invitation-revoke-form-${ACTIVE_INVITATION_ID}`
+          )
+        ).toBeDefined();
+      });
+
+      submitForm(
+        queryRequiredFormBySelector(
+          target,
+          `#invitation-revoke-form-${ACTIVE_INVITATION_ID}`
+        )
+      );
+
+      await waitFor(() => {
+        expect(target.textContent).toContain(
+          'Please confirm that you want to revoke this invitation immediately.'
+        );
+      });
+
+      expect(scenario.invitationRevokeCalls).toEqual([]);
+      expect(target.textContent).toContain(ACTIVE_INVITEE_EMAIL);
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace revokes an invitation after explicit confirmation', async () => {
+    const scenario = createFetchScenario();
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain(ACTIVE_INVITEE_EMAIL);
+      });
+
+      click(
+        queryRequiredButton(
+          target,
+          `#invitation-revoke-toggle-${ACTIVE_INVITATION_ID}`
+        )
+      );
+
+      await waitFor(() => {
+        expect(
+          queryRequiredFormBySelector(
+            target,
+            `#invitation-revoke-form-${ACTIVE_INVITATION_ID}`
+          )
+        ).toBeDefined();
+      });
+
+      setChecked(
+        queryCheckbox(
+          target,
+          `#invitation-revoke-confirm-${ACTIVE_INVITATION_ID}`
+        ),
+        true
+      );
+      submitForm(
+        queryRequiredFormBySelector(
+          target,
+          `#invitation-revoke-form-${ACTIVE_INVITATION_ID}`
+        )
+      );
+
+      await waitFor(() => {
+        expect(scenario.invitationRevokeCalls).toEqual([
+          `/v1/orgs/${ORG_SLUG}/invitations/${ACTIVE_INVITATION_ID}`,
+        ]);
+        expect(target.textContent).toContain('Invitation revoked.');
+      });
+
+      expect(target.textContent).not.toContain(ACTIVE_INVITEE_EMAIL);
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace keeps invitation revoke confirmation open when revocation fails', async () => {
+    const scenario = createFetchScenario();
+    scenario.invitationRevokeError = 'Failed to revoke invitation.';
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain(ACTIVE_INVITEE_EMAIL);
+      });
+
+      click(
+        queryRequiredButton(
+          target,
+          `#invitation-revoke-toggle-${ACTIVE_INVITATION_ID}`
+        )
+      );
+
+      await waitFor(() => {
+        expect(
+          queryRequiredFormBySelector(
+            target,
+            `#invitation-revoke-form-${ACTIVE_INVITATION_ID}`
+          )
+        ).toBeDefined();
+      });
+
+      setChecked(
+        queryCheckbox(
+          target,
+          `#invitation-revoke-confirm-${ACTIVE_INVITATION_ID}`
+        ),
+        true
+      );
+      submitForm(
+        queryRequiredFormBySelector(
+          target,
+          `#invitation-revoke-form-${ACTIVE_INVITATION_ID}`
+        )
+      );
+
+      await waitFor(() => {
+        expect(target.textContent).toContain('Failed to revoke invitation.');
+        expect(scenario.invitationRevokeCalls).toEqual([]);
+        expect(
+          queryRequiredFormBySelector(
+            target,
+            `#invitation-revoke-form-${ACTIVE_INVITATION_ID}`
+          )
+        ).toBeDefined();
+      });
+
+      expect(target.textContent).toContain(ACTIVE_INVITEE_EMAIL);
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace requires explicit confirmation before removing a member', async () => {
+    const scenario = createFetchScenario();
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Admin User');
+      });
+
+      click(queryRequiredButton(target, '#member-remove-toggle-admin-user'));
+
+      await waitFor(() => {
+        expect(
+          queryRequiredFormBySelector(target, '#member-remove-form-admin-user')
+        ).toBeDefined();
+      });
+
+      submitForm(queryRequiredFormBySelector(target, '#member-remove-form-admin-user'));
+
+      await waitFor(() => {
+        expect(target.textContent).toContain(
+          'Please confirm that you want to remove this member from the organization.'
+        );
+      });
+
+      expect(scenario.memberRemoveCalls).toEqual([]);
+      expect(target.textContent).toContain('Admin User');
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace removes a member after explicit confirmation', async () => {
+    const scenario = createFetchScenario();
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Admin User');
+      });
+
+      click(queryRequiredButton(target, '#member-remove-toggle-admin-user'));
+
+      await waitFor(() => {
+        expect(
+          queryRequiredFormBySelector(target, '#member-remove-form-admin-user')
+        ).toBeDefined();
+      });
+
+      setChecked(
+        queryCheckbox(target, '#member-remove-confirm-admin-user'),
+        true
+      );
+      submitForm(queryRequiredFormBySelector(target, '#member-remove-form-admin-user'));
+
+      await waitFor(() => {
+        expect(scenario.memberRemoveCalls).toEqual([
+          `/v1/orgs/${ORG_SLUG}/members/admin-user`,
+        ]);
+        expect(target.textContent).toContain(
+          'Removed @admin-user from the organization.'
+        );
+      });
+
+      expect(target.querySelector('#member-remove-toggle-admin-user')).toBeNull();
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace keeps member removal confirmation open when removal fails', async () => {
+    const scenario = createFetchScenario();
+    scenario.memberRemoveError = 'Failed to remove member.';
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Admin User');
+      });
+
+      click(queryRequiredButton(target, '#member-remove-toggle-admin-user'));
+
+      await waitFor(() => {
+        expect(
+          queryRequiredFormBySelector(target, '#member-remove-form-admin-user')
+        ).toBeDefined();
+      });
+
+      setChecked(
+        queryCheckbox(target, '#member-remove-confirm-admin-user'),
+        true
+      );
+      submitForm(queryRequiredFormBySelector(target, '#member-remove-form-admin-user'));
+
+      await waitFor(() => {
+        expect(target.textContent).toContain('Failed to remove member.');
+        expect(scenario.memberRemoveCalls).toEqual([]);
+        expect(
+          queryRequiredFormBySelector(target, '#member-remove-form-admin-user')
+        ).toBeDefined();
+      });
+
+      expect(target.textContent).toContain('Admin User');
     } finally {
       unmount();
     }
@@ -1324,6 +1612,7 @@ describe('route-level multi-page org dataset coverage', () => {
   });
 
   test('org-scoped search loads repository filter options across multiple pages and submits the selected repository', async () => {
+    const SearchPage = await import('../src/routes/search/+page.svelte');
     const scenario = createFetchScenario();
     currentScenario = scenario;
     currentAuthToken = 'pub_test_token';
@@ -1365,6 +1654,7 @@ describe('route-level multi-page org dataset coverage', () => {
   });
 
   test('search results expose a secondary package-details link alongside security navigation', async () => {
+    const SearchPage = await import('../src/routes/search/+page.svelte');
     const scenario = createFetchScenario();
     currentScenario = scenario;
     currentAuthToken = 'pub_test_token';
@@ -1419,10 +1709,29 @@ function createFetchScenario(): FetchScenario {
     canManageNamespaces: true,
     teamDeleteError: null,
     namespaceDeleteError: null,
+    invitationRevokeError: null,
+    memberRemoveError: null,
     ownershipTransferError: null,
     namespaceTransferError: null,
     repositoryTransferError: null,
     packageTransferError: null,
+    members: members.map((member) => ({ ...member })),
+    invitations: [
+      {
+        id: ACTIVE_INVITATION_ID,
+        status: 'pending',
+        role: 'maintainer',
+        invited_user: {
+          username: 'new-maintainer',
+          email: ACTIVE_INVITEE_EMAIL,
+        },
+        invited_by: {
+          username: 'owner-user',
+        },
+        created_at: '2026-04-03T00:00:00Z',
+        expires_at: '2026-04-10T00:00:00Z',
+      },
+    ],
     teams: [
       {
         name: 'Release Engineering',
@@ -1452,6 +1761,8 @@ function createFetchScenario(): FetchScenario {
     repositoryPackageCoverageRequests: [],
     packagePageRequests: [],
     invitationRequests: [],
+    invitationRevokeCalls: [],
+    memberRemoveCalls: [],
     orgUpdateCalls: [],
     ownershipTransfers: [],
     orgMfaRequired: false,
@@ -1530,7 +1841,7 @@ async function handleApiRequest(
       ],
       packages,
       namespaces: scenario.namespaces,
-      invitations: scenario.canManageInvitations ? [] : [],
+      invitations: scenario.canManageInvitations ? scenario.invitations : [],
       team_management: {
         members_by_team_slug: scenario.canManageTeams
           ? {
@@ -1713,11 +2024,39 @@ async function handleApiRequest(
 
   if (method === 'GET' && requestPath === `/v1/orgs/${ORG_SLUG}/invitations`) {
     scenario.invitationRequests.push(url.toString());
-    return apiResponse({ invitations: [] });
+    return apiResponse({ invitations: scenario.invitations });
   }
 
   if (method === 'GET' && requestPath === `/v1/orgs/${ORG_SLUG}/members`) {
-    return apiResponse({ members });
+    return apiResponse({ members: scenario.members });
+  }
+
+  if (
+    method === 'DELETE' &&
+    requestPath === `/v1/orgs/${ORG_SLUG}/invitations/${ACTIVE_INVITATION_ID}`
+  ) {
+    if (scenario.invitationRevokeError) {
+      throw new TestApiError(500, { error: scenario.invitationRevokeError });
+    }
+    scenario.invitationRevokeCalls.push(requestPath);
+    scenario.invitations = scenario.invitations.filter(
+      (invitation) => invitation.id !== ACTIVE_INVITATION_ID
+    );
+    return apiResponse(null);
+  }
+
+  if (
+    method === 'DELETE' &&
+    requestPath === `/v1/orgs/${ORG_SLUG}/members/admin-user`
+  ) {
+    if (scenario.memberRemoveError) {
+      throw new TestApiError(500, { error: scenario.memberRemoveError });
+    }
+    scenario.memberRemoveCalls.push(requestPath);
+    scenario.members = scenario.members.filter(
+      (member) => member.username !== 'admin-user'
+    );
+    return apiResponse(null);
   }
 
   if (method === 'GET' && requestPath === `/v1/orgs/${ORG_SLUG}/teams`) {

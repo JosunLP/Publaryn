@@ -220,6 +220,10 @@
     'Please confirm the namespace transfer.';
   const PACKAGE_TRANSFER_CONFIRMATION_MESSAGE =
     'Please confirm the package transfer.';
+  const INVITATION_REVOKE_CONFIRMATION_MESSAGE =
+    'Please confirm that you want to revoke this invitation immediately.';
+  const MEMBER_REMOVE_CONFIRMATION_MESSAGE =
+    'Please confirm that you want to remove this member from the organization.';
   const NAMESPACE_DELETE_CONFIRMATION_MESSAGE =
     'Please confirm that you understand deleting this namespace claim is immediate and cannot be undone.';
   const REVIEW_TEAM_FALLBACK_LABEL = 'Team (no name)';
@@ -379,6 +383,12 @@
   let packageTransferConfirmationOpen = false;
   let packageTransferConfirmed = false;
   let transferringPackageOwnershipFlow = false;
+  let invitationRevokeTargetId: string | null = null;
+  let invitationRevokeConfirmed = false;
+  let revokingInvitationId: string | null = null;
+  let memberRemoveTargetUsername: string | null = null;
+  let memberRemoveConfirmed = false;
+  let removingMemberUsername: string | null = null;
   let teamDeleteTargetSlug: string | null = null;
   let teamDeleteConfirmed = false;
   let deletingTeamSlug: string | null = null;
@@ -635,6 +645,12 @@
     packageTransferConfirmationOpen = false;
     packageTransferConfirmed = false;
     transferringPackageOwnershipFlow = false;
+    invitationRevokeTargetId = null;
+    invitationRevokeConfirmed = false;
+    revokingInvitationId = null;
+    memberRemoveTargetUsername = null;
+    memberRemoveConfirmed = false;
+    removingMemberUsername = null;
     teamDeleteTargetSlug = null;
     teamDeleteConfirmed = false;
     deletingTeamSlug = null;
@@ -1164,14 +1180,43 @@
     error = null;
   }
 
-  async function handleRevokeInvitation(invitationId: string): Promise<void> {
+  function openInvitationRevokeConfirmation(invitationId: string): void {
+    invitationRevokeTargetId = invitationId;
+    invitationRevokeConfirmed = false;
+    revokingInvitationId = null;
+    notice = null;
+    error = null;
+  }
+
+  function cancelInvitationRevokeConfirmation(): void {
+    invitationRevokeTargetId = null;
+    invitationRevokeConfirmed = false;
+    revokingInvitationId = null;
+    error = null;
+  }
+
+  async function handleRevokeInvitation(
+    event: SubmitEvent,
+    invitationId: string
+  ): Promise<void> {
+    event.preventDefault();
+
+    if (!invitationRevokeConfirmed) {
+      notice = null;
+      error = INVITATION_REVOKE_CONFIRMATION_MESSAGE;
+      return;
+    }
+
+    revokingInvitationId = invitationId;
+    notice = null;
+    error = null;
+
     try {
       await revokeInvitation(slug, invitationId);
       await loadOrganizationPage({ notice: 'Invitation revoked.' });
     } catch (caughtError: unknown) {
-      await loadOrganizationPage({
-        error: toErrorMessage(caughtError, 'Failed to revoke invitation.'),
-      });
+      error = toErrorMessage(caughtError, 'Failed to revoke invitation.');
+      revokingInvitationId = null;
     }
   }
 
@@ -1203,16 +1248,45 @@
     }
   }
 
-  async function handleRemoveMember(username: string): Promise<void> {
+  function openMemberRemoveConfirmation(username: string): void {
+    memberRemoveTargetUsername = username;
+    memberRemoveConfirmed = false;
+    removingMemberUsername = null;
+    notice = null;
+    error = null;
+  }
+
+  function cancelMemberRemoveConfirmation(): void {
+    memberRemoveTargetUsername = null;
+    memberRemoveConfirmed = false;
+    removingMemberUsername = null;
+    error = null;
+  }
+
+  async function handleRemoveMember(
+    event: SubmitEvent,
+    username: string
+  ): Promise<void> {
+    event.preventDefault();
+
+    if (!memberRemoveConfirmed) {
+      notice = null;
+      error = MEMBER_REMOVE_CONFIRMATION_MESSAGE;
+      return;
+    }
+
+    removingMemberUsername = username;
+    notice = null;
+    error = null;
+
     try {
       await removeMember(slug, username);
       await loadOrganizationPage({
         notice: `Removed @${username} from the organization.`,
       });
     } catch (caughtError: unknown) {
-      await loadOrganizationPage({
-        error: toErrorMessage(caughtError, 'Failed to remove member.'),
-      });
+      error = toErrorMessage(caughtError, 'Failed to remove member.');
+      removingMemberUsername = null;
     }
   }
 
@@ -2470,53 +2544,113 @@
               </p>
             </div>
           {:else}
-            <div class="token-list">
-              {#each activeInvitations as invitation}
-                {@const inviteeLabel = formatOrgInvitationInvitee(invitation)}
-                {@const invitationEvent =
-                  describeOrgInvitationEvent(invitation)}
-                <div class="token-row">
-                  <div class="token-row__main">
-                    <div class="token-row__title">{inviteeLabel}</div>
-                    <div class="token-row__meta">
-                      {#if invitation.invited_user?.email}<span
-                          >{invitation.invited_user?.email}</span
-                        >{/if}
-                      <span>{formatRole(invitation.role || 'viewer')}</span>
-                      <span
-                        >sent by @{invitation.invited_by?.username ||
-                          'unknown'}</span
-                      >
-                      <span>sent {formatDate(invitation.created_at)}</span>
-                      {#if invitationEvent?.occurredAt}<span
-                          >{invitationEvent.label.toLowerCase()}
-                          {formatDate(invitationEvent.occurredAt)}</span
-                        >{/if}
+              <div class="token-list">
+                {#each activeInvitations as invitation}
+                  {@const inviteeLabel = formatOrgInvitationInvitee(invitation)}
+                  {@const invitationEvent =
+                    describeOrgInvitationEvent(invitation)}
+                  <div>
+                    <div class="token-row">
+                      <div class="token-row__main">
+                        <div class="token-row__title">{inviteeLabel}</div>
+                        <div class="token-row__meta">
+                          {#if invitation.invited_user?.email}<span
+                              >{invitation.invited_user?.email}</span
+                            >{/if}
+                          <span>{formatRole(invitation.role || 'viewer')}</span>
+                          <span
+                            >sent by @{invitation.invited_by?.username ||
+                              'unknown'}</span
+                          >
+                          <span>sent {formatDate(invitation.created_at)}</span>
+                          {#if invitationEvent?.occurredAt}<span
+                              >{invitationEvent.label.toLowerCase()}
+                              {formatDate(invitationEvent.occurredAt)}</span
+                            >{/if}
+                        </div>
+                        <div class="token-row__scopes">
+                          <span class="badge badge-ecosystem"
+                            >{formatOrgInvitationStatusLabel(
+                              invitation.status
+                            )}</span
+                          >
+                        </div>
+                      </div>
+                      {#if invitation.id}
+                        <div class="token-row__actions">
+                          {#if invitationRevokeTargetId === invitation.id}
+                            <button
+                              class="btn btn-secondary btn-sm"
+                              type="button"
+                              on:click={cancelInvitationRevokeConfirmation}
+                              disabled={revokingInvitationId === invitation.id}
+                              >Cancel</button
+                            >
+                          {:else}
+                            <button
+                              class="btn btn-secondary btn-sm"
+                              id={`invitation-revoke-toggle-${invitation.id}`}
+                              type="button"
+                              aria-label={`Revoke invitation for ${inviteeLabel}`}
+                              on:click={() =>
+                                openInvitationRevokeConfirmation(invitation.id || '')}
+                              >Revoke...</button
+                            >
+                          {/if}
+                        </div>
+                      {/if}
                     </div>
-                    <div class="token-row__scopes">
-                      <span class="badge badge-ecosystem"
-                        >{formatOrgInvitationStatusLabel(
-                          invitation.status
-                        )}</span
+                    {#if invitation.id &&
+                      invitationRevokeTargetId === invitation.id}
+                      <form
+                        class="alert alert-warning mt-4"
+                        id={`invitation-revoke-form-${invitation.id}`}
+                        on:submit={(event) =>
+                          handleRevokeInvitation(event, invitation.id || '')}
                       >
-                    </div>
+                        <p class="mb-3">
+                          Revoking this invitation immediately removes the
+                          recipient's ability to accept it.
+                        </p>
+                        <label class="mb-3 flex items-start gap-2">
+                          <input
+                            id={`invitation-revoke-confirm-${invitation.id}`}
+                            bind:checked={invitationRevokeConfirmed}
+                            type="checkbox"
+                            name="confirm_revoke"
+                            disabled={revokingInvitationId === invitation.id}
+                          />
+                          <span>
+                            I understand revoking this invitation is immediate.
+                          </span>
+                        </label>
+                        <div class="token-row__actions">
+                          <button
+                            class="btn btn-danger btn-sm"
+                            id={`invitation-revoke-submit-${invitation.id}`}
+                            type="submit"
+                            disabled={revokingInvitationId === invitation.id}
+                          >
+                            {revokingInvitationId === invitation.id
+                              ? 'Revoking…'
+                              : 'Revoke invitation'}
+                          </button>
+                          <button
+                            class="btn btn-secondary btn-sm"
+                            type="button"
+                            on:click={cancelInvitationRevokeConfirmation}
+                            disabled={revokingInvitationId === invitation.id}
+                          >
+                            Keep invitation
+                          </button>
+                        </div>
+                      </form>
+                    {/if}
                   </div>
-                  {#if invitation.id}
-                    <div class="token-row__actions">
-                      <button
-                        class="btn btn-secondary btn-sm"
-                        type="button"
-                        on:click={() =>
-                          handleRevokeInvitation(invitation.id || '')}
-                        >Revoke</button
-                      >
-                    </div>
-                  {/if}
-                </div>
-              {/each}
-            </div>
-          {/if}
-        </div>
+                {/each}
+              </div>
+            {/if}
+          </div>
 
         {#if showInvitationHistory && historicalInvitations.length > 0}
           <div class="settings-subsection">
@@ -2577,58 +2711,122 @@
         {:else}
           <div class="token-list">
             {#each members as member}
-              <div class="token-row">
-                <div class="token-row__main">
-                  <div class="token-row__title">
-                    {member.display_name || member.username || 'Unknown member'}
+              <div>
+                <div class="token-row">
+                  <div class="token-row__main">
+                    <div class="token-row__title">
+                      {member.display_name || member.username || 'Unknown member'}
+                    </div>
+                    <div class="token-row__meta">
+                      <span>@{member.username || 'unknown'}</span>
+                      <span>{formatRole(member.role || 'viewer')}</span>
+                      <span>joined {formatDate(member.joined_at)}</span>
+                    </div>
                   </div>
-                  <div class="token-row__meta">
-                    <span>@{member.username || 'unknown'}</span>
-                    <span>{formatRole(member.role || 'viewer')}</span>
-                    <span>joined {formatDate(member.joined_at)}</span>
-                  </div>
+                  {#if canManageMembers && member.role !== 'owner' && member.username}
+                    <div class="token-row__actions">
+                      <form
+                        class="flex flex-wrap items-center gap-2"
+                        on:submit={(event) =>
+                          handleUpdateMemberRole(
+                            event,
+                            member.username || '',
+                            member.role || 'viewer'
+                          )}
+                      >
+                        <label
+                          class="text-sm text-muted"
+                          for={`member-role-${member.username || 'member'}`}
+                          >Role</label
+                        >
+                        <select
+                          id={`member-role-${member.username || 'member'}`}
+                          name="role"
+                          class="form-input"
+                          style="width:auto; min-width:150px;"
+                        >
+                          {#each ORG_ROLE_OPTIONS as role}
+                            <option
+                              value={role.value}
+                              selected={role.value === (member.role || 'viewer')}
+                              >{role.label}</option
+                            >
+                          {/each}
+                        </select>
+                        <button class="btn btn-secondary btn-sm" type="submit"
+                          >Save</button
+                        >
+                      </form>
+                      {#if memberRemoveTargetUsername === member.username}
+                        <button
+                          class="btn btn-secondary btn-sm"
+                          type="button"
+                          on:click={cancelMemberRemoveConfirmation}
+                          disabled={removingMemberUsername === member.username}
+                          >Cancel</button
+                        >
+                      {:else}
+                        <button
+                          class="btn btn-danger btn-sm"
+                          id={`member-remove-toggle-${member.username}`}
+                          type="button"
+                          aria-label={`Remove member ${member.username}`}
+                          on:click={() =>
+                            openMemberRemoveConfirmation(member.username || '')}
+                          >Remove...</button
+                        >
+                      {/if}
+                    </div>
+                  {/if}
                 </div>
-                {#if canManageMembers && member.role !== 'owner' && member.username}
-                  <div class="token-row__actions">
-                    <form
-                      class="flex flex-wrap items-center gap-2"
-                      on:submit={(event) =>
-                        handleUpdateMemberRole(
-                          event,
-                          member.username || '',
-                          member.role || 'viewer'
-                        )}
-                    >
-                      <label
-                        class="text-sm text-muted"
-                        for={`member-role-${member.username || 'member'}`}
-                        >Role</label
+                {#if canManageMembers &&
+                  member.role !== 'owner' &&
+                  member.username &&
+                  memberRemoveTargetUsername === member.username}
+                  <form
+                    class="alert alert-warning mt-4"
+                    id={`member-remove-form-${member.username}`}
+                    on:submit={(event) =>
+                      handleRemoveMember(event, member.username || '')}
+                  >
+                    <p class="mb-3">
+                      Removing this member immediately revokes their
+                      organization access and delegated team access.
+                    </p>
+                    <label class="mb-3 flex items-start gap-2">
+                      <input
+                        id={`member-remove-confirm-${member.username}`}
+                        bind:checked={memberRemoveConfirmed}
+                        type="checkbox"
+                        name="confirm_remove"
+                        disabled={removingMemberUsername === member.username}
+                      />
+                      <span>
+                        I understand this member will immediately lose access to
+                        the organization.
+                      </span>
+                    </label>
+                    <div class="token-row__actions">
+                      <button
+                        class="btn btn-danger btn-sm"
+                        id={`member-remove-submit-${member.username}`}
+                        type="submit"
+                        disabled={removingMemberUsername === member.username}
                       >
-                      <select
-                        id={`member-role-${member.username || 'member'}`}
-                        name="role"
-                        class="form-input"
-                        style="width:auto; min-width:150px;"
+                        {removingMemberUsername === member.username
+                          ? 'Removing…'
+                          : 'Remove member'}
+                      </button>
+                      <button
+                        class="btn btn-secondary btn-sm"
+                        type="button"
+                        on:click={cancelMemberRemoveConfirmation}
+                        disabled={removingMemberUsername === member.username}
                       >
-                        {#each ORG_ROLE_OPTIONS as role}
-                          <option
-                            value={role.value}
-                            selected={role.value === (member.role || 'viewer')}
-                            >{role.label}</option
-                          >
-                        {/each}
-                      </select>
-                      <button class="btn btn-secondary btn-sm" type="submit"
-                        >Save</button
-                      >
-                    </form>
-                    <button
-                      class="btn btn-danger btn-sm"
-                      type="button"
-                      on:click={() => handleRemoveMember(member.username || '')}
-                      >Remove</button
-                    >
-                  </div>
+                        Keep member
+                      </button>
+                    </div>
+                  </form>
                 {/if}
               </div>
             {/each}
