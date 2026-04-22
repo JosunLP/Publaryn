@@ -441,12 +441,10 @@ describe('route-level multi-page org dataset coverage', () => {
       click(queryRequiredButton(target, `#team-delete-toggle-${TEAM_SLUG}`));
 
       await waitFor(() => {
-        expect(
-          queryRequiredForm(target.querySelector(`#team-delete-form-${TEAM_SLUG}`))
-        ).toBeDefined();
+        expect(queryRequiredFormBySelector(target, `#team-delete-form-${TEAM_SLUG}`)).toBeDefined();
       });
 
-      submitForm(queryRequiredForm(target.querySelector(`#team-delete-form-${TEAM_SLUG}`)));
+      submitForm(queryRequiredFormBySelector(target, `#team-delete-form-${TEAM_SLUG}`));
 
       await waitFor(() => {
         expect(target.textContent).toContain(
@@ -472,16 +470,14 @@ describe('route-level multi-page org dataset coverage', () => {
       click(queryRequiredButton(target, `#team-delete-toggle-${TEAM_SLUG}`));
 
       await waitFor(() => {
-        expect(
-          queryRequiredForm(target.querySelector(`#team-delete-form-${TEAM_SLUG}`))
-        ).toBeDefined();
+        expect(queryRequiredFormBySelector(target, `#team-delete-form-${TEAM_SLUG}`)).toBeDefined();
       });
 
       setChecked(
         queryRequiredCheckbox(target, `#team-delete-confirm-${TEAM_SLUG}`),
         true
       );
-      submitForm(queryRequiredForm(target.querySelector(`#team-delete-form-${TEAM_SLUG}`)));
+      submitForm(queryRequiredFormBySelector(target, `#team-delete-form-${TEAM_SLUG}`));
 
       await waitFor(() => {
         expect(scenario.teamDeleteCalls).toEqual([
@@ -523,9 +519,7 @@ describe('route-level multi-page org dataset coverage', () => {
       await waitFor(() => {
         expect(target.textContent).toContain('Failed to delete team.');
         expect(scenario.teamDeleteCalls).toEqual([]);
-        expect(
-          queryRequiredForm(target.querySelector(`#team-delete-form-${TEAM_SLUG}`))
-        ).toBeDefined();
+        expect(queryRequiredFormBySelector(target, `#team-delete-form-${TEAM_SLUG}`)).toBeDefined();
       });
 
       expect(target.textContent).toContain('Release Engineering');
@@ -547,14 +541,12 @@ describe('route-level multi-page org dataset coverage', () => {
 
       await waitFor(() => {
         expect(
-          queryRequiredForm(
-            target.querySelector(`#namespace-delete-form-${NAMESPACE_CLAIM_ID}`)
-          )
+          queryRequiredFormBySelector(target, `#namespace-delete-form-${NAMESPACE_CLAIM_ID}`)
         ).toBeDefined();
       });
 
       submitForm(
-        queryRequiredForm(target.querySelector(`#namespace-delete-form-${NAMESPACE_CLAIM_ID}`))
+        queryRequiredFormBySelector(target, `#namespace-delete-form-${NAMESPACE_CLAIM_ID}`)
       );
 
       await waitFor(() => {
@@ -582,9 +574,7 @@ describe('route-level multi-page org dataset coverage', () => {
 
       await waitFor(() => {
         expect(
-          queryRequiredForm(
-            target.querySelector(`#namespace-delete-form-${NAMESPACE_CLAIM_ID}`)
-          )
+          queryRequiredFormBySelector(target, `#namespace-delete-form-${NAMESPACE_CLAIM_ID}`)
         ).toBeDefined();
       });
 
@@ -593,7 +583,7 @@ describe('route-level multi-page org dataset coverage', () => {
         true
       );
       submitForm(
-        queryRequiredForm(target.querySelector(`#namespace-delete-form-${NAMESPACE_CLAIM_ID}`))
+        queryRequiredFormBySelector(target, `#namespace-delete-form-${NAMESPACE_CLAIM_ID}`)
       );
 
       await waitFor(() => {
@@ -627,9 +617,7 @@ describe('route-level multi-page org dataset coverage', () => {
 
       await waitFor(() => {
         expect(
-          queryRequiredForm(
-            target.querySelector(`#namespace-delete-form-${NAMESPACE_CLAIM_ID}`)
-          )
+          queryRequiredFormBySelector(target, `#namespace-delete-form-${NAMESPACE_CLAIM_ID}`)
         ).toBeDefined();
       });
 
@@ -638,16 +626,14 @@ describe('route-level multi-page org dataset coverage', () => {
         true
       );
       submitForm(
-        queryRequiredForm(target.querySelector(`#namespace-delete-form-${NAMESPACE_CLAIM_ID}`))
+        queryRequiredFormBySelector(target, `#namespace-delete-form-${NAMESPACE_CLAIM_ID}`)
       );
 
       await waitFor(() => {
         expect(target.textContent).toContain('Failed to delete namespace claim.');
         expect(scenario.namespaceDeleteCalls).toEqual([]);
         expect(
-          queryRequiredForm(
-            target.querySelector(`#namespace-delete-form-${NAMESPACE_CLAIM_ID}`)
-          )
+          queryRequiredFormBySelector(target, `#namespace-delete-form-${NAMESPACE_CLAIM_ID}`)
         ).toBeDefined();
       });
 
@@ -1575,6 +1561,13 @@ function queryRequiredForm(root: Element | ParentNode | null): HTMLFormElement {
   }
 
   return root;
+}
+
+function queryRequiredFormBySelector(
+  root: ParentNode | Element,
+  selector: string
+): HTMLFormElement {
+  return queryRequiredForm(root.querySelector(selector));
 }
 
 function queryCheckbox(

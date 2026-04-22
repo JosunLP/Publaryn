@@ -585,15 +585,21 @@
     });
   }
 
+  function resolveLoadNotice(
+    options: { notice?: string | null },
+    fallbackNotice: string | null
+  ): string | null {
+    const explicitNoticeProvided = Object.hasOwn(options, 'notice');
+    return explicitNoticeProvided ? options.notice ?? null : fallbackNotice;
+  }
+
   async function loadOrganizationPage(
     options: { notice?: string | null; error?: string | null } = {}
   ): Promise<void> {
-    const hasNoticeOverride = Object.hasOwn(options, 'notice');
-
     loading = true;
     notFound = false;
     loadError = null;
-    notice = hasNoticeOverride ? options.notice ?? null : pageNotice;
+    notice = resolveLoadNotice(options, pageNotice);
     error = options.error ?? null;
     canViewPeopleWorkspace = false;
     securityFindingsByPackageKey = {};
