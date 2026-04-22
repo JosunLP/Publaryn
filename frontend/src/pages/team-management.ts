@@ -7,6 +7,7 @@ import type {
   OrgPackageSummary,
   OrgRepositoryListResponse,
   OrgRepositorySummary,
+  OrgWorkspaceTeamManagementBootstrap,
   Team,
   TeamMember,
   TeamMemberListResponse,
@@ -101,6 +102,56 @@ export interface TeamManagementStateMaps {
   teamPackageAccessBySlug: Record<string, TeamPackageAccessState>;
   teamRepositoryAccessBySlug: Record<string, TeamRepositoryAccessState>;
   teamNamespaceAccessBySlug: Record<string, TeamNamespaceAccessState>;
+}
+
+export function buildTeamManagementStateMapsFromBootstrap(
+  bootstrap?: OrgWorkspaceTeamManagementBootstrap | null
+): TeamManagementStateMaps {
+  const membersByTeamSlug = bootstrap?.members_by_team_slug || {};
+  const packageAccessByTeamSlug = bootstrap?.package_access_by_team_slug || {};
+  const repositoryAccessByTeamSlug =
+    bootstrap?.repository_access_by_team_slug || {};
+  const namespaceAccessByTeamSlug =
+    bootstrap?.namespace_access_by_team_slug || {};
+
+  return {
+    teamMembersBySlug: Object.fromEntries(
+      Object.entries(membersByTeamSlug).map(([teamSlug, members]) => [
+        teamSlug,
+        {
+          members: members || [],
+          load_error: null,
+        },
+      ])
+    ),
+    teamPackageAccessBySlug: Object.fromEntries(
+      Object.entries(packageAccessByTeamSlug).map(([teamSlug, grants]) => [
+        teamSlug,
+        {
+          grants: grants || [],
+          load_error: null,
+        },
+      ])
+    ),
+    teamRepositoryAccessBySlug: Object.fromEntries(
+      Object.entries(repositoryAccessByTeamSlug).map(([teamSlug, grants]) => [
+        teamSlug,
+        {
+          grants: grants || [],
+          load_error: null,
+        },
+      ])
+    ),
+    teamNamespaceAccessBySlug: Object.fromEntries(
+      Object.entries(namespaceAccessByTeamSlug).map(([teamSlug, grants]) => [
+        teamSlug,
+        {
+          grants: grants || [],
+          load_error: null,
+        },
+      ])
+    ),
+  };
 }
 
 export interface OrgMembersState {

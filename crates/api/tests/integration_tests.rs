@@ -740,6 +740,48 @@ async fn list_org_repositories(
     (status, body)
 }
 
+/// List aggregated repository package coverage for an organization and return the response.
+async fn list_org_repository_package_coverage(
+    app: &axum::Router,
+    jwt: Option<&str>,
+    org_slug: &str,
+) -> (StatusCode, Value) {
+    let mut request = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/v1/orgs/{org_slug}/repository-package-coverage"));
+
+    if let Some(jwt) = jwt {
+        request = request.header(header::AUTHORIZATION, format!("Bearer {jwt}"));
+    }
+
+    let req = request.body(Body::empty()).unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// Load aggregated bootstrap data for an organization workspace and return the response.
+async fn get_org_workspace_bootstrap(
+    app: &axum::Router,
+    jwt: Option<&str>,
+    org_slug: &str,
+) -> (StatusCode, Value) {
+    let mut request = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/v1/orgs/{org_slug}/workspace"));
+
+    if let Some(jwt) = jwt {
+        request = request.header(header::AUTHORIZATION, format!("Bearer {jwt}"));
+    }
+
+    let req = request.body(Body::empty()).unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
 /// List security findings aggregated for an organization and return the response.
 async fn list_org_security_findings(
     app: &axum::Router,
@@ -3461,6 +3503,457 @@ async fn test_org_repository_list_respects_visibility_and_package_counts(pool: P
     assert_eq!(anonymous_repositories[0]["slug"], "acme-public");
     assert_eq!(anonymous_repositories[0]["visibility"], "public");
     assert_eq!(anonymous_repositories[0]["package_count"], 1);
+
+    let (status, owner_coverage_body) =
+        list_org_repository_package_coverage(&app, Some(&jwt), "acme-corp").await;
+    assert_eq!(status, StatusCode::OK);
+    let owner_coverage = owner_coverage_body["repositories"]
+        .as_array()
+        .expect("owner repository coverage should be an array");
+    assert_eq!(owner_coverage.len(), 2, "response: {owner_coverage_body}");
+    let owner_public_coverage = owner_coverage
+        .iter()
+        .find(|repo| repo["repository_slug"] == "acme-public")
+        .expect("public repository coverage should be present for owner");
+    let owner_public_packages = owner_public_coverage["packages"]
+        .as_array()
+        .expect("owner public coverage packages should be an array");
+    assert_eq!(
+        owner_public_packages.len(),
+        2,
+        "response: {owner_coverage_body}"
+    );
+    for package_name in ["acme-public-widget", "acme-private-widget"] {
+        assert!(
+            owner_public_packages
+                .iter()
+                .any(|package| package["name"] == package_name),
+            "expected {package_name} in response: {owner_coverage_body}"
+        );
+    }
+    let owner_internal_coverage = owner_coverage
+        .iter()
+        .find(|repo| repo["repository_slug"] == "acme-internal")
+        .expect("internal repository coverage should be present for owner");
+    let owner_internal_packages = owner_internal_coverage["packages"]
+        .as_array()
+        .expect("owner internal coverage packages should be an array");
+    assert_eq!(
+        owner_internal_packages.len(),
+        1,
+        "response: {owner_coverage_body}"
+    );
+    assert_eq!(owner_internal_packages[0]["name"], "acme-internal-widget");
+
+    let (status, anonymous_coverage_body) =
+        list_org_repository_package_coverage(&app, None, "acme-corp").await;
+    assert_eq!(status, StatusCode::OK);
+    let anonymous_coverage = anonymous_coverage_body["repositories"]
+        .as_array()
+        .expect("anonymous repository coverage should be an array");
+    assert_eq!(
+        anonymous_coverage.len(),
+        1,
+        "response: {anonymous_coverage_body}"
+    );
+    assert_eq!(anonymous_coverage[0]["repository_slug"], "acme-public");
+    let anonymous_coverage_packages = anonymous_coverage[0]["packages"]
+        .as_array()
+        .expect("anonymous repository coverage packages should be an array");
+    assert_eq!(
+        anonymous_coverage_packages.len(),
+        1,
+        "response: {anonymous_coverage_body}"
+    );
+    assert_eq!(anonymous_coverage_packages[0]["name"], "acme-public-widget");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_org_workspace_bootstrap_aggregates_initial_workspace_data(pool: PgPool) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    register_user(&app, "charlie", "charlie@test.dev", "super_secret_pw!").await;
+    let owner_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &owner_jwt, "Acme Corp", "acme-corp").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id = org_body["id"].as_str().expect("org id should be returned");
+    let org_uuid = Uuid::parse_str(org_id).expect("org id should be a uuid");
+
+    let (status, team_body) = create_team(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        "Release Engineering",
+        "release-engineering",
+        Some("Owns release workflows."),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected team response: {team_body}"
+    );
+
+    let (status, member_body) =
+        add_org_member(&app, &owner_jwt, "acme-corp", "bob", "viewer").await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected org member response: {member_body}"
+    );
+
+    let (status, team_member_body) =
+        add_team_member_to_team(&app, &owner_jwt, "acme-corp", "release-engineering", "bob").await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected team member response: {team_member_body}"
+    );
+
+    let (status, public_repository_body) = create_repository_with_options(
+        &app,
+        &owner_jwt,
+        "Acme Public",
+        "acme-public",
+        Some(org_id),
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected public repository response: {public_repository_body}"
+    );
+
+    let (status, internal_repository_body) = create_repository_with_options(
+        &app,
+        &owner_jwt,
+        "Acme Internal",
+        "acme-internal",
+        Some(org_id),
+        Some("private"),
+        Some("internal_org"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected internal repository response: {internal_repository_body}"
+    );
+
+    let (status, public_package_body) = create_package_with_options(
+        &app,
+        &owner_jwt,
+        "npm",
+        "acme-public-widget",
+        "acme-public",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected public package response: {public_package_body}"
+    );
+
+    let (status, internal_package_body) = create_package_with_options(
+        &app,
+        &owner_jwt,
+        "npm",
+        "acme-internal-widget",
+        "acme-internal",
+        Some("internal_org"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected internal package response: {internal_package_body}"
+    );
+
+    let (status, release_body) =
+        create_release_for_package(&app, &owner_jwt, "npm", "acme-public-widget", "1.0.0").await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected release response: {release_body}"
+    );
+
+    let public_release_id = get_release_id(&pool, "npm", "acme-public-widget", "1.0.0").await;
+    insert_security_finding(
+        &pool,
+        public_release_id,
+        "vulnerability",
+        "high",
+        "Public bootstrap issue",
+        false,
+    )
+    .await;
+
+    let (status, namespace_body) =
+        create_namespace_claim(&app, &owner_jwt, "npm", "@acme", Some(org_id)).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected namespace response: {namespace_body}"
+    );
+    let namespace_claim_id = namespace_body["id"]
+        .as_str()
+        .expect("namespace claim id should be returned");
+
+    let (status, team_package_access_body) = grant_team_package_access(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        "release-engineering",
+        "npm",
+        "acme-public-widget",
+        &["write_metadata"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team package access response: {team_package_access_body}"
+    );
+
+    let (status, team_repository_access_body) = grant_team_repository_access(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        "release-engineering",
+        "acme-internal",
+        &["publish"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team repository access response: {team_repository_access_body}"
+    );
+
+    let (status, team_namespace_access_body) = grant_team_namespace_access(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        "release-engineering",
+        namespace_claim_id,
+        &["admin"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team namespace access response: {team_namespace_access_body}"
+    );
+
+    let (status, invitation_body) =
+        send_org_invitation(&app, &owner_jwt, "acme-corp", "charlie", "viewer", 7).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected invitation response: {invitation_body}"
+    );
+
+    let (status, owner_bootstrap_body) =
+        get_org_workspace_bootstrap(&app, Some(&owner_jwt), "acme-corp").await;
+    assert_eq!(status, StatusCode::OK, "response: {owner_bootstrap_body}");
+    assert_eq!(owner_bootstrap_body["org"]["slug"], "acme-corp");
+    assert_eq!(
+        owner_bootstrap_body["org"]["capabilities"]["can_manage_invitations"],
+        true
+    );
+    assert_eq!(
+        owner_bootstrap_body["teams"]
+            .as_array()
+            .expect("teams should be an array")
+            .len(),
+        1
+    );
+    assert_eq!(
+        owner_bootstrap_body["repositories"]
+            .as_array()
+            .expect("repositories should be an array")
+            .len(),
+        2
+    );
+    assert_eq!(
+        owner_bootstrap_body["repository_package_coverage"]
+            .as_array()
+            .expect("repository coverage should be an array")
+            .len(),
+        2
+    );
+    assert_eq!(
+        owner_bootstrap_body["packages"]
+            .as_array()
+            .expect("packages should be an array")
+            .len(),
+        2
+    );
+    assert_eq!(
+        owner_bootstrap_body["namespaces"]
+            .as_array()
+            .expect("namespaces should be an array")
+            .len(),
+        1
+    );
+    assert_eq!(
+        owner_bootstrap_body["invitations"]
+            .as_array()
+            .expect("invitations should be an array")
+            .len(),
+        1
+    );
+    assert_eq!(
+        owner_bootstrap_body["security"]["summary"]["open_findings"],
+        1
+    );
+    assert_eq!(
+        owner_bootstrap_body["security"]["summary"]["affected_packages"],
+        1
+    );
+    assert_eq!(
+        owner_bootstrap_body["team_management"]["members_by_team_slug"]["release-engineering"]
+            .as_array()
+            .expect("team members should be an array")
+            .len(),
+        1
+    );
+    assert_eq!(
+        owner_bootstrap_body["team_management"]["members_by_team_slug"]["release-engineering"][0]
+            ["username"],
+        "bob"
+    );
+    assert_eq!(
+        owner_bootstrap_body["team_management"]["package_access_by_team_slug"]
+            ["release-engineering"]
+            .as_array()
+            .expect("team package access should be an array")
+            .len(),
+        1
+    );
+    assert_eq!(
+        owner_bootstrap_body["team_management"]["package_access_by_team_slug"]
+            ["release-engineering"][0]["name"],
+        "acme-public-widget"
+    );
+    assert_eq!(
+        owner_bootstrap_body["team_management"]["repository_access_by_team_slug"]
+            ["release-engineering"]
+            .as_array()
+            .expect("team repository access should be an array")
+            .len(),
+        1
+    );
+    assert_eq!(
+        owner_bootstrap_body["team_management"]["repository_access_by_team_slug"]
+            ["release-engineering"][0]["slug"],
+        "acme-internal"
+    );
+    assert_eq!(
+        owner_bootstrap_body["team_management"]["namespace_access_by_team_slug"]
+            ["release-engineering"]
+            .as_array()
+            .expect("team namespace access should be an array")
+            .len(),
+        1
+    );
+    assert_eq!(
+        owner_bootstrap_body["team_management"]["namespace_access_by_team_slug"]
+            ["release-engineering"][0]["namespace"],
+        "@acme"
+    );
+    assert!(
+        owner_bootstrap_body["repository_package_coverage"]
+            .as_array()
+            .expect("repository coverage should be an array")
+            .iter()
+            .any(|entry| entry["repository_slug"] == "acme-internal"),
+        "expected internal repository coverage in response: {owner_bootstrap_body}"
+    );
+
+    let (status, anonymous_bootstrap_body) =
+        get_org_workspace_bootstrap(&app, None, "acme-corp").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "response: {anonymous_bootstrap_body}"
+    );
+    assert_eq!(
+        anonymous_bootstrap_body["teams"]
+            .as_array()
+            .expect("anonymous teams should be an array")
+            .len(),
+        0
+    );
+    assert_eq!(
+        anonymous_bootstrap_body["invitations"]
+            .as_array()
+            .expect("anonymous invitations should be an array")
+            .len(),
+        0
+    );
+    assert_eq!(
+        anonymous_bootstrap_body["repositories"]
+            .as_array()
+            .expect("anonymous repositories should be an array")
+            .len(),
+        1
+    );
+    assert_eq!(
+        anonymous_bootstrap_body["packages"]
+            .as_array()
+            .expect("anonymous packages should be an array")
+            .len(),
+        1
+    );
+    assert_eq!(
+        anonymous_bootstrap_body["repository_package_coverage"]
+            .as_array()
+            .expect("anonymous repository coverage should be an array")
+            .len(),
+        1
+    );
+    assert_eq!(
+        anonymous_bootstrap_body["namespaces"]
+            .as_array()
+            .expect("anonymous namespaces should be an array")
+            .len(),
+        1
+    );
+    assert_eq!(
+        anonymous_bootstrap_body["security"]["summary"]["open_findings"],
+        1
+    );
+    assert_eq!(
+        anonymous_bootstrap_body["security"]["summary"]["affected_packages"],
+        1
+    );
+    assert_eq!(
+        anonymous_bootstrap_body["team_management"]["members_by_team_slug"],
+        json!({})
+    );
+    assert_eq!(
+        anonymous_bootstrap_body["team_management"]["package_access_by_team_slug"],
+        json!({})
+    );
+    assert_eq!(
+        anonymous_bootstrap_body["team_management"]["repository_access_by_team_slug"],
+        json!({})
+    );
+    assert_eq!(
+        anonymous_bootstrap_body["team_management"]["namespace_access_by_team_slug"],
+        json!({})
+    );
+
+    let namespace_owner_org_id = anonymous_bootstrap_body["namespaces"][0]["owner_org_id"]
+        .as_str()
+        .expect("namespace owner org id should be returned");
+    assert_eq!(namespace_owner_org_id, org_uuid.to_string());
 }
 
 #[sqlx::test(migrations = "../../migrations")]

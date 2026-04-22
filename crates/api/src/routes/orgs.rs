@@ -7,8 +7,8 @@ use axum::{
 };
 use csv::WriterBuilder;
 use serde::Deserialize;
-use sqlx::{Postgres, QueryBuilder, Row};
-use std::collections::{BTreeSet, HashMap};
+use sqlx::{PgPool, Postgres, QueryBuilder, Row};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::str::FromStr;
 use uuid::Uuid;
 
@@ -25,11 +25,13 @@ use publaryn_core::{
 use crate::{
     error::{ApiError, ApiResult},
     request_auth::{
-        actor_can_access_org_member_directory_by_id, actor_can_transfer_package_by_id,
+        actor_can_access_org_member_directory_by_id, actor_can_manage_namespace_claim_by_id,
+        actor_can_transfer_namespace_claim_by_id, actor_can_transfer_package_by_id,
         actor_can_transfer_repository_by_id, actor_org_capabilities_by_id,
         ensure_org_admin_by_slug, ensure_org_audit_access_by_slug, ensure_org_member_by_slug,
-        AuthenticatedIdentity, OptionalAuthenticatedIdentity,
+        AuthenticatedIdentity, OptionalAuthenticatedIdentity, OrgActorCapabilities,
     },
+    routes::org_invitations::load_org_invitation_admin_payloads,
     scopes::{ensure_scope, SCOPE_ORGS_TRANSFER, SCOPE_ORGS_WRITE, SCOPE_PACKAGES_WRITE},
     state::AppState,
 };
@@ -89,6 +91,14 @@ pub fn router() -> Router<AppState> {
             put(replace_team_namespace_access).delete(remove_team_namespace_access),
         )
         .route("/v1/orgs/{slug}/repositories", get(list_org_repositories))
+        .route(
+            "/v1/orgs/{slug}/workspace",
+            get(get_org_workspace_bootstrap),
+        )
+        .route(
+            "/v1/orgs/{slug}/repository-package-coverage",
+            get(list_org_repository_package_coverage),
+        )
         .route(
             "/v1/orgs/{slug}/security-findings",
             get(list_org_security_findings),
@@ -185,31 +195,77 @@ async fn get_org(
     identity: OptionalAuthenticatedIdentity,
     Path(slug): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let row = sqlx::query(
-        "SELECT id, name, slug, description, website, email, is_verified, mfa_required, created_at \
-         FROM organizations WHERE slug = $1",
-    )
-    .bind(&slug)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|e| ApiError(Error::Database(e)))?
-    .ok_or_else(|| ApiError(Error::NotFound(format!("Organization '{slug}' not found"))))?;
-    let org_id: Uuid = row
-        .try_get("id")
-        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
-    let capabilities = actor_org_capabilities_by_id(&state.db, org_id, identity.user_id()).await?;
+    let (_, _, org_payload) = load_org_detail_payload(&state.db, &slug, identity.user_id()).await?;
+    Ok(Json(org_payload))
+}
+
+async fn get_org_workspace_bootstrap(
+    State(state): State<AppState>,
+    identity: OptionalAuthenticatedIdentity,
+    Path(slug): Path<String>,
+    Query(query): Query<OrgSecurityFindingsQuery>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let actor_user_id = identity.user_id();
+    let (org_id, capabilities, org_payload) =
+        load_org_detail_payload(&state.db, &slug, actor_user_id).await?;
+    let can_view_non_public =
+        actor_can_access_org_member_directory_by_id(&state.db, org_id, actor_user_id).await?;
+    let security_filters = resolve_org_security_filters(&query)?;
+
+    let teams_future = async {
+        if capabilities.can_view_member_directory && actor_user_id.is_some() {
+            load_org_team_payloads(&state.db, org_id).await
+        } else {
+            Ok(Vec::new())
+        }
+    };
+    let invitations_future = async {
+        if capabilities.can_manage_invitations && actor_user_id.is_some() {
+            load_org_invitation_admin_payloads(&state.db, org_id, true).await
+        } else {
+            Ok(Vec::new())
+        }
+    };
+    let security_future = load_org_security_payload(
+        &state.db,
+        org_id,
+        can_view_non_public,
+        &identity,
+        &security_filters,
+    );
+    let team_management_future =
+        load_org_team_management_payload(&state.db, &capabilities, actor_user_id, org_id);
+
+    let (
+        teams,
+        repositories,
+        repository_package_coverage,
+        packages,
+        namespaces,
+        invitations,
+        team_management,
+        security,
+    ) = tokio::try_join!(
+        teams_future,
+        load_all_org_repository_payloads(&state.db, org_id, can_view_non_public, actor_user_id),
+        load_org_repository_package_coverage_payloads(&state.db, org_id, can_view_non_public),
+        load_all_org_package_payloads(&state.db, org_id, can_view_non_public, actor_user_id),
+        load_org_namespace_payloads(&state.db, org_id, actor_user_id),
+        invitations_future,
+        team_management_future,
+        security_future,
+    )?;
 
     Ok(Json(serde_json::json!({
-        "id": Some(org_id),
-        "name": row.try_get::<String, _>("name").ok(),
-        "slug": row.try_get::<String, _>("slug").ok(),
-        "description": row.try_get::<Option<String>, _>("description").ok().flatten(),
-        "website": row.try_get::<Option<String>, _>("website").ok().flatten(),
-        "email": row.try_get::<Option<String>, _>("email").ok().flatten(),
-        "is_verified": row.try_get::<bool, _>("is_verified").ok(),
-        "mfa_required": row.try_get::<bool, _>("mfa_required").ok(),
-        "created_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at").ok(),
-        "capabilities": capabilities,
+        "org": org_payload,
+        "teams": teams,
+        "repositories": repositories,
+        "repository_package_coverage": repository_package_coverage,
+        "packages": packages,
+        "namespaces": namespaces,
+        "invitations": invitations,
+        "team_management": team_management,
+        "security": security,
     })))
 }
 
@@ -259,6 +315,12 @@ struct ResolvedOrgSecurityFilters {
     severities: Vec<String>,
     ecosystem: Option<String>,
     package: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ResolvedOrgReadScope {
+    org_id: Uuid,
+    can_view_non_public: bool,
 }
 
 async fn update_org(
@@ -2480,19 +2542,11 @@ async fn list_org_packages(
         .min(100);
     let page: i64 = q.get("page").and_then(|s| s.parse().ok()).unwrap_or(1_i64);
     let offset = (page - 1) * limit;
-    let org_row = sqlx::query("SELECT id FROM organizations WHERE slug = $1")
-        .bind(&slug)
-        .fetch_optional(&state.db)
-        .await
-        .map_err(|e| ApiError(Error::Database(e)))?
-        .ok_or_else(|| ApiError(Error::NotFound(format!("Organization '{slug}' not found"))))?;
-
-    let org_id: Uuid = org_row
-        .try_get("id")
-        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
     let actor_user_id = identity.user_id();
-    let can_view_non_public =
-        actor_can_access_org_member_directory_by_id(&state.db, org_id, actor_user_id).await?;
+    let ResolvedOrgReadScope {
+        org_id,
+        can_view_non_public,
+    } = resolve_org_read_scope(&state.db, &slug, actor_user_id).await?;
 
     let rows = sqlx::query(
         "SELECT p.id, p.name, p.ecosystem, p.description, p.download_count, p.created_at \
@@ -2546,19 +2600,11 @@ async fn list_org_repositories(
         .min(100);
     let page: i64 = q.get("page").and_then(|s| s.parse().ok()).unwrap_or(1_i64);
     let offset = (page - 1) * limit;
-    let org_row = sqlx::query("SELECT id FROM organizations WHERE slug = $1")
-        .bind(&slug)
-        .fetch_optional(&state.db)
-        .await
-        .map_err(|e| ApiError(Error::Database(e)))?
-        .ok_or_else(|| ApiError(Error::NotFound(format!("Organization '{slug}' not found"))))?;
-
-    let org_id: Uuid = org_row
-        .try_get("id")
-        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
     let actor_user_id = identity.user_id();
-    let can_view_non_public =
-        actor_can_access_org_member_directory_by_id(&state.db, org_id, actor_user_id).await?;
+    let ResolvedOrgReadScope {
+        org_id,
+        can_view_non_public,
+    } = resolve_org_read_scope(&state.db, &slug, actor_user_id).await?;
 
     let rows = sqlx::query(
         "SELECT r.id, r.name, r.slug, r.description, r.kind::text AS kind, \
@@ -2605,6 +2651,542 @@ async fn list_org_repositories(
     Ok(Json(serde_json::json!({ "repositories": repositories })))
 }
 
+async fn list_org_repository_package_coverage(
+    State(state): State<AppState>,
+    identity: OptionalAuthenticatedIdentity,
+    Path(slug): Path<String>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let ResolvedOrgReadScope {
+        org_id,
+        can_view_non_public,
+    } = resolve_org_read_scope(&state.db, &slug, identity.user_id()).await?;
+
+    let repository_entries =
+        load_org_repository_package_coverage_payloads(&state.db, org_id, can_view_non_public)
+            .await?;
+
+    Ok(Json(
+        serde_json::json!({ "repositories": repository_entries }),
+    ))
+}
+
+async fn load_org_detail_payload(
+    db: &PgPool,
+    slug: &str,
+    actor_user_id: Option<Uuid>,
+) -> ApiResult<(Uuid, OrgActorCapabilities, serde_json::Value)> {
+    let row = sqlx::query(
+        "SELECT id, name, slug, description, website, email, is_verified, mfa_required, created_at \
+         FROM organizations WHERE slug = $1",
+    )
+    .bind(slug)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?
+    .ok_or_else(|| ApiError(Error::NotFound(format!("Organization '{slug}' not found"))))?;
+    let org_id: Uuid = row
+        .try_get("id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let capabilities = actor_org_capabilities_by_id(db, org_id, actor_user_id).await?;
+
+    Ok((
+        org_id,
+        capabilities,
+        serde_json::json!({
+            "id": Some(org_id),
+            "name": row.try_get::<String, _>("name").ok(),
+            "slug": row.try_get::<String, _>("slug").ok(),
+            "description": row.try_get::<Option<String>, _>("description").ok().flatten(),
+            "website": row.try_get::<Option<String>, _>("website").ok().flatten(),
+            "email": row.try_get::<Option<String>, _>("email").ok().flatten(),
+            "is_verified": row.try_get::<bool, _>("is_verified").ok(),
+            "mfa_required": row.try_get::<bool, _>("mfa_required").ok(),
+            "created_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at").ok(),
+            "capabilities": capabilities,
+        }),
+    ))
+}
+
+async fn load_org_team_payloads(db: &PgPool, org_id: Uuid) -> ApiResult<Vec<serde_json::Value>> {
+    let rows = sqlx::query(
+        "SELECT id, name, slug, description, created_at \
+         FROM teams \
+         WHERE org_id = $1 \
+         ORDER BY name ASC",
+    )
+    .bind(org_id)
+    .fetch_all(db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    Ok(rows
+        .iter()
+        .map(|row| {
+            serde_json::json!({
+                "id": row.try_get::<Uuid, _>("id").ok(),
+                "name": row.try_get::<String, _>("name").ok(),
+                "slug": row.try_get::<String, _>("slug").ok(),
+                "description": row.try_get::<Option<String>, _>("description").ok().flatten(),
+                "created_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at").ok(),
+            })
+        })
+        .collect())
+}
+
+async fn load_org_team_management_payload(
+    db: &PgPool,
+    capabilities: &OrgActorCapabilities,
+    actor_user_id: Option<Uuid>,
+    org_id: Uuid,
+) -> ApiResult<serde_json::Value> {
+    let members_and_package_access_allowed =
+        capabilities.can_manage_teams && actor_user_id.is_some();
+    let repository_access_allowed = capabilities.can_manage_repositories && actor_user_id.is_some();
+    let namespace_access_allowed = capabilities.can_manage_namespaces && actor_user_id.is_some();
+
+    let (
+        members_by_team_slug,
+        package_access_by_team_slug,
+        repository_access_by_team_slug,
+        namespace_access_by_team_slug,
+    ) = tokio::try_join!(
+        async {
+            if members_and_package_access_allowed {
+                load_org_team_members_by_slug(db, org_id).await
+            } else {
+                Ok(BTreeMap::new())
+            }
+        },
+        async {
+            if members_and_package_access_allowed {
+                load_org_team_package_access_by_slug(db, org_id).await
+            } else {
+                Ok(BTreeMap::new())
+            }
+        },
+        async {
+            if repository_access_allowed {
+                load_org_team_repository_access_by_slug(db, org_id).await
+            } else {
+                Ok(BTreeMap::new())
+            }
+        },
+        async {
+            if namespace_access_allowed {
+                load_org_team_namespace_access_by_slug(db, org_id).await
+            } else {
+                Ok(BTreeMap::new())
+            }
+        },
+    )?;
+
+    Ok(serde_json::json!({
+        "members_by_team_slug": members_by_team_slug,
+        "package_access_by_team_slug": package_access_by_team_slug,
+        "repository_access_by_team_slug": repository_access_by_team_slug,
+        "namespace_access_by_team_slug": namespace_access_by_team_slug,
+    }))
+}
+
+async fn load_org_team_members_by_slug(
+    db: &PgPool,
+    org_id: Uuid,
+) -> ApiResult<BTreeMap<String, Vec<serde_json::Value>>> {
+    let rows = sqlx::query(
+        "SELECT t.slug AS team_slug, u.id, u.username, u.display_name, tm.added_at \
+         FROM teams t \
+         JOIN team_memberships tm ON tm.team_id = t.id \
+         JOIN users u ON u.id = tm.user_id \
+         WHERE t.org_id = $1 \
+         ORDER BY LOWER(t.slug), tm.added_at ASC",
+    )
+    .bind(org_id)
+    .fetch_all(db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let mut members_by_team_slug = BTreeMap::new();
+    for row in rows {
+        let team_slug: String = row
+            .try_get("team_slug")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+        members_by_team_slug
+            .entry(team_slug)
+            .or_insert_with(Vec::new)
+            .push(serde_json::json!({
+                "id": row.try_get::<Uuid, _>("id").ok(),
+                "username": row.try_get::<String, _>("username").ok(),
+                "display_name": row.try_get::<Option<String>, _>("display_name").ok().flatten(),
+                "added_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("added_at").ok(),
+            }));
+    }
+
+    Ok(members_by_team_slug)
+}
+
+async fn load_org_team_package_access_by_slug(
+    db: &PgPool,
+    org_id: Uuid,
+) -> ApiResult<BTreeMap<String, Vec<serde_json::Value>>> {
+    let rows = sqlx::query(
+        "SELECT t.slug AS team_slug, p.id, p.name, p.normalized_name, p.ecosystem, \
+                ARRAY_AGG(tpa.permission::text ORDER BY tpa.permission::text) AS permissions, \
+                MAX(tpa.granted_at) AS granted_at \
+         FROM team_package_access tpa \
+         JOIN teams t ON t.id = tpa.team_id \
+         JOIN packages p ON p.id = tpa.package_id \
+         WHERE t.org_id = $1 AND p.owner_org_id = $1 \
+         GROUP BY t.slug, p.id, p.name, p.normalized_name, p.ecosystem \
+         ORDER BY LOWER(t.slug), p.ecosystem ASC, p.name ASC",
+    )
+    .bind(org_id)
+    .fetch_all(db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let mut package_access_by_team_slug = BTreeMap::new();
+    for row in rows {
+        let team_slug: String = row
+            .try_get("team_slug")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+        package_access_by_team_slug
+            .entry(team_slug)
+            .or_insert_with(Vec::new)
+            .push(serde_json::json!({
+                "package_id": row.try_get::<Uuid, _>("id").ok(),
+                "name": row.try_get::<String, _>("name").ok(),
+                "normalized_name": row.try_get::<String, _>("normalized_name").ok(),
+                "ecosystem": row.try_get::<String, _>("ecosystem").ok(),
+                "permissions": row.try_get::<Vec<String>, _>("permissions").ok(),
+                "granted_at": row
+                    .try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("granted_at")
+                    .ok()
+                    .flatten(),
+            }));
+    }
+
+    Ok(package_access_by_team_slug)
+}
+
+async fn load_org_team_repository_access_by_slug(
+    db: &PgPool,
+    org_id: Uuid,
+) -> ApiResult<BTreeMap<String, Vec<serde_json::Value>>> {
+    let rows = sqlx::query(
+        "SELECT t.slug AS team_slug, r.id, r.name, r.slug, r.kind::text AS kind, r.visibility::text AS visibility, \
+                ARRAY_AGG(tra.permission::text ORDER BY tra.permission::text) AS permissions, \
+                MAX(tra.granted_at) AS granted_at \
+         FROM team_repository_access tra \
+         JOIN teams t ON t.id = tra.team_id \
+         JOIN repositories r ON r.id = tra.repository_id \
+         WHERE t.org_id = $1 AND r.owner_org_id = $1 \
+         GROUP BY t.slug, r.id, r.name, r.slug, r.kind, r.visibility \
+         ORDER BY LOWER(t.slug), r.name ASC, r.slug ASC",
+    )
+    .bind(org_id)
+    .fetch_all(db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let mut repository_access_by_team_slug = BTreeMap::new();
+    for row in rows {
+        let team_slug: String = row
+            .try_get("team_slug")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+        repository_access_by_team_slug
+            .entry(team_slug)
+            .or_insert_with(Vec::new)
+            .push(serde_json::json!({
+                "repository_id": row.try_get::<Uuid, _>("id").ok(),
+                "name": row.try_get::<String, _>("name").ok(),
+                "slug": row.try_get::<String, _>("slug").ok(),
+                "kind": row.try_get::<String, _>("kind").ok(),
+                "visibility": row.try_get::<String, _>("visibility").ok(),
+                "permissions": row.try_get::<Vec<String>, _>("permissions").ok(),
+                "granted_at": row
+                    .try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("granted_at")
+                    .ok()
+                    .flatten(),
+            }));
+    }
+
+    Ok(repository_access_by_team_slug)
+}
+
+async fn load_org_team_namespace_access_by_slug(
+    db: &PgPool,
+    org_id: Uuid,
+) -> ApiResult<BTreeMap<String, Vec<serde_json::Value>>> {
+    let rows = sqlx::query(
+        "SELECT t.slug AS team_slug, nc.id, nc.ecosystem::text AS ecosystem, nc.namespace, nc.is_verified, \
+                ARRAY_AGG(tna.permission::text ORDER BY tna.permission::text) AS permissions, \
+                MAX(tna.granted_at) AS granted_at \
+         FROM team_namespace_access tna \
+         JOIN teams t ON t.id = tna.team_id \
+         JOIN namespace_claims nc ON nc.id = tna.namespace_claim_id \
+         WHERE t.org_id = $1 AND nc.owner_org_id = $1 \
+         GROUP BY t.slug, nc.id, nc.ecosystem, nc.namespace, nc.is_verified \
+         ORDER BY LOWER(t.slug), nc.ecosystem ASC, nc.namespace ASC",
+    )
+    .bind(org_id)
+    .fetch_all(db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let mut namespace_access_by_team_slug = BTreeMap::new();
+    for row in rows {
+        let team_slug: String = row
+            .try_get("team_slug")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+        namespace_access_by_team_slug
+            .entry(team_slug)
+            .or_insert_with(Vec::new)
+            .push(serde_json::json!({
+                "namespace_claim_id": row.try_get::<Uuid, _>("id").ok(),
+                "ecosystem": row.try_get::<String, _>("ecosystem").ok(),
+                "namespace": row.try_get::<String, _>("namespace").ok(),
+                "is_verified": row.try_get::<bool, _>("is_verified").ok(),
+                "permissions": row.try_get::<Vec<String>, _>("permissions").ok(),
+                "granted_at": row
+                    .try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("granted_at")
+                    .ok()
+                    .flatten(),
+            }));
+    }
+
+    Ok(namespace_access_by_team_slug)
+}
+
+async fn load_all_org_package_payloads(
+    db: &PgPool,
+    org_id: Uuid,
+    can_view_non_public: bool,
+    actor_user_id: Option<Uuid>,
+) -> ApiResult<Vec<serde_json::Value>> {
+    let rows = sqlx::query(
+        "SELECT p.id, p.name, p.ecosystem, p.description, p.download_count, p.created_at \
+         FROM packages p \
+         JOIN repositories r ON r.id = p.repository_id \
+         WHERE p.owner_org_id = $1 \
+           AND ($2::bool = true OR (p.visibility = 'public' AND r.visibility = 'public')) \
+         ORDER BY p.download_count DESC, p.created_at DESC",
+    )
+    .bind(org_id)
+    .bind(can_view_non_public)
+    .fetch_all(db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let mut packages = Vec::with_capacity(rows.len());
+    for row in rows {
+        let package_id: Uuid = row
+            .try_get("id")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+        let can_transfer = actor_can_transfer_package_by_id(db, package_id, actor_user_id).await?;
+
+        packages.push(serde_json::json!({
+            "id": package_id,
+            "name": row.try_get::<String, _>("name").ok(),
+            "ecosystem": row.try_get::<String, _>("ecosystem").ok(),
+            "description": row.try_get::<Option<String>, _>("description").ok().flatten(),
+            "download_count": row.try_get::<i64, _>("download_count").ok(),
+            "created_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at").ok(),
+            "can_transfer": can_transfer,
+        }));
+    }
+
+    Ok(packages)
+}
+
+async fn load_all_org_repository_payloads(
+    db: &PgPool,
+    org_id: Uuid,
+    can_view_non_public: bool,
+    actor_user_id: Option<Uuid>,
+) -> ApiResult<Vec<serde_json::Value>> {
+    let rows = sqlx::query(
+        "SELECT r.id, r.name, r.slug, r.description, r.kind::text AS kind, \
+                r.visibility::text AS visibility, r.upstream_url, r.created_at, \
+                COUNT(p.id) FILTER (WHERE $2::bool = true OR p.visibility = 'public')::BIGINT AS package_count \
+         FROM repositories r \
+         LEFT JOIN packages p ON p.repository_id = r.id \
+         WHERE r.owner_org_id = $1 \
+           AND ($2::bool = true OR r.visibility = 'public') \
+         GROUP BY r.id, r.name, r.slug, r.description, r.kind, r.visibility, r.upstream_url, r.created_at \
+         ORDER BY LOWER(r.name), LOWER(r.slug)",
+    )
+    .bind(org_id)
+    .bind(can_view_non_public)
+    .fetch_all(db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let mut repositories = Vec::with_capacity(rows.len());
+    for row in rows {
+        let repository_id: Uuid = row
+            .try_get("id")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+        let can_transfer =
+            actor_can_transfer_repository_by_id(db, repository_id, actor_user_id).await?;
+
+        repositories.push(serde_json::json!({
+            "id": repository_id,
+            "name": row.try_get::<String, _>("name").ok(),
+            "slug": row.try_get::<String, _>("slug").ok(),
+            "description": row.try_get::<Option<String>, _>("description").ok().flatten(),
+            "kind": row.try_get::<String, _>("kind").ok(),
+            "visibility": row.try_get::<String, _>("visibility").ok(),
+            "upstream_url": row.try_get::<Option<String>, _>("upstream_url").ok().flatten(),
+            "package_count": row.try_get::<i64, _>("package_count").ok(),
+            "created_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at").ok(),
+            "can_transfer": can_transfer,
+        }));
+    }
+
+    Ok(repositories)
+}
+
+async fn load_org_repository_package_coverage_payloads(
+    db: &PgPool,
+    org_id: Uuid,
+    can_view_non_public: bool,
+) -> ApiResult<Vec<serde_json::Value>> {
+    let rows = sqlx::query(
+        "SELECT r.slug AS repository_slug, \
+                p.id AS package_id, \
+                p.name, \
+                p.ecosystem, \
+                p.description, \
+                p.visibility, \
+                p.download_count, \
+                p.created_at \
+         FROM repositories r \
+         LEFT JOIN packages p \
+           ON p.repository_id = r.id \
+          AND ($2::bool = true OR p.visibility = 'public') \
+         WHERE r.owner_org_id = $1 \
+           AND ($2::bool = true OR r.visibility = 'public') \
+         ORDER BY LOWER(r.name), LOWER(r.slug), p.download_count DESC NULLS LAST, p.created_at DESC NULLS LAST",
+    )
+    .bind(org_id)
+    .bind(can_view_non_public)
+    .fetch_all(db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let mut repository_entries = Vec::new();
+    let mut repository_positions = HashMap::new();
+
+    for row in rows {
+        let repository_slug: String = row
+            .try_get("repository_slug")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+        let entry_index = if let Some(index) = repository_positions.get(&repository_slug) {
+            *index
+        } else {
+            let index = repository_entries.len();
+            let repository_slug_key = repository_slug.clone();
+            repository_entries.push(serde_json::json!({
+                "repository_slug": repository_slug,
+                "packages": Vec::<serde_json::Value>::new(),
+            }));
+            repository_positions.insert(repository_slug_key, index);
+            index
+        };
+
+        let package_id = row
+            .try_get::<Option<Uuid>, _>("package_id")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+        if let Some(package_id) = package_id {
+            repository_entries[entry_index]["packages"]
+                .as_array_mut()
+                .expect("repository coverage packages should be an array")
+                .push(serde_json::json!({
+                    "id": package_id,
+                    "name": row.try_get::<Option<String>, _>("name").ok().flatten(),
+                    "ecosystem": row.try_get::<Option<String>, _>("ecosystem").ok().flatten(),
+                    "description": row.try_get::<Option<String>, _>("description").ok().flatten(),
+                    "visibility": row.try_get::<Option<String>, _>("visibility").ok().flatten(),
+                    "download_count": row.try_get::<Option<i64>, _>("download_count").ok().flatten(),
+                    "created_at": row
+                        .try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("created_at")
+                        .ok()
+                        .flatten(),
+                }));
+        }
+    }
+
+    Ok(repository_entries)
+}
+
+async fn load_org_namespace_payloads(
+    db: &PgPool,
+    org_id: Uuid,
+    actor_user_id: Option<Uuid>,
+) -> ApiResult<Vec<serde_json::Value>> {
+    let rows = sqlx::query(
+        "SELECT id, ecosystem::text AS ecosystem, namespace, owner_user_id, owner_org_id, is_verified, created_at \
+         FROM namespace_claims \
+         WHERE owner_org_id = $1 \
+         ORDER BY created_at DESC",
+    )
+    .bind(org_id)
+    .fetch_all(db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let mut namespaces = Vec::with_capacity(rows.len());
+    for row in rows {
+        let claim_id = row
+            .try_get::<Uuid, _>("id")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+        let can_manage =
+            actor_can_manage_namespace_claim_by_id(db, claim_id, actor_user_id).await?;
+        let can_transfer =
+            actor_can_transfer_namespace_claim_by_id(db, claim_id, actor_user_id).await?;
+
+        namespaces.push(serde_json::json!({
+            "id": claim_id,
+            "ecosystem": row.try_get::<String, _>("ecosystem").ok(),
+            "namespace": row.try_get::<String, _>("namespace").ok(),
+            "owner_user_id": row.try_get::<Option<Uuid>, _>("owner_user_id").ok().flatten(),
+            "owner_org_id": row.try_get::<Option<Uuid>, _>("owner_org_id").ok().flatten(),
+            "is_verified": row.try_get::<bool, _>("is_verified").ok(),
+            "created_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at").ok(),
+            "can_manage": can_manage,
+            "can_transfer": can_transfer,
+        }));
+    }
+
+    Ok(namespaces)
+}
+
+async fn load_org_security_payload(
+    db: &PgPool,
+    org_id: Uuid,
+    can_view_non_public: bool,
+    identity: &OptionalAuthenticatedIdentity,
+    filters: &ResolvedOrgSecurityFilters,
+) -> ApiResult<serde_json::Value> {
+    let mut packages = load_org_security_packages(db, org_id, can_view_non_public, filters).await?;
+    enrich_org_security_packages(db, org_id, identity, can_view_non_public, &mut packages).await?;
+    let summary_severities = summarize_org_security_packages(&packages);
+    let package_count = packages.len();
+    let packages = packages
+        .iter()
+        .map(OrgSecurityPackageSummary::as_json)
+        .collect::<Vec<_>>();
+
+    Ok(serde_json::json!({
+        "summary": {
+            "open_findings": summary_severities.total(),
+            "affected_packages": package_count,
+            "severities": summary_severities.as_json(),
+        },
+        "packages": packages,
+    }))
+}
+
 const ORG_SECURITY_SEVERITY_VALUES: [&str; 5] = ["critical", "high", "medium", "low", "info"];
 
 async fn resolve_org_security_scope(
@@ -2626,6 +3208,30 @@ async fn resolve_org_security_scope(
         actor_can_access_org_member_directory_by_id(db, org_id, actor_user_id).await?;
 
     Ok((org_id, can_view_non_public))
+}
+
+async fn resolve_org_read_scope(
+    db: &PgPool,
+    slug: &str,
+    actor_user_id: Option<Uuid>,
+) -> ApiResult<ResolvedOrgReadScope> {
+    let org_row = sqlx::query("SELECT id FROM organizations WHERE slug = $1")
+        .bind(slug)
+        .fetch_optional(db)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?
+        .ok_or_else(|| ApiError(Error::NotFound(format!("Organization '{slug}' not found"))))?;
+
+    let org_id: Uuid = org_row
+        .try_get("id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let can_view_non_public =
+        actor_can_access_org_member_directory_by_id(db, org_id, actor_user_id).await?;
+
+    Ok(ResolvedOrgReadScope {
+        org_id,
+        can_view_non_public,
+    })
 }
 
 fn resolve_org_security_filters(
@@ -3116,32 +3722,10 @@ async fn list_org_security_findings(
     let (org_id, can_view_non_public) =
         resolve_org_security_scope(&state.db, &slug, identity.user_id()).await?;
     let filters = resolve_org_security_filters(&query)?;
-    let mut packages =
-        load_org_security_packages(&state.db, org_id, can_view_non_public, &filters).await?;
-    enrich_org_security_packages(
-        &state.db,
-        org_id,
-        &identity,
-        can_view_non_public,
-        &mut packages,
-    )
-    .await?;
-    let summary_severities = summarize_org_security_packages(&packages);
-
-    let package_count = packages.len();
-    let packages = packages
-        .iter()
-        .map(OrgSecurityPackageSummary::as_json)
-        .collect::<Vec<_>>();
-
-    Ok(Json(serde_json::json!({
-        "summary": {
-            "open_findings": summary_severities.total(),
-            "affected_packages": package_count,
-            "severities": summary_severities.as_json(),
-        },
-        "packages": packages,
-    })))
+    Ok(Json(
+        load_org_security_payload(&state.db, org_id, can_view_non_public, &identity, &filters)
+            .await?,
+    ))
 }
 
 async fn export_org_security_findings_csv(

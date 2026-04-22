@@ -39,7 +39,13 @@ interface FetchScenario {
   canManageTeams: boolean;
   canManageRepositories: boolean;
   canManageNamespaces: boolean;
+  workspaceBootstrapRequests: string[];
+  teamMemberRequests: string[];
+  teamPackageAccessRequests: string[];
+  teamRepositoryAccessRequests: string[];
+  teamNamespaceAccessRequests: string[];
   repositoryPageRequests: number[];
+  repositoryPackageCoverageRequests: string[];
   packagePageRequests: number[];
   invitationRequests: string[];
   orgUpdateCalls: MutationCall[];
@@ -227,9 +233,17 @@ describe('route-level multi-page org dataset coverage', () => {
 
     try {
       await waitFor(() => {
-        expect(scenario.repositoryPageRequests).toEqual([1, 2]);
-        expect(scenario.packagePageRequests).toEqual([1, 2]);
-      });
+        expect(scenario.workspaceBootstrapRequests).toEqual([
+          `/v1/orgs/${ORG_SLUG}/workspace`,
+        ]);
+        expect(scenario.repositoryPageRequests).toEqual([]);
+        expect(scenario.packagePageRequests).toEqual([]);
+        expect(scenario.repositoryPackageCoverageRequests).toEqual([]);
+        expect(scenario.teamMemberRequests).toEqual([]);
+        expect(scenario.teamPackageAccessRequests).toEqual([]);
+        expect(scenario.teamRepositoryAccessRequests).toEqual([]);
+        expect(scenario.teamNamespaceAccessRequests).toEqual([]);
+      }, 5_000);
 
       const finalRepository = repositories.at(-1);
       const finalPackage = packages.at(-1);
@@ -265,6 +279,31 @@ describe('route-level multi-page org dataset coverage', () => {
             `a[href="/orgs/${ORG_SLUG}/teams/${TEAM_SLUG}"]`
           )
         ).not.toBeNull();
+        expect(target.textContent).toContain('@admin-user');
+        expect(
+          target.querySelector(
+            `#team-member-remove-${encodeURIComponent('admin-user')}`
+          )
+        ).not.toBeNull();
+        expect(
+          target.querySelector(
+            `#team-package-revoke-${encodeURIComponent(
+              `${finalPackage?.ecosystem}-${finalPackage?.name}`
+            )}`
+          )
+        ).not.toBeNull();
+        expect(
+          target.querySelector(
+            `#team-repository-revoke-${encodeURIComponent(
+              finalRepository?.slug || ''
+            )}`
+          )
+        ).not.toBeNull();
+        expect(
+          target.querySelector(
+            `#team-namespace-revoke-${encodeURIComponent('claim-001')}`
+          )
+        ).not.toBeNull();
         expect(
           target.querySelector(
             `a[href="/packages/${finalPackage?.ecosystem}/${finalPackage?.name}?tab=security"]`
@@ -275,7 +314,30 @@ describe('route-level multi-page org dataset coverage', () => {
             `a[href="/packages/${finalPackage?.ecosystem}/${finalPackage?.name}"]`
           )
         ).not.toBeNull();
-      });
+      }, 5_000);
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace renders repository package coverage from freshly loaded repositories', async () => {
+    const scenario = createFetchScenario();
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(scenario.workspaceBootstrapRequests).toEqual([
+          `/v1/orgs/${ORG_SLUG}/workspace`,
+        ]);
+        expect(scenario.repositoryPackageCoverageRequests).toEqual([]);
+        expect(target.textContent).toContain('repo-package-001');
+        expect(
+          target.querySelector('a[href="/packages/npm/repo-package-001?tab=security"]')
+        ).not.toBeNull();
+        expect(
+          target.querySelector('a[href="/packages/npm/repo-package-001"]')
+        ).not.toBeNull();
+      }, 5_000);
     } finally {
       unmount();
     }
@@ -708,7 +770,13 @@ function createFetchScenario(): FetchScenario {
     canManageTeams: true,
     canManageRepositories: true,
     canManageNamespaces: true,
+    workspaceBootstrapRequests: [],
+    teamMemberRequests: [],
+    teamPackageAccessRequests: [],
+    teamRepositoryAccessRequests: [],
+    teamNamespaceAccessRequests: [],
     repositoryPageRequests: [],
+    repositoryPackageCoverageRequests: [],
     packagePageRequests: [],
     invitationRequests: [],
     orgUpdateCalls: [],
@@ -739,6 +807,132 @@ async function handleApiRequest(
   }
   const requestPath = url.pathname;
   const body = options?.body || {};
+
+  if (method === 'GET' && requestPath === `/v1/orgs/${ORG_SLUG}/workspace`) {
+    scenario.workspaceBootstrapRequests.push(requestPath);
+    return apiResponse({
+      org: {
+        id: ORG_ID,
+        name: 'Source Org',
+        slug: ORG_SLUG,
+        description: 'Source organization',
+        is_verified: true,
+        mfa_required: scenario.orgMfaRequired,
+        website: null,
+        email: null,
+        created_at: '2026-04-01T00:00:00Z',
+        capabilities: {
+          can_manage: true,
+          can_manage_invitations: scenario.canManageInvitations,
+          can_manage_members: scenario.canManageMembers,
+          can_manage_teams: scenario.canManageTeams,
+          can_manage_repositories: scenario.canManageRepositories,
+          can_manage_namespaces: scenario.canManageNamespaces,
+          can_view_member_directory: true,
+          can_view_audit_log: true,
+          can_transfer_ownership: true,
+        },
+      },
+      teams: [
+        {
+          name: 'Release Engineering',
+          slug: TEAM_SLUG,
+          description: 'Owns release governance',
+          created_at: '2026-04-01T00:00:00Z',
+        },
+      ],
+      repositories,
+      repository_package_coverage: [
+        {
+          repository_slug: 'repo-001',
+          packages: [
+            {
+              id: 'repo-package-001',
+              ecosystem: 'npm',
+              name: 'repo-package-001',
+              description: 'Repository scoped package',
+              latest_version: '1.0.0',
+              download_count: 7,
+              created_at: '2026-04-01T00:00:00Z',
+            },
+          ],
+        },
+      ],
+      packages,
+      namespaces: [],
+      invitations: scenario.canManageInvitations ? [] : [],
+      team_management: {
+        members_by_team_slug: scenario.canManageTeams
+          ? {
+              [TEAM_SLUG]: [
+                {
+                  display_name: 'Admin User',
+                  username: 'admin-user',
+                  added_at: '2026-04-03T00:00:00Z',
+                },
+              ],
+            }
+          : {},
+        package_access_by_team_slug: scenario.canManageTeams
+          ? {
+              [TEAM_SLUG]: [
+                {
+                  package_id: packages.at(-1)?.id,
+                  ecosystem: packages.at(-1)?.ecosystem,
+                  name: packages.at(-1)?.name,
+                  normalized_name: packages.at(-1)?.name,
+                  permissions: ['write_metadata'],
+                  granted_at: '2026-04-03T00:00:00Z',
+                },
+              ],
+            }
+          : {},
+        repository_access_by_team_slug: scenario.canManageRepositories
+          ? {
+              [TEAM_SLUG]: [
+                {
+                  repository_id: repositories.at(-1)?.id,
+                  name: repositories.at(-1)?.name,
+                  slug: repositories.at(-1)?.slug,
+                  kind: repositories.at(-1)?.kind,
+                  visibility: repositories.at(-1)?.visibility,
+                  permissions: ['publish'],
+                  granted_at: '2026-04-03T00:00:00Z',
+                },
+              ],
+            }
+          : {},
+        namespace_access_by_team_slug: scenario.canManageNamespaces
+          ? {
+              [TEAM_SLUG]: [
+                {
+                  namespace_claim_id: 'claim-001',
+                  ecosystem: 'npm',
+                  namespace: '@source-org',
+                  is_verified: true,
+                  permissions: ['admin'],
+                  granted_at: '2026-04-03T00:00:00Z',
+                },
+              ],
+            }
+          : {},
+      },
+      security: {
+        summary: {
+          open_findings: 0,
+          affected_packages: 0,
+          severities: {
+            critical: 0,
+            high: 0,
+            medium: 0,
+            low: 0,
+            info: 0,
+          },
+        },
+        packages: [],
+      },
+    });
+  }
 
   if (method === 'GET' && requestPath === `/v1/orgs/${ORG_SLUG}`) {
     return apiResponse({
@@ -804,6 +998,31 @@ async function handleApiRequest(
 
   if (
     method === 'GET' &&
+    requestPath.endsWith('/repository-package-coverage')
+  ) {
+    scenario.repositoryPackageCoverageRequests.push(requestPath);
+    return apiResponse({
+      repositories: [
+        {
+          repository_slug: 'repo-001',
+          packages: [
+            {
+              id: 'repo-package-001',
+              ecosystem: 'npm',
+              name: 'repo-package-001',
+              description: 'Repository scoped package',
+              latest_version: '1.0.0',
+              download_count: 7,
+              created_at: '2026-04-01T00:00:00Z',
+            },
+          ],
+        },
+      ],
+    });
+  }
+
+  if (
+    method === 'GET' &&
     requestPath === `/v1/orgs/${ORG_SLUG}/security-findings`
   ) {
     return apiResponse({
@@ -857,6 +1076,7 @@ async function handleApiRequest(
     method === 'GET' &&
     requestPath === `/v1/orgs/${ORG_SLUG}/teams/${TEAM_SLUG}/members`
   ) {
+    scenario.teamMemberRequests.push(requestPath);
     return apiResponse({ members: [] });
   }
 
@@ -864,6 +1084,7 @@ async function handleApiRequest(
     method === 'GET' &&
     requestPath === `/v1/orgs/${ORG_SLUG}/teams/${TEAM_SLUG}/package-access`
   ) {
+    scenario.teamPackageAccessRequests.push(requestPath);
     return apiResponse({ package_access: [] });
   }
 
@@ -871,6 +1092,7 @@ async function handleApiRequest(
     method === 'GET' &&
     requestPath === `/v1/orgs/${ORG_SLUG}/teams/${TEAM_SLUG}/repository-access`
   ) {
+    scenario.teamRepositoryAccessRequests.push(requestPath);
     return apiResponse({ repository_access: [] });
   }
 
@@ -878,19 +1100,12 @@ async function handleApiRequest(
     method === 'GET' &&
     requestPath === `/v1/orgs/${ORG_SLUG}/teams/${TEAM_SLUG}/namespace-access`
   ) {
+    scenario.teamNamespaceAccessRequests.push(requestPath);
     return apiResponse({ namespace_access: [] });
   }
 
   if (method === 'GET' && requestPath === '/v1/namespaces') {
     return apiResponse({ namespaces: [] });
-  }
-
-  if (
-    method === 'GET' &&
-    requestPath.startsWith('/v1/repositories/repo-') &&
-    requestPath.endsWith('/packages')
-  ) {
-    return apiResponse({ packages: [] });
   }
 
   if (

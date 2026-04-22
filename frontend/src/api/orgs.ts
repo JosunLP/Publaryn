@@ -1,5 +1,7 @@
 import { api } from './client';
 import { collectPaginatedItems } from './pagination';
+import type { NamespaceClaim } from './namespaces';
+import type { RepositoryPackageSummary } from './repositories';
 
 type NullableString = string | null;
 
@@ -193,6 +195,37 @@ export interface OrgRepositorySummary {
 export interface OrgRepositoryListResponse {
   repositories: OrgRepositorySummary[];
   load_error?: NullableString;
+}
+
+export interface OrgRepositoryPackageCoverageEntry {
+  repository_slug?: NullableString;
+  packages: RepositoryPackageSummary[];
+}
+
+export interface OrgRepositoryPackageCoverageResponse {
+  repositories: OrgRepositoryPackageCoverageEntry[];
+  load_error?: NullableString;
+}
+
+export interface OrgWorkspaceBootstrapResponse {
+  org?: OrganizationDetail | null;
+  teams: Team[];
+  repositories: OrgRepositorySummary[];
+  repository_package_coverage: OrgRepositoryPackageCoverageEntry[];
+  packages: OrgPackageSummary[];
+  namespaces: NamespaceClaim[];
+  invitations: OrgInvitation[];
+  team_management?: OrgWorkspaceTeamManagementBootstrap | null;
+  security?: OrgSecurityFindingsResponse | null;
+}
+
+export interface OrgWorkspaceTeamManagementBootstrap {
+  members_by_team_slug?: Record<string, TeamMember[]> | null;
+  package_access_by_team_slug?: Record<string, TeamPackageAccessGrant[]> | null;
+  repository_access_by_team_slug?:
+    | Record<string, TeamRepositoryAccessGrant[]>
+    | null;
+  namespace_access_by_team_slug?: Record<string, TeamNamespaceAccessGrant[]> | null;
 }
 
 export interface OrgSecuritySeverityCounts {
@@ -793,6 +826,37 @@ export async function listOrgRepositories(
   return {
     repositories,
   };
+}
+
+export async function listOrgRepositoryPackageCoverage(
+  slug: string
+): Promise<OrgRepositoryPackageCoverageResponse> {
+  const { data } = await api.get<OrgRepositoryPackageCoverageResponse>(
+    `/v1/orgs/${enc(slug)}/repository-package-coverage`
+  );
+
+  return data;
+}
+
+export async function getOrgWorkspaceBootstrap(
+  slug: string,
+  query: OrgSecurityQuery = {}
+): Promise<OrgWorkspaceBootstrapResponse> {
+  const { data } = await api.get<OrgWorkspaceBootstrapResponse>(
+    `/v1/orgs/${enc(slug)}/workspace`,
+    {
+      query: {
+        severity:
+          query.severities && query.severities.length > 0
+            ? query.severities.join(',')
+            : undefined,
+        ecosystem: query.ecosystem,
+        package: query.package,
+      },
+    }
+  );
+
+  return data;
 }
 
 export async function listOrgSecurityFindings(
