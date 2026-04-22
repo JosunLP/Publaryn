@@ -907,6 +907,11 @@ Separate or logically isolated for:
 - reindexing
 - manual recovery flows
 
+For 1.0 this operator surface remains intentionally narrow: platform
+administrators can use `GET /v1/admin/jobs` for queue visibility, stale-job
+detection, and filtered recovery checks, while broader operator consoles remain
+post-1.0 work.
+
 ## 15.4 Event API
 
 Useful for:
@@ -1625,6 +1630,7 @@ The control-plane baseline for 1.0 is:
 - organization security reporting under `/v1/orgs/*`
 - `/v1/tokens*`
 - `/v1/audit`
+- `/v1/admin/jobs`
 - `/v1/stats`
 - `/health`
 - `/readiness`

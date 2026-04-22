@@ -36,7 +36,7 @@ No critical runtime state may be stored only on the local container filesystem.
 Publaryn distinguishes liveness from readiness:
 
 - `/health` is the process liveness probe and returns `200 OK` while the process is alive.
-- `/readiness` is the traffic readiness probe for database-backed requests and returns `200 OK` only when PostgreSQL connectivity succeeds; otherwise it returns `503 Service Unavailable`.
+- `/readiness` is the traffic readiness probe for database-backed requests and returns `200 OK` only when PostgreSQL connectivity succeeds and, when Redis is configured for the deployment, Redis connectivity succeeds; otherwise it returns `503 Service Unavailable`.
 
 This allows orchestrators to keep a live process running while removing an unready replica from service.
 
@@ -51,7 +51,7 @@ The local Compose baseline uses a `30s` stop grace period.
 ## Consequences
 
 - API replicas can participate in rolling updates and horizontal scale-down without introducing avoidable request loss.
-- Readiness failures now communicate operational state correctly to load balancers and orchestrators.
+- Readiness failures now communicate PostgreSQL failure and, when Redis-backed features are configured, Redis failure correctly to load balancers and orchestrators.
 - The runtime contract stays aligned with the modular-monolith architecture: strong transactional consistency in shared stores, but no single-node dependency in the API tier.
 - Future worker processes should follow the same lifecycle rules, including signal-aware draining and idempotent retry behavior.
 - Broader dependency readiness checks for object storage, Redis, or search can be added later if a specific endpoint class requires them to be treated as hard readiness dependencies.

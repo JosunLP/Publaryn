@@ -60,6 +60,7 @@ The documented 1.0 control-plane surface covers:
 - `GET /v1/search`
 - `/v1/tokens*`
 - `/v1/audit`
+- `/v1/admin/jobs`
 - `/v1/stats`
 - `/health`
 - `/readiness`
@@ -462,6 +463,24 @@ DELETE /v1/tokens/:id
 ```http
 GET /v1/audit
 ```
+
+### Platform stats & operator jobs
+
+```http
+GET /v1/stats
+GET /v1/admin/jobs
+```
+
+`/v1/stats` stays public in 1.0 and exposes top-level package, release,
+organization, security-finding, artifact, and pending-job counts for quick
+instance-level visibility.
+
+`/v1/admin/jobs` is the intentionally narrow 1.0 operator queue surface. It
+requires a platform-administrator identity with the `audit:read` scope,
+supports `state`, `kind`, `page`, and `per_page` filters, and returns both a
+global queue summary and the matching jobs. Use
+[docs/operator/job-queue-recovery.md](docs/operator/job-queue-recovery.md) as
+the baseline runbook for stale jobs, retry visibility, and recovery checks.
 
 ### Health
 

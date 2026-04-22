@@ -44,8 +44,10 @@ product surface it governs.
 - **Visibility and actor-aware search:** [0007](0007-package-and-repository-read-visibility.md)
 - **Control-plane authentication and scoped writes:** [0001](0001-control-plane-request-authentication.md)
   and [0002](0002-control-plane-scope-taxonomy.md)
-- **Release lifecycle, quarantine, and async work:** [0009](0009-control-plane-release-publication-and-artifact-storage.md)
-  and [0018](0018-rate-limiting-and-background-job-queue.md)
+- **Release lifecycle, quarantine, async work, and operator queue visibility:** [0009](0009-control-plane-release-publication-and-artifact-storage.md)
+  and [0018](0018-rate-limiting-and-background-job-queue.md); see
+  [docs/operator/job-queue-recovery.md](../operator/job-queue-recovery.md) for
+  the `/v1/admin/jobs` operator surface and queue recovery baseline
 - **Organization governance and delegated access:** [0003](0003-registered-user-organization-invitations.md),
   [0004](0004-organization-ownership-transfer.md), [0005](0005-package-ownership-transfer-to-controlled-organizations.md),
   and [0012](0012-team-package-governance.md)

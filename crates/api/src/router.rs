@@ -27,6 +27,7 @@ pub fn build_router(state: AppState) -> Result<Router> {
 
     let api_router = Router::new()
         .merge(routes::health::router())
+        .merge(routes::admin::router())
         .merge(routes::audit::router())
         .merge(routes::auth::router())
         .merge(routes::namespaces::router())

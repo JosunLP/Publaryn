@@ -18,7 +18,11 @@ async fn platform_stats(State(state): State<AppState>) -> ApiResult<Json<serde_j
         "SELECT \
            (SELECT COUNT(*) FROM packages WHERE visibility = 'public') AS package_count, \
            (SELECT COUNT(*) FROM releases WHERE status = 'published') AS release_count, \
-           (SELECT COUNT(*) FROM organizations) AS org_count",
+           (SELECT COUNT(*) FROM organizations) AS org_count, \
+           (SELECT COUNT(*) FROM security_findings) AS security_findings_total, \
+           (SELECT COUNT(*) FROM security_findings WHERE is_resolved = false) AS security_findings_unresolved, \
+           (SELECT COUNT(*) FROM artifacts) AS artifacts_stored, \
+           (SELECT COUNT(*) FROM background_jobs WHERE status = 'pending') AS job_queue_pending",
     )
     .fetch_one(&state.db)
     .await
@@ -27,10 +31,19 @@ async fn platform_stats(State(state): State<AppState>) -> ApiResult<Json<serde_j
     let package_count: i64 = row.try_get("package_count").unwrap_or(0);
     let release_count: i64 = row.try_get("release_count").unwrap_or(0);
     let org_count: i64 = row.try_get("org_count").unwrap_or(0);
+    let security_findings_total: i64 = row.try_get("security_findings_total").unwrap_or(0);
+    let security_findings_unresolved: i64 =
+        row.try_get("security_findings_unresolved").unwrap_or(0);
+    let artifacts_stored: i64 = row.try_get("artifacts_stored").unwrap_or(0);
+    let job_queue_pending: i64 = row.try_get("job_queue_pending").unwrap_or(0);
 
     Ok(Json(serde_json::json!({
         "packages": package_count,
         "releases": release_count,
         "organizations": org_count,
+        "security_findings_total": security_findings_total,
+        "security_findings_unresolved": security_findings_unresolved,
+        "artifacts_stored": artifacts_stored,
+        "job_queue_pending": job_queue_pending,
     })))
 }

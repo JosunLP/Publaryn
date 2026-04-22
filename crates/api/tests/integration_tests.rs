@@ -123,6 +123,18 @@ async fn login_user(app: &axum::Router, username: &str, password: &str) -> Strin
     body["token"].as_str().expect("token field").to_owned()
 }
 
+async fn promote_user_to_platform_admin(pool: &PgPool, username: &str) {
+    sqlx::query(
+        "UPDATE users \
+         SET is_admin = TRUE, updated_at = NOW() \
+         WHERE username = $1",
+    )
+    .bind(username)
+    .execute(pool)
+    .await
+    .expect("user should be promotable to platform admin in tests");
+}
+
 /// Create a personal access token and return the response.
 async fn create_personal_access_token(
     app: &axum::Router,
@@ -535,6 +547,44 @@ async fn export_org_audit_csv(
         .unwrap();
 
     app.clone().oneshot(req).await.unwrap()
+}
+
+/// List platform background jobs and return the response.
+async fn list_platform_admin_jobs(
+    app: &axum::Router,
+    jwt: &str,
+    query: Option<&str>,
+) -> (StatusCode, Value) {
+    let uri = match query {
+        Some(query) if !query.trim().is_empty() => format!("/v1/admin/jobs?{query}"),
+        _ => "/v1/admin/jobs".to_owned(),
+    };
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri(uri)
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// Read public platform stats and return the response.
+async fn get_platform_stats(app: &axum::Router) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/v1/stats")
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
 }
 
 /// Create a namespace claim and return the response.
@@ -2997,6 +3047,208 @@ async fn test_readiness_returns_ok_when_db_available(pool: PgPool) {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
     assert_eq!(body["status"], "ready");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_platform_admin_jobs_requires_platform_admin_access(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, body) = list_platform_admin_jobs(&app, &alice_jwt, None).await;
+
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(body["error"]
+        .as_str()
+        .expect("error message should be present")
+        .contains("audit:read"));
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_platform_admin_jobs_expose_summary_and_filterable_results(pool: PgPool) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    promote_user_to_platform_admin(&pool, "alice").await;
+    let admin_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    sqlx::query("DELETE FROM background_jobs")
+        .execute(&pool)
+        .await
+        .expect("background jobs should be clear before seeding admin-job tests");
+
+    sqlx::query(
+        "INSERT INTO background_jobs \
+         (id, kind, payload, status, attempts, max_attempts, last_error, scheduled_at, locked_until, locked_by, started_at, completed_at, created_at) \
+         VALUES \
+         ($1, 'scan_artifact'::job_kind, $2, 'pending'::job_status, 0, 5, NULL, NOW() - INTERVAL '45 minutes', NULL, NULL, NULL, NULL, NOW() - INTERVAL '45 minutes'), \
+         ($3, 'cleanup_oci_blobs'::job_kind, $4, 'running'::job_status, 1, 5, NULL, NOW() - INTERVAL '20 minutes', NOW() - INTERVAL '5 minutes', 'worker-a', NOW() - INTERVAL '20 minutes', NULL, NOW() - INTERVAL '20 minutes'), \
+         ($5, 'index_package'::job_kind, $6, 'completed'::job_status, 1, 5, NULL, NOW() - INTERVAL '10 minutes', NULL, NULL, NOW() - INTERVAL '10 minutes', NOW() - INTERVAL '9 minutes', NOW() - INTERVAL '10 minutes'), \
+         ($7, 'reindex_search'::job_kind, $8, 'dead'::job_status, 5, 5, 'boom', NOW() - INTERVAL '8 minutes', NULL, NULL, NOW() - INTERVAL '8 minutes', NOW() - INTERVAL '7 minutes', NOW() - INTERVAL '8 minutes')",
+    )
+    .bind(Uuid::new_v4())
+    .bind(json!({ "artifact_id": "artifact-123" }))
+    .bind(Uuid::new_v4())
+    .bind(json!({ "digests": ["sha256:abc"] }))
+    .bind(Uuid::new_v4())
+    .bind(json!({ "package_id": Uuid::new_v4() }))
+    .bind(Uuid::new_v4())
+    .bind(json!({ "package_id": Uuid::new_v4() }))
+    .execute(&pool)
+    .await
+    .expect("background jobs should seed successfully");
+
+    let (status, body) =
+        list_platform_admin_jobs(&app, &admin_jwt, Some("state=pending&kind=scan_artifact"))
+            .await;
+
+    assert_eq!(status, StatusCode::OK, "response: {body}");
+    assert_eq!(body["page"], 1);
+    assert_eq!(body["per_page"], 50);
+    assert_eq!(body["total"], 1);
+    assert_eq!(body["filters"]["state"], "pending");
+    assert_eq!(body["filters"]["kind"], "scan_artifact");
+    assert_eq!(body["summary"]["by_status"]["pending"], 1);
+    assert_eq!(body["summary"]["by_status"]["running"], 1);
+    assert_eq!(body["summary"]["by_status"]["completed"], 1);
+    assert_eq!(body["summary"]["by_status"]["failed"], 0);
+    assert_eq!(body["summary"]["by_status"]["dead"], 1);
+    assert_eq!(body["summary"]["by_kind"]["scan_artifact"], 1);
+    assert_eq!(body["summary"]["by_kind"]["cleanup_oci_blobs"], 1);
+    assert_eq!(body["summary"]["by_kind"]["index_package"], 1);
+    assert_eq!(body["summary"]["by_kind"]["reindex_search"], 1);
+    assert_eq!(body["summary"]["stale_jobs_count"], 1);
+    assert!(body["summary"]["oldest_pending_age_minutes"]
+        .as_i64()
+        .expect("oldest pending age should be present")
+        >= 44);
+
+    let jobs = body["jobs"]
+        .as_array()
+        .expect("jobs response should be an array");
+    assert_eq!(jobs.len(), 1, "response: {body}");
+    assert_eq!(jobs[0]["kind"], "scan_artifact");
+    assert_eq!(jobs[0]["status"], "pending");
+    assert_eq!(jobs[0]["payload"]["artifact_id"], "artifact-123");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_platform_stats_include_security_artifact_and_queue_metrics(pool: PgPool) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &alice_jwt, "Acme Corp", "acme-corp").await;
+    assert_eq!(status, StatusCode::CREATED, "response: {org_body}");
+    let org_id = org_body["id"].as_str().expect("org id should be returned");
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Acme Public",
+        "acme-public",
+        Some(org_id),
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "npm",
+        "stats-widget",
+        "acme-public",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let alice_id: Uuid = sqlx::query_scalar("SELECT id FROM users WHERE username = $1")
+        .bind("alice")
+        .fetch_one(&pool)
+        .await
+        .expect("alice user id should be queryable");
+    let package_id = Uuid::parse_str(
+        package_body["id"]
+            .as_str()
+            .expect("package id should be returned"),
+    )
+    .expect("package id should parse");
+    let release_id = Uuid::new_v4();
+    let artifact_id = Uuid::new_v4();
+
+    sqlx::query(
+        "INSERT INTO releases \
+         (id, package_id, version, status, published_by, published_at, updated_at) \
+         VALUES ($1, $2, $3, 'published'::release_status, $4, NOW(), NOW())",
+    )
+    .bind(release_id)
+    .bind(package_id)
+    .bind("1.0.0")
+    .bind(alice_id)
+    .execute(&pool)
+    .await
+    .expect("published release should insert successfully");
+
+    sqlx::query(
+        "INSERT INTO artifacts \
+         (id, release_id, kind, filename, storage_key, content_type, size_bytes, sha256, uploaded_at) \
+         VALUES ($1, $2, 'tarball'::artifact_kind, $3, $4, 'application/octet-stream', 42, $5, NOW())",
+    )
+    .bind(artifact_id)
+    .bind(release_id)
+    .bind("stats-widget-1.0.0.tgz")
+    .bind("artifacts/stats-widget-1.0.0.tgz")
+    .bind("abc123")
+    .execute(&pool)
+    .await
+    .expect("artifact should insert successfully");
+
+    insert_security_finding(
+        &pool,
+        release_id,
+        "vulnerability",
+        "high",
+        "Stats regression finding",
+        false,
+    )
+    .await;
+
+    sqlx::query("DELETE FROM background_jobs")
+        .execute(&pool)
+        .await
+        .expect("background jobs should be clear before seeding stats tests");
+
+    sqlx::query(
+        "INSERT INTO background_jobs \
+         (id, kind, payload, status, attempts, max_attempts, scheduled_at, created_at) \
+         VALUES ($1, 'scan_artifact'::job_kind, $2, 'pending'::job_status, 0, 5, NOW(), NOW())",
+    )
+    .bind(Uuid::new_v4())
+    .bind(json!({ "release_id": release_id }))
+    .execute(&pool)
+    .await
+    .expect("pending background job should insert successfully");
+
+    let (status, body) = get_platform_stats(&app).await;
+
+    assert_eq!(status, StatusCode::OK, "response: {body}");
+    assert_eq!(body["packages"], 1);
+    assert_eq!(body["releases"], 1);
+    assert_eq!(body["organizations"], 1);
+    assert_eq!(body["security_findings_total"], 1);
+    assert_eq!(body["security_findings_unresolved"], 1);
+    assert_eq!(body["artifacts_stored"], 1);
+    assert_eq!(body["job_queue_pending"], 1);
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

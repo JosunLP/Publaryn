@@ -3,6 +3,7 @@ use publaryn_core::domain::namespace::Ecosystem;
 use crate::error::ApiError;
 use publaryn_core::error::Error;
 
+pub mod admin;
 pub mod audit;
 pub mod auth;
 pub mod health;

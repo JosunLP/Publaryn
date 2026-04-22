@@ -20,9 +20,23 @@ pub enum JobKind {
     ReindexSearch,
 }
 
+impl JobKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ScanArtifact => "scan_artifact",
+            Self::IndexPackage => "index_package",
+            Self::DeliverWebhook => "deliver_webhook",
+            Self::CleanupExpiredTokens => "cleanup_expired_tokens",
+            Self::CleanupOciBlobs => "cleanup_oci_blobs",
+            Self::ReindexSearch => "reindex_search",
+        }
+    }
+}
+
 /// Status of a background job.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
 #[sqlx(type_name = "job_status", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum JobStatus {
     Pending,
     Running,
@@ -31,8 +45,20 @@ pub enum JobStatus {
     Dead,
 }
 
+impl JobStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Running => "running",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Dead => "dead",
+        }
+    }
+}
+
 /// A row from the `background_jobs` table.
-#[derive(Debug, Clone, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct Job {
     pub id: Uuid,
     pub kind: JobKind,
@@ -243,6 +269,7 @@ pub async fn job_counts(db: &PgPool) -> anyhow::Result<JobCounts> {
         SELECT
             COALESCE(SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END), 0) AS pending,
             COALESCE(SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END), 0) AS running,
+            COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0) AS completed,
             COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) AS failed,
             COALESCE(SUM(CASE WHEN status = 'dead' THEN 1 ELSE 0 END), 0) AS dead
         FROM background_jobs
@@ -258,6 +285,7 @@ pub async fn job_counts(db: &PgPool) -> anyhow::Result<JobCounts> {
 pub struct JobCounts {
     pub pending: i64,
     pub running: i64,
+    pub completed: i64,
     pub failed: i64,
     pub dead: i64,
 }
