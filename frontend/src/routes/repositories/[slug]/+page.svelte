@@ -25,6 +25,7 @@
     formatRepositoryVisibilityLabel,
     resolveRepositoryOwnerSummary,
   } from '../../../utils/repositories';
+  import { buildPackageSecurityPath } from '../../../pages/package-security-links';
   import { deriveRepositoryDetailCapabilities } from '../../../utils/repository-detail';
 
   const MAX_VISIBLE_PACKAGES = 100;
@@ -361,7 +362,10 @@
               <div class="release-row">
                 <div>
                   <a
-                    href={`/packages/${encodeURIComponent(pkg.ecosystem || 'unknown')}/${encodeURIComponent(pkg.name || '')}`}
+                    href={buildPackageSecurityPath(
+                      pkg.ecosystem || 'unknown',
+                      pkg.name || ''
+                    )}
                     class="release-row__version"
                     data-sveltekit-preload-data="hover"
                   >

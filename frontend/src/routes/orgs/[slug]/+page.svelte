@@ -139,6 +139,10 @@
     getOrgSecurityViewFromQuery,
   } from '../../../pages/org-security-query';
   import {
+    buildPackageSecurityFindingPath,
+    buildPackageSecurityPath,
+  } from '../../../pages/package-security-links';
+  import {
     buildAuditExportQuery,
     buildSecurityExportQuery,
     decodePackageSelection,
@@ -183,7 +187,6 @@
     canViewOrgAuditWorkspace,
     canViewOrgPeopleWorkspace,
   } from '../../../pages/org-workspace-access';
-  import { buildPackageDetailPath } from '../../../pages/package-detail-tabs';
   import { ECOSYSTEMS, ecosystemLabel } from '../../../utils/ecosystem';
   import { formatDate, formatNumber } from '../../../utils/format';
   import {
@@ -2810,7 +2813,13 @@
                   <div class="token-row__main">
                     <div class="token-row__title">
                       <a
-                        href={`/packages/${encodeURIComponent(pkg.ecosystem || 'unknown')}/${encodeURIComponent(pkg.name || '')}`}
+                        href={buildPackageSecurityPath(
+                          pkg.ecosystem || 'unknown',
+                          pkg.name || '',
+                          {
+                            severities: securityView.severities,
+                          }
+                        )}
                         data-sveltekit-preload-data="hover"
                         >{pkg.name || 'Unnamed package'}</a
                       >
@@ -2871,15 +2880,12 @@
                       {/if}
                         <a
                           class="btn btn-secondary btn-sm"
-                          href={buildPackageDetailPath(pkg.ecosystem, pkg.name, {
-                            tab: 'security',
-                            securityView: {
-                              severities: securityView.severities,
-                            },
+                          href={buildPackageSecurityPath(pkg.ecosystem, pkg.name, {
+                            severities: securityView.severities,
                           })}
                           data-sveltekit-preload-data="hover"
                           >{pkg.can_manage_security ? 'Review findings' : 'Open findings'}</a
-                      >
+                        >
                     </div>
                   {/if}
                   {#if pkg.can_manage_security && packageFindingState.expanded}
@@ -2924,6 +2930,12 @@
                             formatDateValue={formatDate}
                             normalizeSeverity={normalizeSecuritySeverity}
                             formatKindLabel={formatIdentifierLabel}
+                            buildPackageSecurityHref={(finding) =>
+                              buildPackageSecurityFindingPath(
+                                pkg.ecosystem || 'unknown',
+                                pkg.name || '',
+                                finding
+                              )}
                             handleNoteInput={(findingId, value) =>
                               updateOrgSecurityFindingNote(
                                 packageKey,
@@ -3033,7 +3045,13 @@
                           <div class="token-row__main">
                             <div class="token-row__title">
                               <a
-                                href={`/packages/${encodeURIComponent(pkg.ecosystem || 'unknown')}/${encodeURIComponent(pkg.name || '')}`}
+                                href={buildPackageSecurityPath(
+                                  pkg.ecosystem || 'unknown',
+                                  pkg.name || '',
+                                  {
+                                    severities: securityView.severities,
+                                  }
+                                )}
                                 data-sveltekit-preload-data="hover"
                                 >{pkg.name || 'Unnamed package'}</a
                               >
@@ -3623,7 +3641,13 @@
               <div class="token-row__main">
                 <div class="token-row__title">
                   <a
-                    href={`/packages/${encodeURIComponent(pkg.ecosystem || 'unknown')}/${encodeURIComponent(pkg.name || '')}`}
+                    href={buildPackageSecurityPath(
+                      pkg.ecosystem || 'unknown',
+                      pkg.name || '',
+                      {
+                        severities: securityView.severities,
+                      }
+                    )}
                     data-sveltekit-preload-data="hover"
                     >{pkg.name || 'Unnamed package'}</a
                   >

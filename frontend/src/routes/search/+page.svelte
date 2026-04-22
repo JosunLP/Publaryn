@@ -15,6 +15,7 @@
     buildSearchPath,
     getSearchViewFromQuery,
   } from '../../pages/search-query';
+  import { buildPackageSecurityPath } from '../../pages/package-security-links';
   import { formatSearchResultRepository } from '../../pages/search-results';
   import {
     ECOSYSTEMS,
@@ -357,7 +358,10 @@
         {:else}
           {#each results.packages as pkg}
             <a
-              href={`/packages/${encodeURIComponent(pkg.ecosystem || 'unknown')}/${encodeURIComponent(pkg.name)}`}
+              href={buildPackageSecurityPath(
+                pkg.ecosystem || 'unknown',
+                pkg.name
+              )}
               class="package-card"
               data-sveltekit-preload-data="hover"
             >
