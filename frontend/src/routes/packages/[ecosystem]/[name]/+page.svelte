@@ -53,6 +53,10 @@
     createPackageMetadataFormValues,
     packageMetadataHasChanges,
   } from '../../../../utils/package-metadata';
+  import {
+    TEAM_PERMISSION_OPTIONS,
+    formatTeamPermission,
+  } from '../../../../pages/team-management';
   import { selectPackageTransferTargets } from '../../../../utils/package-transfer';
   import {
     normalizeTrustedPublisherInput,
@@ -77,38 +81,9 @@
     loadError: string | null;
   }
 
-  const TEAM_PERMISSION_OPTIONS = [
-    {
-      value: 'admin',
-      label: 'Admin',
-      description: 'Manage package administration workflows.',
-    },
-    {
-      value: 'publish',
-      label: 'Publish',
-      description: 'Create releases and publish artifacts.',
-    },
-    {
-      value: 'write_metadata',
-      label: 'Write metadata',
-      description: 'Update package readmes and metadata.',
-    },
-    {
-      value: 'read_private',
-      label: 'Read private',
-      description: 'Read non-public package data.',
-    },
-    {
-      value: 'security_review',
-      label: 'Security review',
-      description: 'Reserved for future security workflows.',
-    },
-    {
-      value: 'transfer_ownership',
-      label: 'Transfer ownership',
-      description: 'Transfer a package to another owner.',
-    },
-  ] as const;
+  type PackageTeamAccessGrant = NonNullable<PackageDetail['team_access']>[number];
+
+  const SECURITY_REVIEW_PERMISSIONS = new Set(['admin', 'security_review']);
 
   let lastLoadKey = '';
   let loading = true;
@@ -825,11 +800,27 @@
   }
 
   function formatPermission(permission: string): string {
-    return formatIdentifierLabel(permission);
+    return formatTeamPermission(permission);
   }
 
   function isOrgAdminRole(role: string | null | undefined): boolean {
     return role === 'owner' || role === 'admin';
+  }
+
+  function canGrantReviewSecurity(
+    grant: Pick<PackageTeamAccessGrant, 'permissions'> | null | undefined
+  ): boolean {
+    return (grant?.permissions || []).some((permission) =>
+      SECURITY_REVIEW_PERMISSIONS.has(permission)
+    );
+  }
+
+  function securityReviewPermissions(
+    grant: Pick<PackageTeamAccessGrant, 'permissions'> | null | undefined
+  ): string[] {
+    return (grant?.permissions || []).filter((permission) =>
+      SECURITY_REVIEW_PERMISSIONS.has(permission)
+    );
   }
 
   function formatTeamOption(team: Team): string {
@@ -1037,6 +1028,65 @@
         {/if}
 
         {#if activeTab === 'security'}
+          {@const securityReviewerTeams = (pkg?.team_access || []).filter(
+            (grant) => canGrantReviewSecurity(grant)
+          )}
+          {#if pkg?.owner_org_slug && (pkg.can_manage_security || securityReviewerTeams.length > 0)}
+            <div class="surface-card" style="margin-bottom:1rem;">
+              <div class="surface-card__body">
+                <h3>Security review access</h3>
+                <p class="settings-copy" style="margin-bottom:0.75rem;">
+                  {#if securityReviewerTeams.length > 0}
+                    Teams with <strong>Security review</strong> or <strong>Admin</strong> package
+                    grants can resolve and reopen findings for this package.
+                  {:else}
+                    Security findings on this package can be triaged with your current package
+                    access.
+                  {/if}
+                </p>
+                <div class="token-row__scopes" style="margin-bottom:0.75rem;">
+                  {#if pkg.can_manage_security}
+                    <span class="badge badge-verified">You can triage findings</span>
+                  {/if}
+                  {#if securityReviewerTeams.length > 0}
+                    <span class="badge badge-ecosystem"
+                      >{securityReviewerTeams.length} review team{securityReviewerTeams.length === 1
+                        ? ''
+                        : 's'}</span
+                    >
+                  {/if}
+                </div>
+                {#if securityReviewerTeams.length > 0}
+                  <div class="token-list">
+                    {#each securityReviewerTeams as grant}
+                      <div class="token-row">
+                        <div class="token-row__main">
+                          <div class="token-row__title">
+                            {grant.team_name || grant.team_slug || 'Unnamed team'}
+                          </div>
+                          <div class="token-row__meta">
+                            {#if grant.team_slug}
+                              <span>{grant.team_slug}</span>
+                            {/if}
+                            {#if grant.granted_at}
+                              <span>latest grant {formatDate(grant.granted_at)}</span>
+                            {/if}
+                          </div>
+                          <div class="token-row__scopes">
+                            {#each securityReviewPermissions(grant) as permission}
+                              <span class="badge badge-ecosystem"
+                                >{formatPermission(permission)}</span
+                              >
+                            {/each}
+                          </div>
+                        </div>
+                      </div>
+                    {/each}
+                  </div>
+                {/if}
+              </div>
+            </div>
+          {/if}
           <div class="findings-toggle">
             <label>
               <input
@@ -1369,14 +1419,19 @@
                             <span>latest grant {formatDate(grant.granted_at)}</span>
                           {/if}
                         </div>
-                        <div class="token-row__scopes">
-                          {#each grant.permissions || [] as permission}
-                            <span class="badge badge-ecosystem"
-                              >{formatPermission(permission)}</span
-                            >
-                          {/each}
-                        </div>
-                      </div>
+                         <div class="token-row__scopes">
+                           {#each grant.permissions || [] as permission}
+                             <span class="badge badge-ecosystem"
+                               >{formatPermission(permission)}</span
+                             >
+                           {/each}
+                           {#if canGrantReviewSecurity(grant)}
+                             <span class="badge badge-verified"
+                               >Can triage findings</span
+                             >
+                           {/if}
+                         </div>
+                       </div>
                       {#if teamAccessManagementState.showManagement && grant.team_slug}
                         <div class="token-row__actions">
                           <button
