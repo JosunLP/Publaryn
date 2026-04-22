@@ -172,19 +172,23 @@ The platform should be exportable, well documented, and designed to avoid hard v
 - security, audit, and policy enforcement
 - search and discovery
 - publish and install flows
-- webhooks and integrations
+- visibility-aware management and native read flows
+- delegated governance and ownership transfer
+- quarantine-first release lifecycle with background scanning/reindexing
 - APIs and administration functions
-- quotas and governance
+- documented self-hosted deployment and validation baseline
 
 ## 5.2 Extended Future Scope
 
 - federated registries
 - proxy and mirror repositories
 - advisory database integration
+- webhooks and event-outbox delivery
 - Sigstore support
 - provenance and attestation workflows
 - internal dependency graph analysis
 - license compliance features
+- quota enforcement as a technical capability
 - enterprise SSO, SCIM, and billing
 - air-gapped and offline synchronization
 
@@ -234,8 +238,8 @@ Later, selected components can be split out:
 
 - management API for the UI and automation
 - native registry endpoints per ecosystem
-- webhook endpoints
 - auth and OIDC integrations
+- webhooks and event-outbox behavior as a post-1.0 extension
 
 ### Domain Layer
 
@@ -246,7 +250,7 @@ Later, selected components can be split out:
 - security findings
 - audit log
 - search metadata
-- quotas and retention
+- lifecycle and visibility metadata
 
 ### Infrastructure Layer
 
@@ -268,10 +272,10 @@ Responsible for:
 
 - user accounts
 - sessions
-- MFA and passkeys
+- TOTP MFA today; passkeys / WebAuthn after 1.0
 - tokens
 - roles and permissions
-- SSO and enterprise identity
+- SSO and enterprise identity after 1.0
 - service identities
 
 ## 7.2 Organizations and Governance
@@ -285,7 +289,7 @@ Responsible for:
 - invitations
 - namespace claims
 - policies
-- quotas
+- delegated access and ownership transfer
 
 The backend API already implements organization CRUD, memberships, invitations, teams, ownership transfer, and delegated package access. The current frontend exposes org discovery, join/decline, and creation flows in settings and is expanding into dedicated organization workspaces.
 
@@ -351,7 +355,7 @@ Responsible for:
 - abuse and takedowns
 - risk scoring
 
-Scanning, trusted publishing, and security findings are anchored in the backend today; dedicated web dashboards and triage workflows are later slices.
+Scanning, trusted publishing, and security findings are already anchored in the backend and are now exposed through package and organization security views in the current web application baseline. Broader operator tooling, deeper attestation workflows, and richer policy-driven remediation remain later slices.
 
 ## 7.8 Audit and Compliance
 
@@ -363,13 +367,13 @@ Responsible for:
 - compliance-relevant data
 - administrative forensics
 
-Audit capture is already a backend concern; human-friendly audit and compliance views in the web UI are still pending.
+Audit capture is already a backend concern and the current organization workspace now includes human-friendly audit views and CSV export. Broader compliance reporting, operator workflows, and signed audit-chain enhancements remain future work.
 
 ## 7.9 Notifications and Integrations
 
 Responsible for:
 
-- webhooks
+- webhooks as a planned post-1.0 integration surface
 - email
 - chat notifications
 - incident alerts
@@ -407,8 +411,8 @@ Attributes:
 - teams
 - policies
 - visibility defaults
-- quotas
-- billing plan
+- quotas as future lifecycle policy
+- billing plan after 1.0
 - namespace claims
 
 ## 8.3 Team
@@ -1508,126 +1512,144 @@ Enterprise:
 
 ---
 
-# 29. Recommended Roadmap
+# 29. 1.0 Release Roadmap
 
-## Phase 0 – Foundations
+The foundation and MVP phases described earlier in this document are largely
+complete in the current implementation. Publaryn now ships all planned baseline
+adapter crates, a broad management API, a SvelteKit web portal, organization
+workspaces, delegated team governance, rate limiting, background jobs, and a
+quarantine-first publish pipeline.
 
-Goal:
+The remaining roadmap to 1.0 is therefore no longer “build the first product”
+but “align, harden, document, and operationalize the shipped product”.
 
-- solid domain model
-- auth, org, and package core
-- storage and publish transactions
-- Bun-managed TypeScript UI foundation with SvelteKit, Tailwind CSS, persisted theming, and initial public/account pages
-- audit and policy framework
+## Phase 1 – Reality Alignment
 
-## Phase 1 – Minimal Viable Multi-Ecosystem Platform
+- synchronize README, concept, ADR index, and the API/adapter matrix
+- define the 1.0 product scope explicitly
+- define what is intentionally deferred until after 1.0
+- document search, visibility, security flows, and support expectations
+- freeze a release contract that matches the real codebase
 
-Recommended first protocols:
+## Phase 2 – Protocol Hardening
 
-- npm / Bun
-- pip
-- OCI
-- Cargo
+- validate native publish, read, auth, and yank/unlist flows for every mounted adapter
+- add conformance-style regression coverage per ecosystem
+- harden edge-case error behavior and compatibility gaps
+- finish prioritized adapter polish for OCI, Cargo, PyPI, and Maven
 
-Why:
+## Phase 3 – Security GA
 
-- covers modern practical usage well
-- technically strong validation value
-- high market relevance
-- clear security benefits
+- deepen the scanner subsystem
+- surface advisory-driven and supply-chain-oriented findings more consistently
+- formalize SBOM, provenance, and attestation direction
+- extend quarantine, triage, and operator-oriented security workflows
 
-Includes:
+## Phase 4 – Governance GA
 
-- users, organizations, teams
-- public and private packages
-- publish and install
-- package pages
-- search
-- tokens
-- MFA
-- basic audit
-- basic scanning
+- mature invitation and identity-trust flows
+- productize namespace and domain verification
+- expand policy coverage for organizations, repositories, and packages
+- harden approval, transfer, and delegation behavior
+- complete audit and compliance-facing views
 
-The public discovery, package page, and account/governance baseline is already underway in the current implementation; settings now covers profile editing, TOTP MFA, scoped tokens, organization memberships, invitation review, and organization creation. The remaining Phase 1 work focuses on dedicated organization workspaces, broader governance flows, and protocol completeness.
+## Phase 5 – Repository Lifecycle
 
-## Phase 2 – Enterprise and Governance Focus
+- staging and promotion flows
+- snapshot strategy where ecosystems require it
+- proxy and virtual repository types
+- retention, archive, and tombstone rules
+- quota enforcement as a technical capability
 
-- repository types
-- policies
-- OIDC trusted publishing
-- namespace verification
-- quotas
-- staging and promotion
-- security findings UI
-- webhooks
-- verified publishers
+## Phase 6 – Operations and Integrations
 
-## Phase 3 – Additional Ecosystems
+- webhooks and event-outbox behavior
+- admin and operator surfaces
+- reindex, recovery, queue-health, and blob-GC workflows
+- stronger monitoring, tracing, and deployment/operator documentation
 
-- Maven
-- NuGet
-- Composer
-- RubyGems
+## Phase 7 – 1.0 Release Gate
 
-## Phase 4 – Advanced Security and Ecosystem Depth
-
-- SBOM support
-- provenance
-- Sigstore
-- dependency graphing
-- advisory surfacing
-- takedown workflows
-- search and ranking improvements
-
-## Phase 5 – Enterprise Operations
-
-- SSO, SAML, SCIM
-- HA deployment guides
-- regional replication
-- advanced compliance exports
-- proxy and virtual repositories
-- offline sync and air-gap tooling
+- document a per-adapter definition of done
+- complete security review and documentation freeze
+- verify upgrade, migration, smoke, and install paths
+- publish a support and compatibility policy
 
 ---
 
-# 30. MVP Recommendation
+# 30. 1.0 Scope Recommendation
 
-## 30.1 What the Real MVP Should Include
+## 30.1 What 1.0 Should Include
 
-A realistic MVP should not aim for “all ecosystems, partially” but rather “a smaller set of ecosystems, done properly.”
+Publaryn 1.0 should include:
 
-Recommended MVP ecosystems:
+- all currently mounted ecosystems: npm/Bun, PyPI, Cargo, NuGet, Maven, RubyGems, Composer, and OCI
+- the existing management API for auth, governance, packages, releases, search, security findings, and trusted publishers
+- public and authenticated private discovery with visibility-aware search
+- the existing web portal baseline: landing, search, package pages, version pages, settings, MFA, token management, and organization workspaces
+- organization teams, delegated package/repository/namespace access, and ownership-transfer flows
+- background scanning, queue processing, and release reindexing
 
-- npm / Bun
-- pip
-- OCI
-- Cargo
+## 30.2 What 1.0 Should Explicitly Exclude
 
-With:
+- full enterprise identity integration such as SSO, SAML, and SCIM
+- monetization and billing systems
+- federated or globally replicated registry behavior
+- proxy and virtual repositories unless explicitly completed and documented
+- full-featured provenance and attestation product workflows
 
-- user accounts
-- organizations
-- teams
-- public and private repositories
-- package creation
-- release publishing
-- search
-- package pages
-- access tokens
-- MFA
-- basic roles
-- audit log
-- quarantine and basic scanning
-- simple namespace claims
+## 30.3 API and Adapter Matrix for 1.0
 
-## 30.2 What Should Not Be in the MVP
+The control-plane baseline for 1.0 is:
 
-- full SSO, SAML, and SCIM
-- advanced billing
-- sophisticated trending systems
-- full vulnerability platform
-- every protocol at once
-- federation
+- `/v1/auth/*`
+- `/v1/users/*`
+- `/v1/orgs/*`
+- `/v1/org-invitations/*`
+- `/v1/namespaces/*`
+- `/v1/repositories/*`
+- `/v1/packages/*`
+- `GET /v1/search`
+- package security-finding and trusted-publisher routes under `/v1/packages/*`
+- organization security reporting under `/v1/orgs/*`
+- `/v1/tokens*`
+- `/v1/audit`
+- `/v1/stats`
+- `/health`
+- `/readiness`
+
+The mounted native adapter baseline for 1.0 is:
+
+| Ecosystem | Mount path | 1.0 baseline |
+| --- | --- | --- |
+| npm / Bun | `/npm` | packument reads, tarball download, search, publish, dist-tags |
+| PyPI / pip | `/pypi` plus `/_/oidc/*` | Simple API, file download, legacy upload, trusted-publishing token exchange |
+| Cargo | `/cargo/index`, `/cargo/api/v1` | sparse index, publish, download, search, yank, unyank, compatibility owner endpoints |
+| NuGet | `/nuget` | service index, flat container, registration, search, push, unlist, relist |
+| Maven | `/maven` | repository reads, metadata generation, checksum reads, deploy-style PUT upload |
+| RubyGems | `/rubygems` | metadata reads, version listing, gem download, push, yank, API key echo |
+| Composer | `/composer` | packages index, package metadata, dist download, publish, yank |
+| OCI | `/oci` | probe, catalog, manifests, blobs, uploads, tags, referrers, delete semantics |
+
+## 30.4 Search, Visibility, and Security Contract for 1.0
+
+- anonymous search only returns public packages
+- authenticated search can include visible private and `internal_org` packages
+- `org` and `repository` filters narrow the visible search result set
+- `unlisted` packages stay readable via direct URL but remain out of search and package listings
+- `quarantine` and `scanning` releases stay hidden from public protocol reads and public artifact downloads
+- publish flows remain quarantine-first: create/resolve the release, store immutable artifacts, enqueue scan/index work, then expose the release when publication rules are satisfied
+- 1.0 account security means password login, JWT sessions, scoped API tokens, TOTP MFA with recovery codes, and rate limiting; passkeys and enterprise federation remain later work
+
+## 30.5 Release Criteria for 1.0
+
+Publaryn 1.0 should only ship when:
+
+1. README, this concept, `docs/1.0.md`, and the ADR index agree on scope and deferrals.
+2. Every mounted adapter has documented route scope plus targeted regression coverage for publish/read/auth behavior.
+3. The documented Rust and frontend CI checks pass.
+4. The Docker smoke build passes.
+5. Release notes clearly separate supported, unsupported, and deferred features.
 
 ---
 
@@ -1780,9 +1802,9 @@ Very important in the long term.
 
 # 34. Concrete Product Recommendation
 
-If I were to shape this strategically, I would position Publaryn in its first strong version as:
+If I were to shape this strategically, I would position Publaryn at 1.0 as:
 
-“A secure, organization-ready multi-ecosystem registry for modern software teams, built in Rust, with native support for npm, pip, OCI, and Cargo — and a clear roadmap toward Maven, NuGet, Composer, and RubyGems.”
+“A secure, organization-ready multi-ecosystem registry for modern software teams, built in Rust, with native support for npm/Bun, PyPI, Cargo, NuGet, Maven, RubyGems, Composer, and OCI.”
 
 That positioning is technically credible, market-relevant, and operationally realistic.
 
@@ -1808,39 +1830,7 @@ Publaryn should:
 
 # 36. Recommended Next Step
 
-Implementation is already underway. The immediate next step is to turn the settings-based governance baseline into a dedicated organization workspace: a canonical `/orgs/:slug` UI that shows organization overview, members, teams, visible packages, and owner/admin invitation management while keeping Settings as the personal account hub.
-
-In parallel, the project should produce four detailed artifacts:
-
-1. Product Requirements Document
-   - precise MVP definition
-   - priorities
-   - exclusions
-
-2. Domain Model Specification
-   - entities
-   - relationships
-   - state models
-   - permission model
-
-3. Protocol Compatibility Specification
-   - minimal and full support targets per ecosystem
-
-4. Security Architecture Document
-   - token model
-   - authentication
-   - quarantine
-   - audit
-   - OIDC publishing
-   - abuse and takedown handling
-
-After that organization-workspace slice is stable, the next delivery steps should move into team management, delegated package-access governance, audit/security dashboards, and the remaining typed API/auth-session hardening.
-
-If you want, I can continue directly and turn this into one of the following:
-
-- a full MVP / requirements specification
-- a detailed domain model with all entities and relationships
-- a module and service architecture document
-- a security-by-design document
-- a roadmap with epics and user stories
-- a UI / information architecture concept for the SvelteKit frontend
+The immediate next step is to keep the 1.0 release contract and the codebase in
+lockstep: every protocol hardening change, security feature, or governance
+extension should update the README, [docs/1.0.md](1.0.md), and the relevant ADR
+index entry together so the public product contract stays accurate.

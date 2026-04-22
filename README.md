@@ -1,4 +1,4 @@
-# WIP - Publaryn
+# Publaryn
 
 **Publaryn** — secure, independent package registry across ecosystems. Developed by AI Agents, built on Rust, and designed for security-conscious teams who want to host their own package registry without sacrificing the native experience of their ecosystem's tools.
 
@@ -8,20 +8,90 @@ A self-hostable, security-first package registry platform that speaks the native
 
 ## Supported Ecosystems
 
-| Ecosystem    | Protocol                     | Status                 |
-| ------------ | ---------------------------- | ---------------------- |
-| npm / Bun    | npm Registry Protocol        | ✅ Baseline implemented |
-| pip / PyPI   | Simple Index + Legacy Upload | ✅ Baseline implemented |
-| Rust Crates  | Cargo Sparse Index           | ✅ Baseline implemented |
-| NuGet        | NuGet v3                     | ✅ Baseline implemented |
-| Apache Maven | Maven2                       | ✅ Baseline implemented |
-| RubyGems     | RubyGems / Compact Index     | ✅ Baseline implemented |
-| Composer     | Composer Repository          | ✅ Baseline implemented |
-| Containers   | OCI Distribution Spec        | ✅ Baseline implemented |
+| Ecosystem | Mount path | 1.0 baseline | Status |
+| --------- | ---------- | ------------ | ------ |
+| npm / Bun | `/npm` | packument reads, tarball download, search, publish, dist-tags | ✅ Baseline implemented |
+| pip / PyPI | `/pypi` plus `/_/oidc/*` | Simple API, file download, legacy upload, trusted-publishing token exchange | ✅ Baseline implemented |
+| Rust Crates | `/cargo/index`, `/cargo/api/v1` | sparse index, publish, download, search, yank, unyank, compatibility owner endpoints | ✅ Baseline implemented |
+| NuGet | `/nuget` | service index, flat container, registration, search, push, unlist, relist | ✅ Baseline implemented |
+| Apache Maven | `/maven` | repository reads, metadata generation, checksum reads, deploy-style PUT upload | ✅ Baseline implemented |
+| RubyGems | `/rubygems` | metadata reads, version listing, gem download, push, yank, API key echo | ✅ Baseline implemented |
+| Composer | `/composer` | packages index, package metadata, dist download, publish, yank | ✅ Baseline implemented |
+| Containers | `/oci` | probe, catalog, manifests, blobs, uploads, tags, referrers, delete semantics | ✅ Baseline implemented |
 
 > **Note:** Bun uses the npm adapter — no separate protocol implementation is required.
 
-The current documented baseline includes native publish/read flows for every ecosystem above, shared quarantine → scan → publish lifecycle controls, ecosystem-aware package/release detail responses, and a SvelteKit web portal that can browse package metadata, releases, security findings, trusted publishers, and OCI manifest references. The OCI adapter now also exposes native referrers discovery for subject-linked manifests (for example SBOMs or signatures already pushed through the registry), while broader attestation policy, signing UX, proxy/virtual repositories, and broader actor-aware discovery remain intentionally separate follow-on work.
+The current documented baseline includes native publish/read flows for every ecosystem above, shared quarantine → scan → publish lifecycle controls, ecosystem-aware package/release detail responses, and a SvelteKit web portal that can browse package metadata, releases, security findings, trusted publishers, and OCI manifest references. The OCI adapter now also exposes native referrers discovery for subject-linked manifests (for example SBOMs or signatures already pushed through the registry), while broader attestation policy, signing UX, proxy/virtual repositories, and richer discovery/ranking features remain intentionally separate follow-on work.
+
+---
+
+## 1.0 Product Contract
+
+Publaryn is now targeting **1.0.0** as a production-ready baseline for:
+
+- self-hosted multi-ecosystem package hosting
+- native client compatibility across all currently mounted adapters
+- organization-centric governance and delegated team access
+- quarantine-first publication with background scanning and security findings
+- an integrated web portal for package discovery, package details, version details, settings, and organization workspaces
+
+The detailed 1.0 contract lives in [docs/1.0.md](docs/1.0.md). It defines:
+
+- the **1.0 scope**
+- what is **explicitly deferred until after 1.0**
+- the **API and adapter matrix**
+- visibility, search, and security-flow behavior
+- the **release criteria**
+- the support and compatibility policy
+
+For architecture decisions, use the indexed ADR catalog in [docs/adr/README.md](docs/adr/README.md).
+
+### 1.0 management surface
+
+The documented 1.0 control-plane surface covers:
+
+- `/v1/auth/*`
+- `/v1/users/*`
+- `/v1/orgs/*`
+- `/v1/org-invitations/*`
+- `/v1/namespaces/*`
+- `/v1/repositories/*`
+- `/v1/packages/*`
+- `GET /v1/search`
+- `/v1/tokens*`
+- `/v1/audit`
+- `/v1/stats`
+- `/health`
+- `/readiness`
+
+### In scope for 1.0
+
+- management API for auth, users, organizations, teams, repositories, packages, releases, tokens, audit, search, security findings, trusted publishers, and namespace claims
+- native protocol adapters for npm/Bun, PyPI, Cargo, NuGet, Maven, RubyGems, Composer, and OCI
+- actor-aware visibility enforcement for control-plane reads and package search
+- delegated package, repository, and namespace access for organization teams
+- background jobs for scanning, reindexing, cleanup, and operational queue handling
+- documented validation, CI, and container build pipeline
+
+### Explicitly out of scope for 1.0
+
+- proxy, mirror, and virtual repositories
+- Maven snapshot repositories and promotion workflows
+- enterprise SSO, SAML, and SCIM
+- billing, quotas as a product tiering system, and monetization features
+- full attestation policy, signing UX, and deep Sigstore integration
+- federated registries, regional replication, and air-gapped synchronization
+- operator-facing abuse and takedown consoles beyond the current quarantine and audit primitives
+
+### 1.0 release gate
+
+Publaryn should only call itself 1.0-ready when:
+
+- the README, [docs/concept.md](docs/concept.md), [docs/1.0.md](docs/1.0.md), and [docs/adr/README.md](docs/adr/README.md) agree on scope and deferrals
+- every mounted adapter has documented publish/read/auth behavior and targeted regression coverage for its baseline flows
+- the documented Rust and frontend CI checks pass
+- the Docker smoke build succeeds
+- release notes clearly separate supported, unsupported, and deferred features
 
 ---
 
@@ -250,7 +320,7 @@ Repository ownership can be transferred through `POST /v1/repositories/:slug/own
 Cross-organization repository transfers revoke any repository-scoped team grants tied to the previous owner organization, but they do not automatically re-home packages that already belong to the repository.
 The organization workspace also includes an aggregated security overview backed by `GET /v1/orgs/:slug/security-findings`, scoped to the packages currently visible to the requesting actor.
 That endpoint and `GET /v1/orgs/:slug/security-findings/export` both accept the same unresolved-finding filters: repeated or comma-separated `severity` values, a single `ecosystem`, and a package-name substring through `package`.
-The CSV export applies the same filters as the JSON view and remains visibility-aware, so anonymous actors only receive public package rows while organization members can export the broader package set they are allowed to see.
+The CSV export applies the same filters as the JSON view and remains visibility-aware, so anonymous actors only receive public package rows while authorized actors can export the broader package set they are allowed to see.
 Organization audit reads now support action, actor, pagination, and UTC date-range filtering through the `occurred_from` and `occurred_until` query parameters.
 Organization administrators can also export the full filtered audit view as CSV through `GET /v1/orgs/:slug/audit/export`; the export applies the same action, actor, and UTC date filters but ignores pagination.
 
@@ -310,7 +380,7 @@ The control-plane publish workflow is now explicit and quarantine-first:
 2. upload one or more immutable artifacts into shared object storage
 3. publish the release once artifact metadata and blobs are present consistently
 
-Quarantined and scanning releases are intentionally hidden from public direct reads and artifact downloads. They remain visible only to actors who already have package write access.
+Quarantined and scanning releases are intentionally hidden from public direct reads and artifact downloads. They remain visible only to authorized maintainers and reviewers on the private management side.
 
 Package maintainers (including team-delegated reviewers with the `security_review` package or repository permission) can resolve or reopen individual security findings through `PATCH /v1/packages/:ecosystem/:name/security-findings/:finding_id` with body `{ "is_resolved": bool, "note"?: string }`. Every state transition records a `security_finding_resolve` or `security_finding_reopen` audit event, including any supplied note in the audit metadata. For organization-owned packages, those events also appear in organization audit views and CSV exports. `GET /v1/packages/:ecosystem/:name` returns a `can_manage_security` flag that reflects whether the authenticated caller holds the `security_review` requirement, so dedicated reviewers without release-management permissions can see triage controls without being granted broader publish rights.
 
@@ -319,7 +389,7 @@ Artifact uploads are idempotent by filename and content. Repeating the same uplo
 Package and repository read endpoints enforce explicit visibility semantics.
 `public` resources are readable and discoverable by everyone.
 `unlisted` resources remain readable through direct URLs but are intentionally excluded from search and package listing surfaces.
-`private`, `internal_org`, and `quarantined` resources require an authenticated owner or organization member.
+`private`, `internal_org`, and `quarantined` resources require authenticated visibility through ownership, organization membership, or delegated team access.
 
 Control-plane package creation derives package ownership from the target repository instead of trusting caller-supplied owner fields.
 For the current slice, package names are also enforced as globally unique within an ecosystem so the existing `/v1/packages/:ecosystem/:name` control-plane paths remain unambiguous.
@@ -368,11 +438,15 @@ Current PyPI upload behavior:
 ### Search
 
 ```http
-GET /v1/search?q=<query>&ecosystem=<eco>&page=1&per_page=20
+GET /v1/search?q=<query>&ecosystem=<eco>&org=<slug>&repository=<slug>&page=1&per_page=20
 ```
 
-The current search endpoint returns only publicly discoverable packages.
-Authenticated discovery for private and organization-internal packages will be added in a later slice with actor-aware indexing.
+The current search endpoint is actor-aware:
+
+- anonymous callers only see publicly discoverable packages
+- authenticated callers can also see private and `internal_org` packages when they already have visibility through direct ownership, organization membership, or delegated team access
+- `org` and `repository` filters scope the visible search result set by owner organization slug and repository slug
+- `unlisted` and `quarantined` packages remain excluded from search
 
 ### Tokens
 
@@ -429,7 +503,7 @@ This is the expected lifecycle for rolling updates and horizontal scale-down eve
 | `Organization`     | Group of users with teams, namespace claims, policies                 |
 | `Team`             | Sub-group of an org with fine-grained permissions                     |
 | `NamespaceClaim`   | Ecosystem-specific namespace owned by user/org                        |
-| `Repository`       | Logical collection of packages (public/private/staging/proxy/virtual) |
+| `Repository`       | Logical collection of hosted packages; staging/proxy/virtual variants remain post-1.0 lifecycle work |
 | `Package`          | Ecosystem-specific package identity                                   |
 | `Release`          | Immutable versioned release                                           |
 | `Artifact`         | A file associated with a release (tarball, wheel, jar, gem, …)        |
@@ -473,6 +547,7 @@ Contributions are welcome.
 - Read [CONTRIBUTING.md](CONTRIBUTING.md) for local setup, validation steps, and contribution expectations.
 - Review [SUPPORT.md](SUPPORT.md) before opening a usage question or bug report.
 - Use [SECURITY.md](SECURITY.md) for responsible vulnerability disclosure instead of public issues.
+- Review [docs/1.0.md](docs/1.0.md) for the current release contract and [docs/adr/README.md](docs/adr/README.md) for the indexed decision record map.
 - Please open an issue first to discuss major changes before starting implementation work.
 
 ---
