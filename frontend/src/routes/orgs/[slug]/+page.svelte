@@ -356,6 +356,9 @@
   let newPackageDisplayName = '';
   let newPackageDescription = '';
   let creatingPackage = false;
+  let teamDeleteTargetSlug: string | null = null;
+  let teamDeleteConfirmed = false;
+  let deletingTeamSlug: string | null = null;
 
   $: slug = $page.params.slug ?? '';
   $: pageNotice = $page.url.searchParams.get('notice')?.trim() || null;
@@ -586,6 +589,9 @@
     error = options.error ?? null;
     canViewPeopleWorkspace = false;
     securityFindingsByPackageKey = {};
+    teamDeleteTargetSlug = null;
+    teamDeleteConfirmed = false;
+    deletingTeamSlug = null;
 
     isAuthenticated = Boolean(getAuthToken());
 
@@ -1165,14 +1171,41 @@
     }
   }
 
-  async function handleDeleteTeam(teamSlug: string): Promise<void> {
+  function openTeamDeleteConfirmation(teamSlug: string): void {
+    teamDeleteTargetSlug = teamSlug;
+    teamDeleteConfirmed = false;
+    deletingTeamSlug = null;
+    notice = null;
+    error = null;
+  }
+
+  function cancelTeamDeleteConfirmation(): void {
+    teamDeleteTargetSlug = null;
+    teamDeleteConfirmed = false;
+    deletingTeamSlug = null;
+    error = null;
+  }
+
+  async function handleDeleteTeam(event: SubmitEvent, teamSlug: string): Promise<void> {
+    event.preventDefault();
+
+    if (!teamDeleteConfirmed || teamDeleteTargetSlug !== teamSlug) {
+      notice = null;
+      error =
+        'Please confirm that you understand deleting this team revokes its delegated access.';
+      return;
+    }
+
+    deletingTeamSlug = teamSlug;
+    notice = null;
+    error = null;
+
     try {
       await deleteTeam(slug, teamSlug);
       await loadOrganizationPage({ notice: `Deleted team ${teamSlug}.` });
     } catch (caughtError: unknown) {
-      await loadOrganizationPage({
-        error: toErrorMessage(caughtError, 'Failed to delete team.'),
-      });
+      error = toErrorMessage(caughtError, 'Failed to delete team.');
+      deletingTeamSlug = null;
     }
   }
 
@@ -2513,15 +2546,69 @@
                           href={`/orgs/${encodeURIComponent(slug)}/teams/${encodeURIComponent(teamSlug)}`}
                           data-sveltekit-preload-data="hover">Open workspace</a
                         >
-                        <button
-                          class="btn btn-danger btn-sm"
-                          type="button"
-                          on:click={() => handleDeleteTeam(teamSlug)}
-                          >Delete</button
-                        >
+                        {#if teamDeleteTargetSlug === teamSlug}
+                          <button
+                            class="btn btn-secondary btn-sm"
+                            type="button"
+                            on:click={cancelTeamDeleteConfirmation}
+                            disabled={deletingTeamSlug === teamSlug}>Cancel</button
+                          >
+                        {:else}
+                          <button
+                            class="btn btn-danger btn-sm"
+                            id={`team-delete-toggle-${teamSlug}`}
+                            type="button"
+                            on:click={() => openTeamDeleteConfirmation(teamSlug)}
+                            >Delete…</button
+                          >
+                        {/if}
                       </div>
                     {/if}
                   </div>
+
+                  {#if canManageTeams && teamSlug && teamDeleteTargetSlug === teamSlug}
+                    <form
+                      class="alert alert-warning mt-4"
+                      id={`team-delete-form-${teamSlug}`}
+                      on:submit={(event) => handleDeleteTeam(event, teamSlug)}
+                    >
+                      <p style="margin:0 0 12px 0;">
+                        Deleting this team immediately removes its memberships and delegated
+                        package, repository, and namespace access.
+                      </p>
+                      <label class="flex items-start gap-2" style="margin-bottom:12px;">
+                        <input
+                          id={`team-delete-confirm-${teamSlug}`}
+                          bind:checked={teamDeleteConfirmed}
+                          type="checkbox"
+                          name="confirm_delete"
+                          disabled={deletingTeamSlug === teamSlug}
+                        />
+                        <span>
+                          I understand deleting this team revokes its delegated access and cannot be
+                          undone.
+                        </span>
+                      </label>
+                      <div class="token-row__actions">
+                        <button
+                          class="btn btn-danger btn-sm"
+                          id={`team-delete-submit-${teamSlug}`}
+                          type="submit"
+                          disabled={deletingTeamSlug === teamSlug}
+                        >
+                          {deletingTeamSlug === teamSlug ? 'Deleting…' : 'Delete team'}
+                        </button>
+                        <button
+                          class="btn btn-secondary btn-sm"
+                          type="button"
+                          on:click={cancelTeamDeleteConfirmation}
+                          disabled={deletingTeamSlug === teamSlug}
+                        >
+                          Keep team
+                        </button>
+                      </div>
+                    </form>
+                  {/if}
 
                   {#if canManageTeams && teamSlug}
                     <div class="grid gap-6 xl:grid-cols-2">

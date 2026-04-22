@@ -6,6 +6,7 @@ import { writable } from 'svelte/store';
 import { renderPackageSelectionValue } from '../src/pages/org-workspace-actions';
 import {
   changeValue,
+  click,
   renderSvelte,
   setChecked,
   submitForm,
@@ -39,6 +40,12 @@ interface FetchScenario {
   canManageTeams: boolean;
   canManageRepositories: boolean;
   canManageNamespaces: boolean;
+  teams: Array<{
+    name: string;
+    slug: string;
+    description: string;
+    created_at: string;
+  }>;
   workspaceBootstrapRequests: string[];
   teamMemberRequests: string[];
   teamPackageAccessRequests: string[];
@@ -52,6 +59,7 @@ interface FetchScenario {
   orgMfaRequired: boolean;
   teamRepositoryAccessUpdates: MutationCall[];
   teamPackageAccessUpdates: MutationCall[];
+  teamDeleteCalls: string[];
   repositoryTransfers: MutationCall[];
   packageTransfers: MutationCall[];
   searchCalls: SearchCall[];
@@ -401,6 +409,70 @@ describe('route-level multi-page org dataset coverage', () => {
       await waitFor(() => {
         expect(target.textContent).toContain(`Deleted team ${TEAM_SLUG}.`);
       });
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace requires explicit confirmation before deleting a team', async () => {
+    const scenario = createFetchScenario();
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Release Engineering');
+      });
+
+      click(queryRequiredButton(target, `#team-delete-toggle-${TEAM_SLUG}`));
+
+      await waitFor(() => {
+        expect(
+          queryRequiredForm(target.querySelector(`#team-delete-form-${TEAM_SLUG}`))
+        ).toBeDefined();
+      });
+
+      submitForm(queryRequiredForm(target.querySelector(`#team-delete-form-${TEAM_SLUG}`)));
+
+      await waitFor(() => {
+        expect(target.textContent).toContain(
+          'Please confirm that you understand deleting this team revokes its delegated access.'
+        );
+      });
+
+      expect(scenario.teamDeleteCalls).toEqual([]);
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace deletes a team after explicit confirmation', async () => {
+    const scenario = createFetchScenario();
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Release Engineering');
+      });
+
+      click(queryRequiredButton(target, `#team-delete-toggle-${TEAM_SLUG}`));
+
+      await waitFor(() => {
+        expect(
+          queryRequiredForm(target.querySelector(`#team-delete-form-${TEAM_SLUG}`))
+        ).toBeDefined();
+      });
+
+      setChecked(queryCheckbox(target, `#team-delete-confirm-${TEAM_SLUG}`), true);
+      submitForm(queryRequiredForm(target.querySelector(`#team-delete-form-${TEAM_SLUG}`)));
+
+      await waitFor(() => {
+        expect(scenario.teamDeleteCalls).toEqual([
+          `/v1/orgs/${ORG_SLUG}/teams/${TEAM_SLUG}`,
+        ]);
+        expect(target.textContent).toContain(`Deleted team ${TEAM_SLUG}.`);
+      });
+
+      expect(target.textContent).not.toContain('Release Engineering');
     } finally {
       unmount();
     }
@@ -796,6 +868,14 @@ function createFetchScenario(): FetchScenario {
     canManageTeams: true,
     canManageRepositories: true,
     canManageNamespaces: true,
+    teams: [
+      {
+        name: 'Release Engineering',
+        slug: TEAM_SLUG,
+        description: 'Owns release governance',
+        created_at: '2026-04-01T00:00:00Z',
+      },
+    ],
     workspaceBootstrapRequests: [],
     teamMemberRequests: [],
     teamPackageAccessRequests: [],
@@ -809,6 +889,7 @@ function createFetchScenario(): FetchScenario {
     orgMfaRequired: false,
     teamRepositoryAccessUpdates: [],
     teamPackageAccessUpdates: [],
+    teamDeleteCalls: [],
     repositoryTransfers: [],
     packageTransfers: [],
     searchCalls: [],
@@ -859,14 +940,7 @@ async function handleApiRequest(
           can_transfer_ownership: true,
         },
       },
-      teams: [
-        {
-          name: 'Release Engineering',
-          slug: TEAM_SLUG,
-          description: 'Owns release governance',
-          created_at: '2026-04-01T00:00:00Z',
-        },
-      ],
+      teams: scenario.teams,
       repositories,
       repository_package_coverage: [
         {
@@ -1163,6 +1237,12 @@ async function handleApiRequest(
     return apiResponse({ message: 'Saved package access' });
   }
 
+  if (method === 'DELETE' && requestPath === `/v1/orgs/${ORG_SLUG}/teams/${TEAM_SLUG}`) {
+    scenario.teamDeleteCalls.push(requestPath);
+    scenario.teams = scenario.teams.filter((team) => team.slug !== TEAM_SLUG);
+    return apiResponse({ message: 'Deleted team' });
+  }
+
   if (
     method === 'POST' &&
     requestPath.startsWith('/v1/repositories/') &&
@@ -1296,6 +1376,18 @@ function queryCheckbox(
   const element = root.querySelector(selector);
   if (!(element instanceof HTMLInputElement)) {
     throw new Error(`Expected checkbox for selector: ${selector}`);
+  }
+
+  return element;
+}
+
+function queryRequiredButton(
+  root: ParentNode | Element,
+  selector: string
+): HTMLButtonElement {
+  const element = root.querySelector(selector);
+  if (!(element instanceof HTMLButtonElement)) {
+    throw new Error(`Expected button for selector: ${selector}`);
   }
 
   return element;
