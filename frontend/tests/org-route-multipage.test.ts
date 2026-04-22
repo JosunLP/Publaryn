@@ -482,7 +482,7 @@ describe('route-level multi-page org dataset coverage', () => {
       });
 
       setChecked(
-        queryRequiredCheckbox(target, `#team-delete-confirm-${TEAM_SLUG}`),
+        queryCheckbox(target, `#team-delete-confirm-${TEAM_SLUG}`),
         true
       );
       submitForm(queryRequiredFormBySelector(target, `#team-delete-form-${TEAM_SLUG}`));
@@ -517,7 +517,7 @@ describe('route-level multi-page org dataset coverage', () => {
       });
 
       setChecked(
-        queryRequiredCheckbox(target, `#team-delete-confirm-${TEAM_SLUG}`),
+        queryCheckbox(target, `#team-delete-confirm-${TEAM_SLUG}`),
         true
       );
       submitForm(queryRequiredFormBySelector(target, `#team-delete-form-${TEAM_SLUG}`));
@@ -590,7 +590,7 @@ describe('route-level multi-page org dataset coverage', () => {
       });
 
       setChecked(
-        queryRequiredCheckbox(target, `#namespace-delete-confirm-${NAMESPACE_CLAIM_ID}`),
+        queryCheckbox(target, `#namespace-delete-confirm-${NAMESPACE_CLAIM_ID}`),
         true
       );
       submitForm(
@@ -633,7 +633,7 @@ describe('route-level multi-page org dataset coverage', () => {
       });
 
       setChecked(
-        queryRequiredCheckbox(target, `#namespace-delete-confirm-${NAMESPACE_CLAIM_ID}`),
+        queryCheckbox(target, `#namespace-delete-confirm-${NAMESPACE_CLAIM_ID}`),
         true
       );
       submitForm(
@@ -672,7 +672,7 @@ describe('route-level multi-page org dataset coverage', () => {
 
       await waitFor(() => {
         expect(
-          queryRequiredCheckbox(target, '#org-ownership-transfer-confirm')
+        queryCheckbox(target, '#org-ownership-transfer-confirm')
         ).toBeDefined();
       });
 
@@ -706,11 +706,11 @@ describe('route-level multi-page org dataset coverage', () => {
 
       await waitFor(() => {
         expect(
-          queryRequiredCheckbox(target, '#org-ownership-transfer-confirm')
+        queryCheckbox(target, '#org-ownership-transfer-confirm')
         ).toBeDefined();
       });
 
-      setChecked(queryRequiredCheckbox(target, '#org-ownership-transfer-confirm'), true);
+      setChecked(queryCheckbox(target, '#org-ownership-transfer-confirm'), true);
       submitForm(queryRequiredForm(queryRequiredInput(target, '#org-transfer-owner').closest('form')));
 
       await waitFor(() => {
@@ -745,11 +745,11 @@ describe('route-level multi-page org dataset coverage', () => {
 
       await waitFor(() => {
         expect(
-          queryRequiredCheckbox(target, '#org-ownership-transfer-confirm')
+        queryCheckbox(target, '#org-ownership-transfer-confirm')
         ).toBeDefined();
       });
 
-      setChecked(queryRequiredCheckbox(target, '#org-ownership-transfer-confirm'), true);
+      setChecked(queryCheckbox(target, '#org-ownership-transfer-confirm'), true);
       submitForm(queryRequiredForm(queryRequiredInput(target, '#org-transfer-owner').closest('form')));
 
       await waitFor(() => {
@@ -779,7 +779,7 @@ describe('route-level multi-page org dataset coverage', () => {
 
       await waitFor(() => {
         expect(
-          queryRequiredCheckbox(target, '#org-namespace-transfer-confirm')
+        queryCheckbox(target, '#org-namespace-transfer-confirm')
         ).toBeDefined();
       });
 
@@ -813,11 +813,11 @@ describe('route-level multi-page org dataset coverage', () => {
 
       await waitFor(() => {
         expect(
-          queryRequiredCheckbox(target, '#org-namespace-transfer-confirm')
+        queryCheckbox(target, '#org-namespace-transfer-confirm')
         ).toBeDefined();
       });
 
-      setChecked(queryRequiredCheckbox(target, '#org-namespace-transfer-confirm'), true);
+      setChecked(queryCheckbox(target, '#org-namespace-transfer-confirm'), true);
       submitForm(queryRequiredForm(queryRequiredSelect(target, '#org-namespace-transfer-claim').closest('form')));
 
       await waitFor(() => {
@@ -852,11 +852,11 @@ describe('route-level multi-page org dataset coverage', () => {
 
       await waitFor(() => {
         expect(
-          queryRequiredCheckbox(target, '#org-namespace-transfer-confirm')
+        queryCheckbox(target, '#org-namespace-transfer-confirm')
         ).toBeDefined();
       });
 
-      setChecked(queryRequiredCheckbox(target, '#org-namespace-transfer-confirm'), true);
+      setChecked(queryCheckbox(target, '#org-namespace-transfer-confirm'), true);
       submitForm(queryRequiredForm(queryRequiredSelect(target, '#org-namespace-transfer-claim').closest('form')));
 
       await waitFor(() => {
@@ -886,7 +886,7 @@ describe('route-level multi-page org dataset coverage', () => {
 
       await waitFor(() => {
         expect(
-          queryRequiredCheckbox(target, '#org-repository-transfer-confirm')
+        queryCheckbox(target, '#org-repository-transfer-confirm')
         ).toBeDefined();
       });
 
@@ -921,11 +921,11 @@ describe('route-level multi-page org dataset coverage', () => {
 
       await waitFor(() => {
         expect(
-          queryRequiredCheckbox(target, '#org-repository-transfer-confirm')
+        queryCheckbox(target, '#org-repository-transfer-confirm')
         ).toBeDefined();
       });
 
-      setChecked(queryRequiredCheckbox(target, '#org-repository-transfer-confirm'), true);
+      setChecked(queryCheckbox(target, '#org-repository-transfer-confirm'), true);
       submitForm(queryRequiredForm(queryRequiredSelect(target, '#org-repository-transfer-repository').closest('form')));
 
       await waitFor(() => {
@@ -958,7 +958,7 @@ describe('route-level multi-page org dataset coverage', () => {
 
       await waitFor(() => {
         expect(
-          queryRequiredCheckbox(target, '#org-package-transfer-confirm')
+        queryCheckbox(target, '#org-package-transfer-confirm')
         ).toBeDefined();
       });
 
@@ -996,11 +996,11 @@ describe('route-level multi-page org dataset coverage', () => {
 
       await waitFor(() => {
         expect(
-          queryRequiredCheckbox(target, '#org-package-transfer-confirm')
+        queryCheckbox(target, '#org-package-transfer-confirm')
         ).toBeDefined();
       });
 
-      setChecked(queryRequiredCheckbox(target, '#org-package-transfer-confirm'), true);
+      setChecked(queryCheckbox(target, '#org-package-transfer-confirm'), true);
       submitForm(queryRequiredForm(queryRequiredSelect(target, '#org-package-transfer-package').closest('form')));
 
       await waitFor(() => {
@@ -1246,10 +1246,10 @@ describe('route-level multi-page org dataset coverage', () => {
       click(queryRequiredButton(repositoryTransferForm, '#org-repository-transfer-toggle'));
       await waitFor(() => {
         expect(
-          queryRequiredCheckbox(repositoryTransferForm, '#org-repository-transfer-confirm')
+          queryCheckbox(repositoryTransferForm, '#org-repository-transfer-confirm')
         ).toBeDefined();
       });
-      const repositoryTransferConfirm = queryRequiredCheckbox(
+      const repositoryTransferConfirm = queryCheckbox(
         repositoryTransferForm,
         '#org-repository-transfer-confirm'
       );
@@ -1301,10 +1301,10 @@ describe('route-level multi-page org dataset coverage', () => {
       click(queryRequiredButton(packageTransferForm, '#org-package-transfer-toggle'));
       await waitFor(() => {
         expect(
-          queryRequiredCheckbox(packageTransferForm, '#org-package-transfer-confirm')
+          queryCheckbox(packageTransferForm, '#org-package-transfer-confirm')
         ).toBeDefined();
       });
-      const packageTransferConfirm = queryRequiredCheckbox(
+      const packageTransferConfirm = queryCheckbox(
         packageTransferForm,
         '#org-package-transfer-confirm'
       );
@@ -2023,13 +2023,6 @@ function queryCheckbox(
   }
 
   return element;
-}
-
-function queryRequiredCheckbox(
-  root: ParentNode | Element,
-  selector: string
-): HTMLInputElement {
-  return queryCheckbox(root, selector);
 }
 
 function queryRequiredButton(
