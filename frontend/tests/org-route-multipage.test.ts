@@ -40,6 +40,7 @@ interface FetchScenario {
   canManageTeams: boolean;
   canManageRepositories: boolean;
   canManageNamespaces: boolean;
+  teamDeleteError: string | null;
   teams: Array<{
     name: string;
     slug: string;
@@ -478,6 +479,41 @@ describe('route-level multi-page org dataset coverage', () => {
     }
   });
 
+  test('org workspace keeps the confirmation surface open when team deletion fails', async () => {
+    const scenario = createFetchScenario();
+    scenario.teamDeleteError = 'Failed to delete team.';
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Release Engineering');
+      });
+
+      click(queryRequiredButton(target, `#team-delete-toggle-${TEAM_SLUG}`));
+
+      await waitFor(() => {
+        expect(
+          queryRequiredForm(target.querySelector(`#team-delete-form-${TEAM_SLUG}`))
+        ).toBeDefined();
+      });
+
+      setChecked(queryCheckbox(target, `#team-delete-confirm-${TEAM_SLUG}`), true);
+      submitForm(queryRequiredForm(target.querySelector(`#team-delete-form-${TEAM_SLUG}`)));
+
+      await waitFor(() => {
+        expect(target.textContent).toContain('Failed to delete team.');
+        expect(scenario.teamDeleteCalls).toEqual([]);
+        expect(
+          queryRequiredForm(target.querySelector(`#team-delete-form-${TEAM_SLUG}`))
+        ).toBeDefined();
+      });
+
+      expect(target.textContent).toContain('Release Engineering');
+    } finally {
+      unmount();
+    }
+  });
+
   test('org workspace does not load invitation management UI when the explicit invitation capability is absent', async () => {
     const scenario = createFetchScenario();
     scenario.canManageInvitations = false;
@@ -868,6 +904,7 @@ function createFetchScenario(): FetchScenario {
     canManageTeams: true,
     canManageRepositories: true,
     canManageNamespaces: true,
+    teamDeleteError: null,
     teams: [
       {
         name: 'Release Engineering',
@@ -1238,6 +1275,9 @@ async function handleApiRequest(
   }
 
   if (method === 'DELETE' && requestPath === `/v1/orgs/${ORG_SLUG}/teams/${TEAM_SLUG}`) {
+    if (scenario.teamDeleteError) {
+      throw new Error(scenario.teamDeleteError);
+    }
     scenario.teamDeleteCalls.push(requestPath);
     scenario.teams = scenario.teams.filter((team) => team.slug !== TEAM_SLUG);
     return apiResponse({ message: 'Deleted team' });
