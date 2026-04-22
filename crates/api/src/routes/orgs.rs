@@ -7,7 +7,7 @@ use axum::{
 };
 use csv::WriterBuilder;
 use serde::Deserialize;
-use sqlx::{Postgres, QueryBuilder, Row};
+use sqlx::{PgPool, Postgres, QueryBuilder, Row};
 use std::collections::{BTreeSet, HashMap};
 use std::str::FromStr;
 use uuid::Uuid;
@@ -89,6 +89,10 @@ pub fn router() -> Router<AppState> {
             put(replace_team_namespace_access).delete(remove_team_namespace_access),
         )
         .route("/v1/orgs/{slug}/repositories", get(list_org_repositories))
+        .route(
+            "/v1/orgs/{slug}/repository-package-coverage",
+            get(list_org_repository_package_coverage),
+        )
         .route(
             "/v1/orgs/{slug}/security-findings",
             get(list_org_security_findings),
@@ -259,6 +263,12 @@ struct ResolvedOrgSecurityFilters {
     severities: Vec<String>,
     ecosystem: Option<String>,
     package: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ResolvedOrgReadScope {
+    org_id: Uuid,
+    can_view_non_public: bool,
 }
 
 async fn update_org(
@@ -2480,19 +2490,11 @@ async fn list_org_packages(
         .min(100);
     let page: i64 = q.get("page").and_then(|s| s.parse().ok()).unwrap_or(1_i64);
     let offset = (page - 1) * limit;
-    let org_row = sqlx::query("SELECT id FROM organizations WHERE slug = $1")
-        .bind(&slug)
-        .fetch_optional(&state.db)
-        .await
-        .map_err(|e| ApiError(Error::Database(e)))?
-        .ok_or_else(|| ApiError(Error::NotFound(format!("Organization '{slug}' not found"))))?;
-
-    let org_id: Uuid = org_row
-        .try_get("id")
-        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
     let actor_user_id = identity.user_id();
-    let can_view_non_public =
-        actor_can_access_org_member_directory_by_id(&state.db, org_id, actor_user_id).await?;
+    let ResolvedOrgReadScope {
+        org_id,
+        can_view_non_public,
+    } = resolve_org_read_scope(&state.db, &slug, actor_user_id).await?;
 
     let rows = sqlx::query(
         "SELECT p.id, p.name, p.ecosystem, p.description, p.download_count, p.created_at \
@@ -2546,19 +2548,11 @@ async fn list_org_repositories(
         .min(100);
     let page: i64 = q.get("page").and_then(|s| s.parse().ok()).unwrap_or(1_i64);
     let offset = (page - 1) * limit;
-    let org_row = sqlx::query("SELECT id FROM organizations WHERE slug = $1")
-        .bind(&slug)
-        .fetch_optional(&state.db)
-        .await
-        .map_err(|e| ApiError(Error::Database(e)))?
-        .ok_or_else(|| ApiError(Error::NotFound(format!("Organization '{slug}' not found"))))?;
-
-    let org_id: Uuid = org_row
-        .try_get("id")
-        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
     let actor_user_id = identity.user_id();
-    let can_view_non_public =
-        actor_can_access_org_member_directory_by_id(&state.db, org_id, actor_user_id).await?;
+    let ResolvedOrgReadScope {
+        org_id,
+        can_view_non_public,
+    } = resolve_org_read_scope(&state.db, &slug, actor_user_id).await?;
 
     let rows = sqlx::query(
         "SELECT r.id, r.name, r.slug, r.description, r.kind::text AS kind, \
@@ -2605,6 +2599,85 @@ async fn list_org_repositories(
     Ok(Json(serde_json::json!({ "repositories": repositories })))
 }
 
+async fn list_org_repository_package_coverage(
+    State(state): State<AppState>,
+    identity: OptionalAuthenticatedIdentity,
+    Path(slug): Path<String>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let ResolvedOrgReadScope {
+        org_id,
+        can_view_non_public,
+    } = resolve_org_read_scope(&state.db, &slug, identity.user_id()).await?;
+
+    let rows = sqlx::query(
+        "SELECT r.slug AS repository_slug, \
+                p.id AS package_id, \
+                p.name, \
+                p.ecosystem, \
+                p.description, \
+                p.visibility, \
+                p.download_count, \
+                p.created_at \
+         FROM repositories r \
+         LEFT JOIN packages p \
+           ON p.repository_id = r.id \
+          AND ($2::bool = true OR p.visibility = 'public') \
+         WHERE r.owner_org_id = $1 \
+           AND ($2::bool = true OR r.visibility = 'public') \
+         ORDER BY LOWER(r.name), LOWER(r.slug), p.download_count DESC NULLS LAST, p.created_at DESC NULLS LAST",
+    )
+    .bind(org_id)
+    .bind(can_view_non_public)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let mut repository_entries = Vec::new();
+    let mut repository_positions = HashMap::new();
+
+    for row in rows {
+        let repository_slug: String = row
+            .try_get("repository_slug")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+        let entry_index = if let Some(index) = repository_positions.get(&repository_slug) {
+            *index
+        } else {
+            let index = repository_entries.len();
+            repository_entries.push(serde_json::json!({
+                "repository_slug": repository_slug,
+                "packages": Vec::<serde_json::Value>::new(),
+            }));
+            repository_positions.insert(repository_slug.clone(), index);
+            index
+        };
+
+        let package_id = row
+            .try_get::<Option<Uuid>, _>("package_id")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+        if let Some(package_id) = package_id {
+            repository_entries[entry_index]["packages"]
+                .as_array_mut()
+                .expect("repository coverage packages should be an array")
+                .push(serde_json::json!({
+                    "id": package_id,
+                    "name": row.try_get::<Option<String>, _>("name").ok().flatten(),
+                    "ecosystem": row.try_get::<Option<String>, _>("ecosystem").ok().flatten(),
+                    "description": row.try_get::<Option<String>, _>("description").ok().flatten(),
+                    "visibility": row.try_get::<Option<String>, _>("visibility").ok().flatten(),
+                    "download_count": row.try_get::<Option<i64>, _>("download_count").ok().flatten(),
+                    "created_at": row
+                        .try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("created_at")
+                        .ok()
+                        .flatten(),
+                }));
+        }
+    }
+
+    Ok(Json(serde_json::json!({
+        "repositories": repository_entries,
+    })))
+}
+
 const ORG_SECURITY_SEVERITY_VALUES: [&str; 5] = ["critical", "high", "medium", "low", "info"];
 
 async fn resolve_org_security_scope(
@@ -2626,6 +2699,30 @@ async fn resolve_org_security_scope(
         actor_can_access_org_member_directory_by_id(db, org_id, actor_user_id).await?;
 
     Ok((org_id, can_view_non_public))
+}
+
+async fn resolve_org_read_scope(
+    db: &PgPool,
+    slug: &str,
+    actor_user_id: Option<Uuid>,
+) -> ApiResult<ResolvedOrgReadScope> {
+    let org_row = sqlx::query("SELECT id FROM organizations WHERE slug = $1")
+        .bind(slug)
+        .fetch_optional(db)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?
+        .ok_or_else(|| ApiError(Error::NotFound(format!("Organization '{slug}' not found"))))?;
+
+    let org_id: Uuid = org_row
+        .try_get("id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let can_view_non_public =
+        actor_can_access_org_member_directory_by_id(db, org_id, actor_user_id).await?;
+
+    Ok(ResolvedOrgReadScope {
+        org_id,
+        can_view_non_public,
+    })
 }
 
 fn resolve_org_security_filters(

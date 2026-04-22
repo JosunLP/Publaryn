@@ -19,6 +19,7 @@
     OrgInvitationListResponse,
     OrgMember,
     OrgPackageSummary,
+    OrgRepositoryPackageCoverageResponse,
     OrgRepositorySummary,
     OrgSecurityFindingsResponse,
     OrgSecurityPackageSummary,
@@ -50,6 +51,7 @@
     listMyOrganizations,
     listOrgAuditLogs,
     listOrgInvitations,
+    listOrgRepositoryPackageCoverage,
     listOrgSecurityFindings,
     listTeamNamespaceAccess,
     listTeamMembers,
@@ -78,13 +80,9 @@
     updateSecurityFinding,
   } from '../../../api/packages';
   import type { SecurityFinding } from '../../../api/packages';
-  import type {
-    RepositoryPackageListResponse,
-    RepositoryPackageSummary,
-  } from '../../../api/repositories';
+  import type { RepositoryPackageSummary } from '../../../api/repositories';
   import {
     createRepository,
-    listRepositoryPackages,
     transferRepositoryOwnership,
     updateRepository,
   } from '../../../api/repositories';
@@ -819,34 +817,54 @@
   async function loadRepositoryPackages(
     repositoryList: OrgRepositorySummary[]
   ): Promise<Record<string, RepositoryPackageState>> {
-    const entries = await Promise.all(
-      repositoryList.filter(hasRepositorySlug).map(async (repository) => {
-        try {
-          const data: RepositoryPackageListResponse =
-            await listRepositoryPackages(repository.slug, { perPage: 100 });
-          return [
-            repository.slug,
-            {
-              packages: data.packages || [],
-              load_error: data.load_error || null,
-            },
-          ] as const;
-        } catch (caughtError: unknown) {
-          return [
-            repository.slug,
-            {
-              packages: [],
-              load_error: toErrorMessage(
-                caughtError,
-                `Failed to load packages for ${repository.name || repository.slug}.`
-              ),
-            },
-          ] as const;
-        }
-      })
-    );
+    const repositoriesWithSlug = repositoryList.filter(hasRepositorySlug);
+    if (repositoriesWithSlug.length === 0) {
+      return {};
+    }
 
-    return Object.fromEntries(entries);
+    try {
+      const data: OrgRepositoryPackageCoverageResponse =
+        await listOrgRepositoryPackageCoverage(slug);
+      const packagesByRepositorySlug = new Map(
+        (data.repositories || [])
+          .filter(
+            (
+              entry
+            ): entry is {
+              repository_slug: string;
+              packages: RepositoryPackageSummary[];
+            } =>
+              typeof entry.repository_slug === 'string' &&
+              entry.repository_slug.trim().length > 0
+          )
+          .map((entry) => [entry.repository_slug, entry.packages || []] as const)
+      );
+
+      return Object.fromEntries(
+        repositoriesWithSlug.map((repository) => [
+          repository.slug,
+          {
+            packages: packagesByRepositorySlug.get(repository.slug) || [],
+            load_error: data.load_error || null,
+          },
+        ])
+      );
+    } catch (caughtError: unknown) {
+      const loadError = toErrorMessage(
+        caughtError,
+        'Failed to load repository package coverage.'
+      );
+
+      return Object.fromEntries(
+        repositoriesWithSlug.map((repository) => [
+          repository.slug,
+          {
+            packages: [],
+            load_error: loadError,
+          },
+        ])
+      );
+    }
   }
 
   async function handleAuditFilterSubmit(event: SubmitEvent): Promise<void> {

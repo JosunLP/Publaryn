@@ -1,5 +1,6 @@
 import { api } from './client';
 import { collectPaginatedItems } from './pagination';
+import type { RepositoryPackageSummary } from './repositories';
 
 type NullableString = string | null;
 
@@ -192,6 +193,16 @@ export interface OrgRepositorySummary {
 
 export interface OrgRepositoryListResponse {
   repositories: OrgRepositorySummary[];
+  load_error?: NullableString;
+}
+
+export interface OrgRepositoryPackageCoverageEntry {
+  repository_slug?: NullableString;
+  packages: RepositoryPackageSummary[];
+}
+
+export interface OrgRepositoryPackageCoverageResponse {
+  repositories: OrgRepositoryPackageCoverageEntry[];
   load_error?: NullableString;
 }
 
@@ -793,6 +804,16 @@ export async function listOrgRepositories(
   return {
     repositories,
   };
+}
+
+export async function listOrgRepositoryPackageCoverage(
+  slug: string
+): Promise<OrgRepositoryPackageCoverageResponse> {
+  const { data } = await api.get<OrgRepositoryPackageCoverageResponse>(
+    `/v1/orgs/${enc(slug)}/repository-package-coverage`
+  );
+
+  return data;
 }
 
 export async function listOrgSecurityFindings(

@@ -740,6 +740,27 @@ async fn list_org_repositories(
     (status, body)
 }
 
+/// List aggregated repository package coverage for an organization and return the response.
+async fn list_org_repository_package_coverage(
+    app: &axum::Router,
+    jwt: Option<&str>,
+    org_slug: &str,
+) -> (StatusCode, Value) {
+    let mut request = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/v1/orgs/{org_slug}/repository-package-coverage"));
+
+    if let Some(jwt) = jwt {
+        request = request.header(header::AUTHORIZATION, format!("Bearer {jwt}"));
+    }
+
+    let req = request.body(Body::empty()).unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
 /// List security findings aggregated for an organization and return the response.
 async fn list_org_security_findings(
     app: &axum::Router,
@@ -3461,6 +3482,61 @@ async fn test_org_repository_list_respects_visibility_and_package_counts(pool: P
     assert_eq!(anonymous_repositories[0]["slug"], "acme-public");
     assert_eq!(anonymous_repositories[0]["visibility"], "public");
     assert_eq!(anonymous_repositories[0]["package_count"], 1);
+
+    let (status, owner_coverage_body) =
+        list_org_repository_package_coverage(&app, Some(&jwt), "acme-corp").await;
+    assert_eq!(status, StatusCode::OK);
+    let owner_coverage = owner_coverage_body["repositories"]
+        .as_array()
+        .expect("owner repository coverage should be an array");
+    assert_eq!(owner_coverage.len(), 2, "response: {owner_coverage_body}");
+    let owner_public_coverage = owner_coverage
+        .iter()
+        .find(|repo| repo["repository_slug"] == "acme-public")
+        .expect("public repository coverage should be present for owner");
+    let owner_public_packages = owner_public_coverage["packages"]
+        .as_array()
+        .expect("owner public coverage packages should be an array");
+    assert_eq!(owner_public_packages.len(), 3, "response: {owner_coverage_body}");
+    for package_name in [
+        "acme-public-widget",
+        "acme-unlisted-widget",
+        "acme-private-widget",
+    ] {
+        assert!(
+            owner_public_packages
+                .iter()
+                .any(|package| package["name"] == package_name),
+            "expected {package_name} in response: {owner_coverage_body}"
+        );
+    }
+    let owner_internal_coverage = owner_coverage
+        .iter()
+        .find(|repo| repo["repository_slug"] == "acme-internal")
+        .expect("internal repository coverage should be present for owner");
+    let owner_internal_packages = owner_internal_coverage["packages"]
+        .as_array()
+        .expect("owner internal coverage packages should be an array");
+    assert_eq!(owner_internal_packages.len(), 1, "response: {owner_coverage_body}");
+    assert_eq!(owner_internal_packages[0]["name"], "acme-internal-widget");
+
+    let (status, anonymous_coverage_body) =
+        list_org_repository_package_coverage(&app, None, "acme-corp").await;
+    assert_eq!(status, StatusCode::OK);
+    let anonymous_coverage = anonymous_coverage_body["repositories"]
+        .as_array()
+        .expect("anonymous repository coverage should be an array");
+    assert_eq!(anonymous_coverage.len(), 1, "response: {anonymous_coverage_body}");
+    assert_eq!(anonymous_coverage[0]["repository_slug"], "acme-public");
+    let anonymous_coverage_packages = anonymous_coverage[0]["packages"]
+        .as_array()
+        .expect("anonymous repository coverage packages should be an array");
+    assert_eq!(
+        anonymous_coverage_packages.len(),
+        1,
+        "response: {anonymous_coverage_body}"
+    );
+    assert_eq!(anonymous_coverage_packages[0]["name"], "acme-public-widget");
 }
 
 #[sqlx::test(migrations = "../../migrations")]
