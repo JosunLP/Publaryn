@@ -172,19 +172,23 @@ The platform should be exportable, well documented, and designed to avoid hard v
 - security, audit, and policy enforcement
 - search and discovery
 - publish and install flows
-- webhooks and integrations
+- visibility-aware management and native read flows
+- delegated governance and ownership transfer
+- quarantine-first release lifecycle with background scanning/reindexing
 - APIs and administration functions
-- quotas and governance
+- documented self-hosted deployment and validation baseline
 
 ## 5.2 Extended Future Scope
 
 - federated registries
 - proxy and mirror repositories
 - advisory database integration
+- webhooks and event-outbox delivery
 - Sigstore support
 - provenance and attestation workflows
 - internal dependency graph analysis
 - license compliance features
+- quota enforcement as a technical capability
 - enterprise SSO, SCIM, and billing
 - air-gapped and offline synchronization
 
@@ -234,8 +238,8 @@ Later, selected components can be split out:
 
 - management API for the UI and automation
 - native registry endpoints per ecosystem
-- webhook endpoints
 - auth and OIDC integrations
+- webhooks and event-outbox behavior as a post-1.0 extension
 
 ### Domain Layer
 
@@ -246,7 +250,7 @@ Later, selected components can be split out:
 - security findings
 - audit log
 - search metadata
-- quotas and retention
+- lifecycle and visibility metadata
 
 ### Infrastructure Layer
 
@@ -268,10 +272,10 @@ Responsible for:
 
 - user accounts
 - sessions
-- MFA and passkeys
+- TOTP MFA today; passkeys / WebAuthn after 1.0
 - tokens
 - roles and permissions
-- SSO and enterprise identity
+- SSO and enterprise identity after 1.0
 - service identities
 
 ## 7.2 Organizations and Governance
@@ -285,7 +289,7 @@ Responsible for:
 - invitations
 - namespace claims
 - policies
-- quotas
+- delegated access and ownership transfer
 
 The backend API already implements organization CRUD, memberships, invitations, teams, ownership transfer, and delegated package access. The current frontend exposes org discovery, join/decline, and creation flows in settings and is expanding into dedicated organization workspaces.
 
@@ -369,7 +373,7 @@ Audit capture is already a backend concern and the current organization workspac
 
 Responsible for:
 
-- webhooks
+- webhooks as a planned post-1.0 integration surface
 - email
 - chat notifications
 - incident alerts
@@ -407,8 +411,8 @@ Attributes:
 - teams
 - policies
 - visibility defaults
-- quotas
-- billing plan
+- quotas as future lifecycle policy
+- billing plan after 1.0
 - namespace claims
 
 ## 8.3 Team
@@ -1593,6 +1597,59 @@ Publaryn 1.0 should include:
 - federated or globally replicated registry behavior
 - proxy and virtual repositories unless explicitly completed and documented
 - full-featured provenance and attestation product workflows
+
+## 30.3 API and Adapter Matrix for 1.0
+
+The control-plane baseline for 1.0 is:
+
+- `/v1/auth/*`
+- `/v1/users/*`
+- `/v1/orgs/*`
+- `/v1/org-invitations/*`
+- `/v1/namespaces/*`
+- `/v1/repositories/*`
+- `/v1/packages/*`
+- `GET /v1/search`
+- package security-finding and trusted-publisher routes under `/v1/packages/*`
+- organization security reporting under `/v1/orgs/*`
+- `/v1/tokens*`
+- `/v1/audit`
+- `/v1/stats`
+- `/health`
+- `/readiness`
+
+The mounted native adapter baseline for 1.0 is:
+
+| Ecosystem | Mount path | 1.0 baseline |
+| --- | --- | --- |
+| npm / Bun | `/npm` | packument reads, tarball download, search, publish, dist-tags |
+| PyPI / pip | `/pypi` plus `/_/oidc/*` | Simple API, file download, legacy upload, trusted-publishing token exchange |
+| Cargo | `/cargo/index`, `/cargo/api/v1` | sparse index, publish, download, search, yank, unyank, compatibility owner endpoints |
+| NuGet | `/nuget` | service index, flat container, registration, search, push, unlist, relist |
+| Maven | `/maven` | repository reads, metadata generation, checksum reads, deploy-style PUT upload |
+| RubyGems | `/rubygems` | metadata reads, version listing, gem download, push, yank, API key echo |
+| Composer | `/composer` | packages index, package metadata, dist download, publish, yank |
+| OCI | `/oci` | probe, catalog, manifests, blobs, uploads, tags, referrers, delete semantics |
+
+## 30.4 Search, Visibility, and Security Contract for 1.0
+
+- anonymous search only returns public packages
+- authenticated search can include visible private and `internal_org` packages
+- `org` and `repository` filters narrow the visible search result set
+- `unlisted` packages stay readable via direct URL but remain out of search and package listings
+- `quarantine` and `scanning` releases stay hidden from public protocol reads and public artifact downloads
+- publish flows remain quarantine-first: create/resolve the release, store immutable artifacts, enqueue scan/index work, then expose the release when publication rules are satisfied
+- 1.0 account security means password login, JWT sessions, scoped API tokens, TOTP MFA with recovery codes, and rate limiting; passkeys and enterprise federation remain later work
+
+## 30.5 Release Criteria for 1.0
+
+Publaryn 1.0 should only ship when:
+
+1. README, this concept, `docs/1.0.md`, and the ADR index agree on scope and deferrals.
+2. Every mounted adapter has documented route scope plus targeted regression coverage for publish/read/auth behavior.
+3. The documented Rust and frontend CI checks pass.
+4. The Docker smoke build passes.
+5. Release notes clearly separate supported, unsupported, and deferred features.
 
 ---
 
