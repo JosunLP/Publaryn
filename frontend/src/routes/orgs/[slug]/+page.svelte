@@ -582,10 +582,12 @@
   async function loadOrganizationPage(
     options: { notice?: string | null; error?: string | null } = {}
   ): Promise<void> {
+    const hasNoticeOverride = Object.prototype.hasOwnProperty.call(options, 'notice');
+
     loading = true;
     notFound = false;
     loadError = null;
-    notice = options.notice ?? pageNotice;
+    notice = hasNoticeOverride ? options.notice ?? null : pageNotice;
     error = options.error ?? null;
     canViewPeopleWorkspace = false;
     securityFindingsByPackageKey = {};

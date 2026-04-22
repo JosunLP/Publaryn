@@ -295,12 +295,12 @@
           <a
             href={`/orgs/${encodeURIComponent(slug)}`}
             class="btn btn-secondary"
-            data-sveltekit-preload-data="hover">Open org overview</a
+            data-sveltekit-preload-data="hover">Open organization overview</a
           >
           <a
             href={teamWorkspaceAnchor}
             class="btn btn-primary"
-            data-sveltekit-preload-data="hover">Open org team section</a
+            data-sveltekit-preload-data="hover">Open this team in org workspace</a
           >
         </div>
       </div>
@@ -520,7 +520,7 @@
             </p>
           </div>
           <form class="surface-card__body stack-sm" id="team-delete-form" on:submit={handleDeleteTeam}>
-            <label class="flex items-start gap-2">
+            <label class="flex items-start gap-2" for="team-delete-confirm">
               <input
                 id="team-delete-confirm"
                 bind:checked={deleteConfirmed}
