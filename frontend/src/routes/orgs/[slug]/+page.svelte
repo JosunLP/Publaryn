@@ -827,16 +827,7 @@
         await listOrgRepositoryPackageCoverage(slug);
       const packagesByRepositorySlug = new Map(
         (data.repositories || [])
-          .filter(
-            (
-              entry
-            ): entry is {
-              repository_slug: string;
-              packages: RepositoryPackageSummary[];
-            } =>
-              typeof entry.repository_slug === 'string' &&
-              entry.repository_slug.trim().length > 0
-          )
+          .filter(hasRepositoryCoverageSlug)
           .map((entry) => [entry.repository_slug, entry.packages || []] as const)
       );
 
@@ -1615,6 +1606,18 @@
   ): repository is OrgRepositorySummary & { slug: string } {
     return (
       typeof repository.slug === 'string' && repository.slug.trim().length > 0
+    );
+  }
+
+  function hasRepositoryCoverageSlug(
+    entry: OrgRepositoryPackageCoverageResponse['repositories'][number]
+  ): entry is {
+    repository_slug: string;
+    packages: RepositoryPackageSummary[];
+  } {
+    return (
+      typeof entry.repository_slug === 'string' &&
+      entry.repository_slug.trim().length > 0
     );
   }
 

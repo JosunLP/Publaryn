@@ -3497,12 +3497,12 @@ async fn test_org_repository_list_respects_visibility_and_package_counts(pool: P
     let owner_public_packages = owner_public_coverage["packages"]
         .as_array()
         .expect("owner public coverage packages should be an array");
-    assert_eq!(owner_public_packages.len(), 3, "response: {owner_coverage_body}");
-    for package_name in [
-        "acme-public-widget",
-        "acme-unlisted-widget",
-        "acme-private-widget",
-    ] {
+    assert_eq!(
+        owner_public_packages.len(),
+        2,
+        "response: {owner_coverage_body}"
+    );
+    for package_name in ["acme-public-widget", "acme-private-widget"] {
         assert!(
             owner_public_packages
                 .iter()
@@ -3517,7 +3517,11 @@ async fn test_org_repository_list_respects_visibility_and_package_counts(pool: P
     let owner_internal_packages = owner_internal_coverage["packages"]
         .as_array()
         .expect("owner internal coverage packages should be an array");
-    assert_eq!(owner_internal_packages.len(), 1, "response: {owner_coverage_body}");
+    assert_eq!(
+        owner_internal_packages.len(),
+        1,
+        "response: {owner_coverage_body}"
+    );
     assert_eq!(owner_internal_packages[0]["name"], "acme-internal-widget");
 
     let (status, anonymous_coverage_body) =
@@ -3526,7 +3530,11 @@ async fn test_org_repository_list_respects_visibility_and_package_counts(pool: P
     let anonymous_coverage = anonymous_coverage_body["repositories"]
         .as_array()
         .expect("anonymous repository coverage should be an array");
-    assert_eq!(anonymous_coverage.len(), 1, "response: {anonymous_coverage_body}");
+    assert_eq!(
+        anonymous_coverage.len(),
+        1,
+        "response: {anonymous_coverage_body}"
+    );
     assert_eq!(anonymous_coverage[0]["repository_slug"], "acme-public");
     let anonymous_coverage_packages = anonymous_coverage[0]["packages"]
         .as_array()

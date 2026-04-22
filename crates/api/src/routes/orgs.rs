@@ -2643,11 +2643,12 @@ async fn list_org_repository_package_coverage(
             *index
         } else {
             let index = repository_entries.len();
+            let repository_slug_key = repository_slug.clone();
             repository_entries.push(serde_json::json!({
                 "repository_slug": repository_slug,
                 "packages": Vec::<serde_json::Value>::new(),
             }));
-            repository_positions.insert(repository_slug.clone(), index);
+            repository_positions.insert(repository_slug_key, index);
             index
         };
 

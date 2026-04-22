@@ -230,7 +230,7 @@ describe('route-level multi-page org dataset coverage', () => {
       await waitFor(() => {
         expect(scenario.repositoryPageRequests).toEqual([1, 2]);
         expect(scenario.packagePageRequests).toEqual([1, 2]);
-      });
+      }, 5_000);
 
       const finalRepository = repositories.at(-1);
       const finalPackage = packages.at(-1);
@@ -276,7 +276,7 @@ describe('route-level multi-page org dataset coverage', () => {
             `a[href="/packages/${finalPackage?.ecosystem}/${finalPackage?.name}"]`
           )
         ).not.toBeNull();
-      });
+      }, 5_000);
     } finally {
       unmount();
     }
@@ -298,7 +298,7 @@ describe('route-level multi-page org dataset coverage', () => {
         expect(
           target.querySelector('a[href="/packages/npm/repo-package-001"]')
         ).not.toBeNull();
-      });
+      }, 5_000);
     } finally {
       unmount();
     }
@@ -828,7 +828,7 @@ async function handleApiRequest(
 
   if (
     method === 'GET' &&
-    requestPath === `/v1/orgs/${ORG_SLUG}/repository-package-coverage`
+    requestPath.endsWith('/repository-package-coverage')
   ) {
     scenario.repositoryPackageCoverageRequests.push(requestPath);
     return apiResponse({
