@@ -1182,11 +1182,11 @@ struct CargoSearchQuery {
 async fn search_crates<S: CargoAppState>(
     State(state): State<S>,
     Query(params): Query<CargoSearchQuery>,
-    headers: HeaderMap,
+    request_headers: HeaderMap,
 ) -> Response {
     let q = params.q.unwrap_or_default();
     let per_page = params.per_page.unwrap_or(10).min(100);
-    let actor_user_id = authenticate(&state, &headers)
+    let actor_user_id = authenticate(&state, &request_headers)
         .await
         .ok()
         .map(|id| id.user_id);
