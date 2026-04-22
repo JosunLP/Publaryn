@@ -102,7 +102,7 @@ const TEAM_SLUG = 'release-engineering';
 const ORG_SLUG = 'source-org';
 const TARGET_ORG_SLUG = 'target-org';
 const NAMESPACE_CLAIM_ID = 'claim-001';
-const NAMESPACE_VALUE = '@source-org';
+const NAMESPACE_CLAIM_VALUE = '@source-org';
 const apiClientModuleUrl = new URL('../src/api/client.ts', import.meta.url).href;
 const gotoCalls: string[] = [];
 const pageStore = writable<TestPageState>(buildPageState('https://example.test/'));
@@ -453,6 +453,8 @@ describe('route-level multi-page org dataset coverage', () => {
       });
 
       expect(scenario.teamDeleteCalls).toEqual([]);
+      expect(scenario.teams.map((team) => team.slug)).toContain(TEAM_SLUG);
+      expect(queryRequiredFormBySelector(target, `#team-delete-form-${TEAM_SLUG}`)).toBeDefined();
     } finally {
       unmount();
     }
@@ -533,7 +535,7 @@ describe('route-level multi-page org dataset coverage', () => {
 
     try {
       await waitFor(() => {
-        expect(target.textContent).toContain(NAMESPACE_VALUE);
+        expect(target.textContent).toContain(NAMESPACE_CLAIM_VALUE);
       });
 
       click(queryRequiredButton(target, `#namespace-delete-toggle-${NAMESPACE_CLAIM_ID}`));
@@ -555,6 +557,10 @@ describe('route-level multi-page org dataset coverage', () => {
       });
 
       expect(scenario.namespaceDeleteCalls).toEqual([]);
+      expect(scenario.namespaces.map((claim) => claim.id)).toContain(NAMESPACE_CLAIM_ID);
+      expect(
+        queryRequiredFormBySelector(target, `#namespace-delete-form-${NAMESPACE_CLAIM_ID}`)
+      ).toBeDefined();
     } finally {
       unmount();
     }
@@ -566,7 +572,7 @@ describe('route-level multi-page org dataset coverage', () => {
 
     try {
       await waitFor(() => {
-        expect(target.textContent).toContain(NAMESPACE_VALUE);
+        expect(target.textContent).toContain(NAMESPACE_CLAIM_VALUE);
       });
 
       click(queryRequiredButton(target, `#namespace-delete-toggle-${NAMESPACE_CLAIM_ID}`));
@@ -590,7 +596,7 @@ describe('route-level multi-page org dataset coverage', () => {
           `/v1/namespaces/${NAMESPACE_CLAIM_ID}`,
         ]);
         expect(target.textContent).toContain(
-          `Deleted namespace claim ${NAMESPACE_VALUE}.`
+          `Deleted namespace claim ${NAMESPACE_CLAIM_VALUE}.`
         );
       });
 
@@ -609,7 +615,7 @@ describe('route-level multi-page org dataset coverage', () => {
 
     try {
       await waitFor(() => {
-        expect(target.textContent).toContain(NAMESPACE_VALUE);
+        expect(target.textContent).toContain(NAMESPACE_CLAIM_VALUE);
       });
 
       click(queryRequiredButton(target, `#namespace-delete-toggle-${NAMESPACE_CLAIM_ID}`));
@@ -637,7 +643,7 @@ describe('route-level multi-page org dataset coverage', () => {
       });
 
       expect(scenario.namespaces.map((claim) => claim.id)).toContain(NAMESPACE_CLAIM_ID);
-      expect(target.textContent).toContain(NAMESPACE_VALUE);
+      expect(target.textContent).toContain(NAMESPACE_CLAIM_VALUE);
     } finally {
       unmount();
     }
@@ -1047,7 +1053,7 @@ function createFetchScenario(): FetchScenario {
       {
         id: NAMESPACE_CLAIM_ID,
         ecosystem: 'npm',
-        namespace: NAMESPACE_VALUE,
+        namespace: NAMESPACE_CLAIM_VALUE,
         owner_org_id: ORG_ID,
         is_verified: true,
         created_at: '2026-04-01T00:00:00Z',
