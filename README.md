@@ -38,7 +38,6 @@ Publaryn is now targeting **1.0.0** as a production-ready baseline for:
 The detailed 1.0 contract lives in [docs/1.0.md](docs/1.0.md). It defines:
 
 - the **1.0 scope**
-- what is **explicitly deferred until after 1.0**
 - the **API and adapter matrix**
 - visibility, search, and security-flow behavior
 - the **release criteria**
