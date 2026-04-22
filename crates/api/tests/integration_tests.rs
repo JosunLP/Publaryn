@@ -14463,6 +14463,80 @@ async fn test_native_oci_push_auto_creates_org_owned_package_from_repository_pub
     let manifest_download = body_bytes(manifest_get_resp).await;
     assert_eq!(manifest_download, manifest_bytes);
 
+    let manifest_head_challenge_resp = send_oci_request(
+        &app,
+        Method::HEAD,
+        format!("/oci/v2/{package_name}/manifests/latest"),
+        None,
+        None,
+        vec![],
+    )
+    .await;
+    assert_eq!(
+        manifest_head_challenge_resp.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert!(manifest_head_challenge_resp
+        .headers()
+        .get(header::WWW_AUTHENTICATE)
+        .expect("manifest head challenge should exist")
+        .to_str()
+        .expect("manifest head challenge should be utf-8")
+        .contains(&format!("repository:{package_name}:pull")));
+    assert!(body_bytes(manifest_head_challenge_resp).await.is_empty());
+
+    let manifest_head_resp = send_oci_request(
+        &app,
+        Method::HEAD,
+        format!("/oci/v2/{package_name}/manifests/latest"),
+        Some(&oci_token),
+        None,
+        vec![],
+    )
+    .await;
+    assert_eq!(manifest_head_resp.status(), StatusCode::OK);
+    assert_eq!(
+        manifest_head_resp
+            .headers()
+            .get("docker-content-digest")
+            .expect("manifest head should include digest header"),
+        manifest_digest.as_str()
+    );
+    assert_eq!(
+        manifest_head_resp
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .expect("manifest head should include content type"),
+        "application/vnd.oci.image.manifest.v1+json"
+    );
+    assert_eq!(
+        manifest_head_resp
+            .headers()
+            .get(header::CONTENT_LENGTH)
+            .expect("manifest head should include content length"),
+        manifest_bytes.len().to_string().as_str()
+    );
+    assert!(body_bytes(manifest_head_resp).await.is_empty());
+
+    let manifest_head_by_digest_resp = send_oci_request(
+        &app,
+        Method::HEAD,
+        format!("/oci/v2/{package_name}/manifests/{manifest_digest}"),
+        Some(&oci_token),
+        None,
+        vec![],
+    )
+    .await;
+    assert_eq!(manifest_head_by_digest_resp.status(), StatusCode::OK);
+    assert_eq!(
+        manifest_head_by_digest_resp
+            .headers()
+            .get("docker-content-digest")
+            .expect("manifest head by digest should include digest header"),
+        manifest_digest.as_str()
+    );
+    assert!(body_bytes(manifest_head_by_digest_resp).await.is_empty());
+
     let blob_get_resp = send_oci_request(
         &app,
         Method::GET,
@@ -14475,6 +14549,32 @@ async fn test_native_oci_push_auto_creates_org_owned_package_from_repository_pub
     assert_eq!(blob_get_resp.status(), StatusCode::OK);
     let blob_download = body_bytes(blob_get_resp).await;
     assert_eq!(blob_download, layer_bytes);
+
+    let blob_head_resp = send_oci_request(
+        &app,
+        Method::HEAD,
+        format!("/oci/v2/{package_name}/blobs/{layer_digest}"),
+        Some(&oci_token),
+        None,
+        vec![],
+    )
+    .await;
+    assert_eq!(blob_head_resp.status(), StatusCode::OK);
+    assert_eq!(
+        blob_head_resp
+            .headers()
+            .get("docker-content-digest")
+            .expect("blob head should include digest header"),
+        layer_digest.as_str()
+    );
+    assert_eq!(
+        blob_head_resp
+            .headers()
+            .get(header::CONTENT_LENGTH)
+            .expect("blob head should include content length"),
+        layer_bytes.len().to_string().as_str()
+    );
+    assert!(body_bytes(blob_head_resp).await.is_empty());
 }
 
 #[sqlx::test(migrations = "../../migrations")]
@@ -14656,6 +14756,25 @@ async fn test_native_oci_public_repository_supports_chunked_upload_anonymous_pul
     assert_eq!(anonymous_manifest_resp.status(), StatusCode::OK);
     assert_eq!(body_bytes(anonymous_manifest_resp).await, manifest_bytes);
 
+    let anonymous_manifest_head_resp = send_oci_request(
+        &app,
+        Method::HEAD,
+        format!("/oci/v2/{package_name}/manifests/latest"),
+        None,
+        None,
+        vec![],
+    )
+    .await;
+    assert_eq!(anonymous_manifest_head_resp.status(), StatusCode::OK);
+    assert_eq!(
+        anonymous_manifest_head_resp
+            .headers()
+            .get("docker-content-digest")
+            .expect("anonymous manifest head should include digest header"),
+        manifest_digest.as_str()
+    );
+    assert!(body_bytes(anonymous_manifest_head_resp).await.is_empty());
+
     let anonymous_blob_resp = send_oci_request(
         &app,
         Method::GET,
@@ -14667,6 +14786,25 @@ async fn test_native_oci_public_repository_supports_chunked_upload_anonymous_pul
     .await;
     assert_eq!(anonymous_blob_resp.status(), StatusCode::OK);
     assert_eq!(body_bytes(anonymous_blob_resp).await, layer_bytes);
+
+    let anonymous_blob_head_resp = send_oci_request(
+        &app,
+        Method::HEAD,
+        format!("/oci/v2/{package_name}/blobs/{layer_digest}"),
+        None,
+        None,
+        vec![],
+    )
+    .await;
+    assert_eq!(anonymous_blob_head_resp.status(), StatusCode::OK);
+    assert_eq!(
+        anonymous_blob_head_resp
+            .headers()
+            .get("docker-content-digest")
+            .expect("anonymous blob head should include digest header"),
+        layer_digest.as_str()
+    );
+    assert!(body_bytes(anonymous_blob_head_resp).await.is_empty());
 
     let delete_blob_while_referenced_resp = send_oci_request(
         &app,
@@ -14760,6 +14898,18 @@ async fn test_native_oci_public_repository_supports_chunked_upload_anonymous_pul
     .await;
     assert_eq!(blob_after_delete_resp.status(), StatusCode::NOT_FOUND);
 
+    let blob_head_after_delete_resp = send_oci_request(
+        &app,
+        Method::HEAD,
+        format!("/oci/v2/{package_name}/blobs/{layer_digest}"),
+        None,
+        None,
+        vec![],
+    )
+    .await;
+    assert_eq!(blob_head_after_delete_resp.status(), StatusCode::NOT_FOUND);
+    assert!(body_bytes(blob_head_after_delete_resp).await.is_empty());
+
     let manifest_after_delete_resp = send_oci_request(
         &app,
         Method::GET,
@@ -14770,6 +14920,21 @@ async fn test_native_oci_public_repository_supports_chunked_upload_anonymous_pul
     )
     .await;
     assert_eq!(manifest_after_delete_resp.status(), StatusCode::NOT_FOUND);
+
+    let manifest_head_after_delete_resp = send_oci_request(
+        &app,
+        Method::HEAD,
+        format!("/oci/v2/{package_name}/manifests/{manifest_digest}"),
+        None,
+        None,
+        vec![],
+    )
+    .await;
+    assert_eq!(
+        manifest_head_after_delete_resp.status(),
+        StatusCode::NOT_FOUND
+    );
+    assert!(body_bytes(manifest_head_after_delete_resp).await.is_empty());
 }
 
 #[sqlx::test(migrations = "../../migrations")]

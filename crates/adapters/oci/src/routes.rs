@@ -305,18 +305,20 @@ async fn head_dispatch<S: OciAppState>(
     headers: HeaderMap,
 ) -> Response {
     if let Some((name, reference)) = parse_manifest_path(&path) {
-        return manifest_get(state, headers, name, reference, false).await;
+        return head_response_without_body(
+            manifest_get(state, headers, name, reference, false).await,
+        );
     }
     if let Some((name, digest)) = parse_blob_path(&path) {
-        return blob_get(state, headers, name, digest, false).await;
+        return head_response_without_body(blob_get(state, headers, name, digest, false).await);
     }
 
-    auth::with_registry_headers(auth::oci_error_response(
+    head_response_without_body(auth::with_registry_headers(auth::oci_error_response(
         StatusCode::NOT_FOUND,
         "NAME_UNKNOWN",
         "OCI resource not found",
         None,
-    ))
+    )))
 }
 
 async fn put_dispatch<S: OciAppState>(
@@ -1594,6 +1596,11 @@ fn manifest_head_response(manifest: &ManifestArtifactContext) -> Response {
             .body(Body::empty())
             .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()),
     )
+}
+
+fn head_response_without_body(mut response: Response) -> Response {
+    *response.body_mut() = Body::empty();
+    response
 }
 
 fn upload_session_response<S: OciAppState>(
