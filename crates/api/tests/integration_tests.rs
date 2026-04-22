@@ -15182,6 +15182,55 @@ async fn test_native_oci_referrers_support_subject_headers_filters_and_paginatio
         subject_manifest_digest.as_str()
     );
 
+    let second_signature_config_bytes =
+        br#"{"critical":{"identity":{"docker-reference":"acme/public-referrer-widget:v2"}}}"#;
+    let second_signature_layer_bytes = b"signature-manifest-layer-v2";
+    let (second_signature_config_digest, second_signature_config_resp) =
+        upload_oci_blob_monolithic(
+            &app,
+            &oci_token,
+            package_name,
+            second_signature_config_bytes,
+        )
+        .await;
+    assert_eq!(second_signature_config_resp.status(), StatusCode::CREATED);
+    let (second_signature_layer_digest, second_signature_layer_resp) =
+        upload_oci_blob_monolithic(&app, &oci_token, package_name, second_signature_layer_bytes)
+            .await;
+    assert_eq!(second_signature_layer_resp.status(), StatusCode::CREATED);
+    let second_signature_annotations = json!({
+        "org.opencontainers.artifact.created": "2026-04-20T12:10:00Z",
+        "org.example.signature.kind": "simplesigning-v2",
+    });
+    let second_signature_manifest_bytes = build_oci_image_manifest_with_options(
+        &second_signature_config_digest,
+        second_signature_config_bytes.len(),
+        signature_config_media_type,
+        &second_signature_layer_digest,
+        second_signature_layer_bytes.len(),
+        Some(&subject_manifest_digest),
+        Some(subject_manifest_bytes.len()),
+        Some(second_signature_annotations.clone()),
+    );
+    let second_signature_manifest_digest = oci_digest(&second_signature_manifest_bytes);
+    let second_signature_put_resp = send_oci_request(
+        &app,
+        Method::PUT,
+        format!("/oci/v2/{package_name}/manifests/signature-v2"),
+        Some(&oci_token),
+        Some("application/vnd.oci.image.manifest.v1+json"),
+        second_signature_manifest_bytes,
+    )
+    .await;
+    assert_eq!(second_signature_put_resp.status(), StatusCode::CREATED);
+    assert_eq!(
+        second_signature_put_resp
+            .headers()
+            .get("OCI-Subject")
+            .expect("subject-bearing manifest pushes should acknowledge the subject"),
+        subject_manifest_digest.as_str()
+    );
+
     let referrers_resp =
         get_oci_referrers(&app, None, package_name, &subject_manifest_digest, None).await;
     assert_eq!(referrers_resp.status(), StatusCode::OK);
@@ -15201,7 +15250,7 @@ async fn test_native_oci_referrers_support_subject_headers_filters_and_paginatio
     let referrers = referrers_body["manifests"]
         .as_array()
         .expect("referrers response should contain a manifests array");
-    assert_eq!(referrers.len(), 2, "response: {referrers_body}");
+    assert_eq!(referrers.len(), 3, "response: {referrers_body}");
 
     let sbom_descriptor = referrers
         .iter()
@@ -15237,12 +15286,29 @@ async fn test_native_oci_referrers_support_subject_headers_filters_and_paginatio
         "simplesigning"
     );
 
+    let second_signature_descriptor = referrers
+        .iter()
+        .find(|descriptor| descriptor["digest"] == second_signature_manifest_digest)
+        .expect("second signature referrer should be present");
+    assert_eq!(
+        second_signature_descriptor["mediaType"],
+        "application/vnd.oci.image.manifest.v1+json"
+    );
+    assert_eq!(
+        second_signature_descriptor["artifactType"],
+        signature_config_media_type
+    );
+    assert_eq!(
+        second_signature_descriptor["annotations"]["org.example.signature.kind"],
+        "simplesigning-v2"
+    );
+
     let first_page_resp = get_oci_referrers(
         &app,
         None,
         package_name,
         &subject_manifest_digest,
-        Some("n=1"),
+        Some("n=2"),
     )
     .await;
     assert_eq!(first_page_resp.status(), StatusCode::OK);
@@ -15258,21 +15324,21 @@ async fn test_native_oci_referrers_support_subject_headers_filters_and_paginatio
     let first_page_manifests = first_page_body["manifests"]
         .as_array()
         .expect("first page should contain a manifests array");
-    assert_eq!(first_page_manifests.len(), 1);
-    let first_page_digest = first_page_manifests[0]["digest"]
+    assert_eq!(first_page_manifests.len(), 2);
+    let first_page_last_digest = first_page_manifests[1]["digest"]
         .as_str()
-        .expect("first page digest should be present")
+        .expect("first page last digest should be present")
         .to_owned();
-    let next_uri = next_link
-        .split(';')
-        .next()
-        .and_then(|part| part.strip_prefix('<'))
-        .and_then(|part| part.strip_suffix('>'))
-        .expect("link header should wrap the next URI in angle brackets")
-        .to_owned();
-
+    let encoded_first_page_last_digest: String =
+        url::form_urlencoded::byte_serialize(first_page_last_digest.as_bytes()).collect();
+    assert!(next_link.contains(&format!("last={encoded_first_page_last_digest}")));
+    let next_uri = extract_oci_next_link_uri(&next_link);
     let second_page_resp = send_oci_request(&app, Method::GET, next_uri, None, None, vec![]).await;
     assert_eq!(second_page_resp.status(), StatusCode::OK);
+    assert!(
+        second_page_resp.headers().get(header::LINK).is_none(),
+        "the terminal referrers page should not expose another next link"
+    );
     let second_page_body = body_json(second_page_resp).await;
     let second_page_manifests = second_page_body["manifests"]
         .as_array()
@@ -15282,40 +15348,115 @@ async fn test_native_oci_referrers_support_subject_headers_filters_and_paginatio
         .as_str()
         .expect("second page digest should be present")
         .to_owned();
-    assert_ne!(first_page_digest, second_page_digest);
-    let paged_digests = std::collections::BTreeSet::from([first_page_digest, second_page_digest]);
+    let paged_digests = first_page_manifests
+        .iter()
+        .map(|manifest| {
+            manifest["digest"]
+                .as_str()
+                .expect("first page digest should be present")
+                .to_owned()
+        })
+        .chain(std::iter::once(second_page_digest))
+        .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(
         paged_digests,
         std::collections::BTreeSet::from([
             sbom_manifest_digest.clone(),
             signature_manifest_digest.clone(),
+            second_signature_manifest_digest.clone(),
         ])
     );
 
     let encoded_filter: String =
         url::form_urlencoded::byte_serialize(signature_config_media_type.as_bytes()).collect();
-    let filtered_resp = get_oci_referrers(
+    let filtered_first_page_resp = get_oci_referrers(
         &app,
         None,
         package_name,
         &subject_manifest_digest,
-        Some(&format!("artifactType={encoded_filter}")),
+        Some(&format!("artifactType={encoded_filter}&n=1")),
     )
     .await;
-    assert_eq!(filtered_resp.status(), StatusCode::OK);
+    assert_eq!(filtered_first_page_resp.status(), StatusCode::OK);
     assert_eq!(
-        filtered_resp
+        filtered_first_page_resp
             .headers()
             .get("OCI-Filters-Applied")
             .expect("artifactType filters should be acknowledged"),
         "artifactType"
     );
-    let filtered_body = body_json(filtered_resp).await;
-    let filtered_manifests = filtered_body["manifests"]
+    let filtered_first_page_link = filtered_first_page_resp
+        .headers()
+        .get(header::LINK)
+        .expect("filtered pagination should expose a next link")
+        .to_str()
+        .expect("filtered link header should be utf-8")
+        .to_owned();
+    assert!(filtered_first_page_link.contains(&format!("artifactType={encoded_filter}")));
+    let filtered_first_page_body = body_json(filtered_first_page_resp).await;
+    let filtered_first_page_manifests = filtered_first_page_body["manifests"]
         .as_array()
         .expect("filtered response should contain a manifests array");
-    assert_eq!(filtered_manifests.len(), 1);
-    assert_eq!(filtered_manifests[0]["digest"], signature_manifest_digest);
+    assert_eq!(filtered_first_page_manifests.len(), 1);
+    let filtered_first_page_digest = filtered_first_page_manifests[0]["digest"]
+        .as_str()
+        .expect("filtered first page digest should be present")
+        .to_owned();
+    let encoded_filtered_last: String =
+        url::form_urlencoded::byte_serialize(filtered_first_page_digest.as_bytes()).collect();
+    assert!(filtered_first_page_link.contains(&format!("last={encoded_filtered_last}")));
+
+    let filtered_second_page_resp = send_oci_request(
+        &app,
+        Method::GET,
+        extract_oci_next_link_uri(&filtered_first_page_link),
+        None,
+        None,
+        vec![],
+    )
+    .await;
+    assert_eq!(filtered_second_page_resp.status(), StatusCode::OK);
+    assert_eq!(
+        filtered_second_page_resp
+            .headers()
+            .get("OCI-Filters-Applied")
+            .expect("filtered continuation pages should acknowledge filters"),
+        "artifactType"
+    );
+    assert!(
+        filtered_second_page_resp
+            .headers()
+            .get(header::LINK)
+            .is_none(),
+        "the terminal filtered referrers page should not expose another next link"
+    );
+    let filtered_second_page_body = body_json(filtered_second_page_resp).await;
+    let filtered_second_page_manifests = filtered_second_page_body["manifests"]
+        .as_array()
+        .expect("filtered continuation response should contain a manifests array");
+    assert_eq!(filtered_second_page_manifests.len(), 1);
+    let filtered_paged_digests = filtered_first_page_manifests
+        .iter()
+        .map(|manifest| {
+            manifest["digest"]
+                .as_str()
+                .expect("filtered digest should be present")
+                .to_owned()
+        })
+        .chain(filtered_second_page_manifests.iter().map(|manifest| {
+            manifest["digest"]
+                .as_str()
+                .expect("filtered continuation digest should be present")
+                .to_owned()
+        }))
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        filtered_paged_digests,
+        std::collections::BTreeSet::from([
+            signature_manifest_digest.clone(),
+            second_signature_manifest_digest.clone(),
+        ])
+    );
 }
 
 #[sqlx::test(migrations = "../../migrations")]
@@ -15325,6 +15466,8 @@ async fn test_native_oci_referrers_require_auth_for_private_repositories_and_ret
     let app = app(pool);
     register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
     let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
 
     let (status, repository_body) = create_repository_with_options(
         &app,
@@ -15403,8 +15546,17 @@ async fn test_native_oci_referrers_require_auth_for_private_repositories_and_ret
     .await;
     assert_eq!(manifest_put_resp.status(), StatusCode::CREATED);
 
-    let anonymous_referrers_resp =
-        get_oci_referrers(&app, None, package_name, &manifest_digest, None).await;
+    let encoded_filter: String =
+        url::form_urlencoded::byte_serialize("application/vnd.example.empty.v1+json".as_bytes())
+            .collect();
+    let anonymous_referrers_resp = get_oci_referrers(
+        &app,
+        None,
+        package_name,
+        &manifest_digest,
+        Some(&format!("n=1&artifactType={encoded_filter}")),
+    )
+    .await;
     assert_eq!(anonymous_referrers_resp.status(), StatusCode::UNAUTHORIZED);
     assert!(anonymous_referrers_resp
         .headers()
@@ -15414,9 +15566,44 @@ async fn test_native_oci_referrers_require_auth_for_private_repositories_and_ret
         .expect("challenge header should be utf-8")
         .contains(&format!("repository:{package_name}:pull")));
 
-    let authenticated_empty_resp =
-        get_oci_referrers(&app, Some(&oci_token), package_name, &manifest_digest, None).await;
+    let unauthorized_referrers_resp = get_oci_referrers(
+        &app,
+        Some(&bob_jwt),
+        package_name,
+        &manifest_digest,
+        Some("n=1"),
+    )
+    .await;
+    assert_eq!(unauthorized_referrers_resp.status(), StatusCode::NOT_FOUND);
+    let unauthorized_referrers_body = body_json(unauthorized_referrers_resp).await;
+    assert_eq!(
+        unauthorized_referrers_body["errors"][0]["code"],
+        "NAME_UNKNOWN"
+    );
+
+    let authenticated_empty_resp = get_oci_referrers(
+        &app,
+        Some(&oci_token),
+        package_name,
+        &manifest_digest,
+        Some(&format!("n=1&artifactType={encoded_filter}")),
+    )
+    .await;
     assert_eq!(authenticated_empty_resp.status(), StatusCode::OK);
+    assert_eq!(
+        authenticated_empty_resp
+            .headers()
+            .get("OCI-Filters-Applied")
+            .expect("empty filtered referrers responses should acknowledge filters"),
+        "artifactType"
+    );
+    assert!(
+        authenticated_empty_resp
+            .headers()
+            .get(header::LINK)
+            .is_none(),
+        "empty filtered referrers responses should not expose a next link"
+    );
     let authenticated_empty_body = body_json(authenticated_empty_resp).await;
     assert_eq!(authenticated_empty_body["schemaVersion"], 2);
     assert_eq!(authenticated_empty_body["manifests"], json!([]));
