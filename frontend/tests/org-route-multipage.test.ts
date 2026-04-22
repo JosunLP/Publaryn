@@ -40,6 +40,7 @@ interface FetchScenario {
   canManageRepositories: boolean;
   canManageNamespaces: boolean;
   repositoryPageRequests: number[];
+  repositoryPackageRequests: string[];
   packagePageRequests: number[];
   invitationRequests: string[];
   orgUpdateCalls: MutationCall[];
@@ -274,6 +275,26 @@ describe('route-level multi-page org dataset coverage', () => {
           target.querySelector(
             `a[href="/packages/${finalPackage?.ecosystem}/${finalPackage?.name}"]`
           )
+        ).not.toBeNull();
+      });
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace renders repository package coverage from freshly loaded repositories', async () => {
+    const scenario = createFetchScenario();
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(scenario.repositoryPackageRequests).toContain('repo-001');
+        expect(target.textContent).toContain('repo-package-001');
+        expect(
+          target.querySelector('a[href="/packages/npm/repo-package-001?tab=security"]')
+        ).not.toBeNull();
+        expect(
+          target.querySelector('a[href="/packages/npm/repo-package-001"]')
         ).not.toBeNull();
       });
     } finally {
@@ -709,6 +730,7 @@ function createFetchScenario(): FetchScenario {
     canManageRepositories: true,
     canManageNamespaces: true,
     repositoryPageRequests: [],
+    repositoryPackageRequests: [],
     packagePageRequests: [],
     invitationRequests: [],
     orgUpdateCalls: [],
@@ -890,7 +912,24 @@ async function handleApiRequest(
     requestPath.startsWith('/v1/repositories/repo-') &&
     requestPath.endsWith('/packages')
   ) {
-    return apiResponse({ packages: [] });
+    const repositorySlug = requestPath.split('/')[3] || '';
+    scenario.repositoryPackageRequests.push(repositorySlug);
+    return apiResponse({
+      packages:
+        repositorySlug === 'repo-001'
+          ? [
+              {
+                id: 'repo-package-001',
+                ecosystem: 'npm',
+                name: 'repo-package-001',
+                description: 'Repository scoped package',
+                latest_version: '1.0.0',
+                download_count: 7,
+                created_at: '2026-04-01T00:00:00Z',
+              },
+            ]
+          : [],
+    });
   }
 
   if (

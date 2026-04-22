@@ -756,7 +756,7 @@
               logs: [],
               load_error: null,
             }),
-        loadRepositoryPackages(repositories),
+        loadRepositoryPackages(repositoryData.repositories || []),
       ]);
 
       invitations = invitationData.invitations || [];
