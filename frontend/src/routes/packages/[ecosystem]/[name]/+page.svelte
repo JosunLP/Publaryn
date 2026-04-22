@@ -865,7 +865,7 @@
     findingSearchQuery
   );
   $: filteredFindings = filterPackageSecurityFindings(findings, {
-    searchQuery: findingSearchQuery,
+    searchQuery: normalizedFindingSearchQuery,
     severities: findingSeverityFilters,
     focusMode: findingFocusMode,
   });
@@ -877,7 +877,7 @@
     visibleCount: filteredFindings.length,
     includeResolvedFindings,
     filters: {
-      searchQuery: findingSearchQuery,
+      searchQuery: normalizedFindingSearchQuery,
       severities: findingSeverityFilters,
       focusMode: findingFocusMode,
     },
@@ -886,7 +886,7 @@
     totalLoadedCount: findings.length,
     includeResolvedFindings,
     filters: {
-      searchQuery: findingSearchQuery,
+      searchQuery: normalizedFindingSearchQuery,
       severities: findingSeverityFilters,
       focusMode: findingFocusMode,
     },

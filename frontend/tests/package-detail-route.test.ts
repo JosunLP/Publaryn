@@ -158,12 +158,6 @@ describe('package detail security access route', () => {
         expect(normalizeWhitespace(target.textContent)).toContain(
           'Showing 2 of 4 loaded findings, in the unresolved triage queue.'
         );
-      });
-
-      await waitFor(() => {
-        expect(normalizeWhitespace(target.textContent)).toContain(
-          'Showing 2 of 4 loaded findings, in the unresolved triage queue.'
-        );
         expect(target.textContent).not.toContain('Known malicious payload');
       });
 
