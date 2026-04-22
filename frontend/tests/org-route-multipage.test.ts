@@ -463,7 +463,10 @@ describe('route-level multi-page org dataset coverage', () => {
         ).toBeDefined();
       });
 
-      setChecked(queryCheckbox(target, `#team-delete-confirm-${TEAM_SLUG}`), true);
+      setChecked(
+        queryRequiredCheckbox(target, `#team-delete-confirm-${TEAM_SLUG}`),
+        true
+      );
       submitForm(queryRequiredForm(target.querySelector(`#team-delete-form-${TEAM_SLUG}`)));
 
       await waitFor(() => {
@@ -497,7 +500,10 @@ describe('route-level multi-page org dataset coverage', () => {
         ).toBeDefined();
       });
 
-      setChecked(queryCheckbox(target, `#team-delete-confirm-${TEAM_SLUG}`), true);
+      setChecked(
+        queryRequiredCheckbox(target, `#team-delete-confirm-${TEAM_SLUG}`),
+        true
+      );
       submitForm(queryRequiredForm(target.querySelector(`#team-delete-form-${TEAM_SLUG}`)));
 
       await waitFor(() => {
@@ -1419,6 +1425,13 @@ function queryCheckbox(
   }
 
   return element;
+}
+
+function queryRequiredCheckbox(
+  root: ParentNode | Element,
+  selector: string
+): HTMLInputElement {
+  return queryCheckbox(root, selector);
 }
 
 function queryRequiredButton(

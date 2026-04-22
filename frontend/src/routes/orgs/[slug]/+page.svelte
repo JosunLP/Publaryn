@@ -582,7 +582,7 @@
   async function loadOrganizationPage(
     options: { notice?: string | null; error?: string | null } = {}
   ): Promise<void> {
-    const hasNoticeOverride = Object.prototype.hasOwnProperty.call(options, 'notice');
+    const hasNoticeOverride = Object.hasOwn(options, 'notice');
 
     loading = true;
     notFound = false;
@@ -2574,11 +2574,11 @@
                       id={`team-delete-form-${teamSlug}`}
                       on:submit={(event) => handleDeleteTeam(event, teamSlug)}
                     >
-                      <p style="margin:0 0 12px 0;">
+                      <p class="mb-3">
                         Deleting this team immediately removes its memberships and delegated
                         package, repository, and namespace access.
                       </p>
-                      <label class="flex items-start gap-2" style="margin-bottom:12px;">
+                      <label class="mb-3 flex items-start gap-2">
                         <input
                           id={`team-delete-confirm-${teamSlug}`}
                           bind:checked={teamDeleteConfirmed}
