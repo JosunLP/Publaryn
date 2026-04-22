@@ -61,6 +61,10 @@ interface FetchScenario {
   canManageNamespaces: boolean;
   teamDeleteError: string | null;
   namespaceDeleteError: string | null;
+  ownershipTransferError: string | null;
+  namespaceTransferError: string | null;
+  repositoryTransferError: string | null;
+  packageTransferError: string | null;
   teams: Array<{
     name: string;
     slug: string;
@@ -87,11 +91,13 @@ interface FetchScenario {
   packagePageRequests: number[];
   invitationRequests: string[];
   orgUpdateCalls: MutationCall[];
+  ownershipTransfers: MutationCall[];
   orgMfaRequired: boolean;
   teamRepositoryAccessUpdates: MutationCall[];
   teamPackageAccessUpdates: MutationCall[];
   teamDeleteCalls: string[];
   namespaceDeleteCalls: string[];
+  namespaceTransfers: MutationCall[];
   repositoryTransfers: MutationCall[];
   packageTransfers: MutationCall[];
   searchCalls: SearchCall[];
@@ -649,6 +655,366 @@ describe('route-level multi-page org dataset coverage', () => {
     }
   });
 
+  test('org workspace requires explicit confirmation before transferring ownership', async () => {
+    const scenario = createFetchScenario();
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Transfer ownership');
+      });
+
+      changeValue(
+        queryRequiredInput(target, '#org-transfer-owner'),
+        members[1]?.username || 'admin-user'
+      );
+      click(queryRequiredButton(target, '#org-ownership-transfer-toggle'));
+
+      await waitFor(() => {
+        expect(
+          queryRequiredCheckbox(target, '#org-ownership-transfer-confirm')
+        ).toBeDefined();
+      });
+
+      submitForm(queryRequiredForm(queryRequiredInput(target, '#org-transfer-owner').closest('form')));
+
+      await waitFor(() => {
+        expect(target.textContent).toContain('Please confirm the ownership transfer.');
+      });
+
+      expect(scenario.ownershipTransfers).toEqual([]);
+      expect(
+        queryRequiredButton(target, '#org-ownership-transfer-submit')
+      ).toBeDefined();
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace transfers ownership after explicit confirmation', async () => {
+    const scenario = createFetchScenario();
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Transfer ownership');
+      });
+
+      const targetUsername = members[1]?.username || 'admin-user';
+      changeValue(queryRequiredInput(target, '#org-transfer-owner'), targetUsername);
+      click(queryRequiredButton(target, '#org-ownership-transfer-toggle'));
+
+      await waitFor(() => {
+        expect(
+          queryRequiredCheckbox(target, '#org-ownership-transfer-confirm')
+        ).toBeDefined();
+      });
+
+      setChecked(queryRequiredCheckbox(target, '#org-ownership-transfer-confirm'), true);
+      submitForm(queryRequiredForm(queryRequiredInput(target, '#org-transfer-owner').closest('form')));
+
+      await waitFor(() => {
+        expect(scenario.ownershipTransfers).toEqual([
+          {
+            path: `/v1/orgs/${ORG_SLUG}/ownership-transfer`,
+            body: { username: targetUsername },
+          },
+        ]);
+        expect(target.textContent).toContain(`Ownership transferred to @${targetUsername}.`);
+      });
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace keeps ownership transfer confirmation open when transfer fails', async () => {
+    const scenario = createFetchScenario();
+    scenario.ownershipTransferError = 'Failed to transfer organization ownership.';
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Transfer ownership');
+      });
+
+      changeValue(
+        queryRequiredInput(target, '#org-transfer-owner'),
+        members[1]?.username || 'admin-user'
+      );
+      click(queryRequiredButton(target, '#org-ownership-transfer-toggle'));
+
+      await waitFor(() => {
+        expect(
+          queryRequiredCheckbox(target, '#org-ownership-transfer-confirm')
+        ).toBeDefined();
+      });
+
+      setChecked(queryRequiredCheckbox(target, '#org-ownership-transfer-confirm'), true);
+      submitForm(queryRequiredForm(queryRequiredInput(target, '#org-transfer-owner').closest('form')));
+
+      await waitFor(() => {
+        expect(target.textContent).toContain('Failed to transfer organization ownership.');
+        expect(scenario.ownershipTransfers).toEqual([]);
+        expect(
+          queryRequiredButton(target, '#org-ownership-transfer-submit')
+        ).toBeDefined();
+      });
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace requires explicit confirmation before transferring a namespace claim', async () => {
+    const scenario = createFetchScenario();
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Transfer a namespace');
+      });
+
+      changeValue(queryRequiredSelect(target, '#org-namespace-transfer-claim'), NAMESPACE_CLAIM_ID);
+      changeValue(queryRequiredSelect(target, '#org-namespace-transfer-target'), TARGET_ORG_SLUG);
+      click(queryRequiredButton(target, '#org-namespace-transfer-toggle'));
+
+      await waitFor(() => {
+        expect(
+          queryRequiredCheckbox(target, '#org-namespace-transfer-confirm')
+        ).toBeDefined();
+      });
+
+      submitForm(queryRequiredForm(queryRequiredSelect(target, '#org-namespace-transfer-claim').closest('form')));
+
+      await waitFor(() => {
+        expect(target.textContent).toContain('Please confirm the namespace transfer.');
+      });
+
+      expect(scenario.namespaceTransfers).toEqual([]);
+      expect(
+        queryRequiredButton(target, '#org-namespace-transfer-submit')
+      ).toBeDefined();
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace transfers a namespace claim after explicit confirmation', async () => {
+    const scenario = createFetchScenario();
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Transfer a namespace');
+      });
+
+      changeValue(queryRequiredSelect(target, '#org-namespace-transfer-claim'), NAMESPACE_CLAIM_ID);
+      changeValue(queryRequiredSelect(target, '#org-namespace-transfer-target'), TARGET_ORG_SLUG);
+      click(queryRequiredButton(target, '#org-namespace-transfer-toggle'));
+
+      await waitFor(() => {
+        expect(
+          queryRequiredCheckbox(target, '#org-namespace-transfer-confirm')
+        ).toBeDefined();
+      });
+
+      setChecked(queryRequiredCheckbox(target, '#org-namespace-transfer-confirm'), true);
+      submitForm(queryRequiredForm(queryRequiredSelect(target, '#org-namespace-transfer-claim').closest('form')));
+
+      await waitFor(() => {
+        expect(scenario.namespaceTransfers).toEqual([
+          {
+            path: `/v1/namespaces/${NAMESPACE_CLAIM_ID}/ownership-transfer`,
+            body: { target_org_slug: TARGET_ORG_SLUG },
+          },
+        ]);
+        expect(target.textContent).toContain(
+          `Transferred ${NAMESPACE_CLAIM_VALUE} to ${TARGET_ORG_SLUG}.`
+        );
+      });
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace keeps namespace transfer confirmation open when transfer fails', async () => {
+    const scenario = createFetchScenario();
+    scenario.namespaceTransferError = 'Failed to transfer namespace claim ownership.';
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Transfer a namespace');
+      });
+
+      changeValue(queryRequiredSelect(target, '#org-namespace-transfer-claim'), NAMESPACE_CLAIM_ID);
+      changeValue(queryRequiredSelect(target, '#org-namespace-transfer-target'), TARGET_ORG_SLUG);
+      click(queryRequiredButton(target, '#org-namespace-transfer-toggle'));
+
+      await waitFor(() => {
+        expect(
+          queryRequiredCheckbox(target, '#org-namespace-transfer-confirm')
+        ).toBeDefined();
+      });
+
+      setChecked(queryRequiredCheckbox(target, '#org-namespace-transfer-confirm'), true);
+      submitForm(queryRequiredForm(queryRequiredSelect(target, '#org-namespace-transfer-claim').closest('form')));
+
+      await waitFor(() => {
+        expect(target.textContent).toContain('Failed to transfer namespace claim ownership.');
+        expect(scenario.namespaceTransfers).toEqual([]);
+        expect(
+          queryRequiredButton(target, '#org-namespace-transfer-submit')
+        ).toBeDefined();
+      });
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace requires explicit confirmation before transferring a repository', async () => {
+    const scenario = createFetchScenario();
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Transfer repository ownership');
+      });
+
+      changeValue(queryRequiredSelect(target, '#org-repository-transfer-repository'), repositories[0]?.slug || '');
+      changeValue(queryRequiredSelect(target, '#org-repository-transfer-target'), TARGET_ORG_SLUG);
+      click(queryRequiredButton(target, '#org-repository-transfer-toggle'));
+
+      await waitFor(() => {
+        expect(
+          queryRequiredCheckbox(target, '#org-repository-transfer-confirm')
+        ).toBeDefined();
+      });
+
+      submitForm(queryRequiredForm(queryRequiredSelect(target, '#org-repository-transfer-repository').closest('form')));
+
+      await waitFor(() => {
+        expect(target.textContent).toContain('Please confirm the repository transfer.');
+      });
+
+      expect(scenario.repositoryTransfers).toEqual([]);
+      expect(
+        queryRequiredButton(target, '#org-repository-transfer-submit')
+      ).toBeDefined();
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace keeps repository transfer confirmation open when transfer fails', async () => {
+    const scenario = createFetchScenario();
+    scenario.repositoryTransferError = 'Failed to transfer repository ownership.';
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Transfer repository ownership');
+      });
+
+      changeValue(queryRequiredSelect(target, '#org-repository-transfer-repository'), repositories[0]?.slug || '');
+      changeValue(queryRequiredSelect(target, '#org-repository-transfer-target'), TARGET_ORG_SLUG);
+      click(queryRequiredButton(target, '#org-repository-transfer-toggle'));
+
+      await waitFor(() => {
+        expect(
+          queryRequiredCheckbox(target, '#org-repository-transfer-confirm')
+        ).toBeDefined();
+      });
+
+      setChecked(queryRequiredCheckbox(target, '#org-repository-transfer-confirm'), true);
+      submitForm(queryRequiredForm(queryRequiredSelect(target, '#org-repository-transfer-repository').closest('form')));
+
+      await waitFor(() => {
+        expect(target.textContent).toContain('Failed to transfer repository ownership.');
+        expect(scenario.repositoryTransfers).toEqual([]);
+        expect(
+          queryRequiredButton(target, '#org-repository-transfer-submit')
+        ).toBeDefined();
+      });
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace requires explicit confirmation before transferring a package', async () => {
+    const scenario = createFetchScenario();
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Transfer package ownership');
+      });
+
+      changeValue(
+        queryRequiredSelect(target, '#org-package-transfer-package'),
+        renderPackageSelectionValue(packages[0]?.ecosystem, packages[0]?.name)
+      );
+      changeValue(queryRequiredSelect(target, '#org-package-transfer-target'), TARGET_ORG_SLUG);
+      click(queryRequiredButton(target, '#org-package-transfer-toggle'));
+
+      await waitFor(() => {
+        expect(
+          queryRequiredCheckbox(target, '#org-package-transfer-confirm')
+        ).toBeDefined();
+      });
+
+      submitForm(queryRequiredForm(queryRequiredSelect(target, '#org-package-transfer-package').closest('form')));
+
+      await waitFor(() => {
+        expect(target.textContent).toContain('Please confirm the package transfer.');
+      });
+
+      expect(scenario.packageTransfers).toEqual([]);
+      expect(
+        queryRequiredButton(target, '#org-package-transfer-submit')
+      ).toBeDefined();
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace keeps package transfer confirmation open when transfer fails', async () => {
+    const scenario = createFetchScenario();
+    scenario.packageTransferError = 'Failed to transfer package ownership.';
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Transfer package ownership');
+      });
+
+      changeValue(
+        queryRequiredSelect(target, '#org-package-transfer-package'),
+        renderPackageSelectionValue(packages[0]?.ecosystem, packages[0]?.name)
+      );
+      changeValue(queryRequiredSelect(target, '#org-package-transfer-target'), TARGET_ORG_SLUG);
+      click(queryRequiredButton(target, '#org-package-transfer-toggle'));
+
+      await waitFor(() => {
+        expect(
+          queryRequiredCheckbox(target, '#org-package-transfer-confirm')
+        ).toBeDefined();
+      });
+
+      setChecked(queryRequiredCheckbox(target, '#org-package-transfer-confirm'), true);
+      submitForm(queryRequiredForm(queryRequiredSelect(target, '#org-package-transfer-package').closest('form')));
+
+      await waitFor(() => {
+        expect(target.textContent).toContain('Failed to transfer package ownership.');
+        expect(scenario.packageTransfers).toEqual([]);
+        expect(
+          queryRequiredButton(target, '#org-package-transfer-submit')
+        ).toBeDefined();
+      });
+    } finally {
+      unmount();
+    }
+  });
+
   test('org workspace does not load invitation management UI when the explicit invitation capability is absent', async () => {
     const scenario = createFetchScenario();
     scenario.canManageInvitations = false;
@@ -875,12 +1241,18 @@ describe('route-level multi-page org dataset coverage', () => {
         repositoryTransferForm,
         '#org-repository-transfer-target'
       );
-      const repositoryTransferConfirm = queryCheckbox(
-        repositoryTransferForm,
-        'input[name="confirm"]'
-      );
       changeValue(repositoryTransferSelect, finalRepository?.slug || '');
       changeValue(repositoryTransferTarget, TARGET_ORG_SLUG);
+      click(queryRequiredButton(repositoryTransferForm, '#org-repository-transfer-toggle'));
+      await waitFor(() => {
+        expect(
+          queryRequiredCheckbox(repositoryTransferForm, '#org-repository-transfer-confirm')
+        ).toBeDefined();
+      });
+      const repositoryTransferConfirm = queryRequiredCheckbox(
+        repositoryTransferForm,
+        '#org-repository-transfer-confirm'
+      );
       setChecked(repositoryTransferConfirm, true);
       submitForm(repositoryTransferForm);
 
@@ -924,12 +1296,18 @@ describe('route-level multi-page org dataset coverage', () => {
         packageTransferForm,
         '#org-package-transfer-target'
       );
-      const packageTransferConfirm = queryCheckbox(
-        packageTransferForm,
-        'input[name="confirm"]'
-      );
       changeValue(packageTransferSelect, finalPackageKey);
       changeValue(packageTransferTarget, TARGET_ORG_SLUG);
+      click(queryRequiredButton(packageTransferForm, '#org-package-transfer-toggle'));
+      await waitFor(() => {
+        expect(
+          queryRequiredCheckbox(packageTransferForm, '#org-package-transfer-confirm')
+        ).toBeDefined();
+      });
+      const packageTransferConfirm = queryRequiredCheckbox(
+        packageTransferForm,
+        '#org-package-transfer-confirm'
+      );
       setChecked(packageTransferConfirm, true);
       submitForm(packageTransferForm);
 
@@ -1041,6 +1419,10 @@ function createFetchScenario(): FetchScenario {
     canManageNamespaces: true,
     teamDeleteError: null,
     namespaceDeleteError: null,
+    ownershipTransferError: null,
+    namespaceTransferError: null,
+    repositoryTransferError: null,
+    packageTransferError: null,
     teams: [
       {
         name: 'Release Engineering',
@@ -1071,11 +1453,13 @@ function createFetchScenario(): FetchScenario {
     packagePageRequests: [],
     invitationRequests: [],
     orgUpdateCalls: [],
+    ownershipTransfers: [],
     orgMfaRequired: false,
     teamRepositoryAccessUpdates: [],
     teamPackageAccessUpdates: [],
     teamDeleteCalls: [],
     namespaceDeleteCalls: [],
+    namespaceTransfers: [],
     repositoryTransfers: [],
     packageTransfers: [],
     searchCalls: [],
@@ -1404,6 +1788,21 @@ async function handleApiRequest(
   }
 
   if (
+    method === 'POST' &&
+    requestPath === `/v1/orgs/${ORG_SLUG}/ownership-transfer`
+  ) {
+    if (scenario.ownershipTransferError) {
+      throw new TestApiError(500, { error: scenario.ownershipTransferError });
+    }
+    scenario.ownershipTransfers.push({ path: requestPath, body });
+    return apiResponse({
+      new_owner: {
+        username: body.username,
+      },
+    });
+  }
+
+  if (
     method === 'PUT' &&
     requestPath.startsWith(
       `/v1/orgs/${ORG_SLUG}/teams/${TEAM_SLUG}/repository-access/`
@@ -1445,9 +1844,32 @@ async function handleApiRequest(
 
   if (
     method === 'POST' &&
+    requestPath.startsWith('/v1/namespaces/') &&
+    requestPath.endsWith('/ownership-transfer')
+  ) {
+    if (scenario.namespaceTransferError) {
+      throw new TestApiError(500, { error: scenario.namespaceTransferError });
+    }
+    scenario.namespaceTransfers.push({ path: requestPath, body });
+    return apiResponse({
+      namespace_claim: {
+        id: requestPath.split('/')[3],
+        namespace: NAMESPACE_CLAIM_VALUE,
+      },
+      owner: {
+        slug: body.target_org_slug,
+      },
+    });
+  }
+
+  if (
+    method === 'POST' &&
     requestPath.startsWith('/v1/repositories/') &&
     requestPath.endsWith('/ownership-transfer')
   ) {
+    if (scenario.repositoryTransferError) {
+      throw new TestApiError(500, { error: scenario.repositoryTransferError });
+    }
     scenario.repositoryTransfers.push({ path: requestPath, body });
     return apiResponse({
       repository: {
@@ -1464,6 +1886,9 @@ async function handleApiRequest(
     requestPath.startsWith('/v1/packages/') &&
     requestPath.endsWith('/ownership-transfer')
   ) {
+    if (scenario.packageTransferError) {
+      throw new TestApiError(500, { error: scenario.packageTransferError });
+    }
     scenario.packageTransfers.push({ path: requestPath, body });
     return apiResponse({
       owner: {
@@ -1556,6 +1981,18 @@ function queryRequiredSelect(
   const element = root?.querySelector(selector);
   if (!(element instanceof HTMLSelectElement)) {
     throw new Error(`Expected select for selector: ${selector}`);
+  }
+
+  return element;
+}
+
+function queryRequiredInput(
+  root: ParentNode | Element | null,
+  selector: string
+): HTMLInputElement {
+  const element = root?.querySelector(selector);
+  if (!(element instanceof HTMLInputElement)) {
+    throw new Error(`Expected input for selector: ${selector}`);
   }
 
   return element;

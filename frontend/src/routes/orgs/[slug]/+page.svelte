@@ -212,6 +212,14 @@
   const ORG_AUDIT_PAGE_SIZE = 20;
   const DEFAULT_NAMESPACE_ECOSYSTEM = 'npm';
   const DEFAULT_PACKAGE_ECOSYSTEM = 'npm';
+  const OWNERSHIP_TRANSFER_CONFIRMATION_MESSAGE =
+    'Please confirm the ownership transfer.';
+  const REPOSITORY_TRANSFER_CONFIRMATION_MESSAGE =
+    'Please confirm the repository transfer.';
+  const NAMESPACE_TRANSFER_CONFIRMATION_MESSAGE =
+    'Please confirm the namespace transfer.';
+  const PACKAGE_TRANSFER_CONFIRMATION_MESSAGE =
+    'Please confirm the package transfer.';
   const NAMESPACE_DELETE_CONFIRMATION_MESSAGE =
     'Please confirm that you understand deleting this namespace claim is immediate and cannot be undone.';
   const REVIEW_TEAM_FALLBACK_LABEL = 'Team (no name)';
@@ -359,6 +367,18 @@
   let newPackageDisplayName = '';
   let newPackageDescription = '';
   let creatingPackage = false;
+  let ownershipTransferConfirmationOpen = false;
+  let ownershipTransferConfirmed = false;
+  let transferringOwnership = false;
+  let repositoryTransferConfirmationOpen = false;
+  let repositoryTransferConfirmed = false;
+  let transferringRepositoryOwnership = false;
+  let namespaceTransferConfirmationOpen = false;
+  let namespaceTransferConfirmed = false;
+  let transferringNamespaceOwnership = false;
+  let packageTransferConfirmationOpen = false;
+  let packageTransferConfirmed = false;
+  let transferringPackageOwnershipFlow = false;
   let teamDeleteTargetSlug: string | null = null;
   let teamDeleteConfirmed = false;
   let deletingTeamSlug: string | null = null;
@@ -603,6 +623,18 @@
     error = options.error ?? null;
     canViewPeopleWorkspace = false;
     securityFindingsByPackageKey = {};
+    ownershipTransferConfirmationOpen = false;
+    ownershipTransferConfirmed = false;
+    transferringOwnership = false;
+    repositoryTransferConfirmationOpen = false;
+    repositoryTransferConfirmed = false;
+    transferringRepositoryOwnership = false;
+    namespaceTransferConfirmationOpen = false;
+    namespaceTransferConfirmed = false;
+    transferringNamespaceOwnership = false;
+    packageTransferConfirmationOpen = false;
+    packageTransferConfirmed = false;
+    transferringPackageOwnershipFlow = false;
     teamDeleteTargetSlug = null;
     teamDeleteConfirmed = false;
     deletingTeamSlug = null;
@@ -1090,12 +1122,15 @@
       ownershipMemberOptions
     );
 
-    if (!formData.get('confirm')) {
-      await loadOrganizationPage({
-        error: 'Please confirm the ownership transfer.',
-      });
+    if (!ownershipTransferConfirmed) {
+      notice = null;
+      error = OWNERSHIP_TRANSFER_CONFIRMATION_MESSAGE;
       return;
     }
+
+    transferringOwnership = true;
+    notice = null;
+    error = null;
 
     try {
       const result: TransferOwnershipResult = await transferOwnership(slug, {
@@ -1106,13 +1141,27 @@
         notice: `Ownership transferred to @${result.new_owner?.username || 'the selected user'}.`,
       });
     } catch (caughtError: unknown) {
-      await loadOrganizationPage({
-        error: toErrorMessage(
-          caughtError,
-          'Failed to transfer organization ownership.'
-        ),
-      });
+      error = toErrorMessage(
+        caughtError,
+        'Failed to transfer organization ownership.'
+      );
+      transferringOwnership = false;
     }
+  }
+
+  function openOwnershipTransferConfirmation(): void {
+    ownershipTransferConfirmationOpen = true;
+    ownershipTransferConfirmed = false;
+    transferringOwnership = false;
+    notice = null;
+    error = null;
+  }
+
+  function cancelOwnershipTransferConfirmation(): void {
+    ownershipTransferConfirmationOpen = false;
+    ownershipTransferConfirmed = false;
+    transferringOwnership = false;
+    error = null;
   }
 
   async function handleRevokeInvitation(invitationId: string): Promise<void> {
@@ -1319,25 +1368,26 @@
       formData.get('target_org_slug')?.toString().trim() || '';
 
     if (!claimId) {
-      await loadOrganizationPage({
-        error: 'Select a namespace claim to transfer.',
-      });
+      notice = null;
+      error = 'Select a namespace claim to transfer.';
       return;
     }
 
     if (!targetOrgSlug) {
-      await loadOrganizationPage({
-        error: 'Select a target organization.',
-      });
+      notice = null;
+      error = 'Select a target organization.';
       return;
     }
 
-    if (!formData.get('confirm')) {
-      await loadOrganizationPage({
-        error: 'Please confirm the namespace transfer.',
-      });
+    if (!namespaceTransferConfirmed) {
+      notice = null;
+      error = NAMESPACE_TRANSFER_CONFIRMATION_MESSAGE;
       return;
     }
+
+    transferringNamespaceOwnership = true;
+    notice = null;
+    error = null;
 
     try {
       const result: NamespaceTransferOwnershipResult = await transferNamespaceClaim(
@@ -1354,13 +1404,27 @@
         notice: `Transferred ${namespace} to ${result.owner?.name || result.owner?.slug || targetOrgSlug}.`,
       });
     } catch (caughtError: unknown) {
-      await loadOrganizationPage({
-        error: toErrorMessage(
-          caughtError,
-          'Failed to transfer namespace claim ownership.'
-        ),
-      });
+      error = toErrorMessage(
+        caughtError,
+        'Failed to transfer namespace claim ownership.'
+      );
+      transferringNamespaceOwnership = false;
     }
+  }
+
+  function openNamespaceTransferConfirmation(): void {
+    namespaceTransferConfirmationOpen = true;
+    namespaceTransferConfirmed = false;
+    transferringNamespaceOwnership = false;
+    notice = null;
+    error = null;
+  }
+
+  function cancelNamespaceTransferConfirmation(): void {
+    namespaceTransferConfirmationOpen = false;
+    namespaceTransferConfirmed = false;
+    transferringNamespaceOwnership = false;
+    error = null;
   }
 
   async function handleCreateRepository(event: SubmitEvent): Promise<void> {
@@ -1488,25 +1552,26 @@
       formData.get('target_org_slug')?.toString().trim() || '';
 
     if (!repositorySlug) {
-      await loadOrganizationPage({
-        error: 'Select a repository to transfer.',
-      });
+      notice = null;
+      error = 'Select a repository to transfer.';
       return;
     }
 
     if (!targetOrgSlug) {
-      await loadOrganizationPage({
-        error: 'Select a target organization.',
-      });
+      notice = null;
+      error = 'Select a target organization.';
       return;
     }
 
-    if (!formData.get('confirm')) {
-      await loadOrganizationPage({
-        error: 'Please confirm the repository transfer.',
-      });
+    if (!repositoryTransferConfirmed) {
+      notice = null;
+      error = REPOSITORY_TRANSFER_CONFIRMATION_MESSAGE;
       return;
     }
+
+    transferringRepositoryOwnership = true;
+    notice = null;
+    error = null;
 
     try {
       const result = await transferRepositoryOwnership(repositorySlug, {
@@ -1517,13 +1582,27 @@
         notice: `Transferred ${result.repository?.name || result.repository?.slug || repositorySlug} to ${result.owner?.name || result.owner?.slug || targetOrgSlug}.`,
       });
     } catch (caughtError: unknown) {
-      await loadOrganizationPage({
-        error: toErrorMessage(
-          caughtError,
-          'Failed to transfer repository ownership.'
-        ),
-      });
+      error = toErrorMessage(
+        caughtError,
+        'Failed to transfer repository ownership.'
+      );
+      transferringRepositoryOwnership = false;
     }
+  }
+
+  function openRepositoryTransferConfirmation(): void {
+    repositoryTransferConfirmationOpen = true;
+    repositoryTransferConfirmed = false;
+    transferringRepositoryOwnership = false;
+    notice = null;
+    error = null;
+  }
+
+  function cancelRepositoryTransferConfirmation(): void {
+    repositoryTransferConfirmationOpen = false;
+    repositoryTransferConfirmed = false;
+    transferringRepositoryOwnership = false;
+    error = null;
   }
 
   async function handlePackageTransfer(event: SubmitEvent): Promise<void> {
@@ -1536,21 +1615,26 @@
       formData.get('target_org_slug')?.toString().trim() || '';
 
     if (!packageTarget) {
-      await loadOrganizationPage({ error: 'Select a package to transfer.' });
+      notice = null;
+      error = 'Select a package to transfer.';
       return;
     }
 
     if (!targetOrgSlug) {
-      await loadOrganizationPage({ error: 'Select a target organization.' });
+      notice = null;
+      error = 'Select a target organization.';
       return;
     }
 
-    if (!formData.get('confirm')) {
-      await loadOrganizationPage({
-        error: 'Please confirm the package transfer.',
-      });
+    if (!packageTransferConfirmed) {
+      notice = null;
+      error = PACKAGE_TRANSFER_CONFIRMATION_MESSAGE;
       return;
     }
+
+    transferringPackageOwnershipFlow = true;
+    notice = null;
+    error = null;
 
     try {
       const result = await transferPackageOwnership(
@@ -1565,13 +1649,27 @@
         notice: `Transferred ${packageTarget.name} to ${result.owner?.name || result.owner?.slug || targetOrgSlug}.`,
       });
     } catch (caughtError: unknown) {
-      await loadOrganizationPage({
-        error: toErrorMessage(
-          caughtError,
-          'Failed to transfer package ownership.'
-        ),
-      });
+      error = toErrorMessage(
+        caughtError,
+        'Failed to transfer package ownership.'
+      );
+      transferringPackageOwnershipFlow = false;
     }
+  }
+
+  function openPackageTransferConfirmation(): void {
+    packageTransferConfirmationOpen = true;
+    packageTransferConfirmed = false;
+    transferringPackageOwnershipFlow = false;
+    notice = null;
+    error = null;
+  }
+
+  function cancelPackageTransferConfirmation(): void {
+    packageTransferConfirmationOpen = false;
+    packageTransferConfirmed = false;
+    transferringPackageOwnershipFlow = false;
+    error = null;
   }
 
   function getEligibleTeamMemberOptions(
@@ -2260,17 +2358,56 @@
                 {/each}
               </datalist>
             </div>
-            <div class="form-group">
-              <label class="flex items-start gap-2">
-                <input type="checkbox" name="confirm" required />
-                <span
-                  >I understand this transfer is immediate and irreversible.</span
-                >
-              </label>
-            </div>
-            <button type="submit" class="btn btn-danger"
-              >Transfer ownership</button
-            >
+            {#if ownershipTransferConfirmationOpen}
+              <div
+                class="alert alert-warning"
+                id="org-ownership-transfer-confirmation"
+                style="margin-bottom:12px;"
+              >
+                <label class="flex items-start gap-2">
+                  <input
+                    id="org-ownership-transfer-confirm"
+                    bind:checked={ownershipTransferConfirmed}
+                    type="checkbox"
+                    name="confirm"
+                    disabled={transferringOwnership}
+                  />
+                  <span
+                    >I understand this transfer is immediate and irreversible.</span
+                  >
+                </label>
+                <div class="token-row__actions" style="margin-top:12px;">
+                  <button
+                    id="org-ownership-transfer-submit"
+                    type="submit"
+                    class="btn btn-danger"
+                    disabled={transferringOwnership}
+                  >
+                    {transferringOwnership
+                      ? 'Transferring...'
+                      : 'Transfer ownership'}
+                  </button>
+                  <button
+                    type="button"
+                    class="btn btn-secondary"
+                    on:click={cancelOwnershipTransferConfirmation}
+                    disabled={transferringOwnership}
+                  >
+                    Keep current owner
+                  </button>
+                </div>
+              </div>
+            {:else}
+              <button
+                id="org-ownership-transfer-toggle"
+                type="button"
+                class="btn btn-danger"
+                aria-label="Review organization ownership transfer"
+                on:click={openOwnershipTransferConfirmation}
+              >
+                Transfer ownership...
+              </button>
+            {/if}
           </form>
         {/if}
       </section>
@@ -3290,18 +3427,57 @@
                     </select>
                   </div>
                 </div>
-                <div class="form-group" style="margin-bottom:12px;">
-                  <label class="flex items-start gap-2">
-                    <input type="checkbox" name="confirm" required />
-                    <span
-                      >I understand this repository transfer is immediate and
-                      existing team grants will be removed.</span
-                    >
-                  </label>
-                </div>
-                <button type="submit" class="btn btn-danger"
-                  >Transfer repository</button
-                >
+                {#if repositoryTransferConfirmationOpen}
+                  <div
+                    class="alert alert-warning"
+                    id="org-repository-transfer-confirmation"
+                    style="margin-bottom:12px;"
+                  >
+                    <label class="flex items-start gap-2">
+                      <input
+                        id="org-repository-transfer-confirm"
+                        bind:checked={repositoryTransferConfirmed}
+                        type="checkbox"
+                        name="confirm"
+                        disabled={transferringRepositoryOwnership}
+                      />
+                      <span
+                        >I understand this repository transfer is immediate and
+                        existing team grants will be removed.</span
+                      >
+                    </label>
+                    <div class="token-row__actions" style="margin-top:12px;">
+                      <button
+                        id="org-repository-transfer-submit"
+                        type="submit"
+                        class="btn btn-danger"
+                        disabled={transferringRepositoryOwnership}
+                      >
+                        {transferringRepositoryOwnership
+                          ? 'Transferring...'
+                          : 'Transfer repository'}
+                      </button>
+                      <button
+                        type="button"
+                        class="btn btn-secondary"
+                        on:click={cancelRepositoryTransferConfirmation}
+                        disabled={transferringRepositoryOwnership}
+                      >
+                        Keep repository
+                      </button>
+                    </div>
+                  </div>
+                {:else}
+                  <button
+                    id="org-repository-transfer-toggle"
+                    type="button"
+                    class="btn btn-danger"
+                    aria-label="Review repository ownership transfer"
+                    on:click={openRepositoryTransferConfirmation}
+                  >
+                    Transfer repository...
+                  </button>
+                {/if}
               </form>
             {/if}
           </div>
@@ -3750,17 +3926,56 @@
                     </select>
                   </div>
                 </div>
-                <div class="form-group" style="margin-bottom:12px;">
-                  <label class="flex items-start gap-2">
-                    <input type="checkbox" name="confirm" required />
-                    <span
-                      >I understand this namespace transfer is immediate.</span
-                    >
-                  </label>
-                </div>
-                <button type="submit" class="btn btn-danger"
-                  >Transfer namespace</button
-                >
+                {#if namespaceTransferConfirmationOpen}
+                  <div
+                    class="alert alert-warning"
+                    id="org-namespace-transfer-confirmation"
+                    style="margin-bottom:12px;"
+                  >
+                    <label class="flex items-start gap-2">
+                      <input
+                        id="org-namespace-transfer-confirm"
+                        bind:checked={namespaceTransferConfirmed}
+                        type="checkbox"
+                        name="confirm"
+                        disabled={transferringNamespaceOwnership}
+                      />
+                      <span
+                        >I understand this namespace transfer is immediate.</span
+                      >
+                    </label>
+                    <div class="token-row__actions" style="margin-top:12px;">
+                      <button
+                        id="org-namespace-transfer-submit"
+                        type="submit"
+                        class="btn btn-danger"
+                        disabled={transferringNamespaceOwnership}
+                      >
+                        {transferringNamespaceOwnership
+                          ? 'Transferring...'
+                          : 'Transfer namespace'}
+                      </button>
+                      <button
+                        type="button"
+                        class="btn btn-secondary"
+                        on:click={cancelNamespaceTransferConfirmation}
+                        disabled={transferringNamespaceOwnership}
+                      >
+                        Keep namespace claim
+                      </button>
+                    </div>
+                  </div>
+                {:else}
+                  <button
+                    id="org-namespace-transfer-toggle"
+                    type="button"
+                    class="btn btn-danger"
+                    aria-label="Review namespace claim transfer"
+                    on:click={openNamespaceTransferConfirmation}
+                  >
+                    Transfer namespace...
+                  </button>
+                {/if}
               </form>
             {/if}
           </div>
@@ -3889,18 +4104,57 @@
                   </select>
                 </div>
               </div>
-              <div class="form-group" style="margin-bottom:12px;">
-                <label class="flex items-start gap-2">
-                  <input type="checkbox" name="confirm" required />
-                  <span
-                    >I understand this package transfer is immediate and
-                    existing team grants will be removed.</span
-                  >
-                </label>
-              </div>
-              <button type="submit" class="btn btn-danger"
-                >Transfer package</button
-              >
+              {#if packageTransferConfirmationOpen}
+                <div
+                  class="alert alert-warning"
+                  id="org-package-transfer-confirmation"
+                  style="margin-bottom:12px;"
+                >
+                  <label class="flex items-start gap-2">
+                    <input
+                      id="org-package-transfer-confirm"
+                      bind:checked={packageTransferConfirmed}
+                      type="checkbox"
+                      name="confirm"
+                      disabled={transferringPackageOwnershipFlow}
+                    />
+                    <span
+                      >I understand this package transfer is immediate and
+                      existing team grants will be removed.</span
+                    >
+                  </label>
+                  <div class="token-row__actions" style="margin-top:12px;">
+                    <button
+                      id="org-package-transfer-submit"
+                      type="submit"
+                      class="btn btn-danger"
+                      disabled={transferringPackageOwnershipFlow}
+                    >
+                      {transferringPackageOwnershipFlow
+                        ? 'Transferring...'
+                        : 'Transfer package'}
+                    </button>
+                    <button
+                      type="button"
+                      class="btn btn-secondary"
+                      on:click={cancelPackageTransferConfirmation}
+                      disabled={transferringPackageOwnershipFlow}
+                    >
+                      Keep package
+                    </button>
+                  </div>
+                </div>
+              {:else}
+                <button
+                  id="org-package-transfer-toggle"
+                  type="button"
+                  class="btn btn-danger"
+                  aria-label="Review package ownership transfer"
+                  on:click={openPackageTransferConfirmation}
+                >
+                  Transfer package...
+                </button>
+              {/if}
             </form>
           {/if}
         </div>
