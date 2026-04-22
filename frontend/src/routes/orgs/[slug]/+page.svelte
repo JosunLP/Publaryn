@@ -16,7 +16,6 @@
     OrgAuditListResponse,
     OrgAuditLog,
     OrgInvitation,
-    OrgInvitationListResponse,
     OrgMember,
     OrgPackageSummary,
     OrgRepositoryPackageCoverageResponse,
@@ -25,11 +24,11 @@
     OrgSecurityPackageSummary,
     OrgSecurityQuery,
     OrgSecuritySummary,
+    OrgWorkspaceBootstrapResponse,
     OrganizationDetail,
     OrganizationListResponse,
     OrganizationMembership,
     Team,
-    TeamListResponse,
     TeamMember,
     TeamNamespaceAccessGrant,
     TeamNamespaceAccessListResponse,
@@ -47,17 +46,14 @@
     deleteTeam,
     exportOrgAuditLogsCsv,
     exportOrgSecurityFindingsCsv,
-    getOrg,
+    getOrgWorkspaceBootstrap,
     listMyOrganizations,
     listOrgAuditLogs,
-    listOrgInvitations,
-    listOrgRepositoryPackageCoverage,
     listOrgSecurityFindings,
     listTeamNamespaceAccess,
     listTeamMembers,
     listTeamPackageAccess,
     listTeamRepositoryAccess,
-    listTeams,
     removeMember,
     removeTeamMember,
     removeTeamNamespaceAccess,
@@ -159,9 +155,6 @@
     buildRepositoryGrantOptions,
     createTeamManagementController,
     loadOrgMembersState,
-    loadOrgNamespacesState,
-    loadOrgPackagesState,
-    loadOrgRepositoriesState,
     loadTeamManagementStateMaps,
     type TeamMemberState,
     type TeamNamespaceAccessState,
@@ -609,34 +602,8 @@
     };
 
     try {
-      const [
-        loadedOrg,
-        repositoryData,
-        packageData,
-        securityData,
-        myOrganizationsData,
-      ] = await Promise.all([
-        getOrg(slug),
-        loadOrgRepositoriesState(slug, {
-          include: true,
-          errorMessage: 'Failed to load repositories.',
-          toErrorMessage,
-        }),
-        loadOrgPackagesState(slug, {
-          include: true,
-          errorMessage: 'Failed to load packages.',
-          toErrorMessage,
-        }),
-        listOrgSecurityFindings(slug, securityQuery).catch(
-          (caughtError: unknown): OrgSecurityFindingsResponse => ({
-            summary: null,
-            packages: [],
-            load_error: toErrorMessage(
-              caughtError,
-              'Failed to load security overview.'
-            ),
-          })
-        ),
+      const [bootstrapData, myOrganizationsData] = await Promise.all([
+        getOrgWorkspaceBootstrap(slug, securityQuery),
         isAuthenticated
           ? listMyOrganizations().catch(
               (): OrganizationListResponse => ({ organizations: [] })
@@ -644,7 +611,7 @@
           : Promise.resolve<OrganizationListResponse>({ organizations: [] }),
       ]);
 
-      org = loadedOrg;
+      org = bootstrapData.org || null;
       membership = myOrganizationsData.organizations.find(
         (item) => item.slug === slug
       );
@@ -658,13 +625,23 @@
       canViewAudit = canViewOrgAuditWorkspace(org);
       canTransferOwnership = canTransferOrgOwnership(org);
 
-      repositories = repositoryData.repositories || [];
-      repositoriesError = repositoryData.load_error || null;
-      packages = packageData.packages || [];
-      packagesError = packageData.load_error || null;
-      securitySummary = securityData.summary || null;
-      securityPackages = securityData.packages || [];
-      securityError = securityData.load_error || null;
+      repositories = bootstrapData.repositories || [];
+      repositoriesError = null;
+      packages = bootstrapData.packages || [];
+      packagesError = null;
+      securitySummary = bootstrapData.security?.summary || null;
+      securityPackages = bootstrapData.security?.packages || [];
+      securityError = null;
+      teams = bootstrapData.teams || [];
+      teamsError = null;
+      invitations = bootstrapData.invitations || [];
+      invitationsError = null;
+      namespaceClaims = bootstrapData.namespaces || [];
+      namespaceError = null;
+      repositoryPackagesBySlug = buildRepositoryPackagesBySlug(
+        repositories,
+        bootstrapData.repository_package_coverage || []
+      );
       packageTransferTargets = selectPackageTransferTargets(
         myOrganizationsData.organizations,
         slug
@@ -679,52 +656,12 @@
       );
 
       const [
-        invitationData,
         memberState,
-        teamData,
-        namespaceState,
         auditData,
-        repositoryPackageData,
       ] = await Promise.all([
-        canManageInvitations
-          ? listOrgInvitations(slug, { includeInactive: true }).catch(
-              (caughtError: unknown): OrgInvitationListResponse => ({
-                invitations: [],
-                load_error: toErrorMessage(
-                  caughtError,
-                  'Failed to load invitations.'
-                ),
-              })
-            )
-          : Promise.resolve<OrgInvitationListResponse>({
-              invitations: [],
-              load_error: null,
-            }),
         loadOrgMembersState(slug, {
           include: canViewPeopleWorkspace,
           errorMessage: 'Failed to load members.',
-          toErrorMessage,
-        }),
-        canViewPeopleWorkspace
-          ? listTeams(slug).catch(
-              (caughtError: unknown): TeamListResponse => ({
-                teams: [],
-                load_error: toErrorMessage(
-                  caughtError,
-                  'Failed to load teams.'
-                ),
-              })
-            )
-          : Promise.resolve<TeamListResponse>({
-              teams: [],
-              load_error: null,
-            }),
-        loadOrgNamespacesState({
-          orgId: org?.id,
-          include: true,
-          errorMessage: 'Failed to load namespace claims.',
-          missingOrgIdMessage:
-            'Failed to load namespace claims because the organization id is unavailable.',
           toErrorMessage,
         }),
         canViewAudit
@@ -754,15 +691,10 @@
               logs: [],
               load_error: null,
             }),
-        loadRepositoryPackages(repositoryData.repositories || []),
       ]);
 
-      invitations = invitationData.invitations || [];
-      invitationsError = invitationData.load_error || null;
       members = memberState.members;
       membersError = memberState.load_error;
-      teams = teamData.teams || [];
-      teamsError = teamData.load_error || null;
       const teamManagementStateMaps = await loadTeamManagementStateMaps(slug, teams, {
         includeMembers: canManageTeams,
         includePackageAccess: canManageTeams,
@@ -774,12 +706,9 @@
       teamPackageAccessBySlug = teamManagementStateMaps.teamPackageAccessBySlug;
       teamRepositoryAccessBySlug = teamManagementStateMaps.teamRepositoryAccessBySlug;
       teamNamespaceAccessBySlug = teamManagementStateMaps.teamNamespaceAccessBySlug;
-      namespaceClaims = namespaceState.namespaces;
-      namespaceError = namespaceState.load_error;
       auditLogs = auditData.logs || [];
       auditError = auditData.load_error || null;
       auditHasNext = auditData.has_next === true;
-      repositoryPackagesBySlug = repositoryPackageData;
     } catch (caughtError: unknown) {
       if (caughtError instanceof ApiError && caughtError.status === 404) {
         notFound = true;
@@ -814,48 +743,26 @@
     }
   }
 
-  async function loadRepositoryPackages(
-    repositoryList: OrgRepositorySummary[]
-  ): Promise<Record<string, RepositoryPackageState>> {
+  function buildRepositoryPackagesBySlug(
+    repositoryList: OrgRepositorySummary[],
+    repositoryCoverage: OrgRepositoryPackageCoverageResponse['repositories']
+  ): Record<string, RepositoryPackageState> {
     const repositoriesWithSlug = repositoryList.filter(hasRepositorySlug);
-    if (repositoriesWithSlug.length === 0) {
-      return {};
-    }
+    const packagesByRepositorySlug = new Map(
+      (repositoryCoverage || [])
+        .filter(hasRepositoryCoverageSlug)
+        .map((entry) => [entry.repository_slug, entry.packages || []] as const)
+    );
 
-    try {
-      const data: OrgRepositoryPackageCoverageResponse =
-        await listOrgRepositoryPackageCoverage(slug);
-      const packagesByRepositorySlug = new Map(
-        (data.repositories || [])
-          .filter(hasRepositoryCoverageSlug)
-          .map((entry) => [entry.repository_slug, entry.packages || []] as const)
-      );
-
-      return Object.fromEntries(
-        repositoriesWithSlug.map((repository) => [
-          repository.slug,
-          {
-            packages: packagesByRepositorySlug.get(repository.slug) || [],
-            load_error: data.load_error || null,
-          },
-        ])
-      );
-    } catch (caughtError: unknown) {
-      const loadError = toErrorMessage(
-        caughtError,
-        'Failed to load repository package coverage.'
-      );
-
-      return Object.fromEntries(
-        repositoriesWithSlug.map((repository) => [
-          repository.slug,
-          {
-            packages: [],
-            load_error: loadError,
-          },
-        ])
-      );
-    }
+    return Object.fromEntries(
+      repositoriesWithSlug.map((repository) => [
+        repository.slug,
+        {
+          packages: packagesByRepositorySlug.get(repository.slug) || [],
+          load_error: null,
+        },
+      ])
+    );
   }
 
   async function handleAuditFilterSubmit(event: SubmitEvent): Promise<void> {

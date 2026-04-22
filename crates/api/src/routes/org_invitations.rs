@@ -6,7 +6,7 @@ use axum::{
 };
 use chrono::{Duration, Utc};
 use serde::Deserialize;
-use sqlx::{postgres::PgRow, Row};
+use sqlx::{postgres::PgRow, PgPool, Row};
 use std::str::FromStr;
 use uuid::Uuid;
 
@@ -230,8 +230,18 @@ async fn list_org_invitations(
     ensure_scope(&identity, SCOPE_ORGS_WRITE)?;
 
     let org_id = ensure_org_admin_by_slug(&state.db, &slug, identity.user_id).await?;
-    let include_inactive = query.include_inactive.unwrap_or(false);
+    let invitations =
+        load_org_invitation_admin_payloads(&state.db, org_id, query.include_inactive.unwrap_or(false))
+            .await?;
 
+    Ok(Json(serde_json::json!({ "invitations": invitations })))
+}
+
+pub(crate) async fn load_org_invitation_admin_payloads(
+    db: &PgPool,
+    org_id: Uuid,
+    include_inactive: bool,
+) -> ApiResult<Vec<serde_json::Value>> {
     let sql = if include_inactive {
         "SELECT oi.id, oi.org_id, oi.invited_user_id, oi.role, oi.invited_by, oi.accepted_by, oi.accepted_at, \
                 oi.declined_by, oi.declined_at, oi.revoked_by, oi.revoked_at, oi.expires_at, oi.created_at, \
@@ -260,17 +270,14 @@ async fn list_org_invitations(
 
     let rows = sqlx::query(sql)
         .bind(org_id)
-        .fetch_all(&state.db)
+        .fetch_all(db)
         .await
         .map_err(|e| ApiError(Error::Database(e)))?;
 
     let now = Utc::now();
-    let invitations = rows
-        .iter()
+    rows.iter()
         .map(|row| org_invitation_admin_payload(row, now))
-        .collect::<ApiResult<Vec<_>>>()?;
-
-    Ok(Json(serde_json::json!({ "invitations": invitations })))
+        .collect::<ApiResult<Vec<_>>>()
 }
 
 async fn revoke_org_invitation(

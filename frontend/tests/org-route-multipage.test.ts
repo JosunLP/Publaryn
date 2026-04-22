@@ -39,6 +39,7 @@ interface FetchScenario {
   canManageTeams: boolean;
   canManageRepositories: boolean;
   canManageNamespaces: boolean;
+  workspaceBootstrapRequests: string[];
   repositoryPageRequests: number[];
   repositoryPackageCoverageRequests: string[];
   packagePageRequests: number[];
@@ -228,8 +229,12 @@ describe('route-level multi-page org dataset coverage', () => {
 
     try {
       await waitFor(() => {
-        expect(scenario.repositoryPageRequests).toEqual([1, 2]);
-        expect(scenario.packagePageRequests).toEqual([1, 2]);
+        expect(scenario.workspaceBootstrapRequests).toEqual([
+          `/v1/orgs/${ORG_SLUG}/workspace`,
+        ]);
+        expect(scenario.repositoryPageRequests).toEqual([]);
+        expect(scenario.packagePageRequests).toEqual([]);
+        expect(scenario.repositoryPackageCoverageRequests).toEqual([]);
       }, 5_000);
 
       const finalRepository = repositories.at(-1);
@@ -288,9 +293,10 @@ describe('route-level multi-page org dataset coverage', () => {
 
     try {
       await waitFor(() => {
-        expect(scenario.repositoryPackageCoverageRequests).toEqual([
-          `/v1/orgs/${ORG_SLUG}/repository-package-coverage`,
+        expect(scenario.workspaceBootstrapRequests).toEqual([
+          `/v1/orgs/${ORG_SLUG}/workspace`,
         ]);
+        expect(scenario.repositoryPackageCoverageRequests).toEqual([]);
         expect(target.textContent).toContain('repo-package-001');
         expect(
           target.querySelector('a[href="/packages/npm/repo-package-001?tab=security"]')
@@ -731,6 +737,7 @@ function createFetchScenario(): FetchScenario {
     canManageTeams: true,
     canManageRepositories: true,
     canManageNamespaces: true,
+    workspaceBootstrapRequests: [],
     repositoryPageRequests: [],
     repositoryPackageCoverageRequests: [],
     packagePageRequests: [],
@@ -763,6 +770,76 @@ async function handleApiRequest(
   }
   const requestPath = url.pathname;
   const body = options?.body || {};
+
+  if (method === 'GET' && requestPath === `/v1/orgs/${ORG_SLUG}/workspace`) {
+    scenario.workspaceBootstrapRequests.push(requestPath);
+    return apiResponse({
+      org: {
+        id: ORG_ID,
+        name: 'Source Org',
+        slug: ORG_SLUG,
+        description: 'Source organization',
+        is_verified: true,
+        mfa_required: scenario.orgMfaRequired,
+        website: null,
+        email: null,
+        created_at: '2026-04-01T00:00:00Z',
+        capabilities: {
+          can_manage: true,
+          can_manage_invitations: scenario.canManageInvitations,
+          can_manage_members: scenario.canManageMembers,
+          can_manage_teams: scenario.canManageTeams,
+          can_manage_repositories: scenario.canManageRepositories,
+          can_manage_namespaces: scenario.canManageNamespaces,
+          can_view_member_directory: true,
+          can_view_audit_log: true,
+          can_transfer_ownership: true,
+        },
+      },
+      teams: [
+        {
+          name: 'Release Engineering',
+          slug: TEAM_SLUG,
+          description: 'Owns release governance',
+          created_at: '2026-04-01T00:00:00Z',
+        },
+      ],
+      repositories,
+      repository_package_coverage: [
+        {
+          repository_slug: 'repo-001',
+          packages: [
+            {
+              id: 'repo-package-001',
+              ecosystem: 'npm',
+              name: 'repo-package-001',
+              description: 'Repository scoped package',
+              latest_version: '1.0.0',
+              download_count: 7,
+              created_at: '2026-04-01T00:00:00Z',
+            },
+          ],
+        },
+      ],
+      packages,
+      namespaces: [],
+      invitations: scenario.canManageInvitations ? [] : [],
+      security: {
+        summary: {
+          open_findings: 0,
+          affected_packages: 0,
+          severities: {
+            critical: 0,
+            high: 0,
+            medium: 0,
+            low: 0,
+            info: 0,
+          },
+        },
+        packages: [],
+      },
+    });
+  }
 
   if (method === 'GET' && requestPath === `/v1/orgs/${ORG_SLUG}`) {
     return apiResponse({

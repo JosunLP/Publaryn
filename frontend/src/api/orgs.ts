@@ -1,5 +1,6 @@
 import { api } from './client';
 import { collectPaginatedItems } from './pagination';
+import type { NamespaceClaim } from './namespaces';
 import type { RepositoryPackageSummary } from './repositories';
 
 type NullableString = string | null;
@@ -204,6 +205,17 @@ export interface OrgRepositoryPackageCoverageEntry {
 export interface OrgRepositoryPackageCoverageResponse {
   repositories: OrgRepositoryPackageCoverageEntry[];
   load_error?: NullableString;
+}
+
+export interface OrgWorkspaceBootstrapResponse {
+  org?: OrganizationDetail | null;
+  teams: Team[];
+  repositories: OrgRepositorySummary[];
+  repository_package_coverage: OrgRepositoryPackageCoverageEntry[];
+  packages: OrgPackageSummary[];
+  namespaces: NamespaceClaim[];
+  invitations: OrgInvitation[];
+  security?: OrgSecurityFindingsResponse | null;
 }
 
 export interface OrgSecuritySeverityCounts {
@@ -811,6 +823,27 @@ export async function listOrgRepositoryPackageCoverage(
 ): Promise<OrgRepositoryPackageCoverageResponse> {
   const { data } = await api.get<OrgRepositoryPackageCoverageResponse>(
     `/v1/orgs/${enc(slug)}/repository-package-coverage`
+  );
+
+  return data;
+}
+
+export async function getOrgWorkspaceBootstrap(
+  slug: string,
+  query: OrgSecurityQuery = {}
+): Promise<OrgWorkspaceBootstrapResponse> {
+  const { data } = await api.get<OrgWorkspaceBootstrapResponse>(
+    `/v1/orgs/${enc(slug)}/workspace`,
+    {
+      query: {
+        severity:
+          query.severities && query.severities.length > 0
+            ? query.severities.join(',')
+            : undefined,
+        ecosystem: query.ecosystem,
+        package: query.package,
+      },
+    }
   );
 
   return data;
