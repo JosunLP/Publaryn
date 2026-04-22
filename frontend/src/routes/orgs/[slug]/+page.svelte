@@ -156,6 +156,7 @@
     buildRepositoryGrantOptions,
     createTeamManagementController,
     loadOrgMembersState,
+    TEAM_DELETE_CONFIRMATION_MESSAGE,
     type TeamMemberState,
     type TeamNamespaceAccessState,
     type TeamPackageAccessState,
@@ -1193,8 +1194,7 @@
 
     if (!teamDeleteConfirmed || teamDeleteTargetSlug !== teamSlug) {
       notice = null;
-      error =
-        'Please confirm that you understand deleting this team revokes its delegated access.';
+      error = TEAM_DELETE_CONFIRMATION_MESSAGE;
       return;
     }
 

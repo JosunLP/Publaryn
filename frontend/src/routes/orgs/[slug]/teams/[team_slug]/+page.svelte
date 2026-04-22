@@ -32,6 +32,7 @@
     createTeamManagementController,
     loadOrgTeamReferenceData,
     loadSingleTeamManagementState,
+    TEAM_DELETE_CONFIRMATION_MESSAGE,
     TEAM_NAMESPACE_PERMISSION_OPTIONS,
     TEAM_PERMISSION_OPTIONS,
   } from '../../../../../pages/team-management';
@@ -204,8 +205,7 @@
 
     if (!deleteConfirmed) {
       notice = null;
-      error =
-        'Please confirm that you understand deleting this team revokes its delegated access.';
+      error = TEAM_DELETE_CONFIRMATION_MESSAGE;
       return;
     }
 

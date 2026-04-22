@@ -14,6 +14,25 @@ import {
 
 type JsonRecord = Record<string, unknown>;
 
+class TestApiError<TBody = unknown> extends Error {
+  readonly status: number;
+  readonly body: TBody;
+
+  constructor(status: number, body: TBody) {
+    super(
+      body &&
+        typeof body === 'object' &&
+        'error' in (body as Record<string, unknown>) &&
+        typeof (body as Record<string, unknown>).error === 'string'
+        ? String((body as Record<string, unknown>).error)
+        : `HTTP ${status}`
+    );
+    this.name = 'ApiError';
+    this.status = status;
+    this.body = body;
+  }
+}
+
 interface TestPageState {
   url: URL;
   params: Record<string, string>;
@@ -173,27 +192,8 @@ mock.module('$app/navigation', () => ({
 }));
 
 mock.module(apiClientModuleUrl, () => {
-  class ApiError<TBody = unknown> extends Error {
-    readonly status: number;
-    readonly body: TBody;
-
-    constructor(status: number, body: TBody) {
-      super(
-        body &&
-          typeof body === 'object' &&
-          'error' in (body as Record<string, unknown>) &&
-          typeof (body as Record<string, unknown>).error === 'string'
-          ? String((body as Record<string, unknown>).error)
-          : `HTTP ${status}`
-      );
-      this.name = 'ApiError';
-      this.status = status;
-      this.body = body;
-    }
-  }
-
   return {
-    ApiError,
+    ApiError: TestApiError,
     getAuthToken(): string | null {
       return currentAuthToken;
     },
@@ -1282,7 +1282,7 @@ async function handleApiRequest(
 
   if (method === 'DELETE' && requestPath === `/v1/orgs/${ORG_SLUG}/teams/${TEAM_SLUG}`) {
     if (scenario.teamDeleteError) {
-      throw new Error(scenario.teamDeleteError);
+      throw new TestApiError(500, { error: scenario.teamDeleteError });
     }
     scenario.teamDeleteCalls.push(requestPath);
     scenario.teams = scenario.teams.filter((team) => team.slug !== TEAM_SLUG);
