@@ -66,6 +66,14 @@ function main() {
     'release notes unsupported section'
   );
 
+  if (releaseNotes.includes('(Draft)')) {
+    throw new Error(`Release notes still marked as draft: docs/releases/${version}.md`);
+  }
+
+  if (changelog.includes(`## [${version}] - Planned`)) {
+    throw new Error(`Changelog entry for ${version} is still marked as planned.`);
+  }
+
   console.log(`Release artifacts for ${version} are present.`);
 }
 

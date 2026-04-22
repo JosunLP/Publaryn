@@ -23,7 +23,7 @@ on:
         type: string
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: release-${{ github.workflow }}-${{ github.event.release.tag_name ||
@@ -137,6 +137,43 @@ jobs:
       - name: Verify release artifacts
         run: bun scripts/release/release-artifacts.mjs --version ${{
           needs.prepare-release.outputs.version }}
+
+  sync-release-notes:
+    name: Sync GitHub release notes from docs
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs:
+      - prepare-release
+      - release-contract
+    permissions:
+      contents: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.12
+
+      - name: Render release body from docs
+        run: bun scripts/release/github-release-body.mjs --version ${{
+          needs.prepare-release.outputs.version }} > /tmp/github-release-body.md
+
+      - name: Update GitHub release body
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('node:fs');
+            const body = fs.readFileSync('/tmp/github-release-body.md', 'utf8');
+
+            await github.rest.repos.updateRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: context.payload.release.id,
+              body,
+            });
 
   rust-format-and-lint:
     name: Rust format & lint
@@ -333,6 +370,7 @@ jobs:
     needs:
       - prepare-release
       - release-contract
+      - sync-release-notes
     permissions:
       contents: read
       packages: write

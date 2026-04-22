@@ -42,7 +42,7 @@ every item below is part of the release gate, not optional ceremony.
 ## 6. Versioning and release automation
 
 - [ ] All release-facing manifests are synchronized to the target version.
-- [ ] GitHub release automation validates before publish and builds release artifacts on publish.
+- [ ] GitHub release automation validates before publish, syncs the versioned docs release notes into the GitHub release body, and builds release artifacts on publish.
 - [ ] Container images are tagged consistently with the release version and `latest` policy, when applicable.
 - [ ] The changelog and release notes reference the same release number.
 
