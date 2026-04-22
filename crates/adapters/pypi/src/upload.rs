@@ -48,6 +48,10 @@ pub struct LegacyPackageMetadata {
     pub repository_url: Option<String>,
     pub license: Option<String>,
     pub keywords: Vec<String>,
+    pub requires_python: Option<String>,
+    pub requires_dist: Vec<String>,
+    pub requires_external: Vec<String>,
+    pub provides_extra: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -169,22 +173,38 @@ impl LegacyUploadBuilder {
 
 impl LegacyUploadRequest {
     pub fn package_metadata(&self) -> LegacyPackageMetadata {
-        let project_urls = self.metadata_values("project_urls");
+        let project_urls = collect_metadata_values(&self.metadata_fields, &["project_urls"]);
 
         LegacyPackageMetadata {
             description: self.first_metadata_value("summary"),
             readme: self.first_metadata_value("description"),
             homepage: self
                 .first_metadata_value("home_page")
-                .or_else(|| project_url_for_labels(project_urls, &["homepage", "home"])),
+                .or_else(|| project_url_for_labels(&project_urls, &["homepage", "home"])),
             repository_url: project_url_for_labels(
-                project_urls,
+                &project_urls,
                 &["source", "repository", "code", "source code"],
             ),
             license: self
                 .first_metadata_value("license_expression")
                 .or_else(|| self.first_metadata_value("license")),
             keywords: parse_keywords(self.metadata_values("keywords")),
+            requires_python: first_non_empty_value(collect_metadata_values(
+                &self.metadata_fields,
+                &["requires_python", "requires-python"],
+            )),
+            requires_dist: parse_multi_value_fields(collect_metadata_values(
+                &self.metadata_fields,
+                &["requires_dist", "requires-dist"],
+            )),
+            requires_external: parse_multi_value_fields(collect_metadata_values(
+                &self.metadata_fields,
+                &["requires_external", "requires-external"],
+            )),
+            provides_extra: parse_multi_value_fields(collect_metadata_values(
+                &self.metadata_fields,
+                &["provides_extra", "provides-extra"],
+            )),
         }
     }
 
@@ -406,6 +426,41 @@ fn parse_keywords(values: &[String]) -> Vec<String> {
     deduplicated.into_iter().collect()
 }
 
+fn collect_metadata_values(
+    fields: &BTreeMap<String, Vec<String>>,
+    keys: &[&str],
+) -> Vec<String> {
+    let mut values = Vec::new();
+
+    for key in keys {
+        if let Some(field_values) = fields.get(*key) {
+            values.extend(field_values.iter().cloned());
+        }
+    }
+
+    values
+}
+
+fn first_non_empty_value(values: Vec<String>) -> Option<String> {
+    values
+        .into_iter()
+        .map(|value| value.trim().to_owned())
+        .find(|value| !value.is_empty())
+}
+
+fn parse_multi_value_fields(values: Vec<String>) -> Vec<String> {
+    let mut deduplicated = BTreeSet::new();
+
+    for value in values {
+        let normalized = value.trim();
+        if !normalized.is_empty() {
+            deduplicated.insert(normalized.to_owned());
+        }
+    }
+
+    deduplicated.into_iter().collect()
+}
+
 fn project_url_for_labels(values: &[String], labels: &[&str]) -> Option<String> {
     let labels = labels
         .iter()
@@ -461,6 +516,11 @@ mod tests {
         builder.add_text_field("summary", "A demo package".into());
         builder.add_text_field("description", "Long description".into());
         builder.add_text_field("keywords", "python, packages, demo".into());
+        builder.add_text_field("requires_python", ">=3.10".into());
+        builder.add_text_field("requires_dist", "requests>=2.31".into());
+        builder.add_text_field("requires_dist", "urllib3>=2".into());
+        builder.add_text_field("requires_external", "libssl".into());
+        builder.add_text_field("provides_extra", "s3".into());
         builder.add_text_field("project_urls", "Source, https://example.test/src".into());
         builder.add_text_field("project_urls", "Homepage, https://example.test".into());
         builder.add_text_field("license_expression", "MIT".into());
@@ -500,6 +560,13 @@ mod tests {
                 "python".to_owned()
             ]
         );
+        assert_eq!(metadata.requires_python.as_deref(), Some(">=3.10"));
+        assert_eq!(
+            metadata.requires_dist,
+            vec!["requests>=2.31".to_owned(), "urllib3>=2".to_owned()]
+        );
+        assert_eq!(metadata.requires_external, vec!["libssl".to_owned()]);
+        assert_eq!(metadata.provides_extra, vec!["s3".to_owned()]);
     }
 
     #[test]

@@ -3,6 +3,7 @@ use axum::{
     http::{header, Method, Request, StatusCode},
 };
 use base64::engine::{general_purpose::STANDARD as BASE64, Engine};
+use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
 use sqlx::{PgPool, Row};
 use std::{net::ToSocketAddrs, sync::Arc};
@@ -12,7 +13,11 @@ use url::Url;
 use uuid::Uuid;
 
 use publaryn_api::{
-    config::Config, router::build_router, state::AppState, storage::ArtifactStoreReaderAdapter,
+    config::Config,
+    job_handlers::CleanupOciBlobsHandler,
+    router::build_router,
+    state::AppState,
+    storage::ArtifactStoreReaderAdapter,
 };
 use publaryn_workers::{
     handler::JobHandler,
@@ -1706,6 +1711,38 @@ async fn fetch_background_jobs(
     .collect()
 }
 
+async fn fetch_oci_cleanup_jobs(pool: &PgPool) -> Vec<(serde_json::Value, String, DateTime<Utc>)> {
+    sqlx::query(
+        "SELECT payload, status::text AS status, scheduled_at \
+         FROM background_jobs \
+         WHERE kind::text = 'cleanup_oci_blobs' \
+         ORDER BY created_at ASC",
+    )
+    .fetch_all(pool)
+    .await
+    .expect("oci cleanup jobs should be queryable")
+    .into_iter()
+    .map(|row| {
+        (
+            row.try_get::<serde_json::Value, _>("payload")
+                .expect("cleanup payload should be present"),
+            row.try_get::<String, _>("status")
+                .expect("cleanup status should be present"),
+            row.try_get::<DateTime<Utc>, _>("scheduled_at")
+                .expect("cleanup scheduled_at should be present"),
+        )
+    })
+    .collect()
+}
+
+async fn count_oci_blob_inventory(pool: &PgPool, digest: &str) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM oci_blob_inventory WHERE digest = $1")
+        .bind(digest)
+        .fetch_one(pool)
+        .await
+        .expect("oci blob inventory count should be queryable")
+}
+
 /// Yank a release and return the response.
 async fn yank_release_for_package(
     app: &axum::Router,
@@ -1948,6 +1985,17 @@ fn build_pypi_legacy_upload_multipart(
     version: &str,
     artifact_bytes: &[u8],
 ) -> (String, Vec<u8>) {
+    build_pypi_legacy_upload_multipart_with_fields(package_name, version, artifact_bytes, &[])
+}
+
+/// Build a PyPI legacy upload multipart body with additional metadata fields and
+/// return `(content_type, body)`.
+fn build_pypi_legacy_upload_multipart_with_fields(
+    package_name: &str,
+    version: &str,
+    artifact_bytes: &[u8],
+    metadata_fields: &[(&str, &str)],
+) -> (String, Vec<u8>) {
     use sha2::{Digest, Sha256};
 
     let boundary = "----publaryn-test-boundary-2f4e";
@@ -1957,18 +2005,23 @@ fn build_pypi_legacy_upload_multipart(
     let sha256_hex = hex::encode(digest.finalize());
 
     let mut body: Vec<u8> = Vec::new();
-    let text_fields: &[(&str, &str)] = &[
-        (":action", "file_upload"),
-        ("protocol_version", "1"),
-        ("metadata_version", "2.4"),
-        ("name", package_name),
-        ("version", version),
-        ("filetype", "sdist"),
-        ("pyversion", "source"),
-        ("sha256_digest", sha256_hex.as_str()),
+    let mut text_fields: Vec<(String, String)> = vec![
+        (":action".to_owned(), "file_upload".to_owned()),
+        ("protocol_version".to_owned(), "1".to_owned()),
+        ("metadata_version".to_owned(), "2.4".to_owned()),
+        ("name".to_owned(), package_name.to_owned()),
+        ("version".to_owned(), version.to_owned()),
+        ("filetype".to_owned(), "sdist".to_owned()),
+        ("pyversion".to_owned(), "source".to_owned()),
+        ("sha256_digest".to_owned(), sha256_hex),
     ];
+    text_fields.extend(
+        metadata_fields
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned())),
+    );
 
-    for (name, value) in text_fields {
+    for (name, value) in &text_fields {
         body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
         body.extend_from_slice(
             format!("Content-Disposition: form-data; name=\"{name}\"\r\n\r\n").as_bytes(),
@@ -2019,6 +2072,90 @@ async fn upload_pypi_distribution(
     let resp = app.clone().oneshot(req).await.unwrap();
     let status = resp.status();
     let body = body_json_or_empty(resp).await;
+    (status, body)
+}
+
+/// Upload a PyPI distribution via the legacy upload endpoint with extra metadata
+/// fields and return the response.
+async fn upload_pypi_distribution_with_fields(
+    app: &axum::Router,
+    token: &str,
+    repository_slug: Option<&str>,
+    package_name: &str,
+    version: &str,
+    artifact_bytes: &[u8],
+    metadata_fields: &[(&str, &str)],
+) -> (StatusCode, Value) {
+    let (content_type, body) =
+        build_pypi_legacy_upload_multipart_with_fields(
+            package_name,
+            version,
+            artifact_bytes,
+            metadata_fields,
+        );
+    let uri = match repository_slug {
+        Some(slug) => format!("/pypi/legacy/{slug}/"),
+        None => "/pypi/legacy/".to_owned(),
+    };
+    let auth_header = ["Bearer ", token].concat();
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri(uri)
+        .header(header::AUTHORIZATION, auth_header)
+        .header(header::CONTENT_TYPE, content_type)
+        .body(Body::from(body))
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json_or_empty(resp).await;
+    (status, body)
+}
+
+/// Read a PyPI project detail document from the Simple API JSON surface.
+async fn get_pypi_simple_project_json(
+    app: &axum::Router,
+    token: Option<&str>,
+    project: &str,
+) -> (StatusCode, Value) {
+    let mut request = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/pypi/simple/{project}/"))
+        .header(
+            header::ACCEPT,
+            "application/vnd.pypi.simple.v1+json",
+        );
+
+    if let Some(token) = token {
+        request = request.header(header::AUTHORIZATION, format!("Bearer {token}"));
+    }
+
+    let req = request.body(Body::empty()).unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json_or_empty(resp).await;
+    (status, body)
+}
+
+/// Read a PyPI project detail document from the Simple API HTML surface.
+async fn get_pypi_simple_project_html(
+    app: &axum::Router,
+    token: Option<&str>,
+    project: &str,
+) -> (StatusCode, String) {
+    let mut request = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/pypi/simple/{project}/"))
+        .header(header::ACCEPT, "text/html");
+
+    if let Some(token) = token {
+        request = request.header(header::AUTHORIZATION, format!("Bearer {token}"));
+    }
+
+    let req = request.body(Body::empty()).unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_text(resp).await;
     (status, body)
 }
 
@@ -2197,6 +2334,11 @@ fn oci_digest(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
 
     format!("sha256:{}", hex::encode(Sha256::digest(bytes)))
+}
+
+fn oci_blob_storage_key(digest: &str) -> String {
+    let digest_hex = digest.split(':').nth(1).unwrap_or(digest);
+    format!("oci/blobs/sha256/{digest_hex}")
 }
 
 fn build_oci_image_manifest(
@@ -4124,6 +4266,55 @@ async fn test_org_admin_can_update_repository_details(pool: PgPool) {
         repository_body["upstream_url"],
         "https://git.example.test/acme/public"
     );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_repository_creation_rejects_proxy_and_virtual_kinds(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, proxy_body) = create_repository_with_options(
+        &app,
+        &jwt,
+        "Acme Proxy",
+        "acme-proxy",
+        None,
+        Some("proxy"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "unexpected proxy repository response: {proxy_body}"
+    );
+    let proxy_error = proxy_body["error"]
+        .as_str()
+        .expect("proxy repository rejection should return an error");
+    assert!(proxy_error.contains("public, private, staging, and release"));
+    assert!(proxy_error.contains("Proxy and virtual repositories"));
+
+    let (status, virtual_body) = create_repository_with_options(
+        &app,
+        &jwt,
+        "Acme Virtual",
+        "acme-virtual",
+        None,
+        Some("virtual"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "unexpected virtual repository response: {virtual_body}"
+    );
+    let virtual_error = virtual_body["error"]
+        .as_str()
+        .expect("virtual repository rejection should return an error");
+    assert!(virtual_error.contains("public, private, staging, and release"));
+    assert!(virtual_error.contains("Proxy and virtual repositories"));
 }
 
 #[sqlx::test(migrations = "../../migrations")]
@@ -13667,6 +13858,249 @@ async fn test_native_pypi_repository_publish_permission_allows_existing_package_
 }
 
 #[sqlx::test(migrations = "../../migrations")]
+async fn test_native_pypi_simple_api_projects_requires_python_and_dependency_metadata(
+    pool: PgPool,
+) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Alice PyPI Packages",
+        "alice-pypi-packages",
+        None,
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, token_body) =
+        create_personal_access_token(&app, &alice_jwt, "alice-pypi-publish", &["packages:write"])
+            .await;
+    assert_eq!(status, StatusCode::CREATED, "unexpected token response: {token_body}");
+    let pypi_token = token_body["token"]
+        .as_str()
+        .expect("pypi token should be returned")
+        .to_owned();
+
+    let artifact_bytes = b"fake-sdist-bytes-for-pypi-metadata";
+    let (status, upload_body) = upload_pypi_distribution_with_fields(
+        &app,
+        &pypi_token,
+        Some("alice-pypi-packages"),
+        "native-metadata-widget",
+        "1.0.0",
+        artifact_bytes,
+        &[
+            ("requires_python", ">=3.10"),
+            ("requires_dist", "requests>=2.31"),
+            ("requires_dist", "urllib3>=2"),
+            ("requires_external", "libssl"),
+            ("provides_extra", "s3"),
+        ],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected pypi upload response: {upload_body}"
+    );
+
+    let release_id = get_release_id(&pool, "pypi", "native-metadata-widget", "1.0.0").await;
+    let metadata_row = sqlx::query(
+        "SELECT requires_python, requires_dist, requires_external, provides_extra
+         FROM pypi_release_metadata
+         WHERE release_id = $1",
+    )
+    .bind(release_id)
+    .fetch_one(&pool)
+    .await
+    .expect("pypi release metadata should be stored");
+    let requires_python = metadata_row
+        .try_get::<Option<String>, _>("requires_python")
+        .expect("requires_python should be readable");
+    let requires_dist = metadata_row
+        .try_get::<Option<Vec<String>>, _>("requires_dist")
+        .expect("requires_dist should be readable")
+        .expect("requires_dist should be present");
+    let requires_external = metadata_row
+        .try_get::<Option<Vec<String>>, _>("requires_external")
+        .expect("requires_external should be readable")
+        .expect("requires_external should be present");
+    let provides_extra = metadata_row
+        .try_get::<Option<Vec<String>>, _>("provides_extra")
+        .expect("provides_extra should be readable")
+        .expect("provides_extra should be present");
+    assert_eq!(requires_python.as_deref(), Some(">=3.10"));
+    assert_eq!(requires_dist, vec!["requests>=2.31".to_owned(), "urllib3>=2".to_owned()]);
+    assert_eq!(requires_external, vec!["libssl".to_owned()]);
+    assert_eq!(provides_extra, vec!["s3".to_owned()]);
+
+    let (status, simple_json) =
+        get_pypi_simple_project_json(&app, None, "native-metadata-widget").await;
+    assert_eq!(status, StatusCode::OK, "unexpected simple api response: {simple_json}");
+    assert_eq!(simple_json["name"], "native-metadata-widget");
+    assert_eq!(simple_json["files"][0]["requires-python"], ">=3.10");
+    assert_eq!(
+        simple_json["files"][0]["requires-dist"],
+        json!(["requests>=2.31", "urllib3>=2"])
+    );
+    assert_eq!(simple_json["files"][0]["requires-external"], json!(["libssl"]));
+    assert_eq!(simple_json["files"][0]["provides-extra"], json!(["s3"]));
+
+    let (status, simple_html) =
+        get_pypi_simple_project_html(&app, None, "native-metadata-widget").await;
+    assert_eq!(status, StatusCode::OK, "unexpected simple html response: {simple_html}");
+    assert!(simple_html.contains("data-requires-python=\"&gt;=3.10\""));
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_native_pypi_retry_preserves_existing_requires_python_metadata(pool: PgPool) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Alice PyPI Packages",
+        "alice-pypi-packages",
+        None,
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, token_body) =
+        create_personal_access_token(&app, &alice_jwt, "alice-pypi-publish", &["packages:write"])
+            .await;
+    assert_eq!(status, StatusCode::CREATED, "unexpected token response: {token_body}");
+    let pypi_token = token_body["token"]
+        .as_str()
+        .expect("pypi token should be returned")
+        .to_owned();
+
+    let artifact_bytes = b"fake-sdist-bytes-for-pypi-idempotent-retry";
+    let (status, first_upload_body) = upload_pypi_distribution_with_fields(
+        &app,
+        &pypi_token,
+        Some("alice-pypi-packages"),
+        "native-retry-widget",
+        "1.0.0",
+        artifact_bytes,
+        &[("requires_python", ">=3.11")],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected first pypi upload response: {first_upload_body}"
+    );
+
+    let (status, retry_body) = upload_pypi_distribution(
+        &app,
+        &pypi_token,
+        Some("alice-pypi-packages"),
+        "native-retry-widget",
+        "1.0.0",
+        artifact_bytes,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected retry pypi upload response: {retry_body}"
+    );
+
+    let (status, simple_json) = get_pypi_simple_project_json(&app, None, "native-retry-widget").await;
+    assert_eq!(status, StatusCode::OK, "unexpected simple api response: {simple_json}");
+    assert_eq!(simple_json["files"][0]["requires-python"], ">=3.11");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_native_pypi_simple_api_omits_missing_resolver_metadata(pool: PgPool) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Alice PyPI Packages",
+        "alice-pypi-packages",
+        None,
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, token_body) =
+        create_personal_access_token(&app, &alice_jwt, "alice-pypi-publish", &["packages:write"])
+            .await;
+    assert_eq!(status, StatusCode::CREATED, "unexpected token response: {token_body}");
+    let pypi_token = token_body["token"]
+        .as_str()
+        .expect("pypi token should be returned")
+        .to_owned();
+
+    let artifact_bytes = b"fake-sdist-bytes-without-pypi-resolver-metadata";
+    let (status, upload_body) = upload_pypi_distribution(
+        &app,
+        &pypi_token,
+        Some("alice-pypi-packages"),
+        "native-null-metadata-widget",
+        "1.0.0",
+        artifact_bytes,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected pypi upload response: {upload_body}"
+    );
+
+    let release_id = get_release_id(&pool, "pypi", "native-null-metadata-widget", "1.0.0").await;
+    let metadata_row = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM pypi_release_metadata WHERE release_id = $1",
+    )
+    .bind(release_id)
+    .fetch_one(&pool)
+    .await
+    .expect("pypi metadata count should be queryable");
+    assert_eq!(metadata_row, 0, "empty uploads should not create metadata rows");
+
+    let (status, simple_json) =
+        get_pypi_simple_project_json(&app, None, "native-null-metadata-widget").await;
+    assert_eq!(status, StatusCode::OK, "unexpected simple api response: {simple_json}");
+    assert!(simple_json["files"][0].get("requires-python").is_none());
+    assert!(simple_json["files"][0].get("requires-dist").is_none());
+    assert!(simple_json["files"][0].get("requires-external").is_none());
+    assert!(simple_json["files"][0].get("provides-extra").is_none());
+
+    let (status, simple_html) =
+        get_pypi_simple_project_html(&app, None, "native-null-metadata-widget").await;
+    assert_eq!(status, StatusCode::OK, "unexpected simple html response: {simple_html}");
+    assert!(!simple_html.contains("data-requires-python"));
+}
+
+#[sqlx::test(migrations = "../../migrations")]
 async fn test_native_composer_publish_auto_creates_org_owned_package_from_repository_publish_grant(
     pool: PgPool,
 ) {
@@ -15785,6 +16219,457 @@ async fn test_native_oci_referrers_require_auth_for_private_repositories_and_ret
     assert_eq!(invalid_digest_resp.status(), StatusCode::BAD_REQUEST);
     let invalid_digest_body = body_json(invalid_digest_resp).await;
     assert_eq!(invalid_digest_body["errors"][0]["code"], "DIGEST_INVALID");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_native_oci_blob_cleanup_jobs_are_enqueued_for_uploads_and_manifest_delete(
+    pool: PgPool,
+) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "OCI Cleanup Scheduling",
+        "oci-cleanup-scheduling",
+        None,
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let package_name = "acme/cleanup-scheduling-widget";
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "oci",
+        package_name,
+        "oci-cleanup-scheduling",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let (status, token_body) = create_personal_access_token(
+        &app,
+        &alice_jwt,
+        "alice-oci-cleanup-scheduling",
+        &["packages:write"],
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "unexpected token response: {token_body}");
+    let oci_token = token_body["token"]
+        .as_str()
+        .expect("oci token should be returned")
+        .to_owned();
+
+    let config_bytes =
+        br#"{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]}}"#;
+    let layer_bytes = b"oci-cleanup-scheduling-layer";
+    let (config_digest, config_resp) =
+        upload_oci_blob_monolithic(&app, &oci_token, package_name, config_bytes).await;
+    assert_eq!(config_resp.status(), StatusCode::CREATED);
+    let (layer_digest, layer_resp) =
+        upload_oci_blob_monolithic(&app, &oci_token, package_name, layer_bytes).await;
+    assert_eq!(layer_resp.status(), StatusCode::CREATED);
+
+    let cleanup_jobs_after_upload = fetch_oci_cleanup_jobs(&pool).await;
+    assert_eq!(cleanup_jobs_after_upload.len(), 2, "jobs: {cleanup_jobs_after_upload:?}");
+    assert!(cleanup_jobs_after_upload.iter().all(|(_, status, _)| status == "pending"));
+    assert!(cleanup_jobs_after_upload.iter().all(|(payload, _, _)| {
+        payload["grace_period_hours"] == json!(168) && payload["batch_size"] == json!(100)
+    }));
+    assert!(cleanup_jobs_after_upload
+        .iter()
+        .all(|(_, _, scheduled_at)| *scheduled_at > Utc::now()));
+
+    let manifest_bytes = build_oci_image_manifest(
+        &config_digest,
+        config_bytes.len(),
+        &layer_digest,
+        layer_bytes.len(),
+    );
+    let manifest_digest = oci_digest(&manifest_bytes);
+    let manifest_resp = send_oci_request(
+        &app,
+        Method::PUT,
+        format!("/oci/v2/{package_name}/manifests/latest"),
+        Some(&oci_token),
+        Some("application/vnd.oci.image.manifest.v1+json"),
+        manifest_bytes,
+    )
+    .await;
+    assert_eq!(manifest_resp.status(), StatusCode::CREATED);
+
+    let delete_tag_resp = send_oci_request(
+        &app,
+        Method::DELETE,
+        format!("/oci/v2/{package_name}/manifests/latest"),
+        Some(&oci_token),
+        None,
+        vec![],
+    )
+    .await;
+    assert_eq!(delete_tag_resp.status(), StatusCode::ACCEPTED);
+
+    let delete_manifest_resp = send_oci_request(
+        &app,
+        Method::DELETE,
+        format!("/oci/v2/{package_name}/manifests/{manifest_digest}"),
+        Some(&oci_token),
+        None,
+        vec![],
+    )
+    .await;
+    assert_eq!(delete_manifest_resp.status(), StatusCode::ACCEPTED);
+
+    let cleanup_jobs_after_delete = fetch_oci_cleanup_jobs(&pool).await;
+    assert_eq!(cleanup_jobs_after_delete.len(), 3, "jobs: {cleanup_jobs_after_delete:?}");
+    assert!(cleanup_jobs_after_delete
+        .iter()
+        .any(|(_, _, scheduled_at)| *scheduled_at <= Utc::now()));
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_native_oci_blob_cleanup_handler_preserves_referenced_blobs(pool: PgPool) {
+    let (state, app) = app_with_state(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "OCI Cleanup Preserve",
+        "oci-cleanup-preserve",
+        None,
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let package_name = "acme/cleanup-preserve-widget";
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "oci",
+        package_name,
+        "oci-cleanup-preserve",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let (status, token_body) = create_personal_access_token(
+        &app,
+        &alice_jwt,
+        "alice-oci-cleanup-preserve",
+        &["packages:write"],
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "unexpected token response: {token_body}");
+    let oci_token = token_body["token"]
+        .as_str()
+        .expect("oci token should be returned")
+        .to_owned();
+
+    let config_bytes =
+        br#"{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]}}"#;
+    let layer_bytes = b"oci-cleanup-preserve-layer";
+    let (config_digest, config_resp) =
+        upload_oci_blob_monolithic(&app, &oci_token, package_name, config_bytes).await;
+    assert_eq!(config_resp.status(), StatusCode::CREATED);
+    let (layer_digest, layer_resp) =
+        upload_oci_blob_monolithic(&app, &oci_token, package_name, layer_bytes).await;
+    assert_eq!(layer_resp.status(), StatusCode::CREATED);
+
+    let manifest_resp = send_oci_request(
+        &app,
+        Method::PUT,
+        format!("/oci/v2/{package_name}/manifests/latest"),
+        Some(&oci_token),
+        Some("application/vnd.oci.image.manifest.v1+json"),
+        build_oci_image_manifest(
+            &config_digest,
+            config_bytes.len(),
+            &layer_digest,
+            layer_bytes.len(),
+        ),
+    )
+    .await;
+    assert_eq!(manifest_resp.status(), StatusCode::CREATED);
+
+    let cleanup_handler = CleanupOciBlobsHandler {
+        db: pool.clone(),
+        artifact_store: state.artifact_store.clone(),
+    };
+    cleanup_handler
+        .handle(json!({ "grace_period_hours": 0, "batch_size": 100 }))
+        .await
+        .expect("cleanup handler should succeed");
+
+    assert!(state
+        .artifact_store
+        .get_object(&oci_blob_storage_key(&layer_digest))
+        .await
+        .expect("blob lookup should succeed")
+        .is_some());
+    assert_eq!(count_oci_blob_inventory(&pool, &layer_digest).await, 1);
+
+    let blob_resp = send_oci_request(
+        &app,
+        Method::GET,
+        format!("/oci/v2/{package_name}/blobs/{layer_digest}"),
+        None,
+        None,
+        vec![],
+    )
+    .await;
+    assert_eq!(blob_resp.status(), StatusCode::OK);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_native_oci_blob_cleanup_handler_removes_orphaned_blobs_after_manifest_delete(
+    pool: PgPool,
+) {
+    let (state, app) = app_with_state(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "OCI Cleanup Remove",
+        "oci-cleanup-remove",
+        None,
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let package_name = "acme/cleanup-remove-widget";
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "oci",
+        package_name,
+        "oci-cleanup-remove",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let (status, token_body) = create_personal_access_token(
+        &app,
+        &alice_jwt,
+        "alice-oci-cleanup-remove",
+        &["packages:write"],
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "unexpected token response: {token_body}");
+    let oci_token = token_body["token"]
+        .as_str()
+        .expect("oci token should be returned")
+        .to_owned();
+
+    let config_bytes =
+        br#"{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]}}"#;
+    let layer_bytes = b"oci-cleanup-remove-layer";
+    let (config_digest, config_resp) =
+        upload_oci_blob_monolithic(&app, &oci_token, package_name, config_bytes).await;
+    assert_eq!(config_resp.status(), StatusCode::CREATED);
+    let (layer_digest, layer_resp) =
+        upload_oci_blob_monolithic(&app, &oci_token, package_name, layer_bytes).await;
+    assert_eq!(layer_resp.status(), StatusCode::CREATED);
+
+    let manifest_bytes = build_oci_image_manifest(
+        &config_digest,
+        config_bytes.len(),
+        &layer_digest,
+        layer_bytes.len(),
+    );
+    let manifest_digest = oci_digest(&manifest_bytes);
+    let manifest_resp = send_oci_request(
+        &app,
+        Method::PUT,
+        format!("/oci/v2/{package_name}/manifests/latest"),
+        Some(&oci_token),
+        Some("application/vnd.oci.image.manifest.v1+json"),
+        manifest_bytes,
+    )
+    .await;
+    assert_eq!(manifest_resp.status(), StatusCode::CREATED);
+
+    let delete_tag_resp = send_oci_request(
+        &app,
+        Method::DELETE,
+        format!("/oci/v2/{package_name}/manifests/latest"),
+        Some(&oci_token),
+        None,
+        vec![],
+    )
+    .await;
+    assert_eq!(delete_tag_resp.status(), StatusCode::ACCEPTED);
+
+    let delete_manifest_resp = send_oci_request(
+        &app,
+        Method::DELETE,
+        format!("/oci/v2/{package_name}/manifests/{manifest_digest}"),
+        Some(&oci_token),
+        None,
+        vec![],
+    )
+    .await;
+    assert_eq!(delete_manifest_resp.status(), StatusCode::ACCEPTED);
+
+    let cleanup_handler = CleanupOciBlobsHandler {
+        db: pool.clone(),
+        artifact_store: state.artifact_store.clone(),
+    };
+    cleanup_handler
+        .handle(json!({ "grace_period_hours": 0, "batch_size": 100 }))
+        .await
+        .expect("cleanup handler should succeed");
+
+    assert!(state
+        .artifact_store
+        .get_object(&oci_blob_storage_key(&layer_digest))
+        .await
+        .expect("blob lookup should succeed")
+        .is_none());
+    assert_eq!(count_oci_blob_inventory(&pool, &layer_digest).await, 0);
+
+    let blob_resp = send_oci_request(
+        &app,
+        Method::GET,
+        format!("/oci/v2/{package_name}/blobs/{layer_digest}"),
+        None,
+        None,
+        vec![],
+    )
+    .await;
+    assert_eq!(blob_resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_native_oci_blob_cleanup_handler_respects_grace_period_and_is_idempotent(
+    pool: PgPool,
+) {
+    let (state, app) = app_with_state(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "OCI Cleanup Grace",
+        "oci-cleanup-grace",
+        None,
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let package_name = "acme/cleanup-grace-widget";
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "oci",
+        package_name,
+        "oci-cleanup-grace",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let (status, token_body) = create_personal_access_token(
+        &app,
+        &alice_jwt,
+        "alice-oci-cleanup-grace",
+        &["packages:write"],
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "unexpected token response: {token_body}");
+    let oci_token = token_body["token"]
+        .as_str()
+        .expect("oci token should be returned")
+        .to_owned();
+
+    let layer_bytes = b"oci-cleanup-grace-layer";
+    let (layer_digest, layer_resp) =
+        upload_oci_blob_monolithic(&app, &oci_token, package_name, layer_bytes).await;
+    assert_eq!(layer_resp.status(), StatusCode::CREATED);
+
+    let cleanup_handler = CleanupOciBlobsHandler {
+        db: pool.clone(),
+        artifact_store: state.artifact_store.clone(),
+    };
+    cleanup_handler
+        .handle(json!({ "grace_period_hours": 24, "batch_size": 100 }))
+        .await
+        .expect("grace-period cleanup should succeed");
+
+    assert!(state
+        .artifact_store
+        .get_object(&oci_blob_storage_key(&layer_digest))
+        .await
+        .expect("blob lookup should succeed")
+        .is_some());
+    assert_eq!(count_oci_blob_inventory(&pool, &layer_digest).await, 1);
+
+    cleanup_handler
+        .handle(json!({ "grace_period_hours": 0, "batch_size": 100 }))
+        .await
+        .expect("cleanup handler should delete orphaned blob");
+    cleanup_handler
+        .handle(json!({ "grace_period_hours": 0, "batch_size": 100 }))
+        .await
+        .expect("cleanup handler should be idempotent");
+
+    assert!(state
+        .artifact_store
+        .get_object(&oci_blob_storage_key(&layer_digest))
+        .await
+        .expect("blob lookup should succeed")
+        .is_none());
+    assert_eq!(count_oci_blob_inventory(&pool, &layer_digest).await, 0);
 }
 
 #[sqlx::test(migrations = "../../migrations")]

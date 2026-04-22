@@ -78,6 +78,11 @@ Each OCI tag is modelled as a `Release` whose `version` is the tag (or
 the digest for untagged references). Artifact kinds `oci_manifest` and
 `oci_layer` already exist in the `artifact_kind` enum (migration 001).
 
+Migration 023 adds `oci_blob_inventory` plus the `cleanup_oci_blobs`
+background job kind. The inventory persists each uploaded config/layer blob's
+digest, storage key, size, and last-uploaded timestamp so the worker can reap
+unreferenced blobs without requiring object-store prefix listing support.
+
 ### Authentication
 
 The `/v2/` probe returns `401` with a
@@ -97,9 +102,8 @@ Scopes required:
 
 1. Client pushes blobs (config + layers) one by one via
    `POST → PATCH* → PUT` or monolithic `POST?digest=…`.
-2. Each blob is stored content-addressable and a placeholder `Release`
-   (status `quarantine`) is created on first blob push for the
-   repository/reference pair if none exists.
+2. Each blob is stored content-addressable, recorded in `oci_blob_inventory`,
+  and scheduled for delayed cleanup if no manifest ultimately references it.
 3. Client pushes the manifest. The adapter validates that every digest
    referenced by the manifest is present in storage. Missing references
    return `400 Bad Request` (`MANIFEST_BLOB_UNKNOWN`).
@@ -109,17 +113,23 @@ Scopes required:
 5. When the manifest includes a `subject`, the registry stores the subject
   reference, acknowledges it through the `OCI-Subject` response header, and
   exposes the published manifest through `/v2/{name}/referrers/{digest}`.
+6. Manifest deletion enqueues immediate blob cleanup work. The cleanup worker
+  removes inventory rows and object-store blobs only when no published
+  manifest still references the digest and the configured grace period has
+  elapsed.
 
 ## Consequences
 
 - **Positive:** Publaryn gains first-class container / OCI artifact
   support, unlocking the largest remaining ecosystem.
 - **Positive:** Content-addressable dedupe keeps storage costs in check.
+- **Positive:** Self-hosted deployments now get automatic background cleanup
+  for orphaned OCI config/layer blobs without depending on storage listing.
 - **Negative:** OCI spec still has many optional features (chunk size
   negotiation, Warnings header, blob mount). MVP excludes the
   optimizations but stays spec-compliant for required behavior.
-- **Negative:** Blob GC is manual for now; a follow-up ADR will add a
-  background reaper that removes blobs unreferenced by any manifest.
+- **Negative:** Blob cleanup now depends on additional inventory metadata and
+  background job processing, so operators must keep the worker loop running.
 
 ## References
 

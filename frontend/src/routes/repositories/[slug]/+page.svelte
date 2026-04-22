@@ -13,6 +13,10 @@
     updateRepository,
   } from '../../../api/repositories';
   import {
+    buildPackageDetailsPath,
+    buildPackageSecurityPath,
+  } from '../../../pages/package-security-links';
+  import {
     ECOSYSTEMS,
     ecosystemIcon,
     ecosystemLabel,
@@ -25,10 +29,6 @@
     formatRepositoryVisibilityLabel,
     resolveRepositoryOwnerSummary,
   } from '../../../utils/repositories';
-  import {
-    buildPackageDetailsPath,
-    buildPackageSecurityPath,
-  } from '../../../pages/package-security-links';
   import { deriveRepositoryDetailCapabilities } from '../../../utils/repository-detail';
 
   const MAX_VISIBLE_PACKAGES = 100;
@@ -47,7 +47,6 @@
   let updatingRepository = false;
   let repositoryDescription = '';
   let repositoryVisibility = 'public';
-  let repositoryUpstreamUrl = '';
 
   let creatingPackage = false;
   let newPackageEcosystem = DEFAULT_PACKAGE_ECOSYSTEM;
@@ -96,7 +95,6 @@
       repositoryDescription = repository.description || '';
       repositoryVisibility =
         normalizeRepositoryValue(repository.visibility) || 'public';
-      repositoryUpstreamUrl = repository.upstream_url || '';
     } catch (caughtError: unknown) {
       if (caughtError instanceof ApiError && caughtError.status === 404) {
         notFound = true;
@@ -138,7 +136,6 @@
       const result = await updateRepository(repository.slug?.trim() || slug, {
         description: normalizeOptionalText(repositoryDescription),
         visibility: normalizeRepositoryValue(repositoryVisibility) || undefined,
-        upstreamUrl: normalizeOptionalText(repositoryUpstreamUrl),
       });
 
       await loadRepositoryPage({
@@ -333,7 +330,9 @@
       </div>
       <div class="page-stat">
         <div class="page-stat__label">Kind</div>
-        <div class="page-stat__value">{formatRepositoryKindLabel(repository.kind)}</div>
+        <div class="page-stat__value">
+          {formatRepositoryKindLabel(repository.kind)}
+        </div>
       </div>
       <div class="page-stat">
         <div class="page-stat__label">Visibility</div>
@@ -354,67 +353,67 @@
           </div>
 
           <div class="surface-card__body" style="padding-top:0;">
-          {#if packageError}
-            <div class="alert alert-error">{packageError}</div>
-          {:else if packages.length === 0}
-            <div class="empty-state">
-              <p>No visible packages belong to this repository yet.</p>
-            </div>
-          {:else}
-            {#each packages as pkg}
-              {@const packageSecurityPath = buildPackageSecurityPath(
-                pkg.ecosystem || 'unknown',
-                pkg.name || ''
-              )}
-              {@const packageDetailsPath = buildPackageDetailsPath(
-                pkg.ecosystem || 'unknown',
-                pkg.name || ''
-              )}
-              <div class="release-row">
-                <div>
-                  <a
-                    href={packageSecurityPath}
-                    class="release-row__version"
-                    data-sveltekit-preload-data="hover"
-                  >
-                    {ecosystemIcon(pkg.ecosystem)}
-                    {pkg.name || 'Unnamed package'}
-                  </a>
-                  <span class="text-muted">
-                    {ecosystemLabel(pkg.ecosystem)}
-                  </span>
-                  {#if pkg.visibility}
-                    <span class="badge badge-ecosystem"
-                      >{formatRepositoryVisibilityLabel(pkg.visibility)}</span
+            {#if packageError}
+              <div class="alert alert-error">{packageError}</div>
+            {:else if packages.length === 0}
+              <div class="empty-state">
+                <p>No visible packages belong to this repository yet.</p>
+              </div>
+            {:else}
+              {#each packages as pkg}
+                {@const packageSecurityPath = buildPackageSecurityPath(
+                  pkg.ecosystem || 'unknown',
+                  pkg.name || ''
+                )}
+                {@const packageDetailsPath = buildPackageDetailsPath(
+                  pkg.ecosystem || 'unknown',
+                  pkg.name || ''
+                )}
+                <div class="release-row">
+                  <div>
+                    <a
+                      href={packageSecurityPath}
+                      class="release-row__version"
+                      data-sveltekit-preload-data="hover"
                     >
-                  {/if}
-                  {#if pkg.description}
-                    <div class="settings-copy mt-4">
-                      {pkg.description}
-                    </div>
-                  {/if}
-                </div>
-                <div class="release-row__actions">
-                  <div class="release-row__meta">
-                    {#if pkg.download_count != null}{formatNumber(
-                        pkg.download_count
-                      )} downloads{/if}
-                    {#if pkg.created_at}
-                      {pkg.download_count != null ? ' · ' : ''}created {formatDate(
-                        pkg.created_at
-                      )}
+                      {ecosystemIcon(pkg.ecosystem)}
+                      {pkg.name || 'Unnamed package'}
+                    </a>
+                    <span class="text-muted">
+                      {ecosystemLabel(pkg.ecosystem)}
+                    </span>
+                    {#if pkg.visibility}
+                      <span class="badge badge-ecosystem"
+                        >{formatRepositoryVisibilityLabel(pkg.visibility)}</span
+                      >
+                    {/if}
+                    {#if pkg.description}
+                      <div class="settings-copy mt-4">
+                        {pkg.description}
+                      </div>
                     {/if}
                   </div>
-                  <a
-                    href={packageDetailsPath}
-                    class="btn btn-secondary btn-sm"
-                    data-sveltekit-preload-data="hover"
-                    >Open package details</a
-                  >
+                  <div class="release-row__actions">
+                    <div class="release-row__meta">
+                      {#if pkg.download_count != null}{formatNumber(
+                          pkg.download_count
+                        )} downloads{/if}
+                      {#if pkg.created_at}
+                        {pkg.download_count != null ? ' · ' : ''}created {formatDate(
+                          pkg.created_at
+                        )}
+                      {/if}
+                    </div>
+                    <a
+                      href={packageDetailsPath}
+                      class="btn btn-secondary btn-sm"
+                      data-sveltekit-preload-data="hover"
+                      >Open package details</a
+                    >
+                  </div>
                 </div>
-              </div>
-            {/each}
-          {/if}
+              {/each}
+            {/if}
           </div>
         </section>
 
@@ -423,7 +422,8 @@
             <div class="surface-card__header">
               <h2 class="surface-card__title">Repository settings</h2>
               <p class="surface-card__copy">
-                Update the repository description, visibility, and upstream metadata.
+                Update the repository description, visibility, and upstream
+                metadata.
               </p>
             </div>
 
@@ -452,18 +452,6 @@
                     {/each}
                   </select>
                 </div>
-              </div>
-
-              <div class="form-group">
-                <label for="repository-upstream">Upstream URL</label>
-                <input
-                  id="repository-upstream"
-                  name="upstream_url"
-                  class="form-input"
-                  type="url"
-                  bind:value={repositoryUpstreamUrl}
-                  placeholder="https://registry.npmjs.org"
-                />
               </div>
 
               <div class="form-group">
@@ -501,7 +489,10 @@
             </div>
 
             {#if repositoryCapabilities.packageCreationMessage}
-              <div class="alert alert-warning surface-card__body" style="padding-top:0;">
+              <div
+                class="alert alert-warning surface-card__body"
+                style="padding-top:0;"
+              >
                 {repositoryCapabilities.packageCreationMessage}
               </div>
             {/if}

@@ -47,6 +47,14 @@ That lets JSON responses include:
 - `files[].size`
 - `files[].upload-time`
 
+Project detail responses also project resolver-relevant metadata when Publaryn has
+it in protocol-aware storage:
+
+- `files[].requires-python` in JSON and `data-requires-python` in HTML
+- `files[].requires-dist` in JSON
+- `files[].requires-external` in JSON
+- `files[].provides-extra` in JSON
+
 while still using the standard `v1` media types because the media type only carries the major version.
 
 ### File coverage
@@ -94,11 +102,11 @@ Existing stored PyPI package rows are updated by migration so protocol routes an
 
 - this slice is read-only; Twine uploads and richer Python metadata are deferred
 - root project listing may become expensive at large package counts and is a candidate for caching later
-- GPG signatures, core metadata sidecars, provenance URLs, and Requires-Python fields are not exposed yet because the shared data model does not currently persist them in protocol-ready form
+- GPG signatures, core metadata sidecars, and provenance URLs are not exposed yet because the shared data model does not currently persist them in protocol-ready form
 
 ## Follow-up work
 
 - add upload support compatible with Twine and the PyPI upload workflow
-- persist Python-specific metadata such as `Requires-Python` and optional core metadata sidecars
+- persist additional Python-specific metadata such as project URLs, signatures, and optional core metadata sidecars
 - consider caching or precomputed views for the `/simple/` root index as package counts grow
 - align the npm adapter's protocol-layer permission checks with the newer delegated team-governance model everywhere they still lag behind

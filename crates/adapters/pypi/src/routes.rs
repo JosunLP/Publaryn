@@ -313,9 +313,9 @@ async fn download_distribution<S: PyPiAppState>(
     let actor_user_id = identity.as_ref().map(|identity| identity.user_id);
 
     let artifact_row = match sqlx::query(
-        "SELECT a.storage_key, a.content_type, a.sha256, p.id AS package_id, p.visibility AS package_visibility, \
-                p.owner_user_id AS package_owner_user_id, p.owner_org_id AS package_owner_org_id, \
-                r.visibility AS repository_visibility, r.owner_user_id AS repository_owner_user_id, \
+        "SELECT a.storage_key, a.content_type, a.sha256, p.id AS package_id, p.visibility::text AS package_visibility, \
+            p.owner_user_id AS package_owner_user_id, p.owner_org_id AS package_owner_org_id, \
+            r.visibility::text AS repository_visibility, r.owner_user_id AS repository_owner_user_id, \
                 r.owner_org_id AS repository_owner_org_id \
          FROM artifacts a \
          JOIN releases rel ON rel.id = a.release_id \
@@ -428,11 +428,13 @@ async fn upload_distribution_inner<S: PyPiAppState>(
         Ok(upload) => upload,
         Err(response) => return response,
     };
+    let package_metadata = upload.package_metadata();
 
     let package = match resolve_or_create_upload_package(
         &state,
         &identity,
         &upload,
+        &package_metadata,
         repository_slug.as_deref(),
     )
     .await
@@ -457,6 +459,12 @@ async fn upload_distribution_inner<S: PyPiAppState>(
         Ok(artifact) => artifact,
         Err(response) => return response,
     };
+
+    if let Err(response) =
+        persist_pypi_release_metadata(state.db(), release.release_id, &package_metadata).await
+    {
+        return response;
+    }
 
     let final_status = match finalize_upload_release(state.db(), &release).await {
         Ok(status) => status,
@@ -600,8 +608,8 @@ async fn load_package_access_row(
 ) -> Result<PackageAccessRow, Response> {
     let normalized_name = normalize_package_name(canonical_name, &Ecosystem::Pypi);
     let row = sqlx::query(
-        "SELECT p.id, p.name, p.normalized_name, p.visibility, p.owner_user_id, p.owner_org_id, \
-                r.visibility AS repository_visibility, r.owner_user_id AS repository_owner_user_id, \
+        "SELECT p.id, p.name, p.normalized_name, p.visibility::text AS visibility, p.owner_user_id, p.owner_org_id, \
+            r.visibility::text AS repository_visibility, r.owner_user_id AS repository_owner_user_id, \
                 r.owner_org_id AS repository_owner_org_id \
          FROM packages p \
          JOIN repositories r ON r.id = p.repository_id \
@@ -631,9 +639,11 @@ async fn load_project_files<S: PyPiAppState>(
 ) -> Result<(Vec<String>, Vec<ProjectFile>), Response> {
     let rows = sqlx::query(
         "SELECT rel.version, rel.is_yanked, rel.yank_reason, a.id AS artifact_id, a.filename, a.sha256, \
-                a.sha512, a.size_bytes, a.uploaded_at \
+                                a.sha512, a.size_bytes, a.uploaded_at, prm.requires_python, prm.requires_dist, \
+                                prm.requires_external, prm.provides_extra \
          FROM releases rel \
          JOIN artifacts a ON a.release_id = rel.id \
+                 LEFT JOIN pypi_release_metadata prm ON prm.release_id = rel.id \
          WHERE rel.package_id = $1 \
            AND rel.status::text = ANY($2) \
            AND a.kind IN ('wheel', 'sdist') \
@@ -681,6 +691,11 @@ async fn load_project_files<S: PyPiAppState>(
             hashes,
             size_bytes: i64_column(&row, "size_bytes"),
             upload_time: optional_datetime_column(&row, "uploaded_at"),
+            requires_python: optional_string_column(&row, "requires_python"),
+            requires_dist: optional_string_array_column(&row, "requires_dist").unwrap_or_default(),
+            requires_external: optional_string_array_column(&row, "requires_external")
+                .unwrap_or_default(),
+            provides_extra: optional_string_array_column(&row, "provides_extra").unwrap_or_default(),
             is_yanked: bool_column(&row, "is_yanked"),
             yanked_reason,
         });
@@ -957,10 +972,10 @@ async fn resolve_or_create_upload_package<S: PyPiAppState>(
     state: &S,
     identity: &PyPiIdentity,
     upload: &LegacyUploadRequest,
+    metadata: &LegacyPackageMetadata,
     requested_repository_slug: Option<&str>,
 ) -> Result<UploadPackageContext, Response> {
     let normalized_name = normalize_package_name(&upload.package_name, &Ecosystem::Pypi);
-    let metadata = upload.package_metadata();
 
     if let Some(existing_package) =
         load_existing_upload_package(state.db(), &normalized_name).await?
@@ -1178,7 +1193,7 @@ async fn load_target_upload_repository(
     actor_user_id: Uuid,
 ) -> Result<UploadRepositoryTarget, Response> {
     let repository = sqlx::query(
-        "SELECT id, slug, kind, visibility, owner_user_id, owner_org_id \
+        "SELECT id, slug, kind::text AS kind, visibility::text AS visibility, owner_user_id, owner_org_id \
          FROM repositories \
          WHERE slug = $1",
     )
@@ -1331,6 +1346,64 @@ async fn update_upload_package_metadata(
     .map_err(|_| internal_error_response("Database error"))?;
 
     Ok(())
+}
+
+async fn persist_pypi_release_metadata(
+    db: &PgPool,
+    release_id: Uuid,
+    metadata: &LegacyPackageMetadata,
+) -> Result<(), Response> {
+    let requires_python = metadata
+        .requires_python
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    let requires_dist = non_empty_string_array(&metadata.requires_dist);
+    let requires_external = non_empty_string_array(&metadata.requires_external);
+    let provides_extra = non_empty_string_array(&metadata.provides_extra);
+
+    if requires_python.is_none()
+        && requires_dist.is_none()
+        && requires_external.is_none()
+        && provides_extra.is_none()
+    {
+        return Ok(());
+    }
+
+    sqlx::query(
+        "INSERT INTO pypi_release_metadata (
+             release_id,
+             requires_python,
+             requires_dist,
+             requires_external,
+             provides_extra
+         )
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (release_id) DO UPDATE SET
+             requires_python = COALESCE(EXCLUDED.requires_python, pypi_release_metadata.requires_python),
+             requires_dist = COALESCE(EXCLUDED.requires_dist, pypi_release_metadata.requires_dist),
+             requires_external = COALESCE(EXCLUDED.requires_external, pypi_release_metadata.requires_external),
+             provides_extra = COALESCE(EXCLUDED.provides_extra, pypi_release_metadata.provides_extra)",
+    )
+    .bind(release_id)
+    .bind(requires_python)
+    .bind(requires_dist)
+    .bind(requires_external)
+    .bind(provides_extra)
+    .execute(db)
+    .await
+    .map_err(|_| internal_error_response("Database error"))?;
+
+    Ok(())
+}
+
+fn non_empty_string_array(values: &[String]) -> Option<Vec<String>> {
+    if values.is_empty() {
+        None
+    } else {
+        Some(values.to_vec())
+    }
 }
 
 async fn actor_can_publish_package(
@@ -1983,6 +2056,13 @@ fn string_column(row: &sqlx::postgres::PgRow, column: &str) -> String {
 }
 
 fn optional_string_column(row: &sqlx::postgres::PgRow, column: &str) -> Option<String> {
+    row.try_get(column).ok().flatten()
+}
+
+fn optional_string_array_column(
+    row: &sqlx::postgres::PgRow,
+    column: &str,
+) -> Option<Vec<String>> {
     row.try_get(column).ok().flatten()
 }
 

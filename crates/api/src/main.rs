@@ -1,7 +1,11 @@
 use anyhow::Result;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
-use publaryn_api::{config, job_handlers::ReindexSearchHandler, router, state};
+use publaryn_api::{
+    config,
+    job_handlers::{CleanupOciBlobsHandler, ReindexSearchHandler},
+    router, state,
+};
 use publaryn_workers::queue::JobKind;
 use publaryn_workers::scanners::{PolicyScanner, ScanArtifactHandler, SecretsScanner};
 use publaryn_workers::worker::{Worker, WorkerConfig};
@@ -53,6 +57,12 @@ async fn main() -> Result<()> {
             search: app_state.search.clone(),
         });
         worker.register_handler(JobKind::ReindexSearch, reindex_handler);
+
+        let oci_blob_cleanup_handler = std::sync::Arc::new(CleanupOciBlobsHandler {
+            db: app_state.db.clone(),
+            artifact_store: app_state.artifact_store.clone(),
+        });
+        worker.register_handler(JobKind::CleanupOciBlobs, oci_blob_cleanup_handler);
 
         worker.run(shutdown_rx).await;
     });

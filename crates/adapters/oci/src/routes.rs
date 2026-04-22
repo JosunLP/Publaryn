@@ -10,7 +10,7 @@ use axum::{
     Json, Router,
 };
 use bytes::Bytes as BytesAlias;
-use chrono::Utc;
+use chrono::{Duration as ChronoDuration, Utc};
 use serde::Deserialize;
 use sha2::Digest;
 use sqlx::{PgPool, Row};
@@ -41,6 +41,8 @@ const TEAM_REPOSITORY_PUBLISH_PERMISSIONS: &[&str] = &["admin", "publish"];
 const TEAM_REPOSITORY_ADMIN_PERMISSIONS: &[&str] = &["admin"];
 const OCI_IMAGE_INDEX_MEDIA_TYPE: &str = "application/vnd.oci.image.index.v1+json";
 const OCI_IMAGE_MANIFEST_MEDIA_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
+const OCI_BLOB_CLEANUP_GRACE_PERIOD_HOURS: i64 = 24 * 7;
+const OCI_BLOB_CLEANUP_BATCH_SIZE: i64 = 100;
 
 pub trait OciAppState: Clone + Send + Sync + 'static {
     fn db(&self) -> &PgPool;
@@ -1140,6 +1142,7 @@ async fn begin_blob_upload<S: OciAppState>(
             ));
         }
 
+        let blob_size = i64::try_from(body.len()).unwrap_or(i64::MAX);
         let storage_key = upload::blob_storage_key(&digest);
         if state
             .artifact_put(storage_key.clone(), "application/octet-stream".into(), body)
@@ -1152,6 +1155,23 @@ async fn begin_blob_upload<S: OciAppState>(
                 "Failed to persist OCI blob",
                 None,
             ));
+        }
+
+        if let Err(response) =
+            record_oci_blob_inventory(state.db(), &digest, &storage_key, blob_size)
+                .await
+        {
+            let _ = state.artifact_delete(&storage_key).await;
+            return response;
+        }
+
+        if let Err(error) = enqueue_oci_blob_cleanup_job(
+            state.db(),
+            Utc::now() + ChronoDuration::hours(OCI_BLOB_CLEANUP_GRACE_PERIOD_HOURS),
+        )
+        .await
+        {
+            tracing::warn!(error = %error, digest = %digest, "Failed to schedule OCI blob cleanup job after monolithic upload");
         }
 
         let location = format!(
@@ -1360,6 +1380,7 @@ async fn finalize_blob_upload<S: OciAppState>(
     }
 
     let final_storage_key = upload::blob_storage_key(&digest);
+    let blob_size = i64::try_from(bytes.len()).unwrap_or(i64::MAX);
     if state
         .artifact_put(
             final_storage_key.clone(),
@@ -1377,8 +1398,29 @@ async fn finalize_blob_upload<S: OciAppState>(
         ));
     }
 
+    if let Err(response) = record_oci_blob_inventory(
+        state.db(),
+        &digest,
+        &final_storage_key,
+        blob_size,
+    )
+    .await
+    {
+        let _ = state.artifact_delete(&final_storage_key).await;
+        return response;
+    }
+
     let _ = state.artifact_delete(&session.storage_key).await;
     let _ = upload::delete_upload_session(state.db(), session.id).await;
+
+    if let Err(error) = enqueue_oci_blob_cleanup_job(
+        state.db(),
+        Utc::now() + ChronoDuration::hours(OCI_BLOB_CLEANUP_GRACE_PERIOD_HOURS),
+    )
+    .await
+    {
+        tracing::warn!(error = %error, digest = %digest, "Failed to schedule OCI blob cleanup job after finalized upload");
+    }
 
     let location = format!(
         "{}/oci/v2/{}/blobs/{}",
@@ -1475,6 +1517,10 @@ async fn manifest_delete<S: OciAppState>(
             .bind(manifest.release_id)
             .execute(state.db())
             .await;
+
+            if let Err(error) = enqueue_oci_blob_cleanup_job(state.db(), Utc::now()).await {
+                tracing::warn!(error = %error, release_id = %manifest.release_id, "Failed to schedule OCI blob cleanup job after manifest delete");
+            }
 
             auth::with_registry_headers(StatusCode::ACCEPTED.into_response())
         }
@@ -1584,6 +1630,10 @@ async fn blob_delete<S: OciAppState>(
         ));
     }
 
+    if let Err(error) = delete_oci_blob_inventory_entry(state.db(), &digest).await {
+        tracing::warn!(error = %error, digest = %digest, "Failed to delete OCI blob inventory row after manual blob deletion");
+    }
+
     auth::with_registry_headers(StatusCode::ACCEPTED.into_response())
 }
 
@@ -1659,6 +1709,64 @@ fn upload_session_response<S: OciAppState>(
             .body(Body::empty())
             .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()),
     )
+}
+
+async fn record_oci_blob_inventory(
+    db: &PgPool,
+    digest: &str,
+    storage_key: &str,
+    size_bytes: i64,
+) -> Result<(), Response> {
+    sqlx::query(
+        "INSERT INTO oci_blob_inventory (digest, storage_key, size_bytes, created_at, last_uploaded_at) \
+         VALUES ($1, $2, $3, NOW(), NOW()) \
+         ON CONFLICT (digest) DO UPDATE \
+         SET storage_key = EXCLUDED.storage_key, \
+             size_bytes = EXCLUDED.size_bytes, \
+             last_uploaded_at = NOW()",
+    )
+    .bind(digest)
+    .bind(storage_key)
+    .bind(size_bytes)
+    .execute(db)
+    .await
+    .map_err(|_| {
+        auth::with_registry_headers(auth::oci_error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "UNKNOWN",
+            "Failed to record OCI blob inventory metadata",
+            None,
+        ))
+    })?;
+
+    Ok(())
+}
+
+async fn delete_oci_blob_inventory_entry(db: &PgPool, digest: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM oci_blob_inventory WHERE digest = $1")
+        .bind(digest)
+        .execute(db)
+        .await
+        .map(|_| ())
+}
+
+async fn enqueue_oci_blob_cleanup_job(
+    db: &PgPool,
+    scheduled_at: chrono::DateTime<Utc>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO background_jobs (id, kind, payload, scheduled_at) \
+         VALUES ($1, 'cleanup_oci_blobs'::job_kind, $2, $3)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(serde_json::json!({
+        "grace_period_hours": OCI_BLOB_CLEANUP_GRACE_PERIOD_HOURS,
+        "batch_size": OCI_BLOB_CLEANUP_BATCH_SIZE,
+    }))
+    .bind(scheduled_at)
+    .execute(db)
+    .await
+    .map(|_| ())
 }
 
 async fn load_package_context(db: &PgPool, package_name: &str) -> Result<PackageContext, Response> {

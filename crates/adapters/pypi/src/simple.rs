@@ -32,6 +32,10 @@ pub struct ProjectFile {
     pub hashes: BTreeMap<String, String>,
     pub size_bytes: i64,
     pub upload_time: Option<DateTime<Utc>>,
+    pub requires_python: Option<String>,
+    pub requires_dist: Vec<String>,
+    pub requires_external: Vec<String>,
+    pub provides_extra: Vec<String>,
     pub is_yanked: bool,
     pub yanked_reason: Option<String>,
 }
@@ -154,6 +158,16 @@ pub fn render_project_html(project_name: &str, files: &[ProjectFile]) -> String 
         html.push_str(&escape_html_attribute(&file_url));
         html.push('"');
 
+        if let Some(requires_python) = file
+            .requires_python
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            html.push_str(" data-requires-python=\"");
+            html.push_str(&escape_html_attribute(requires_python));
+            html.push('"');
+        }
+
         if file.is_yanked {
             match file
                 .yanked_reason
@@ -215,6 +229,29 @@ fn project_file_to_json(file: &ProjectFile) -> Value {
         );
     }
 
+    if let Some(requires_python) = file
+        .requires_python
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        object.insert(
+            "requires-python".into(),
+            Value::String(requires_python.to_owned()),
+        );
+    }
+
+    if !file.requires_dist.is_empty() {
+        object.insert("requires-dist".into(), json!(file.requires_dist));
+    }
+
+    if !file.requires_external.is_empty() {
+        object.insert("requires-external".into(), json!(file.requires_external));
+    }
+
+    if !file.provides_extra.is_empty() {
+        object.insert("provides-extra".into(), json!(file.provides_extra));
+    }
+
     if file.is_yanked {
         match file
             .yanked_reason
@@ -267,6 +304,7 @@ fn escape_html_attribute(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use chrono::TimeZone;
+    use serde_json::json;
     use std::collections::BTreeMap;
 
     use super::{
@@ -310,6 +348,10 @@ mod tests {
             hashes,
             size_bytes: 42,
             upload_time: Some(chrono::Utc.with_ymd_and_hms(2026, 4, 15, 9, 30, 0).unwrap()),
+            requires_python: Some(">=3.10".into()),
+            requires_dist: vec!["requests>=2.31".into(), "urllib3>=2".into()],
+            requires_external: vec!["libssl".into()],
+            provides_extra: vec!["s3".into()],
             is_yanked: true,
             yanked_reason: Some("Broken build".into()),
         }];
@@ -319,6 +361,13 @@ mod tests {
         assert_eq!(document["name"], "demo-package");
         assert_eq!(document["versions"][0], "1.0");
         assert_eq!(document["files"][0]["size"], 42);
+        assert_eq!(document["files"][0]["requires-python"], ">=3.10");
+        assert_eq!(
+            document["files"][0]["requires-dist"],
+            json!(["requests>=2.31", "urllib3>=2"])
+        );
+        assert_eq!(document["files"][0]["requires-external"], json!(["libssl"]));
+        assert_eq!(document["files"][0]["provides-extra"], json!(["s3"]));
         assert_eq!(document["files"][0]["yanked"], "Broken build");
     }
 
@@ -334,12 +383,17 @@ mod tests {
                 hashes,
                 size_bytes: 7,
                 upload_time: None,
+                requires_python: Some(">=3.10".into()),
+                requires_dist: vec![],
+                requires_external: vec![],
+                provides_extra: vec![],
                 is_yanked: true,
                 yanked_reason: Some("Superseded".into()),
             }],
         );
 
         assert!(html.contains("#sha256=deadbeef"));
+        assert!(html.contains("data-requires-python=\"&gt;=3.10\""));
         assert!(html.contains("data-yanked=\"Superseded\""));
     }
 

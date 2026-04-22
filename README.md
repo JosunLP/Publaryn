@@ -8,20 +8,20 @@ A self-hostable, security-first package registry platform that speaks the native
 
 ## Supported Ecosystems
 
-| Ecosystem | Mount path | 1.0 baseline | Status |
-| --------- | ---------- | ------------ | ------ |
-| npm / Bun | `/npm` | packument reads, tarball download, search, publish, dist-tags | ✅ Baseline implemented |
-| pip / PyPI | `/pypi` plus `/_/oidc/*` | Simple API, file download, legacy upload, trusted-publishing token exchange | ✅ Baseline implemented |
-| Rust Crates | `/cargo/index`, `/cargo/api/v1` | sparse index, publish, download, search, yank, unyank, compatibility owner endpoints | ✅ Baseline implemented |
-| NuGet | `/nuget` | service index, flat container, registration, search, push, unlist, relist | ✅ Baseline implemented |
-| Apache Maven | `/maven` | repository reads, metadata generation, checksum reads, deploy-style PUT upload | ✅ Baseline implemented |
-| RubyGems | `/rubygems` | metadata reads, version listing, gem download, push, yank, API key echo | ✅ Baseline implemented |
-| Composer | `/composer` | packages index, package metadata, dist download, publish, yank | ✅ Baseline implemented |
-| Containers | `/oci` | probe, catalog, manifests, blobs, uploads, tags, referrers, delete semantics | ✅ Baseline implemented |
+| Ecosystem    | Mount path                      | 1.0 baseline                                                                                        | Status                 |
+| ------------ | ------------------------------- | --------------------------------------------------------------------------------------------------- | ---------------------- |
+| npm / Bun    | `/npm`                          | packument reads, tarball download, search, publish, dist-tags                                       | ✅ Baseline implemented |
+| pip / PyPI   | `/pypi` plus `/_/oidc/*`        | Simple API, file download, legacy upload, trusted-publishing token exchange                         | ✅ Baseline implemented |
+| Rust Crates  | `/cargo/index`, `/cargo/api/v1` | sparse index, publish, download, search, yank, unyank, compatibility owner endpoints                | ✅ Baseline implemented |
+| NuGet        | `/nuget`                        | service index, flat container, registration, search, push, unlist, relist                           | ✅ Baseline implemented |
+| Apache Maven | `/maven`                        | repository reads, metadata generation, checksum reads, deploy-style PUT upload                      | ✅ Baseline implemented |
+| RubyGems     | `/rubygems`                     | metadata reads, version listing, gem download, push, yank, API key echo                             | ✅ Baseline implemented |
+| Composer     | `/composer`                     | packages index, package metadata, dist download, publish, yank                                      | ✅ Baseline implemented |
+| Containers   | `/oci`                          | probe, catalog, manifests, blobs, uploads, tags, referrers, delete semantics, orphaned blob cleanup | ✅ Baseline implemented |
 
 > **Note:** Bun uses the npm adapter — no separate protocol implementation is required.
 
-The current documented baseline includes native publish/read flows for every ecosystem above, shared quarantine → scan → publish lifecycle controls, ecosystem-aware package/release detail responses, and a SvelteKit web portal that can browse package metadata, releases, security findings, trusted publishers, and OCI manifest references. The OCI adapter now also exposes native referrers discovery for subject-linked manifests (for example SBOMs or signatures already pushed through the registry), while broader attestation policy, signing UX, proxy/virtual repositories, and richer discovery/ranking features remain intentionally separate follow-on work.
+The current documented baseline includes native publish/read flows for every ecosystem above, shared quarantine → scan → publish lifecycle controls, ecosystem-aware package/release detail responses, and a SvelteKit web portal that can browse package metadata, releases, security findings, trusted publishers, and OCI manifest references. The OCI adapter now also exposes native referrers discovery for subject-linked manifests (for example SBOMs or signatures already pushed through the registry) and inventory-backed background cleanup for unreferenced config/layer blobs, while broader attestation policy, signing UX, proxy/mirror/virtual repository lifecycle features, and richer discovery/ranking features remain intentionally separate follow-on work.
 
 ---
 
@@ -67,6 +67,7 @@ The documented 1.0 control-plane surface covers:
 ### In scope for 1.0
 
 - management API for auth, users, organizations, teams, repositories, packages, releases, tokens, audit, search, security findings, trusted publishers, and namespace claims
+- hosted repository kinds `public`, `private`, `staging`, and `release` for self-hosted package ownership and visibility boundaries
 - native protocol adapters for npm/Bun, PyPI, Cargo, NuGet, Maven, RubyGems, Composer, and OCI
 - actor-aware visibility enforcement for control-plane reads and package search
 - delegated package, repository, and namespace access for organization teams
@@ -470,7 +471,7 @@ GET /readiness
 ```
 
 `/health` is a liveness probe and returns `200 OK` while the process is running.
-`/readiness` is a readiness probe and returns `200 OK` only when the instance can reach PostgreSQL; it returns `503 Service Unavailable` otherwise so orchestrators can stop routing new traffic to that replica.
+`/readiness` is a readiness probe and returns `200 OK` only when the instance can reach PostgreSQL and, when Redis is configured, Redis. It returns `503 Service Unavailable` otherwise so orchestrators can stop routing new traffic to that replica.
 
 The API server handles `SIGTERM` and `Ctrl+C` gracefully.
 During shutdown it stops accepting new work, lets in-flight requests drain within the orchestrator grace period, and then exits cleanly.
@@ -490,6 +491,7 @@ This is the expected lifecycle for rolling updates and horizontal scale-down eve
 - **Name similarity checks** — Levenshtein distance on new package names
 - **Reserved names** — block common abuse patterns
 - **Granular tokens** — personal, org, repo-scoped, package-scoped, CI
+- **Redis-backed rate limiting** — shared auth, write, read, and protocol throttles coordinated across replicas
 - **Publish pipeline** — quarantine → scan → publish (never skippable)
 - **Dependency confusion protection** — explicit namespace ownership
 
@@ -497,21 +499,19 @@ This is the expected lifecycle for rolling updates and horizontal scale-down eve
 
 ## Domain Model
 
-| Entity             | Description                                                           |
-| ------------------ | --------------------------------------------------------------------- |
-| `User`             | A registered user account with MFA support                            |
-| `Organization`     | Group of users with teams, namespace claims, policies                 |
-| `Team`             | Sub-group of an org with fine-grained permissions                     |
-| `NamespaceClaim`   | Ecosystem-specific namespace owned by user/org                        |
-| `Repository`       | Logical collection of hosted packages; staging/proxy/virtual variants remain post-1.0 lifecycle work |
-| `Package`          | Ecosystem-specific package identity                                   |
-| `Release`          | Immutable versioned release                                           |
-| `Artifact`         | A file associated with a release (tarball, wheel, jar, gem, …)        |
-| `ChannelRef`       | Mutable tag/alias pointing to a release (npm dist-tag, OCI tag)       |
-| `Token`            | Granular API token with expiry and scopes                             |
-| `AuditLog`         | Append-only record of all significant actions                         |
-| `SecurityFinding`  | CVE, malware, or policy violation found in a release                  |
-| `TrustedPublisher` | OIDC trusted publishing configuration                                 |
+- `User`: A registered user account with MFA support
+- `Organization`: Group of users with teams, namespace claims, and policies
+- `Team`: Sub-group of an org with fine-grained permissions
+- `NamespaceClaim`: Ecosystem-specific namespace owned by a user or organization
+- `Repository`: Hosted packages; 1.0 supports `public`, `private`, `staging`, and `release` kinds, while proxy and virtual stay post-1.0
+- `Package`: Ecosystem-specific package identity
+- `Release`: Immutable versioned release
+- `Artifact`: A file associated with a release (tarball, wheel, jar, gem, …)
+- `ChannelRef`: Mutable tag/alias pointing to a release (npm dist-tag, OCI tag)
+- `Token`: Granular API token with expiry and scopes
+- `AuditLog`: Append-only record of all significant actions
+- `SecurityFinding`: CVE, malware, or policy violation found in a release
+- `TrustedPublisher`: OIDC trusted publishing configuration
 
 ---
 

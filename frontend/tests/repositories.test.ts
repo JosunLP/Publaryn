@@ -113,8 +113,6 @@ describe('repository option helpers', () => {
       'private',
       'staging',
       'release',
-      'proxy',
-      'virtual',
     ]);
     expect(REPOSITORY_VISIBILITY_OPTIONS.map((option) => option.value)).toEqual(
       ['public', 'private', 'internal_org', 'unlisted', 'quarantined']

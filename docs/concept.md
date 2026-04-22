@@ -167,7 +167,7 @@ The platform should be exportable, well documented, and designed to avoid hard v
 
 - package hosting
 - registry protocols
-- public and private repositories
+- hosted repositories with `public`, `private`, `staging`, and `release` kinds
 - users, organizations, teams
 - security, audit, and policy enforcement
 - search and discovery
@@ -743,6 +743,11 @@ Professional use cases often require more than a single global package store.
 - Quarantine
 - Archive
 
+The 1.0 baseline currently ships hosted repositories with `public`,
+`private`, `staging`, and `release` kinds. Proxy, group/virtual, archive-
+specific lifecycle policies, and broader promotion semantics remain later
+repository-lifecycle work.
+
 ## 13.3 Typical Flows
 
 - developer publishes to staging
@@ -848,6 +853,11 @@ Needs:
 - blob deduplication
 - garbage collection
 - mutable tags with immutable digests
+
+The current 1.0 adapter baseline now includes inventory-backed background
+cleanup of unreferenced OCI config and layer blobs after manifest lifecycle
+changes, so self-hosted operators do not need a separate manual blob-GC loop
+for the documented OCI feature set.
 
 ## 14.8 Rust Crates / Cargo
 
@@ -1584,6 +1594,7 @@ but “align, harden, document, and operationalize the shipped product”.
 Publaryn 1.0 should include:
 
 - all currently mounted ecosystems: npm/Bun, PyPI, Cargo, NuGet, Maven, RubyGems, Composer, and OCI
+- hosted repository kinds `public`, `private`, `staging`, and `release`
 - the existing management API for auth, governance, packages, releases, search, security findings, and trusted publishers
 - public and authenticated private discovery with visibility-aware search
 - the existing web portal baseline: landing, search, package pages, version pages, settings, MFA, token management, and organization workspaces
@@ -1595,7 +1606,7 @@ Publaryn 1.0 should include:
 - full enterprise identity integration such as SSO, SAML, and SCIM
 - monetization and billing systems
 - federated or globally replicated registry behavior
-- proxy and virtual repositories unless explicitly completed and documented
+- proxy, mirror, and virtual repositories unless explicitly completed and documented
 - full-featured provenance and attestation product workflows
 
 ## 30.3 API and Adapter Matrix for 1.0
@@ -1620,21 +1631,21 @@ The control-plane baseline for 1.0 is:
 
 The mounted native adapter baseline for 1.0 is:
 
-| Ecosystem | Mount path | 1.0 baseline |
-| --- | --- | --- |
-| npm / Bun | `/npm` | packument reads, tarball download, search, publish, dist-tags |
-| PyPI / pip | `/pypi` plus `/_/oidc/*` | Simple API, file download, legacy upload, trusted-publishing token exchange |
-| Cargo | `/cargo/index`, `/cargo/api/v1` | sparse index, publish, download, search, yank, unyank, compatibility owner endpoints |
-| NuGet | `/nuget` | service index, flat container, registration, search, push, unlist, relist |
-| Maven | `/maven` | repository reads, metadata generation, checksum reads, deploy-style PUT upload |
-| RubyGems | `/rubygems` | metadata reads, version listing, gem download, push, yank, API key echo |
-| Composer | `/composer` | packages index, package metadata, dist download, publish, yank |
-| OCI | `/oci` | probe, catalog, manifests, blobs, uploads, tags, referrers, delete semantics |
+| Ecosystem  | Mount path                      | 1.0 baseline                                                                                        |
+| ---------- | ------------------------------- | --------------------------------------------------------------------------------------------------- |
+| npm / Bun  | `/npm`                          | packument reads, tarball download, search, publish, dist-tags                                       |
+| PyPI / pip | `/pypi` plus `/_/oidc/*`        | Simple API, file download, legacy upload, trusted-publishing token exchange                         |
+| Cargo      | `/cargo/index`, `/cargo/api/v1` | sparse index, publish, download, search, yank, unyank, compatibility owner endpoints                |
+| NuGet      | `/nuget`                        | service index, flat container, registration, search, push, unlist, relist                           |
+| Maven      | `/maven`                        | repository reads, metadata generation, checksum reads, deploy-style PUT upload                      |
+| RubyGems   | `/rubygems`                     | metadata reads, version listing, gem download, push, yank, API key echo                             |
+| Composer   | `/composer`                     | packages index, package metadata, dist download, publish, yank                                      |
+| OCI        | `/oci`                          | probe, catalog, manifests, blobs, uploads, tags, referrers, delete semantics, orphaned blob cleanup |
 
 ## 30.4 Search, Visibility, and Security Contract for 1.0
 
 - anonymous search only returns public packages
-- authenticated search can include visible private and `internal_org` packages
+- authenticated search can include visible private and `internal_org` packages through owner access, organization membership, or delegated team access
 - `org` and `repository` filters narrow the visible search result set
 - `unlisted` packages stay readable via direct URL but remain out of search and package listings
 - `quarantine` and `scanning` releases stay hidden from public protocol reads and public artifact downloads

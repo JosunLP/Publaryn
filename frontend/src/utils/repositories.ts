@@ -29,8 +29,6 @@ export const REPOSITORY_KIND_OPTIONS: RepositoryOption[] = [
   { value: 'private', label: 'Private' },
   { value: 'staging', label: 'Staging' },
   { value: 'release', label: 'Release' },
-  { value: 'proxy', label: 'Proxy' },
-  { value: 'virtual', label: 'Virtual' },
 ];
 
 export const REPOSITORY_VISIBILITY_OPTIONS: RepositoryOption[] = [

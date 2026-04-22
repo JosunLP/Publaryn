@@ -156,6 +156,7 @@ async fn create_repository(
     }
 
     let kind = parse_repository_kind(body.kind.as_deref().unwrap_or("public"))?;
+    validate_repository_kind_for_creation(&kind)?;
     let visibility = parse_visibility(body.visibility.as_deref().unwrap_or("public"))?;
     let kind_str = kind.as_str();
     let visibility_str = visibility.as_str();
@@ -553,6 +554,18 @@ fn validate_repository_transfer_target(
     }
 
     Ok(())
+}
+
+fn validate_repository_kind_for_creation(kind: &RepositoryKind) -> ApiResult<()> {
+    match kind {
+        RepositoryKind::Public
+        | RepositoryKind::Private
+        | RepositoryKind::Staging
+        | RepositoryKind::Release => Ok(()),
+        RepositoryKind::Proxy | RepositoryKind::Virtual => Err(ApiError(Error::Conflict(
+            "Publaryn 1.0 currently supports only public, private, staging, and release repository kinds. Proxy and virtual repositories remain post-1.0 lifecycle work.".into(),
+        ))),
+    }
 }
 
 fn parse_repository_kind(input: &str) -> ApiResult<RepositoryKind> {

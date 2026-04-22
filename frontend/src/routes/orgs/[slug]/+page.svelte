@@ -20,28 +20,17 @@
     OrgPackageSummary,
     OrgRepositoryPackageCoverageResponse,
     OrgRepositorySummary,
-    OrgSecurityFindingsResponse,
     OrgSecurityPackageSummary,
     OrgSecurityQuery,
     OrgSecuritySummary,
-    OrgWorkspaceBootstrapResponse,
     OrganizationDetail,
     OrganizationListResponse,
     OrganizationMembership,
     Team,
-    TeamMember,
-    TeamNamespaceAccessGrant,
-    TeamNamespaceAccessListResponse,
-    TeamPackageAccessGrant,
-    TeamPackageAccessListResponse,
-    TeamNamespaceAccessMutationResult,
-    TeamRepositoryAccessGrant,
-    TeamRepositoryAccessListResponse,
     TransferOwnershipResult,
   } from '../../../api/orgs';
   import {
     addMember,
-    addTeamMember,
     createTeam,
     deleteTeam,
     exportOrgAuditLogsCsv,
@@ -50,32 +39,20 @@
     listMyOrganizations,
     listOrgAuditLogs,
     listOrgSecurityFindings,
-    listTeamNamespaceAccess,
-    listTeamMembers,
-    listTeamPackageAccess,
-    listTeamRepositoryAccess,
     removeMember,
-    removeTeamMember,
-    removeTeamNamespaceAccess,
-    removeTeamPackageAccess,
-    removeTeamRepositoryAccess,
-    replaceTeamNamespaceAccess,
-    replaceTeamPackageAccess,
-    replaceTeamRepositoryAccess,
     revokeInvitation,
     searchOrgMembers,
     sendInvitation,
     transferOwnership,
     updateOrg,
-    updateTeam,
   } from '../../../api/orgs';
+  import type { SecurityFinding } from '../../../api/packages';
   import {
     createPackage,
     listSecurityFindings,
     transferPackageOwnership,
     updateSecurityFinding,
   } from '../../../api/packages';
-  import type { SecurityFinding } from '../../../api/packages';
   import type { RepositoryPackageSummary } from '../../../api/repositories';
   import {
     createRepository,
@@ -83,8 +60,8 @@
     updateRepository,
   } from '../../../api/repositories';
   import OrgAuditFilterControls from '../../../lib/components/OrgAuditFilterControls.svelte';
-  import OrgSecurityFindingTriageControls from '../../../lib/components/OrgSecurityFindingTriageControls.svelte';
   import OrgSecurityFilterControls from '../../../lib/components/OrgSecurityFilterControls.svelte';
+  import OrgSecurityFindingTriageControls from '../../../lib/components/OrgSecurityFindingTriageControls.svelte';
   import TeamMembersEditor from '../../../lib/components/TeamMembersEditor.svelte';
   import TeamNamespaceAccessEditor from '../../../lib/components/TeamNamespaceAccessEditor.svelte';
   import TeamPackageAccessEditor from '../../../lib/components/TeamPackageAccessEditor.svelte';
@@ -118,10 +95,6 @@
     formatOrgInvitationStatusLabel,
     partitionOrgInvitations,
   } from '../../../pages/org-invitation-history';
-  import {
-    selectNamespaceTransferTargets,
-    sortNamespaceClaims,
-  } from '../../../pages/personal-namespaces';
   import type { OrgMemberPickerOption } from '../../../pages/org-member-picker';
   import {
     buildOrgMemberPickerOptions,
@@ -132,38 +105,6 @@
     buildOrgSecurityPath,
     getOrgSecurityViewFromQuery,
   } from '../../../pages/org-security-query';
-  import {
-    buildPackageDetailsPath,
-    buildPackageSecurityFindingPath,
-    buildPackageSecurityPath,
-  } from '../../../pages/package-security-links';
-  import {
-    buildAuditExportQuery,
-    buildSecurityExportQuery,
-    decodePackageSelection,
-    renderPackageSelectionValue,
-    resolveAuditFilterSubmission,
-    resolveSecurityFilterSubmission,
-    resolveTeamNamespaceAccessSubmission,
-    resolveTeamPackageAccessSubmission,
-    resolveTeamRepositoryAccessSubmission,
-  } from '../../../pages/org-workspace-actions';
-  import {
-    buildTeamManagementStateMapsFromBootstrap,
-    buildEligibleTeamMemberOptions,
-    buildNamespaceGrantOptions,
-    buildPackageGrantOptions,
-    buildRepositoryGrantOptions,
-    createTeamManagementController,
-    loadOrgMembersState,
-    TEAM_DELETE_CONFIRMATION_MESSAGE,
-    type TeamMemberState,
-    type TeamNamespaceAccessState,
-    type TeamPackageAccessState,
-    type TeamRepositoryAccessState,
-    TEAM_NAMESPACE_PERMISSION_OPTIONS,
-    TEAM_PERMISSION_OPTIONS,
-  } from '../../../pages/team-management';
   import {
     buildOrgSecurityPackageKey,
     mergeUpdatedOrgSecurityFinding,
@@ -180,6 +121,39 @@
     canViewOrgAuditWorkspace,
     canViewOrgPeopleWorkspace,
   } from '../../../pages/org-workspace-access';
+  import {
+    buildAuditExportQuery,
+    buildSecurityExportQuery,
+    decodePackageSelection,
+    renderPackageSelectionValue,
+    resolveAuditFilterSubmission,
+    resolveSecurityFilterSubmission,
+  } from '../../../pages/org-workspace-actions';
+  import {
+    buildPackageDetailsPath,
+    buildPackageSecurityFindingPath,
+    buildPackageSecurityPath,
+  } from '../../../pages/package-security-links';
+  import {
+    selectNamespaceTransferTargets,
+    sortNamespaceClaims,
+  } from '../../../pages/personal-namespaces';
+  import {
+    TEAM_DELETE_CONFIRMATION_MESSAGE,
+    TEAM_NAMESPACE_PERMISSION_OPTIONS,
+    TEAM_PERMISSION_OPTIONS,
+    buildEligibleTeamMemberOptions,
+    buildNamespaceGrantOptions,
+    buildPackageGrantOptions,
+    buildRepositoryGrantOptions,
+    buildTeamManagementStateMapsFromBootstrap,
+    createTeamManagementController,
+    loadOrgMembersState,
+    type TeamMemberState,
+    type TeamNamespaceAccessState,
+    type TeamPackageAccessState,
+    type TeamRepositoryAccessState,
+  } from '../../../pages/team-management';
   import { ECOSYSTEMS, ecosystemLabel } from '../../../utils/ecosystem';
   import { formatDate, formatNumber } from '../../../utils/format';
   import {
@@ -253,10 +227,12 @@
     value: action,
     label: formatAuditActionLabel(action),
   }));
-  const SECURITY_FILTER_SEVERITY_OPTIONS = SECURITY_SEVERITIES.map((severity) => ({
-    value: severity,
-    label: formatIdentifierLabel(severity),
-  }));
+  const SECURITY_FILTER_SEVERITY_OPTIONS = SECURITY_SEVERITIES.map(
+    (severity) => ({
+      value: severity,
+      label: formatIdentifierLabel(severity),
+    })
+  );
   let securityPackageOptions: Array<{ value: string; label: string }> = [];
 
   $: repositoryGrantOptions = buildRepositoryGrantOptions(repositories);
@@ -341,7 +317,8 @@
   let securitySummary: OrgSecuritySummary | null = null;
   let securityPackages: OrgSecurityPackageSummary[] = [];
   let securityError: string | null = null;
-  let securityFindingsByPackageKey: Record<string, OrgSecurityFindingState> = {};
+  let securityFindingsByPackageKey: Record<string, OrgSecurityFindingState> =
+    {};
   let exportingSecurity = false;
   let auditLogs: OrgAuditLog[] = [];
   let auditError: string | null = null;
@@ -606,7 +583,8 @@
     value: string
   ): void {
     const currentState =
-      securityFindingsByPackageKey[packageKey] || createOrgSecurityFindingState();
+      securityFindingsByPackageKey[packageKey] ||
+      createOrgSecurityFindingState();
     updateOrgSecurityFindingState(packageKey, {
       findingNotes: {
         ...currentState.findingNotes,
@@ -620,7 +598,7 @@
     fallbackNotice: string | null
   ): string | null {
     const explicitNoticeProvided = Object.hasOwn(options, 'notice');
-    return explicitNoticeProvided ? options.notice ?? null : fallbackNotice;
+    return explicitNoticeProvided ? (options.notice ?? null) : fallbackNotice;
   }
 
   async function loadOrganizationPage(
@@ -727,10 +705,7 @@
         slug
       );
 
-      const [
-        memberState,
-        auditData,
-      ] = await Promise.all([
+      const [memberState, auditData] = await Promise.all([
         loadOrgMembersState(slug, {
           include: canViewPeopleWorkspace,
           errorMessage: 'Failed to load members.',
@@ -772,8 +747,10 @@
       );
       teamMembersBySlug = teamManagementStateMaps.teamMembersBySlug;
       teamPackageAccessBySlug = teamManagementStateMaps.teamPackageAccessBySlug;
-      teamRepositoryAccessBySlug = teamManagementStateMaps.teamRepositoryAccessBySlug;
-      teamNamespaceAccessBySlug = teamManagementStateMaps.teamNamespaceAccessBySlug;
+      teamRepositoryAccessBySlug =
+        teamManagementStateMaps.teamRepositoryAccessBySlug;
+      teamNamespaceAccessBySlug =
+        teamManagementStateMaps.teamNamespaceAccessBySlug;
       auditLogs = auditData.logs || [];
       auditError = auditData.load_error || null;
       auditHasNext = auditData.has_next === true;
@@ -791,7 +768,9 @@
   async function reloadSecurityOverview(): Promise<void> {
     const securityQuery: OrgSecurityQuery = {
       severities:
-        securityView.severities.length > 0 ? securityView.severities : undefined,
+        securityView.severities.length > 0
+          ? securityView.severities
+          : undefined,
       ecosystem: securityView.ecosystem || undefined,
       package: securityView.packageQuery || undefined,
     };
@@ -982,9 +961,7 @@
       new FormData(event.currentTarget as HTMLFormElement)
     );
 
-    await goto(
-      buildOrgSecurityPath(slug, nextView, $page.url.searchParams)
-    );
+    await goto(buildOrgSecurityPath(slug, nextView, $page.url.searchParams));
   }
 
   async function clearSecuritySeverityFilter(): Promise<void> {
@@ -1326,7 +1303,10 @@
     error = null;
   }
 
-  async function handleDeleteTeam(event: SubmitEvent, teamSlug: string): Promise<void> {
+  async function handleDeleteTeam(
+    event: SubmitEvent,
+    teamSlug: string
+  ): Promise<void> {
     event.preventDefault();
 
     if (!teamDeleteConfirmed) {
@@ -1408,7 +1388,8 @@
 
     if (!claimId) {
       await loadOrganizationPage({
-        error: 'Failed to delete namespace claim because the claim id is unavailable.',
+        error:
+          'Failed to delete namespace claim because the claim id is unavailable.',
       });
       return;
     }
@@ -1464,12 +1445,10 @@
     error = null;
 
     try {
-      const result: NamespaceTransferOwnershipResult = await transferNamespaceClaim(
-        claimId,
-        {
+      const result: NamespaceTransferOwnershipResult =
+        await transferNamespaceClaim(claimId, {
           targetOrgSlug,
-        }
-      );
+        });
       const namespace =
         result.namespace_claim?.namespace ||
         namespaceClaims.find((claim) => claim.id === claimId)?.namespace ||
@@ -1521,7 +1500,6 @@
         kind: formData.get('kind')?.toString().trim() || 'public',
         visibility: formData.get('visibility')?.toString().trim() || 'public',
         description: normalizeFormOptionalText(formData.get('description')),
-        upstreamUrl: normalizeFormOptionalText(formData.get('upstream_url')),
         ownerOrgId: org.id,
       });
 
@@ -1604,7 +1582,6 @@
       await updateRepository(repositorySlug, {
         description: formData.get('description')?.toString().trim() || '',
         visibility: formData.get('visibility')?.toString().trim() || 'public',
-        upstreamUrl: formData.get('upstream_url')?.toString().trim() || '',
       });
 
       await loadOrganizationPage({
@@ -2022,9 +1999,13 @@
       );
       const latestState = getOrgSecurityFindingState(securityPackage);
       updateOrgSecurityFindingState(packageKey, {
-        findings: mergeUpdatedOrgSecurityFinding(latestState.findings, updated, {
-          includeResolved: true,
-        }),
+        findings: mergeUpdatedOrgSecurityFinding(
+          latestState.findings,
+          updated,
+          {
+            includeResolved: true,
+          }
+        ),
         updatingFindingId: null,
         notice: targetIsResolved
           ? 'Finding marked as resolved.'
@@ -2166,7 +2147,9 @@
           summary={formatAuditFilterSummary()}
           showActionClear={Boolean(auditView.action)}
           showActorClear={Boolean(auditView.actorUserId)}
-          showDateClear={Boolean(auditView.occurredFrom || auditView.occurredUntil)}
+          showDateClear={Boolean(
+            auditView.occurredFrom || auditView.occurredUntil
+          )}
           handleSubmit={handleAuditFilterSubmit}
           handleExport={handleExportAudit}
           clearAction={clearAuditActionFilter}
@@ -2317,9 +2300,8 @@
               />
               <span>
                 <strong>Require MFA for maintainers</strong><br />
-                Record an organization-level MFA requirement for elevated roles
-                including owners, admins, maintainers, publishers, and security
-                managers.
+                Record an organization-level MFA requirement for elevated roles including
+                owners, admins, maintainers, publishers, and security managers.
               </span>
             </label>
           </div>
@@ -2544,113 +2526,113 @@
               </p>
             </div>
           {:else}
-              <div class="token-list">
-                {#each activeInvitations as invitation}
-                  {@const inviteeLabel = formatOrgInvitationInvitee(invitation)}
-                  {@const invitationEvent =
-                    describeOrgInvitationEvent(invitation)}
-                  <div>
-                    <div class="token-row">
-                      <div class="token-row__main">
-                        <div class="token-row__title">{inviteeLabel}</div>
-                        <div class="token-row__meta">
-                          {#if invitation.invited_user?.email}<span
-                              >{invitation.invited_user?.email}</span
-                            >{/if}
-                          <span>{formatRole(invitation.role || 'viewer')}</span>
-                          <span
-                            >sent by @{invitation.invited_by?.username ||
-                              'unknown'}</span
-                          >
-                          <span>sent {formatDate(invitation.created_at)}</span>
-                          {#if invitationEvent?.occurredAt}<span
-                              >{invitationEvent.label.toLowerCase()}
-                              {formatDate(invitationEvent.occurredAt)}</span
-                            >{/if}
-                        </div>
-                        <div class="token-row__scopes">
-                          <span class="badge badge-ecosystem"
-                            >{formatOrgInvitationStatusLabel(
-                              invitation.status
-                            )}</span
-                          >
-                        </div>
+            <div class="token-list">
+              {#each activeInvitations as invitation}
+                {@const inviteeLabel = formatOrgInvitationInvitee(invitation)}
+                {@const invitationEvent =
+                  describeOrgInvitationEvent(invitation)}
+                <div>
+                  <div class="token-row">
+                    <div class="token-row__main">
+                      <div class="token-row__title">{inviteeLabel}</div>
+                      <div class="token-row__meta">
+                        {#if invitation.invited_user?.email}<span
+                            >{invitation.invited_user?.email}</span
+                          >{/if}
+                        <span>{formatRole(invitation.role || 'viewer')}</span>
+                        <span
+                          >sent by @{invitation.invited_by?.username ||
+                            'unknown'}</span
+                        >
+                        <span>sent {formatDate(invitation.created_at)}</span>
+                        {#if invitationEvent?.occurredAt}<span
+                            >{invitationEvent.label.toLowerCase()}
+                            {formatDate(invitationEvent.occurredAt)}</span
+                          >{/if}
                       </div>
-                      {#if invitation.id}
-                        <div class="token-row__actions">
-                          {#if invitationRevokeTargetId === invitation.id}
-                            <button
-                              class="btn btn-secondary btn-sm"
-                              type="button"
-                              on:click={cancelInvitationRevokeConfirmation}
-                              disabled={revokingInvitationId === invitation.id}
-                              >Cancel</button
-                            >
-                          {:else}
-                            <button
-                              class="btn btn-secondary btn-sm"
-                              id={`invitation-revoke-toggle-${invitation.id}`}
-                              type="button"
-                              aria-label={`Revoke invitation for ${inviteeLabel}`}
-                              on:click={() =>
-                                openInvitationRevokeConfirmation(invitation.id || '')}
-                              >Revoke...</button
-                            >
-                          {/if}
-                        </div>
-                      {/if}
+                      <div class="token-row__scopes">
+                        <span class="badge badge-ecosystem"
+                          >{formatOrgInvitationStatusLabel(
+                            invitation.status
+                          )}</span
+                        >
+                      </div>
                     </div>
-                    {#if invitation.id &&
-                      invitationRevokeTargetId === invitation.id}
-                      <form
-                        class="alert alert-warning mt-4"
-                        id={`invitation-revoke-form-${invitation.id}`}
-                        on:submit={(event) =>
-                          handleRevokeInvitation(event, invitation.id || '')}
-                      >
-                        <p class="mb-3">
-                          Revoking this invitation immediately removes the
-                          recipient's ability to accept it.
-                        </p>
-                        <label class="mb-3 flex items-start gap-2">
-                          <input
-                            id={`invitation-revoke-confirm-${invitation.id}`}
-                            bind:checked={invitationRevokeConfirmed}
-                            type="checkbox"
-                            name="confirm_revoke"
-                            disabled={revokingInvitationId === invitation.id}
-                          />
-                          <span>
-                            I understand revoking this invitation is immediate.
-                          </span>
-                        </label>
-                        <div class="token-row__actions">
-                          <button
-                            class="btn btn-danger btn-sm"
-                            id={`invitation-revoke-submit-${invitation.id}`}
-                            type="submit"
-                            disabled={revokingInvitationId === invitation.id}
-                          >
-                            {revokingInvitationId === invitation.id
-                              ? 'Revoking…'
-                              : 'Revoke invitation'}
-                          </button>
+                    {#if invitation.id}
+                      <div class="token-row__actions">
+                        {#if invitationRevokeTargetId === invitation.id}
                           <button
                             class="btn btn-secondary btn-sm"
                             type="button"
                             on:click={cancelInvitationRevokeConfirmation}
                             disabled={revokingInvitationId === invitation.id}
+                            >Cancel</button
                           >
-                            Keep invitation
-                          </button>
-                        </div>
-                      </form>
+                        {:else}
+                          <button
+                            class="btn btn-secondary btn-sm"
+                            id={`invitation-revoke-toggle-${invitation.id}`}
+                            type="button"
+                            aria-label={`Revoke invitation for ${inviteeLabel}`}
+                            on:click={() =>
+                              openInvitationRevokeConfirmation(
+                                invitation.id || ''
+                              )}>Revoke...</button
+                          >
+                        {/if}
+                      </div>
                     {/if}
                   </div>
-                {/each}
-              </div>
-            {/if}
-          </div>
+                  {#if invitation.id && invitationRevokeTargetId === invitation.id}
+                    <form
+                      class="alert alert-warning mt-4"
+                      id={`invitation-revoke-form-${invitation.id}`}
+                      on:submit={(event) =>
+                        handleRevokeInvitation(event, invitation.id || '')}
+                    >
+                      <p class="mb-3">
+                        Revoking this invitation immediately removes the
+                        recipient's ability to accept it.
+                      </p>
+                      <label class="mb-3 flex items-start gap-2">
+                        <input
+                          id={`invitation-revoke-confirm-${invitation.id}`}
+                          bind:checked={invitationRevokeConfirmed}
+                          type="checkbox"
+                          name="confirm_revoke"
+                          disabled={revokingInvitationId === invitation.id}
+                        />
+                        <span>
+                          I understand revoking this invitation is immediate.
+                        </span>
+                      </label>
+                      <div class="token-row__actions">
+                        <button
+                          class="btn btn-danger btn-sm"
+                          id={`invitation-revoke-submit-${invitation.id}`}
+                          type="submit"
+                          disabled={revokingInvitationId === invitation.id}
+                        >
+                          {revokingInvitationId === invitation.id
+                            ? 'Revoking…'
+                            : 'Revoke invitation'}
+                        </button>
+                        <button
+                          class="btn btn-secondary btn-sm"
+                          type="button"
+                          on:click={cancelInvitationRevokeConfirmation}
+                          disabled={revokingInvitationId === invitation.id}
+                        >
+                          Keep invitation
+                        </button>
+                      </div>
+                    </form>
+                  {/if}
+                </div>
+              {/each}
+            </div>
+          {/if}
+        </div>
 
         {#if showInvitationHistory && historicalInvitations.length > 0}
           <div class="settings-subsection">
@@ -2715,7 +2697,9 @@
                 <div class="token-row">
                   <div class="token-row__main">
                     <div class="token-row__title">
-                      {member.display_name || member.username || 'Unknown member'}
+                      {member.display_name ||
+                        member.username ||
+                        'Unknown member'}
                     </div>
                     <div class="token-row__meta">
                       <span>@{member.username || 'unknown'}</span>
@@ -2748,8 +2732,8 @@
                           {#each ORG_ROLE_OPTIONS as role}
                             <option
                               value={role.value}
-                              selected={role.value === (member.role || 'viewer')}
-                              >{role.label}</option
+                              selected={role.value ===
+                                (member.role || 'viewer')}>{role.label}</option
                             >
                           {/each}
                         </select>
@@ -2779,10 +2763,7 @@
                     </div>
                   {/if}
                 </div>
-                {#if canManageMembers &&
-                  member.role !== 'owner' &&
-                  member.username &&
-                  memberRemoveTargetUsername === member.username}
+                {#if canManageMembers && member.role !== 'owner' && member.username && memberRemoveTargetUsername === member.username}
                   <form
                     class="alert alert-warning mt-4"
                     id={`member-remove-form-${member.username}`}
@@ -2905,7 +2886,10 @@
                   teamPackageAccessBySlug[teamSlug]?.load_error || null}
                 {@const eligibleTeamMemberOptions =
                   getEligibleTeamMemberOptions(teamSlug)}
-                <div class="settings-subsection" id={teamSlug ? `team-${teamSlug}` : undefined}>
+                <div
+                  class="settings-subsection"
+                  id={teamSlug ? `team-${teamSlug}` : undefined}
+                >
                   <div class="org-section-header">
                     <div>
                       <h3>{team.name || team.slug || 'Team'}</h3>
@@ -2929,7 +2913,8 @@
                             class="btn btn-secondary btn-sm"
                             type="button"
                             on:click={cancelTeamDeleteConfirmation}
-                            disabled={deletingTeamSlug === teamSlug}>Cancel</button
+                            disabled={deletingTeamSlug === teamSlug}
+                            >Cancel</button
                           >
                         {:else}
                           <button
@@ -2937,7 +2922,8 @@
                             id={`team-delete-toggle-${teamSlug}`}
                             type="button"
                             aria-label={`Delete team ${teamSlug}`}
-                            on:click={() => openTeamDeleteConfirmation(teamSlug)}
+                            on:click={() =>
+                              openTeamDeleteConfirmation(teamSlug)}
                             >Delete...</button
                           >
                         {/if}
@@ -2952,8 +2938,8 @@
                       on:submit={(event) => handleDeleteTeam(event, teamSlug)}
                     >
                       <p class="mb-3">
-                        Deleting this team immediately removes its memberships and delegated
-                        package, repository, and namespace access.
+                        Deleting this team immediately removes its memberships
+                        and delegated package, repository, and namespace access.
                       </p>
                       <label class="mb-3 flex items-start gap-2">
                         <input
@@ -2964,8 +2950,8 @@
                           disabled={deletingTeamSlug === teamSlug}
                         />
                         <span>
-                          I understand deleting this team revokes its delegated access and cannot be
-                          undone.
+                          I understand deleting this team revokes its delegated
+                          access and cannot be undone.
                         </span>
                       </label>
                       <div class="token-row__actions">
@@ -2975,7 +2961,9 @@
                           type="submit"
                           disabled={deletingTeamSlug === teamSlug}
                         >
-                          {deletingTeamSlug === teamSlug ? 'Deleting…' : 'Delete team'}
+                          {deletingTeamSlug === teamSlug
+                            ? 'Deleting…'
+                            : 'Delete team'}
                         </button>
                         <button
                           class="btn btn-secondary btn-sm"
@@ -2998,7 +2986,8 @@
                         descriptionFieldId={`team-description-${teamSlug}`}
                         submitLabel="Save changes"
                         submitClass="btn btn-secondary"
-                        handleSubmit={(event) => teamManagement.updateTeam(teamSlug, event)}
+                        handleSubmit={(event) =>
+                          teamManagement.updateTeam(teamSlug, event)}
                       />
 
                       <div>
@@ -3024,27 +3013,30 @@
                         <h4>Repository access</h4>
                         <p class="settings-copy">
                           Repository grants apply across current and future
-                        packages in the selected repository. The <strong
-                          >Admin</strong
-                        >
-                        permission also unlocks repository setting updates.
-                      </p>
-                      <TeamRepositoryAccessEditor
-                        grants={teamRepositoryGrants}
-                        grantsError={teamRepositoryGrantsError}
-                        optionsError={repositoriesError}
-                        options={repositoryGrantOptions}
-                        permissionOptions={TEAM_PERMISSION_OPTIONS}
-                        fieldId={`team-repository-${teamSlug}`}
-                        emptyGrantsMessage="No repository grants assigned yet."
-                        handleSubmit={(event) =>
-                          teamManagement.replaceTeamRepositoryAccess(teamSlug, event)}
-                        handleRevoke={(repositorySlug) =>
-                          teamManagement.removeTeamRepositoryAccess(
-                            teamSlug,
-                            repositorySlug
-                          )}
-                      />
+                          packages in the selected repository. The <strong
+                            >Admin</strong
+                          >
+                          permission also unlocks repository setting updates.
+                        </p>
+                        <TeamRepositoryAccessEditor
+                          grants={teamRepositoryGrants}
+                          grantsError={teamRepositoryGrantsError}
+                          optionsError={repositoriesError}
+                          options={repositoryGrantOptions}
+                          permissionOptions={TEAM_PERMISSION_OPTIONS}
+                          fieldId={`team-repository-${teamSlug}`}
+                          emptyGrantsMessage="No repository grants assigned yet."
+                          handleSubmit={(event) =>
+                            teamManagement.replaceTeamRepositoryAccess(
+                              teamSlug,
+                              event
+                            )}
+                          handleRevoke={(repositorySlug) =>
+                            teamManagement.removeTeamRepositoryAccess(
+                              teamSlug,
+                              repositorySlug
+                            )}
+                        />
                       </div>
                     {/if}
 
@@ -3059,7 +3051,10 @@
                         fieldId={`team-package-${teamSlug}`}
                         emptyGrantsMessage="No package grants assigned yet."
                         handleSubmit={(event) =>
-                          teamManagement.replaceTeamPackageAccess(teamSlug, event)}
+                          teamManagement.replaceTeamPackageAccess(
+                            teamSlug,
+                            event
+                          )}
                         handleRevoke={(ecosystem, packageName) =>
                           teamManagement.removeTeamPackageAccess(
                             teamSlug,
@@ -3071,29 +3066,32 @@
 
                     {#if canManageNamespaces}
                       <div class="mt-6">
-                      <h4>Namespace access</h4>
-                      <p class="settings-copy">
-                        Namespace grants let a team delete or transfer specific
-                        organization-owned namespace claims without broader
-                        organization roles.
-                      </p>
-                      <TeamNamespaceAccessEditor
-                        grants={teamNamespaceGrants}
-                        grantsError={teamNamespaceGrantsError}
-                        optionsError={namespaceError}
-                        options={namespaceGrantOptions}
-                        permissionOptions={TEAM_NAMESPACE_PERMISSION_OPTIONS}
-                        fieldId={`team-namespace-${teamSlug}`}
-                        emptyGrantsMessage="No namespace grants assigned yet."
-                        handleSubmit={(event) =>
-                          teamManagement.replaceTeamNamespaceAccess(teamSlug, event)}
-                        handleRevoke={(claimId, namespace) =>
-                          teamManagement.removeTeamNamespaceAccess(
-                            teamSlug,
-                            claimId,
-                            namespace
-                          )}
-                      />
+                        <h4>Namespace access</h4>
+                        <p class="settings-copy">
+                          Namespace grants let a team delete or transfer
+                          specific organization-owned namespace claims without
+                          broader organization roles.
+                        </p>
+                        <TeamNamespaceAccessEditor
+                          grants={teamNamespaceGrants}
+                          grantsError={teamNamespaceGrantsError}
+                          optionsError={namespaceError}
+                          options={namespaceGrantOptions}
+                          permissionOptions={TEAM_NAMESPACE_PERMISSION_OPTIONS}
+                          fieldId={`team-namespace-${teamSlug}`}
+                          emptyGrantsMessage="No namespace grants assigned yet."
+                          handleSubmit={(event) =>
+                            teamManagement.replaceTeamNamespaceAccess(
+                              teamSlug,
+                              event
+                            )}
+                          handleRevoke={(claimId, namespace) =>
+                            teamManagement.removeTeamNamespaceAccess(
+                              teamSlug,
+                              claimId,
+                              namespace
+                            )}
+                        />
                       </div>
                     {/if}
                   {/if}
@@ -3254,9 +3252,11 @@
                         style="margin-top:0.5rem; flex-wrap:wrap;"
                       >
                         <span>Review teams</span>
-                          {#each reviewerTeams as team}
+                        {#each reviewerTeams as team}
                           <span class="badge badge-ecosystem"
-                            >{team.name || team.slug || REVIEW_TEAM_FALLBACK_LABEL}</span
+                            >{team.name ||
+                              team.slug ||
+                              REVIEW_TEAM_FALLBACK_LABEL}</span
                           >
                         {/each}
                       </div>
@@ -3275,27 +3275,30 @@
                             : 'Show findings'}
                         </button>
                       {/if}
-                        <a
-                          class="btn btn-secondary btn-sm"
-                          href={buildPackageSecurityPath(pkg.ecosystem, pkg.name, {
+                      <a
+                        class="btn btn-secondary btn-sm"
+                        href={buildPackageSecurityPath(
+                          pkg.ecosystem,
+                          pkg.name,
+                          {
                             severities: securityView.severities,
-                          })}
-                          data-sveltekit-preload-data="hover"
-                          >{pkg.can_manage_security ? 'Review findings' : 'Open findings'}</a
-                        >
-                        <a
-                          class="btn btn-secondary btn-sm"
-                          href={packageDetailsPath}
-                          data-sveltekit-preload-data="hover"
-                          >Open package details</a
-                        >
+                          }
+                        )}
+                        data-sveltekit-preload-data="hover"
+                        >{pkg.can_manage_security
+                          ? 'Review findings'
+                          : 'Open findings'}</a
+                      >
+                      <a
+                        class="btn btn-secondary btn-sm"
+                        href={packageDetailsPath}
+                        data-sveltekit-preload-data="hover"
+                        >Open package details</a
+                      >
                     </div>
                   {/if}
                   {#if pkg.can_manage_security && packageFindingState.expanded}
-                    <div
-                      class="card"
-                      style="margin-top:1rem; width:100%;"
-                    >
+                    <div class="card" style="margin-top:1rem; width:100%;">
                       <div class="settings-subsection" style="margin-bottom:0;">
                         <h3 style="margin-bottom:0.5rem;">Inline findings</h3>
                         <p class="settings-copy" style="margin-top:0;">
@@ -3527,19 +3530,6 @@
                           {/each}
                         </select>
                       </div>
-                    </div>
-                    <div class="form-group">
-                      <label for={`repository-upstream-${repositorySlug}`}
-                        >Upstream URL</label
-                      >
-                      <input
-                        id={`repository-upstream-${repositorySlug}`}
-                        name="upstream_url"
-                        class="form-input"
-                        type="url"
-                        value={repository.upstream_url || ''}
-                        placeholder="https://registry.npmjs.org"
-                      />
                     </div>
                     <div class="form-group">
                       <label for={`repository-description-${repositorySlug}`}
@@ -3886,16 +3876,6 @@
               </div>
             </div>
             <div class="form-group">
-              <label for="repository-create-upstream">Upstream URL</label>
-              <input
-                id="repository-create-upstream"
-                name="upstream_url"
-                class="form-input"
-                type="url"
-                placeholder="https://registry.npmjs.org"
-              />
-            </div>
-            <div class="form-group">
               <label for="repository-create-description">Description</label>
               <textarea
                 id="repository-create-description"
@@ -3904,6 +3884,12 @@
                 rows="3"
               ></textarea>
             </div>
+            <p class="settings-copy" style="margin-bottom:12px;">
+              Publaryn 1.0 supports hosted <strong>public</strong>,
+              <strong>private</strong>, <strong>staging</strong>, and
+              <strong>release</strong> repositories here. Proxy and virtual repository
+              lifecycle features remain post-1.0 work.
+            </p>
             <button type="submit" class="btn btn-primary"
               >Create repository</button
             >
@@ -3961,7 +3947,8 @@
                           id={`namespace-delete-toggle-${claim.id}`}
                           type="button"
                           aria-label={`Delete namespace claim ${claim.namespace || 'Unnamed claim'}`}
-                          on:click={() => openNamespaceDeleteConfirmation(claim.id || '')}
+                          on:click={() =>
+                            openNamespaceDeleteConfirmation(claim.id || '')}
                           >Delete...</button
                         >
                       {/if}
@@ -3981,8 +3968,8 @@
                       )}
                   >
                     <p class="mb-3">
-                      Deleting this namespace claim immediately removes the organization's claim to
-                      this ecosystem namespace.
+                      Deleting this namespace claim immediately removes the
+                      organization's claim to this ecosystem namespace.
                     </p>
                     <label class="mb-3 flex items-start gap-2">
                       <input
@@ -3993,8 +3980,8 @@
                         disabled={deletingNamespaceClaimId === claim.id}
                       />
                       <span>
-                        I understand deleting this namespace claim is immediate and cannot be
-                        undone.
+                        I understand deleting this namespace claim is immediate
+                        and cannot be undone.
                       </span>
                     </label>
                     <div class="token-row__actions">
@@ -4083,7 +4070,10 @@
                 This transfer is immediate and keeps the claim's verification
                 state unchanged.
               </div>
-              <form class="settings-subsection" on:submit={handleNamespaceTransfer}>
+              <form
+                class="settings-subsection"
+                on:submit={handleNamespaceTransfer}
+              >
                 <div class="grid gap-4 xl:grid-cols-2">
                   <div class="form-group">
                     <label for="org-namespace-transfer-claim"
@@ -4226,8 +4216,7 @@
                 <a
                   href={packageDetailsPath}
                   class="btn btn-secondary btn-sm"
-                  data-sveltekit-preload-data="hover"
-                  >Open package details</a
+                  data-sveltekit-preload-data="hover">Open package details</a
                 >
               </div>
             </div>

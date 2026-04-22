@@ -81,6 +81,14 @@ Publaryn stores the upload's core metadata as release provenance and projects th
 - license expression or license → package license
 - keywords → package keywords
 
+Publaryn also normalizes and persists the resolver-critical per-release subset in
+dedicated PyPI metadata storage so the Simple API can project it later:
+
+- `Requires-Python`
+- `Requires-Dist`
+- `Requires-External`
+- `Provides-Extra`
+
 ### Explicit non-goals for this slice
 
 The route currently rejects or defers:
@@ -88,7 +96,7 @@ The route currently rejects or defers:
 - upload attestations
 - detached signatures
 - implicit organization-targeted auto-create without a repository-specific upload URL
-- richer Python-specific metadata persistence beyond release provenance
+- richer Python-specific metadata persistence beyond the current resolver-critical subset
 
 ## Consequences
 
@@ -105,11 +113,11 @@ The route currently rejects or defers:
 - package auto-create still defaults to user-owned repositories on the bare `/pypi/legacy/` endpoint
 - organization-targeted auto-create requires a repository-specific upload URL
 - additional files may appear on an already published PyPI version over time, which is necessary for protocol compatibility but narrower than the current control-plane publish model
-- Python-specific metadata is preserved in provenance rather than normalized into dedicated schema columns
+- resolver-critical metadata is normalized into dedicated per-release schema columns, but broader Python metadata still remains provenance-first
 
 ## Follow-up work
 
 - consider organization-level default resolution for bare `/pypi/legacy/` uploads when the actor has exactly one eligible organization repository
-- persist Python-specific metadata such as `Requires-Python`, project URLs, signatures, and attestations in protocol-aware columns
+- persist additional Python-specific metadata such as project URLs, signatures, full core metadata sidecars, and attestations in protocol-aware columns
 - add trusted publishing support for PyPI uploads using the existing trusted publisher model
 - consider emitting richer observability metrics for upload sizes, duplicate retries, and protocol-level conflicts

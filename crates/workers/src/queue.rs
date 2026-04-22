@@ -16,6 +16,7 @@ pub enum JobKind {
     IndexPackage,
     DeliverWebhook,
     CleanupExpiredTokens,
+    CleanupOciBlobs,
     ReindexSearch,
 }
 
