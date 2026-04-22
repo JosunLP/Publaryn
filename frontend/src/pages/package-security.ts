@@ -31,9 +31,18 @@ export function normalizePackageSecurityFocusMode(
 export function normalizePackageSecuritySeverityFilters(
   values: readonly string[] | null | undefined
 ): SecuritySeverity[] {
-  const selected = new Set(
-    (values || []).map((value) => normalizeSecuritySeverity(value))
-  );
+  const selected = new Set<SecuritySeverity>();
+
+  for (const value of values || []) {
+    for (const entry of value.split(',')) {
+      const normalizedValue = entry.trim().toLowerCase();
+      if (!SECURITY_SEVERITIES.includes(normalizedValue as SecuritySeverity)) {
+        continue;
+      }
+
+      selected.add(normalizedValue as SecuritySeverity);
+    }
+  }
 
   return SECURITY_SEVERITIES.filter((severity) => selected.has(severity));
 }

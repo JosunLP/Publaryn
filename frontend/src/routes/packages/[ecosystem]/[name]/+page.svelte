@@ -61,6 +61,7 @@
     normalizePackageSecuritySearchQuery,
     type PackageSecurityFocusMode,
   } from '../../../../pages/package-security';
+  import { getPackageSecurityViewFromQuery } from '../../../../pages/pkg-security-url';
   import {
     TEAM_PERMISSION_OPTIONS,
     formatTeamPermission,
@@ -164,10 +165,28 @@
   let deletingTrustedPublisherId: string | null = null;
   let savingTeamAccess = false;
   let revokingTeamSlug: string | null = null;
+  let lastPackageSecurityQuerySyncKey = '';
 
   $: ecosystem = $page.params.ecosystem ?? '';
   $: name = $page.params.name ?? '';
   $: activeTab = getPackageDetailTabFromQuery($page.url.searchParams);
+  $: packageSecurityView = getPackageSecurityViewFromQuery($page.url.searchParams);
+  $: {
+    const nextSyncKey = [
+      packageSecurityView.focusMode,
+      packageSecurityView.includeResolved ? '1' : '0',
+      packageSecurityView.searchQuery,
+      packageSecurityView.severities.join(','),
+    ].join('|');
+
+    if (nextSyncKey !== lastPackageSecurityQuerySyncKey) {
+      lastPackageSecurityQuerySyncKey = nextSyncKey;
+      includeResolvedFindings = packageSecurityView.includeResolved;
+      findingSearchQuery = packageSecurityView.searchQuery;
+      findingSeverityFilters = [...packageSecurityView.severities];
+      findingFocusMode = packageSecurityView.focusMode;
+    }
+  }
   $: loadKey = `${ecosystem}|${name}`;
   $: if (ecosystem && name && loadKey !== lastLoadKey) {
     lastLoadKey = loadKey;
@@ -206,10 +225,10 @@
     packageSettingsError = null;
     trustedPublisherNotice = null;
     trustedPublisherError = null;
-    includeResolvedFindings = false;
-    findingSearchQuery = '';
-    findingSeverityFilters = [];
-    findingFocusMode = 'triage';
+    includeResolvedFindings = packageSecurityView.includeResolved;
+    findingSearchQuery = packageSecurityView.searchQuery;
+    findingSeverityFilters = [...packageSecurityView.severities];
+    findingFocusMode = packageSecurityView.focusMode;
     resetReleaseForm();
     resetTransferForm();
     resetPackageSettingsForm();
@@ -243,7 +262,9 @@
         () => [] as Release[]
       ),
       listTags(ecosystem, name).catch(() => [] as Tag[]),
-      listSecurityFindings(ecosystem, name).catch(
+      listSecurityFindings(ecosystem, name, {
+        includeResolved: includeResolvedFindings,
+      }).catch(
         () => [] as SecurityFinding[]
       ),
       loadTransferState(pkg),
@@ -439,7 +460,42 @@
     );
   }
 
+  async function syncPackageSecurityQueryState(
+    overrides: {
+      focusMode?: PackageSecurityFocusMode;
+      includeResolved?: boolean;
+      searchQuery?: string;
+      severities?: string[];
+    } = {}
+  ): Promise<void> {
+    await goto(
+      buildPackageDetailPath(
+        ecosystem,
+        name,
+        {
+          tab: 'security',
+          securityView: {
+            focusMode: overrides.focusMode ?? findingFocusMode,
+            includeResolved: overrides.includeResolved ?? includeResolvedFindings,
+            searchQuery: overrides.searchQuery ?? findingSearchQuery,
+            severities: overrides.severities ?? findingSeverityFilters,
+          },
+        },
+        $page.url.searchParams
+      ),
+      {
+        replaceState: true,
+        noScroll: true,
+        keepFocus: true,
+      }
+    );
+  }
+
   async function handleResolvedToggleChange(): Promise<void> {
+    await syncPackageSecurityQueryState({
+      includeResolved: includeResolvedFindings,
+    });
+
     try {
       findings = await listSecurityFindings(ecosystem, name, {
         includeResolved: includeResolvedFindings,
@@ -449,10 +505,33 @@
     }
   }
 
-  function clearFindingFilters(): void {
+  async function handleFindingSearchInput(): Promise<void> {
+    await syncPackageSecurityQueryState({
+      searchQuery: findingSearchQuery,
+    });
+  }
+
+  async function handleFindingFocusModeChange(): Promise<void> {
+    await syncPackageSecurityQueryState({
+      focusMode: findingFocusMode,
+    });
+  }
+
+  async function handleFindingSeverityFilterChange(): Promise<void> {
+    await syncPackageSecurityQueryState({
+      severities: findingSeverityFilters,
+    });
+  }
+
+  async function clearFindingFilters(): Promise<void> {
     findingSearchQuery = '';
     findingSeverityFilters = [];
     findingFocusMode = 'triage';
+    await syncPackageSecurityQueryState({
+      searchQuery: '',
+      severities: [],
+      focusMode: 'triage',
+    });
   }
 
   async function handleToggleFindingResolution(
@@ -1155,6 +1234,7 @@
                     id="package-security-focus"
                     class="form-input"
                     bind:value={findingFocusMode}
+                    on:change={handleFindingFocusModeChange}
                   >
                     <option value="triage">Unresolved triage queue</option>
                     <option value="all">All loaded findings</option>
@@ -1167,6 +1247,7 @@
                     id="package-security-search"
                     class="form-input"
                     bind:value={findingSearchQuery}
+                    on:input={handleFindingSearchInput}
                     placeholder="Match title, advisory, version, or artifact"
                     autocomplete="off"
                   />
@@ -1185,7 +1266,7 @@
                   <button
                     type="button"
                     class="btn btn-secondary"
-                    on:click={clearFindingFilters}>Clear filters</button
+                    on:click={() => void clearFindingFilters()}>Clear filters</button
                   >
                 {/if}
               </div>
@@ -1198,6 +1279,7 @@
                         type="checkbox"
                         bind:group={findingSeverityFilters}
                         value={severity}
+                        on:change={handleFindingSeverityFilterChange}
                         style="margin-right:0.35rem;"
                       />
                       {formatIdentifierLabel(severity)}
@@ -1226,7 +1308,7 @@
                   <button
                     type="button"
                     class="btn btn-secondary"
-                    on:click={clearFindingFilters}>Clear filters</button
+                    on:click={() => void clearFindingFilters()}>Clear filters</button
                   >
                 {/if}
               </div>

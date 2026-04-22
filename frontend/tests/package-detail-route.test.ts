@@ -24,6 +24,7 @@ interface ApiRequestOptions {
 
 interface Scenario {
   requests: string[];
+  gotoCalls: string[];
   packageDetail: JsonRecord;
   findings: JsonRecord[];
   organizations: JsonRecord[];
@@ -41,6 +42,10 @@ const pageStore = writable<TestPageState>(
 );
 let currentScenario: Scenario | null = null;
 
+function setPageHref(href: string): void {
+  pageStore.set(buildPageState(href));
+}
+
 mock.module('$app/stores', () => ({
   page: {
     subscribe: pageStore.subscribe,
@@ -48,7 +53,15 @@ mock.module('$app/stores', () => ({
 }));
 
 mock.module('$app/navigation', () => ({
-  async goto(): Promise<void> {},
+  async goto(href: string): Promise<void> {
+    if (!currentScenario) {
+      return;
+    }
+
+    const nextUrl = new URL(href, 'https://example.test');
+    currentScenario.gotoCalls.push(`${nextUrl.pathname}${nextUrl.search}`);
+    setPageHref(nextUrl.toString());
+  },
 }));
 
 mock.module(apiClientModuleUrl, () => {
@@ -98,11 +111,7 @@ const PackagePage = await import('../src/routes/packages/[ecosystem]/[name]/+pag
 
 afterEach(() => {
   currentScenario = null;
-  pageStore.set(
-    buildPageState(
-      `https://example.test/packages/${ECOSYSTEM}/${PACKAGE_NAME}?tab=security`
-    )
-  );
+  setPageHref(`https://example.test/packages/${ECOSYSTEM}/${PACKAGE_NAME}?tab=security`);
 });
 
 describe('package detail security access route', () => {
@@ -194,6 +203,55 @@ describe('package detail security access route', () => {
         `/v1/orgs/${ORG_SLUG}/teams`,
         `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/security-findings`,
       ]);
+      expect(currentScenario.gotoCalls).toEqual([
+        `/packages/${ECOSYSTEM}/${PACKAGE_NAME}?tab=security&security_include_resolved=true`,
+        `/packages/${ECOSYSTEM}/${PACKAGE_NAME}?tab=security&security_include_resolved=true&security_search=prototype`,
+        `/packages/${ECOSYSTEM}/${PACKAGE_NAME}?tab=security&security_include_resolved=true&security_search=prototype&security_severity=high`,
+      ]);
+    } finally {
+      unmount();
+    }
+  });
+
+  test('hydrates package security filters from the URL on initial load', async () => {
+    currentScenario = createScenario();
+    setPageHref(
+      `https://example.test/packages/${ECOSYSTEM}/${PACKAGE_NAME}?tab=security&security_focus=resolved&security_include_resolved=true&security_search=pub-2026-0007&security_severity=critical`
+    );
+
+    const { target, unmount } = await renderSvelte(PackagePage.default);
+
+    try {
+      await waitFor(() => {
+        expect(normalizeWhitespace(target.textContent)).toContain(
+          'Showing 1 of 4 loaded findings, from resolved history, filtered to Critical severity, matching "pub-2026-0007".'
+        );
+        expect(target.textContent).toContain('Known malicious payload');
+        expect(target.textContent).not.toContain('Prototype pollution');
+      });
+
+      expect(
+        queryRequiredSelect(target, '#package-security-focus').value
+      ).toBe('resolved');
+      expect(
+        queryRequiredCheckbox(target, '#package-security-include-resolved').checked
+      ).toBe(true);
+      expect(queryRequiredInput(target, '#package-security-search').value).toBe(
+        'pub-2026-0007'
+      );
+      expect(
+        queryRequiredCheckbox(target, 'input[type="checkbox"][value="critical"]')
+          .checked
+      ).toBe(true);
+
+      expect(currentScenario.requests).toEqual([
+        `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}`,
+        `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/releases`,
+        `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/tags`,
+        `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/security-findings`,
+        '/v1/users/me/organizations',
+        `/v1/orgs/${ORG_SLUG}/teams`,
+      ]);
     } finally {
       unmount();
     }
@@ -262,6 +320,7 @@ function apiResponse(data: JsonRecord): { data: JsonRecord; requestId: null } {
 function createScenario(): Scenario {
   return {
     requests: [],
+    gotoCalls: [],
     packageDetail: {
       ecosystem: ECOSYSTEM,
       name: PACKAGE_NAME,
@@ -411,6 +470,14 @@ function queryRequiredInput(target: HTMLElement, selector: string): HTMLInputEle
   const element = target.querySelector(selector);
   if (!(element instanceof HTMLInputElement)) {
     throw new Error(`Missing input for selector ${selector}.`);
+  }
+  return element;
+}
+
+function queryRequiredSelect(target: HTMLElement, selector: string): HTMLSelectElement {
+  const element = target.querySelector(selector);
+  if (!(element instanceof HTMLSelectElement)) {
+    throw new Error(`Missing select for selector ${selector}.`);
   }
   return element;
 }

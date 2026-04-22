@@ -2869,13 +2869,16 @@
                             : 'Show findings'}
                         </button>
                       {/if}
-                      <a
-                        class="btn btn-secondary btn-sm"
-                        href={buildPackageDetailPath(pkg.ecosystem, pkg.name, {
-                          tab: 'security',
-                        })}
-                        data-sveltekit-preload-data="hover"
-                        >{pkg.can_manage_security ? 'Review findings' : 'Open findings'}</a
+                        <a
+                          class="btn btn-secondary btn-sm"
+                          href={buildPackageDetailPath(pkg.ecosystem, pkg.name, {
+                            tab: 'security',
+                            securityView: {
+                              severities: securityView.severities,
+                            },
+                          })}
+                          data-sveltekit-preload-data="hover"
+                          >{pkg.can_manage_security ? 'Review findings' : 'Open findings'}</a
                       >
                     </div>
                   {/if}
