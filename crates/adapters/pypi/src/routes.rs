@@ -695,7 +695,8 @@ async fn load_project_files<S: PyPiAppState>(
             requires_dist: optional_string_array_column(&row, "requires_dist").unwrap_or_default(),
             requires_external: optional_string_array_column(&row, "requires_external")
                 .unwrap_or_default(),
-            provides_extra: optional_string_array_column(&row, "provides_extra").unwrap_or_default(),
+            provides_extra: optional_string_array_column(&row, "provides_extra")
+                .unwrap_or_default(),
             is_yanked: bool_column(&row, "is_yanked"),
             yanked_reason,
         });
@@ -1002,7 +1003,7 @@ async fn resolve_or_create_upload_package<S: PyPiAppState>(
             &existing_package.repository_slug,
         )?;
 
-        update_upload_package_metadata(state.db(), package_id, &metadata).await?;
+        update_upload_package_metadata(state.db(), package_id, metadata).await?;
         return Ok(UploadPackageContext {
             package_id,
             repository_slug: existing_package.repository_slug,
@@ -1135,7 +1136,7 @@ async fn resolve_or_create_upload_package<S: PyPiAppState>(
                 &existing_package.repository_slug,
             )?;
 
-            update_upload_package_metadata(state.db(), package_id, &metadata).await?;
+            update_upload_package_metadata(state.db(), package_id, metadata).await?;
             Ok(UploadPackageContext {
                 package_id,
                 repository_slug: existing_package.repository_slug,
@@ -2059,10 +2060,7 @@ fn optional_string_column(row: &sqlx::postgres::PgRow, column: &str) -> Option<S
     row.try_get(column).ok().flatten()
 }
 
-fn optional_string_array_column(
-    row: &sqlx::postgres::PgRow,
-    column: &str,
-) -> Option<Vec<String>> {
+fn optional_string_array_column(row: &sqlx::postgres::PgRow, column: &str) -> Option<Vec<String>> {
     row.try_get(column).ok().flatten()
 }
 

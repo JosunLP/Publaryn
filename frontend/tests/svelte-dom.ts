@@ -1,12 +1,11 @@
 /// <reference path="./bun-test.d.ts" />
 
 import { afterEach } from 'bun:test';
-import { readFileSync } from 'node:fs';
-import { existsSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
+import { Window } from 'happy-dom';
 import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve as resolvePath } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { Window } from 'happy-dom';
 import { compile } from 'svelte/compiler';
 
 const window = new Window({
@@ -86,7 +85,10 @@ export function click(element: HTMLElement): void {
 
 async function getClientRuntime(): Promise<{
   flushSync: (fn?: (() => void) | undefined) => void;
-  mount: (component: any, options: { target: Element; props?: Record<string, unknown> }) => any;
+  mount: (
+    component: any,
+    options: { target: Element; props?: Record<string, unknown> }
+  ) => any;
   unmount: (component: any) => void;
 }> {
   const renderModuleUrl = new URL(
@@ -99,7 +101,10 @@ async function getClientRuntime(): Promise<{
   ).href;
 
   const renderModule = (await import(renderModuleUrl)) as {
-    mount: (component: any, options: { target: Element; props?: Record<string, unknown> }) => any;
+    mount: (
+      component: any,
+      options: { target: Element; props?: Record<string, unknown> }
+    ) => any;
     unmount: (component: any) => void;
   };
   const batchModule = (await import(batchModuleUrl)) as {
@@ -132,7 +137,9 @@ async function loadComponentModule(component: any): Promise<any> {
   return modulePromise;
 }
 
-async function ensureCompiledComponentUrl(componentPath: string): Promise<string> {
+async function ensureCompiledComponentUrl(
+  componentPath: string
+): Promise<string> {
   const cached = compiledComponentUrlCache.get(componentPath);
   if (cached) {
     return cached;
@@ -150,17 +157,18 @@ async function compileComponentModule(componentPath: string): Promise<string> {
     generate: 'client',
     dev: true,
   });
-  const outputDir = '/tmp/publaryn-svelte-test-modules';
-  const outputPath = `${outputDir}/${createHash('sha256').update(componentPath).digest('hex')}.mjs`;
-  mkdirSync(outputDir, { recursive: true });
-  const nodeModulesLink = `${outputDir}/node_modules`;
-  const localNodeModulesPath = fileURLToPath(
-    new URL('../node_modules', import.meta.url)
+  const outputDir = fileURLToPath(
+    new URL('./.compiled-svelte-test-modules/', import.meta.url)
   );
-  if (!existsSync(nodeModulesLink)) {
-    symlinkSync(localNodeModulesPath, nodeModulesLink, 'dir');
-  }
-  const rewrittenCode = await rewriteRelativeImports(compiled.js.code, componentPath);
+  const outputPath = resolvePath(
+    outputDir,
+    `${createHash('sha256').update(componentPath).digest('hex')}.mjs`
+  );
+  mkdirSync(outputDir, { recursive: true });
+  const rewrittenCode = await rewriteRelativeImports(
+    compiled.js.code,
+    componentPath
+  );
   writeFileSync(outputPath, rewrittenCode, 'utf8');
 
   return pathToFileURL(outputPath).href;
@@ -202,7 +210,10 @@ async function rewriteRelativeImports(
   return rewrittenCode;
 }
 
-function resolveRelativeImport(componentPath: string, specifier: string): string {
+function resolveRelativeImport(
+  componentPath: string,
+  specifier: string
+): string {
   const basePath = resolvePath(dirname(componentPath), specifier);
   const candidates = [
     basePath,

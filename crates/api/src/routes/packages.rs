@@ -33,9 +33,10 @@ use crate::{
         enqueue_package_reindex_job, enqueue_release_scan_jobs, enqueue_scan_artifact_job,
     },
     request_auth::{
-        actor_can_access_org_member_directory_by_id, actor_can_admin_package_by_id,
-        actor_can_publish_package_by_id, actor_can_security_review_package_by_id,
-        actor_can_transfer_package_by_id, actor_can_write_package_by_id,
+        actor_can_admin_package_by_id,
+        actor_can_publish_package_by_id as actor_can_publish_package_via_auth_by_id,
+        actor_can_security_review_package_by_id, actor_can_transfer_package_by_id,
+        actor_can_view_org_member_directory_by_id, actor_can_write_package_by_id,
         actor_can_write_package_metadata_by_id, ensure_package_admin_access,
         ensure_package_metadata_write_access, ensure_package_publish_access,
         ensure_package_read_access, ensure_package_transfer_access,
@@ -138,7 +139,7 @@ async fn can_manage_releases_for_package(
                 .iter()
                 .any(|scope| scope == SCOPE_PACKAGES_WRITE) =>
         {
-            actor_can_publish_package_by_id(db, package_id, Some(identity.user_id)).await
+            actor_can_publish_package_via_auth_by_id(db, package_id, Some(identity.user_id)).await
         }
         _ => Ok(false),
     }
@@ -511,46 +512,48 @@ async fn get_package(
         .try_get::<Option<Uuid>, _>("owner_org_id")
         .ok()
         .flatten();
-    let team_access = match (owner_org_id, identity.user_id()) {
-        (Some(owner_org_id), Some(actor_user_id))
-            if actor_can_access_org_member_directory_by_id(
-                &state.db,
-                owner_org_id,
-                Some(actor_user_id),
-            )
-            .await? =>
-        {
-            let rows = sqlx::query(
-                "SELECT t.id, t.slug, t.name, \
-                        ARRAY_AGG(tpa.permission::text ORDER BY tpa.permission::text) AS permissions, \
-                        MAX(tpa.granted_at) AS granted_at \
-                 FROM team_package_access tpa \
-                 JOIN teams t ON t.id = tpa.team_id \
-                 WHERE tpa.package_id = $1 AND t.org_id = $2 \
-                 GROUP BY t.id, t.slug, t.name \
-                 ORDER BY t.slug ASC",
-            )
-            .bind(package_id)
-            .bind(owner_org_id)
-            .fetch_all(&state.db)
-            .await
-            .map_err(|e| ApiError(Error::Database(e)))?;
-
-            Some(
-                rows.iter()
-                    .map(|row| {
-                        serde_json::json!({
-                            "team_id": row.try_get::<Uuid, _>("id").ok(),
-                            "team_slug": row.try_get::<String, _>("slug").ok(),
-                            "team_name": row.try_get::<String, _>("name").ok(),
-                            "permissions": row.try_get::<Vec<String>, _>("permissions").ok(),
-                            "granted_at": row.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("granted_at").ok().flatten(),
-                        })
-                    })
-                    .collect::<Vec<_>>(),
-            )
+    let can_view_team_access = match (owner_org_id, identity.user_id()) {
+        (Some(owner_org_id), Some(actor_user_id)) => {
+            actor_can_view_org_member_directory_by_id(&state.db, owner_org_id, Some(actor_user_id))
+                .await?
         }
-        _ => None,
+        _ => false,
+    };
+    let team_access = if can_view_team_access {
+        // Team grant metadata reveals team structure, so it intentionally follows
+        // the organization member-directory visibility policy.
+        let owner_org_id = owner_org_id.expect("team access visibility requires org ownership");
+        let rows = sqlx::query(
+            "SELECT t.id, t.slug, t.name, \
+                    ARRAY_AGG(tpa.permission::text ORDER BY tpa.permission::text) AS permissions, \
+                    MAX(tpa.granted_at) AS granted_at \
+             FROM team_package_access tpa \
+             JOIN teams t ON t.id = tpa.team_id \
+             WHERE tpa.package_id = $1 AND t.org_id = $2 \
+             GROUP BY t.id, t.slug, t.name \
+             ORDER BY t.slug ASC",
+        )
+        .bind(package_id)
+        .bind(owner_org_id)
+        .fetch_all(&state.db)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+        Some(
+            rows.iter()
+                .map(|row| {
+                    serde_json::json!({
+                        "team_id": row.try_get::<Uuid, _>("id").ok(),
+                        "team_slug": row.try_get::<String, _>("slug").ok(),
+                        "team_name": row.try_get::<String, _>("name").ok(),
+                        "permissions": row.try_get::<Vec<String>, _>("permissions").ok(),
+                        "granted_at": row.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("granted_at").ok().flatten(),
+                    })
+                })
+                .collect::<Vec<_>>(),
+        )
+    } else {
+        None
     };
 
     Ok(Json(serde_json::json!({

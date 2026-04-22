@@ -144,13 +144,23 @@ async fn cleanup_oci_blob_batch(
         artifact_store
             .delete_object(&candidate.storage_key)
             .await
-            .map_err(|e| format!("Failed to delete OCI blob {} from storage: {e}", candidate.digest))?;
+            .map_err(|e| {
+                format!(
+                    "Failed to delete OCI blob {} from storage: {e}",
+                    candidate.digest
+                )
+            })?;
 
         sqlx::query("DELETE FROM oci_blob_inventory WHERE digest = $1")
             .bind(&candidate.digest)
             .execute(db)
             .await
-            .map_err(|e| format!("Failed to delete OCI blob {} from inventory: {e}", candidate.digest))?;
+            .map_err(|e| {
+                format!(
+                    "Failed to delete OCI blob {} from inventory: {e}",
+                    candidate.digest
+                )
+            })?;
     }
 
     Ok(candidates.len())
@@ -186,8 +196,9 @@ impl JobHandler for CleanupOciBlobsHandler {
             queue::enqueue(
                 &self.db,
                 JobKind::CleanupOciBlobs,
-                serde_json::to_value(&payload)
-                    .map_err(|e| format!("Failed to serialize follow-up OCI cleanup payload: {e}"))?,
+                serde_json::to_value(&payload).map_err(|e| {
+                    format!("Failed to serialize follow-up OCI cleanup payload: {e}")
+                })?,
             )
             .await
             .map_err(|e| format!("Failed to enqueue follow-up OCI cleanup job: {e}"))?;

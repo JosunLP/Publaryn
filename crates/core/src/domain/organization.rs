@@ -73,6 +73,7 @@ pub struct Organization {
     pub is_verified: bool,
     pub verified_domain: Option<String>,
     pub mfa_required: bool,
+    pub member_directory_is_private: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -92,6 +93,7 @@ impl Organization {
             is_verified: false,
             verified_domain: None,
             mfa_required: false,
+            member_directory_is_private: false,
             created_at: now,
             updated_at: now,
         }

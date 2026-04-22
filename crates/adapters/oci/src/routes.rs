@@ -1158,8 +1158,7 @@ async fn begin_blob_upload<S: OciAppState>(
         }
 
         if let Err(response) =
-            record_oci_blob_inventory(state.db(), &digest, &storage_key, blob_size)
-                .await
+            record_oci_blob_inventory(state.db(), &digest, &storage_key, blob_size).await
         {
             let _ = state.artifact_delete(&storage_key).await;
             return response;
@@ -1398,13 +1397,8 @@ async fn finalize_blob_upload<S: OciAppState>(
         ));
     }
 
-    if let Err(response) = record_oci_blob_inventory(
-        state.db(),
-        &digest,
-        &final_storage_key,
-        blob_size,
-    )
-    .await
+    if let Err(response) =
+        record_oci_blob_inventory(state.db(), &digest, &final_storage_key, blob_size).await
     {
         let _ = state.artifact_delete(&final_storage_key).await;
         return response;

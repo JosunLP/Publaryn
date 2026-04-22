@@ -25,11 +25,12 @@ use publaryn_core::{
 use crate::{
     error::{ApiError, ApiResult},
     request_auth::{
-        actor_can_access_org_member_directory_by_id, actor_can_manage_namespace_claim_by_id,
-        actor_can_transfer_namespace_claim_by_id, actor_can_transfer_package_by_id,
-        actor_can_transfer_repository_by_id, actor_org_capabilities_by_id,
-        ensure_org_admin_by_slug, ensure_org_audit_access_by_slug, ensure_org_member_by_slug,
-        AuthenticatedIdentity, OptionalAuthenticatedIdentity, OrgActorCapabilities,
+        actor_can_manage_namespace_claim_by_id, actor_can_transfer_namespace_claim_by_id,
+        actor_can_transfer_package_by_id, actor_can_transfer_repository_by_id,
+        actor_can_view_non_public_org_resources_by_id, actor_org_capabilities_by_id,
+        ensure_org_admin_by_slug, ensure_org_audit_access_by_slug,
+        ensure_org_member_directory_access_by_slug, AuthenticatedIdentity,
+        OptionalAuthenticatedIdentity, OrgActorCapabilities,
     },
     routes::org_invitations::load_org_invitation_admin_payloads,
     scopes::{ensure_scope, SCOPE_ORGS_TRANSFER, SCOPE_ORGS_WRITE, SCOPE_PACKAGES_WRITE},
@@ -209,7 +210,7 @@ async fn get_org_workspace_bootstrap(
     let (org_id, capabilities, org_payload) =
         load_org_detail_payload(&state.db, &slug, actor_user_id).await?;
     let can_view_non_public =
-        actor_can_access_org_member_directory_by_id(&state.db, org_id, actor_user_id).await?;
+        actor_can_view_non_public_org_resources_by_id(&state.db, org_id, actor_user_id).await?;
     let security_filters = resolve_org_security_filters(&query)?;
 
     let teams_future = async {
@@ -275,6 +276,7 @@ struct UpdateOrgRequest {
     website: Option<Option<String>>,
     email: Option<Option<String>>,
     mfa_required: Option<bool>,
+    member_directory_is_private: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -283,6 +285,7 @@ struct ResolvedOrgProfileUpdate {
     website: Option<String>,
     email: Option<String>,
     mfa_required: bool,
+    member_directory_is_private: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -333,7 +336,7 @@ async fn update_org(
     let org_id = ensure_org_admin_by_slug(&state.db, &slug, identity.user_id).await?;
 
     let current_org = sqlx::query(
-        "SELECT name, description, website, email, mfa_required \
+        "SELECT name, description, website, email, mfa_required, member_directory_is_private \
          FROM organizations \
          WHERE id = $1",
     )
@@ -357,20 +360,25 @@ async fn update_org(
     let current_mfa_required = current_org
         .try_get::<bool, _>("mfa_required")
         .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let current_member_directory_is_private = current_org
+        .try_get::<bool, _>("member_directory_is_private")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
 
     let current_profile = ResolvedOrgProfileUpdate {
         description: current_description,
         website: current_website,
         email: current_email,
         mfa_required: current_mfa_required,
+        member_directory_is_private: current_member_directory_is_private,
     };
     let updated_profile = resolve_org_profile_update(&current_profile, &body);
     let changes = collect_org_profile_changes(&current_profile, &updated_profile);
 
     if changes.is_empty() {
-        return Ok(Json(
-            serde_json::json!({ "message": "Organization updated" }),
-        ));
+        let (_, _, mut org_payload) =
+            load_org_detail_payload(&state.db, &slug, Some(identity.user_id)).await?;
+        org_payload["message"] = serde_json::json!("Organization updated");
+        return Ok(Json(org_payload));
     }
 
     let changed_fields = changes.keys().cloned().collect::<Vec<_>>();
@@ -387,13 +395,15 @@ async fn update_org(
               website     = $2, \
               email       = $3, \
               mfa_required = $4, \
+                member_directory_is_private = $5, \
               updated_at   = NOW() \
-         WHERE id = $5",
+            WHERE id = $6",
     )
     .bind(&updated_profile.description)
     .bind(&updated_profile.website)
     .bind(&updated_profile.email)
     .bind(updated_profile.mfa_required)
+    .bind(updated_profile.member_directory_is_private)
     .bind(org_id)
     .execute(&mut *tx)
     .await
@@ -421,9 +431,11 @@ async fn update_org(
         .await
         .map_err(|e| ApiError(Error::Database(e)))?;
 
-    Ok(Json(
-        serde_json::json!({ "message": "Organization updated" }),
-    ))
+    let (_, _, mut org_payload) =
+        load_org_detail_payload(&state.db, &slug, Some(identity.user_id)).await?;
+    org_payload["message"] = serde_json::json!("Organization updated");
+
+    Ok(Json(org_payload))
 }
 
 fn normalize_optional_org_field(value: Option<String>) -> Option<String> {
@@ -458,6 +470,9 @@ fn resolve_org_profile_update(
             .map(normalize_optional_org_field)
             .unwrap_or_else(|| current.email.clone()),
         mfa_required: body.mfa_required.unwrap_or(current.mfa_required),
+        member_directory_is_private: body
+            .member_directory_is_private
+            .unwrap_or(current.member_directory_is_private),
     }
 }
 
@@ -503,6 +518,16 @@ fn collect_org_profile_changes(
             serde_json::json!({
                 "before": current.mfa_required,
                 "after": updated.mfa_required,
+            }),
+        );
+    }
+
+    if current.member_directory_is_private != updated.member_directory_is_private {
+        changes.insert(
+            "member_directory_is_private".into(),
+            serde_json::json!({
+                "before": current.member_directory_is_private,
+                "after": updated.member_directory_is_private,
             }),
         );
     }
@@ -829,7 +854,7 @@ async fn list_members(
     identity: AuthenticatedIdentity,
     Path(slug): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    ensure_org_member_by_slug(&state.db, &slug, identity.user_id).await?;
+    ensure_org_member_directory_access_by_slug(&state.db, &slug, identity.user_id).await?;
 
     let rows = sqlx::query(
         "SELECT u.id AS user_id, u.username, u.display_name, om.role::text AS role, om.joined_at \
@@ -866,7 +891,7 @@ async fn search_org_members(
     Path(slug): Path<String>,
     Query(query): Query<MemberSearchQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    ensure_org_member_by_slug(&state.db, &slug, identity.user_id).await?;
+    ensure_org_member_directory_access_by_slug(&state.db, &slug, identity.user_id).await?;
 
     let Some(search) = query
         .query
@@ -1317,7 +1342,7 @@ async fn list_teams(
     identity: AuthenticatedIdentity,
     Path(slug): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    ensure_org_member_by_slug(&state.db, &slug, identity.user_id).await?;
+    ensure_org_member_directory_access_by_slug(&state.db, &slug, identity.user_id).await?;
 
     let rows = sqlx::query(
         "SELECT t.id, t.name, t.slug, t.description, t.created_at \
@@ -2676,7 +2701,8 @@ async fn load_org_detail_payload(
     actor_user_id: Option<Uuid>,
 ) -> ApiResult<(Uuid, OrgActorCapabilities, serde_json::Value)> {
     let row = sqlx::query(
-        "SELECT id, name, slug, description, website, email, is_verified, mfa_required, created_at \
+        "SELECT id, name, slug, description, website, email, is_verified, mfa_required, \
+                member_directory_is_private, created_at \
          FROM organizations WHERE slug = $1",
     )
     .bind(slug)
@@ -2701,6 +2727,9 @@ async fn load_org_detail_payload(
             "email": row.try_get::<Option<String>, _>("email").ok().flatten(),
             "is_verified": row.try_get::<bool, _>("is_verified").ok(),
             "mfa_required": row.try_get::<bool, _>("mfa_required").ok(),
+            "member_directory_is_private": row
+                .try_get::<bool, _>("member_directory_is_private")
+                .ok(),
             "created_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at").ok(),
             "capabilities": capabilities,
         }),
@@ -3205,7 +3234,7 @@ async fn resolve_org_security_scope(
         .try_get("id")
         .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
     let can_view_non_public =
-        actor_can_access_org_member_directory_by_id(db, org_id, actor_user_id).await?;
+        actor_can_view_non_public_org_resources_by_id(db, org_id, actor_user_id).await?;
 
     Ok((org_id, can_view_non_public))
 }
@@ -3226,7 +3255,7 @@ async fn resolve_org_read_scope(
         .try_get("id")
         .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
     let can_view_non_public =
-        actor_can_access_org_member_directory_by_id(db, org_id, actor_user_id).await?;
+        actor_can_view_non_public_org_resources_by_id(db, org_id, actor_user_id).await?;
 
     Ok(ResolvedOrgReadScope {
         org_id,
@@ -4068,6 +4097,7 @@ mod tests {
             website: Some("https://packages.example.com".into()),
             email: Some("team@example.com".into()),
             mfa_required: false,
+            member_directory_is_private: false,
         };
 
         let updated = resolve_org_profile_update(
@@ -4077,6 +4107,7 @@ mod tests {
                 website: None,
                 email: Some(Some("   ".into())),
                 mfa_required: Some(true),
+                member_directory_is_private: Some(true),
             },
         );
 
@@ -4087,6 +4118,7 @@ mod tests {
                 website: Some("https://packages.example.com".into()),
                 email: None,
                 mfa_required: true,
+                member_directory_is_private: true,
             }
         );
     }
@@ -4098,18 +4130,27 @@ mod tests {
             website: Some("https://packages.example.com".into()),
             email: Some("team@example.com".into()),
             mfa_required: false,
+            member_directory_is_private: false,
         };
         let updated = ResolvedOrgProfileUpdate {
             description: Some("Current description".into()),
             website: Some("https://packages.example.com".into()),
             email: Some("team@example.com".into()),
             mfa_required: true,
+            member_directory_is_private: true,
         };
 
         let changes = collect_org_profile_changes(&current, &updated);
 
         assert_eq!(
             changes.get("mfa_required"),
+            Some(&serde_json::json!({
+                "before": false,
+                "after": true,
+            }))
+        );
+        assert_eq!(
+            changes.get("member_directory_is_private"),
             Some(&serde_json::json!({
                 "before": false,
                 "after": true,

@@ -1,6 +1,6 @@
 import { api } from './client';
-import { collectPaginatedItems } from './pagination';
 import type { NamespaceClaim } from './namespaces';
+import { collectPaginatedItems } from './pagination';
 import type { RepositoryPackageSummary } from './repositories';
 
 type NullableString = string | null;
@@ -24,6 +24,7 @@ export interface OrganizationDetail {
   description?: NullableString;
   is_verified?: boolean;
   mfa_required?: boolean;
+  member_directory_is_private?: boolean;
   website?: NullableString;
   email?: NullableString;
   created_at?: NullableString;
@@ -222,10 +223,14 @@ export interface OrgWorkspaceBootstrapResponse {
 export interface OrgWorkspaceTeamManagementBootstrap {
   members_by_team_slug?: Record<string, TeamMember[]> | null;
   package_access_by_team_slug?: Record<string, TeamPackageAccessGrant[]> | null;
-  repository_access_by_team_slug?:
-    | Record<string, TeamRepositoryAccessGrant[]>
-    | null;
-  namespace_access_by_team_slug?: Record<string, TeamNamespaceAccessGrant[]> | null;
+  repository_access_by_team_slug?: Record<
+    string,
+    TeamRepositoryAccessGrant[]
+  > | null;
+  namespace_access_by_team_slug?: Record<
+    string,
+    TeamNamespaceAccessGrant[]
+  > | null;
 }
 
 export interface OrgSecuritySeverityCounts {
@@ -252,13 +257,11 @@ export interface OrgSecurityPackageSummary {
   worst_severity?: NullableString;
   latest_detected_at?: NullableString;
   severities?: OrgSecuritySeverityCounts | null;
-  reviewer_teams?:
-    | Array<{
-        id?: NullableString;
-        slug?: NullableString;
-        name?: NullableString;
-      }>
-    | null;
+  reviewer_teams?: Array<{
+    id?: NullableString;
+    slug?: NullableString;
+    name?: NullableString;
+  }> | null;
   can_manage_security?: boolean | null;
 }
 
@@ -375,6 +378,7 @@ export interface UpdateOrgInput {
   website?: NullableString;
   email?: NullableString;
   mfaRequired?: boolean;
+  memberDirectoryIsPrivate?: boolean;
 }
 
 export interface AddMemberInput {
@@ -481,6 +485,7 @@ export async function updateOrg(
         website: updates.website,
         email: updates.email,
         mfa_required: updates.mfaRequired,
+        member_directory_is_private: updates.memberDirectoryIsPrivate,
       },
     }
   );
@@ -1015,7 +1020,9 @@ function enc(value: string): string {
   return encodeURIComponent(value);
 }
 
-function throwOrgCollectionLoadError(loadError: NullableString | undefined): void {
+function throwOrgCollectionLoadError(
+  loadError: NullableString | undefined
+): void {
   // The org collection endpoints may surface a load_error payload instead of a
   // transport failure; treat that as a hard failure so paginated callers do not
   // silently return incomplete repository or package lists.

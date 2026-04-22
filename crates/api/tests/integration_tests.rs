@@ -13,10 +13,7 @@ use url::Url;
 use uuid::Uuid;
 
 use publaryn_api::{
-    config::Config,
-    job_handlers::CleanupOciBlobsHandler,
-    router::build_router,
-    state::AppState,
+    config::Config, job_handlers::CleanupOciBlobsHandler, router::build_router, state::AppState,
     storage::ArtifactStoreReaderAdapter,
 };
 use publaryn_workers::{
@@ -2136,13 +2133,12 @@ async fn upload_pypi_distribution_with_fields(
     artifact_bytes: &[u8],
     metadata_fields: &[(&str, &str)],
 ) -> (StatusCode, Value) {
-    let (content_type, body) =
-        build_pypi_legacy_upload_multipart_with_fields(
-            package_name,
-            version,
-            artifact_bytes,
-            metadata_fields,
-        );
+    let (content_type, body) = build_pypi_legacy_upload_multipart_with_fields(
+        package_name,
+        version,
+        artifact_bytes,
+        metadata_fields,
+    );
     let uri = match repository_slug {
         Some(slug) => format!("/pypi/legacy/{slug}/"),
         None => "/pypi/legacy/".to_owned(),
@@ -2171,10 +2167,7 @@ async fn get_pypi_simple_project_json(
     let mut request = Request::builder()
         .method(Method::GET)
         .uri(format!("/pypi/simple/{project}/"))
-        .header(
-            header::ACCEPT,
-            "application/vnd.pypi.simple.v1+json",
-        );
+        .header(header::ACCEPT, "application/vnd.pypi.simple.v1+json");
 
     if let Some(token) = token {
         request = request.header(header::AUTHORIZATION, format!("Bearer {token}"));
@@ -3098,8 +3091,7 @@ async fn test_platform_admin_jobs_expose_summary_and_filterable_results(pool: Pg
     .expect("background jobs should seed successfully");
 
     let (status, body) =
-        list_platform_admin_jobs(&app, &admin_jwt, Some("state=pending&kind=scan_artifact"))
-            .await;
+        list_platform_admin_jobs(&app, &admin_jwt, Some("state=pending&kind=scan_artifact")).await;
 
     assert_eq!(status, StatusCode::OK, "response: {body}");
     assert_eq!(body["page"], 1);
@@ -3117,10 +3109,12 @@ async fn test_platform_admin_jobs_expose_summary_and_filterable_results(pool: Pg
     assert_eq!(body["summary"]["by_kind"]["index_package"], 1);
     assert_eq!(body["summary"]["by_kind"]["reindex_search"], 1);
     assert_eq!(body["summary"]["stale_jobs_count"], 1);
-    assert!(body["summary"]["oldest_pending_age_minutes"]
-        .as_i64()
-        .expect("oldest pending age should be present")
-        >= 44);
+    assert!(
+        body["summary"]["oldest_pending_age_minutes"]
+            .as_i64()
+            .expect("oldest pending age should be present")
+            >= 44
+    );
 
     let jobs = body["jobs"]
         .as_array()
@@ -3810,6 +3804,177 @@ async fn test_org_member_and_team_directory_reads_require_org_membership(pool: P
         .unwrap();
     let member_search_resp = app.clone().oneshot(member_search_req).await.unwrap();
     assert_eq!(member_search_resp.status(), StatusCode::OK);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_private_org_member_directory_restricts_viewers_without_hiding_private_packages(
+    pool: PgPool,
+) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    register_user(&app, "charlie", "charlie@test.dev", "super_secret_pw!").await;
+    let owner_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let admin_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+    let viewer_jwt = login_user(&app, "charlie", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &owner_jwt, "Acme Corp", "acme-corp").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id = org_body["id"].as_str().expect("org id");
+
+    let (status, _) = add_org_member(&app, &owner_jwt, "acme-corp", "bob", "admin").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = add_org_member(&app, &owner_jwt, "acme-corp", "charlie", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_team(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        "Release Engineering",
+        "release-engineering",
+        Some("Owns package publication workflows"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &owner_jwt,
+        "Acme Private Packages",
+        "acme-private-packages",
+        Some(org_id),
+        Some("private"),
+        Some("private"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, package_body) = create_package(
+        &app,
+        &owner_jwt,
+        "npm",
+        "acme-private-widget",
+        "acme-private-packages",
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let viewer_before_req = Request::builder()
+        .method(Method::GET)
+        .uri("/v1/orgs/acme-corp")
+        .header(header::AUTHORIZATION, format!("Bearer {viewer_jwt}"))
+        .body(Body::empty())
+        .unwrap();
+    let viewer_before_resp = app.clone().oneshot(viewer_before_req).await.unwrap();
+    assert_eq!(viewer_before_resp.status(), StatusCode::OK);
+    let viewer_before_body = body_json(viewer_before_resp).await;
+    assert_eq!(
+        viewer_before_body["capabilities"]["can_view_member_directory"],
+        true
+    );
+
+    let (status, updated_org_body) = update_org_profile(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        json!({ "member_directory_is_private": true }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected org update response: {updated_org_body}"
+    );
+    assert_eq!(updated_org_body["message"], "Organization updated");
+    assert_eq!(updated_org_body["member_directory_is_private"], true);
+
+    let viewer_org_req = Request::builder()
+        .method(Method::GET)
+        .uri("/v1/orgs/acme-corp")
+        .header(header::AUTHORIZATION, format!("Bearer {viewer_jwt}"))
+        .body(Body::empty())
+        .unwrap();
+    let viewer_org_resp = app.clone().oneshot(viewer_org_req).await.unwrap();
+    assert_eq!(viewer_org_resp.status(), StatusCode::OK);
+    let viewer_org_body = body_json(viewer_org_resp).await;
+    assert_eq!(viewer_org_body["member_directory_is_private"], true);
+    assert_eq!(
+        viewer_org_body["capabilities"]["can_view_member_directory"],
+        false
+    );
+
+    let admin_org_req = Request::builder()
+        .method(Method::GET)
+        .uri("/v1/orgs/acme-corp")
+        .header(header::AUTHORIZATION, format!("Bearer {admin_jwt}"))
+        .body(Body::empty())
+        .unwrap();
+    let admin_org_resp = app.clone().oneshot(admin_org_req).await.unwrap();
+    assert_eq!(admin_org_resp.status(), StatusCode::OK);
+    let admin_org_body = body_json(admin_org_resp).await;
+    assert_eq!(
+        admin_org_body["capabilities"]["can_view_member_directory"],
+        true
+    );
+
+    let viewer_members_req = Request::builder()
+        .method(Method::GET)
+        .uri("/v1/orgs/acme-corp/members")
+        .header(header::AUTHORIZATION, format!("Bearer {viewer_jwt}"))
+        .body(Body::empty())
+        .unwrap();
+    let viewer_members_resp = app.clone().oneshot(viewer_members_req).await.unwrap();
+    assert_eq!(viewer_members_resp.status(), StatusCode::FORBIDDEN);
+
+    let viewer_teams_req = Request::builder()
+        .method(Method::GET)
+        .uri("/v1/orgs/acme-corp/teams")
+        .header(header::AUTHORIZATION, format!("Bearer {viewer_jwt}"))
+        .body(Body::empty())
+        .unwrap();
+    let viewer_teams_resp = app.clone().oneshot(viewer_teams_req).await.unwrap();
+    assert_eq!(viewer_teams_resp.status(), StatusCode::FORBIDDEN);
+
+    let viewer_search_req = Request::builder()
+        .method(Method::GET)
+        .uri("/v1/orgs/acme-corp/members/search?query=al")
+        .header(header::AUTHORIZATION, format!("Bearer {viewer_jwt}"))
+        .body(Body::empty())
+        .unwrap();
+    let viewer_search_resp = app.clone().oneshot(viewer_search_req).await.unwrap();
+    assert_eq!(viewer_search_resp.status(), StatusCode::FORBIDDEN);
+
+    let admin_members_req = Request::builder()
+        .method(Method::GET)
+        .uri("/v1/orgs/acme-corp/members")
+        .header(header::AUTHORIZATION, format!("Bearer {admin_jwt}"))
+        .body(Body::empty())
+        .unwrap();
+    let admin_members_resp = app.clone().oneshot(admin_members_req).await.unwrap();
+    assert_eq!(admin_members_resp.status(), StatusCode::OK);
+
+    let viewer_packages_req = Request::builder()
+        .method(Method::GET)
+        .uri("/v1/orgs/acme-corp/packages")
+        .header(header::AUTHORIZATION, format!("Bearer {viewer_jwt}"))
+        .body(Body::empty())
+        .unwrap();
+    let viewer_packages_resp = app.clone().oneshot(viewer_packages_req).await.unwrap();
+    assert_eq!(viewer_packages_resp.status(), StatusCode::OK);
+    let viewer_packages_body = body_json(viewer_packages_resp).await;
+    assert_eq!(
+        viewer_packages_body["packages"][0]["name"],
+        "acme-private-widget"
+    );
 }
 
 #[sqlx::test(migrations = "../../migrations")]
@@ -10141,6 +10306,114 @@ async fn test_package_detail_surfaces_team_access_only_to_org_members(pool: PgPo
 }
 
 #[sqlx::test(migrations = "../../migrations")]
+async fn test_private_org_member_directory_hides_package_team_access_from_non_admin_members(
+    pool: PgPool,
+) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &alice_jwt, "Acme Org", "acme-org").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id = org_body["id"].as_str().expect("org id");
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Acme Packages",
+        "acme-packages",
+        Some(org_id),
+        Some("private"),
+        Some("private"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, package_body) =
+        create_package(&app, &alice_jwt, "npm", "acme-widget", "acme-packages").await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let (status, _) = add_org_member(&app, &alice_jwt, "acme-org", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "acme-org",
+        "Release Engineering",
+        "release-engineering",
+        Some("Publishes package releases."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, grant_body) = grant_team_package_access(
+        &app,
+        &alice_jwt,
+        "acme-org",
+        "release-engineering",
+        "npm",
+        "acme-widget",
+        &["publish"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team package access response: {grant_body}"
+    );
+
+    let (status, member_detail_before) =
+        get_package_detail(&app, Some(&bob_jwt), "npm", "acme-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        member_detail_before["team_access"][0]["team_slug"],
+        "release-engineering"
+    );
+
+    let (status, org_update_body) = update_org_profile(
+        &app,
+        &alice_jwt,
+        "acme-org",
+        json!({ "member_directory_is_private": true }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected org update response: {org_update_body}"
+    );
+    assert_eq!(org_update_body["member_directory_is_private"], true);
+
+    let (status, member_detail_after) =
+        get_package_detail(&app, Some(&bob_jwt), "npm", "acme-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(member_detail_after["team_access"], Value::Null);
+
+    let (status, owner_detail_after) =
+        get_package_detail(&app, Some(&alice_jwt), "npm", "acme-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        owner_detail_after["team_access"][0]["team_slug"],
+        "release-engineering"
+    );
+    assert_eq!(
+        owner_detail_after["team_access"][0]["permissions"],
+        json!(["publish"])
+    );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
 async fn test_package_detail_team_access_updates_after_grant_revoke(pool: PgPool) {
     let app = app(pool);
     register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
@@ -14136,7 +14409,11 @@ async fn test_native_pypi_simple_api_projects_requires_python_and_dependency_met
     let (status, token_body) =
         create_personal_access_token(&app, &alice_jwt, "alice-pypi-publish", &["packages:write"])
             .await;
-    assert_eq!(status, StatusCode::CREATED, "unexpected token response: {token_body}");
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
     let pypi_token = token_body["token"]
         .as_str()
         .expect("pypi token should be returned")
@@ -14191,25 +14468,39 @@ async fn test_native_pypi_simple_api_projects_requires_python_and_dependency_met
         .expect("provides_extra should be readable")
         .expect("provides_extra should be present");
     assert_eq!(requires_python.as_deref(), Some(">=3.10"));
-    assert_eq!(requires_dist, vec!["requests>=2.31".to_owned(), "urllib3>=2".to_owned()]);
+    assert_eq!(
+        requires_dist,
+        vec!["requests>=2.31".to_owned(), "urllib3>=2".to_owned()]
+    );
     assert_eq!(requires_external, vec!["libssl".to_owned()]);
     assert_eq!(provides_extra, vec!["s3".to_owned()]);
 
     let (status, simple_json) =
         get_pypi_simple_project_json(&app, None, "native-metadata-widget").await;
-    assert_eq!(status, StatusCode::OK, "unexpected simple api response: {simple_json}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected simple api response: {simple_json}"
+    );
     assert_eq!(simple_json["name"], "native-metadata-widget");
     assert_eq!(simple_json["files"][0]["requires-python"], ">=3.10");
     assert_eq!(
         simple_json["files"][0]["requires-dist"],
         json!(["requests>=2.31", "urllib3>=2"])
     );
-    assert_eq!(simple_json["files"][0]["requires-external"], json!(["libssl"]));
+    assert_eq!(
+        simple_json["files"][0]["requires-external"],
+        json!(["libssl"])
+    );
     assert_eq!(simple_json["files"][0]["provides-extra"], json!(["s3"]));
 
     let (status, simple_html) =
         get_pypi_simple_project_html(&app, None, "native-metadata-widget").await;
-    assert_eq!(status, StatusCode::OK, "unexpected simple html response: {simple_html}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected simple html response: {simple_html}"
+    );
     assert!(simple_html.contains("data-requires-python=\"&gt;=3.10\""));
 }
 
@@ -14238,7 +14529,11 @@ async fn test_native_pypi_retry_preserves_existing_requires_python_metadata(pool
     let (status, token_body) =
         create_personal_access_token(&app, &alice_jwt, "alice-pypi-publish", &["packages:write"])
             .await;
-    assert_eq!(status, StatusCode::CREATED, "unexpected token response: {token_body}");
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
     let pypi_token = token_body["token"]
         .as_str()
         .expect("pypi token should be returned")
@@ -14276,8 +14571,13 @@ async fn test_native_pypi_retry_preserves_existing_requires_python_metadata(pool
         "unexpected retry pypi upload response: {retry_body}"
     );
 
-    let (status, simple_json) = get_pypi_simple_project_json(&app, None, "native-retry-widget").await;
-    assert_eq!(status, StatusCode::OK, "unexpected simple api response: {simple_json}");
+    let (status, simple_json) =
+        get_pypi_simple_project_json(&app, None, "native-retry-widget").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected simple api response: {simple_json}"
+    );
     assert_eq!(simple_json["files"][0]["requires-python"], ">=3.11");
 }
 
@@ -14306,7 +14606,11 @@ async fn test_native_pypi_simple_api_omits_missing_resolver_metadata(pool: PgPoo
     let (status, token_body) =
         create_personal_access_token(&app, &alice_jwt, "alice-pypi-publish", &["packages:write"])
             .await;
-    assert_eq!(status, StatusCode::CREATED, "unexpected token response: {token_body}");
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
     let pypi_token = token_body["token"]
         .as_str()
         .expect("pypi token should be returned")
@@ -14336,11 +14640,18 @@ async fn test_native_pypi_simple_api_omits_missing_resolver_metadata(pool: PgPoo
     .fetch_one(&pool)
     .await
     .expect("pypi metadata count should be queryable");
-    assert_eq!(metadata_row, 0, "empty uploads should not create metadata rows");
+    assert_eq!(
+        metadata_row, 0,
+        "empty uploads should not create metadata rows"
+    );
 
     let (status, simple_json) =
         get_pypi_simple_project_json(&app, None, "native-null-metadata-widget").await;
-    assert_eq!(status, StatusCode::OK, "unexpected simple api response: {simple_json}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected simple api response: {simple_json}"
+    );
     assert!(simple_json["files"][0].get("requires-python").is_none());
     assert!(simple_json["files"][0].get("requires-dist").is_none());
     assert!(simple_json["files"][0].get("requires-external").is_none());
@@ -14348,7 +14659,11 @@ async fn test_native_pypi_simple_api_omits_missing_resolver_metadata(pool: PgPoo
 
     let (status, simple_html) =
         get_pypi_simple_project_html(&app, None, "native-null-metadata-widget").await;
-    assert_eq!(status, StatusCode::OK, "unexpected simple html response: {simple_html}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected simple html response: {simple_html}"
+    );
     assert!(!simple_html.contains("data-requires-python"));
 }
 
@@ -16520,7 +16835,11 @@ async fn test_native_oci_blob_cleanup_jobs_are_enqueued_for_uploads_and_manifest
         &["packages:write"],
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "unexpected token response: {token_body}");
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
     let oci_token = token_body["token"]
         .as_str()
         .expect("oci token should be returned")
@@ -16537,8 +16856,14 @@ async fn test_native_oci_blob_cleanup_jobs_are_enqueued_for_uploads_and_manifest
     assert_eq!(layer_resp.status(), StatusCode::CREATED);
 
     let cleanup_jobs_after_upload = fetch_oci_cleanup_jobs(&pool).await;
-    assert_eq!(cleanup_jobs_after_upload.len(), 2, "jobs: {cleanup_jobs_after_upload:?}");
-    assert!(cleanup_jobs_after_upload.iter().all(|(_, status, _)| status == "pending"));
+    assert_eq!(
+        cleanup_jobs_after_upload.len(),
+        2,
+        "jobs: {cleanup_jobs_after_upload:?}"
+    );
+    assert!(cleanup_jobs_after_upload
+        .iter()
+        .all(|(_, status, _)| status == "pending"));
     assert!(cleanup_jobs_after_upload.iter().all(|(payload, _, _)| {
         payload["grace_period_hours"] == json!(168) && payload["batch_size"] == json!(100)
     }));
@@ -16587,7 +16912,11 @@ async fn test_native_oci_blob_cleanup_jobs_are_enqueued_for_uploads_and_manifest
     assert_eq!(delete_manifest_resp.status(), StatusCode::ACCEPTED);
 
     let cleanup_jobs_after_delete = fetch_oci_cleanup_jobs(&pool).await;
-    assert_eq!(cleanup_jobs_after_delete.len(), 3, "jobs: {cleanup_jobs_after_delete:?}");
+    assert_eq!(
+        cleanup_jobs_after_delete.len(),
+        3,
+        "jobs: {cleanup_jobs_after_delete:?}"
+    );
     assert!(cleanup_jobs_after_delete
         .iter()
         .any(|(_, _, scheduled_at)| *scheduled_at <= Utc::now()));
@@ -16638,7 +16967,11 @@ async fn test_native_oci_blob_cleanup_handler_preserves_referenced_blobs(pool: P
         &["packages:write"],
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "unexpected token response: {token_body}");
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
     let oci_token = token_body["token"]
         .as_str()
         .expect("oci token should be returned")
@@ -16746,7 +17079,11 @@ async fn test_native_oci_blob_cleanup_handler_removes_orphaned_blobs_after_manif
         &["packages:write"],
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "unexpected token response: {token_body}");
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
     let oci_token = token_body["token"]
         .as_str()
         .expect("oci token should be returned")
@@ -16878,7 +17215,11 @@ async fn test_native_oci_blob_cleanup_handler_respects_grace_period_and_is_idemp
         &["packages:write"],
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "unexpected token response: {token_body}");
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
     let oci_token = token_body["token"]
         .as_str()
         .expect("oci token should be returned")

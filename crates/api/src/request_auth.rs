@@ -180,7 +180,7 @@ impl OrgAccessRequirement {
         match self {
             Self::Admin => "Organization administration requires owner or admin membership",
             Self::MemberDirectory => {
-                "Organization member and team directories require organization membership"
+                "Organization member and team directories require organization membership, and private directories are limited to owners and admins"
             }
             Self::AuditLog => {
                 "Organization activity log requires owner, admin, or auditor membership"
@@ -585,6 +585,10 @@ async fn authorize_org_access_by_requirement(
     actor_user_id: Uuid,
     requirement: OrgAccessRequirement,
 ) -> ApiResult<OrgAccessOutcome> {
+    if matches!(requirement, OrgAccessRequirement::MemberDirectory) {
+        return authorize_org_member_directory_access(db, org_id, actor_user_id).await;
+    }
+
     if requirement.requires_write_role_mfa() {
         return Ok(
             match authorize_org_write_roles(
@@ -619,6 +623,43 @@ async fn authorize_org_access_by_requirement(
     } else {
         OrgAccessOutcome::MissingPermission
     })
+}
+
+async fn authorize_org_member_directory_access(
+    db: &PgPool,
+    org_id: Uuid,
+    actor_user_id: Uuid,
+) -> ApiResult<OrgAccessOutcome> {
+    let row = sqlx::query(
+        "SELECT om.role::text AS role, o.member_directory_is_private \
+         FROM org_memberships om \
+         JOIN organizations o ON o.id = om.org_id \
+         WHERE om.org_id = $1 AND om.user_id = $2",
+    )
+    .bind(org_id)
+    .bind(actor_user_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let Some(row) = row else {
+        return Ok(OrgAccessOutcome::MissingPermission);
+    };
+
+    let role = row
+        .try_get::<String, _>("role")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let member_directory_is_private = row
+        .try_get::<bool, _>("member_directory_is_private")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+
+    Ok(
+        if !member_directory_is_private || ORG_ADMIN_ROLES.contains(&role.as_str()) {
+            OrgAccessOutcome::Allowed
+        } else {
+            OrgAccessOutcome::MissingPermission
+        },
+    )
 }
 
 async fn ensure_org_access_by_requirement(
@@ -1165,7 +1206,7 @@ pub async fn ensure_org_admin_by_slug(
         .await
 }
 
-pub async fn ensure_org_member_by_slug(
+pub async fn ensure_org_member_directory_access_by_slug(
     db: &PgPool,
     slug: &str,
     actor_user_id: Uuid,
@@ -1202,7 +1243,7 @@ pub async fn actor_can_manage_org_by_id(
         .await
 }
 
-pub async fn actor_can_access_org_member_directory_by_id(
+pub async fn actor_can_view_org_member_directory_by_id(
     db: &PgPool,
     org_id: Uuid,
     actor_user_id: Option<Uuid>,
@@ -1214,6 +1255,18 @@ pub async fn actor_can_access_org_member_directory_by_id(
         OrgAccessRequirement::MemberDirectory,
     )
     .await
+}
+
+pub async fn actor_can_view_non_public_org_resources_by_id(
+    db: &PgPool,
+    org_id: Uuid,
+    actor_user_id: Option<Uuid>,
+) -> ApiResult<bool> {
+    let Some(actor_user_id) = actor_user_id else {
+        return Ok(false);
+    };
+
+    is_org_member(db, org_id, actor_user_id).await
 }
 
 pub async fn actor_can_access_org_audit_log_by_id(
@@ -1303,7 +1356,7 @@ pub async fn actor_org_capabilities_by_id(
             .await?,
         can_manage_namespaces: actor_can_manage_org_namespaces_by_id(db, org_id, actor_user_id)
             .await?,
-        can_view_member_directory: actor_can_access_org_member_directory_by_id(
+        can_view_member_directory: actor_can_view_org_member_directory_by_id(
             db,
             org_id,
             actor_user_id,
@@ -2099,7 +2152,7 @@ mod tests {
         );
         assert_eq!(
             OrgAccessRequirement::MemberDirectory.denial_message(),
-            "Organization member and team directories require organization membership"
+            "Organization member and team directories require organization membership, and private directories are limited to owners and admins"
         );
         assert_eq!(
             OrgAccessRequirement::AuditLog.denial_message(),

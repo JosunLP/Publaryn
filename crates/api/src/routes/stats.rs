@@ -1,5 +1,7 @@
 use axum::{extract::State, routing::get, Json, Router};
+use serde::Serialize;
 use sqlx::Row;
+use utoipa::ToSchema;
 
 use publaryn_core::error::Error;
 
@@ -8,12 +10,34 @@ use crate::{
     state::AppState,
 };
 
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub(crate) struct PlatformStatsResponse {
+    pub packages: i64,
+    pub releases: i64,
+    pub organizations: i64,
+    pub security_findings_total: i64,
+    pub security_findings_unresolved: i64,
+    pub artifacts_stored: i64,
+    pub job_queue_pending: i64,
+}
+
 pub fn router() -> Router<AppState> {
     Router::new().route("/v1/stats", get(platform_stats))
 }
 
 /// GET /v1/stats — public platform statistics
-async fn platform_stats(State(state): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
+#[utoipa::path(
+    get,
+    path = "/v1/stats",
+    tag = "stats",
+    responses(
+        (status = 200, description = "Public platform statistics", body = PlatformStatsResponse),
+    )
+)]
+#[allow(dead_code)]
+pub async fn platform_stats_doc() {}
+
+async fn platform_stats(State(state): State<AppState>) -> ApiResult<Json<PlatformStatsResponse>> {
     let row = sqlx::query(
         "SELECT \
            (SELECT COUNT(*) FROM packages WHERE visibility = 'public') AS package_count, \
@@ -37,13 +61,13 @@ async fn platform_stats(State(state): State<AppState>) -> ApiResult<Json<serde_j
     let artifacts_stored: i64 = row.try_get("artifacts_stored").unwrap_or(0);
     let job_queue_pending: i64 = row.try_get("job_queue_pending").unwrap_or(0);
 
-    Ok(Json(serde_json::json!({
-        "packages": package_count,
-        "releases": release_count,
-        "organizations": org_count,
-        "security_findings_total": security_findings_total,
-        "security_findings_unresolved": security_findings_unresolved,
-        "artifacts_stored": artifacts_stored,
-        "job_queue_pending": job_queue_pending,
-    })))
+    Ok(Json(PlatformStatsResponse {
+        packages: package_count,
+        releases: release_count,
+        organizations: org_count,
+        security_findings_total,
+        security_findings_unresolved,
+        artifacts_stored,
+        job_queue_pending,
+    }))
 }

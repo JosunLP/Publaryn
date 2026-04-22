@@ -3,32 +3,11 @@
   import { page } from '$app/stores';
 
   import { ApiError, getAuthToken } from '../../../api/client';
-  import type {
-    NamespaceClaim,
-    NamespaceTransferOwnershipResult,
-  } from '../../../api/namespaces';
   import {
     createNamespaceClaim,
     deleteNamespaceClaim,
     transferNamespaceClaim,
   } from '../../../api/namespaces';
-  import type {
-    OrgAuditListResponse,
-    OrgAuditLog,
-    OrgInvitation,
-    OrgMember,
-    OrgPackageSummary,
-    OrgRepositoryPackageCoverageResponse,
-    OrgRepositorySummary,
-    OrgSecurityPackageSummary,
-    OrgSecurityQuery,
-    OrgSecuritySummary,
-    OrganizationDetail,
-    OrganizationListResponse,
-    OrganizationMembership,
-    Team,
-    TransferOwnershipResult,
-  } from '../../../api/orgs';
   import {
     addMember,
     createTeam,
@@ -46,14 +25,12 @@
     transferOwnership,
     updateOrg,
   } from '../../../api/orgs';
-  import type { SecurityFinding } from '../../../api/packages';
   import {
     createPackage,
     listSecurityFindings,
     transferPackageOwnership,
     updateSecurityFinding,
   } from '../../../api/packages';
-  import type { RepositoryPackageSummary } from '../../../api/repositories';
   import {
     createRepository,
     transferRepositoryOwnership,
@@ -67,7 +44,6 @@
   import TeamPackageAccessEditor from '../../../lib/components/TeamPackageAccessEditor.svelte';
   import TeamRepositoryAccessEditor from '../../../lib/components/TeamRepositoryAccessEditor.svelte';
   import TeamSettingsEditor from '../../../lib/components/TeamSettingsEditor.svelte';
-  import type { OrgAuditActorOption } from '../../../pages/org-audit-actors';
   import {
     buildAuditActorOptions,
     buildRemoteAuditActorOptions,
@@ -95,7 +71,6 @@
     formatOrgInvitationStatusLabel,
     partitionOrgInvitations,
   } from '../../../pages/org-invitation-history';
-  import type { OrgMemberPickerOption } from '../../../pages/org-member-picker';
   import {
     buildOrgMemberPickerOptions,
     resolveOrgMemberPickerInput,
@@ -149,10 +124,6 @@
     buildTeamManagementStateMapsFromBootstrap,
     createTeamManagementController,
     loadOrgMembersState,
-    type TeamMemberState,
-    type TeamNamespaceAccessState,
-    type TeamPackageAccessState,
-    type TeamRepositoryAccessState,
   } from '../../../pages/team-management';
   import { ECOSYSTEMS, ecosystemLabel } from '../../../utils/ecosystem';
   import { formatDate, formatNumber } from '../../../utils/format';
@@ -182,6 +153,45 @@
     totalSecuritySeverityCounts,
     worstSecuritySeverityFromCounts,
   } from '../../../utils/security';
+
+  type NamespaceClaim = import('../../../api/namespaces').NamespaceClaim;
+  type NamespaceTransferOwnershipResult =
+    import('../../../api/namespaces').NamespaceTransferOwnershipResult;
+  type OrgAuditListResponse = import('../../../api/orgs').OrgAuditListResponse;
+  type OrgAuditLog = import('../../../api/orgs').OrgAuditLog;
+  type OrgInvitation = import('../../../api/orgs').OrgInvitation;
+  type OrgMember = import('../../../api/orgs').OrgMember;
+  type OrgPackageSummary = import('../../../api/orgs').OrgPackageSummary;
+  type OrgRepositoryPackageCoverageResponse =
+    import('../../../api/orgs').OrgRepositoryPackageCoverageResponse;
+  type OrgRepositorySummary = import('../../../api/orgs').OrgRepositorySummary;
+  type OrgSecurityPackageSummary =
+    import('../../../api/orgs').OrgSecurityPackageSummary;
+  type OrgSecurityQuery = import('../../../api/orgs').OrgSecurityQuery;
+  type OrgSecuritySummary = import('../../../api/orgs').OrgSecuritySummary;
+  type OrganizationDetail = import('../../../api/orgs').OrganizationDetail;
+  type OrganizationListResponse =
+    import('../../../api/orgs').OrganizationListResponse;
+  type OrganizationMembership =
+    import('../../../api/orgs').OrganizationMembership;
+  type Team = import('../../../api/orgs').Team;
+  type TransferOwnershipResult =
+    import('../../../api/orgs').TransferOwnershipResult;
+  type SecurityFinding = import('../../../api/packages').SecurityFinding;
+  type RepositoryPackageSummary =
+    import('../../../api/repositories').RepositoryPackageSummary;
+  type OrgAuditActorOption =
+    import('../../../pages/org-audit-actors').OrgAuditActorOption;
+  type OrgMemberPickerOption =
+    import('../../../pages/org-member-picker').OrgMemberPickerOption;
+  type TeamMemberState =
+    import('../../../pages/team-management').TeamMemberState;
+  type TeamNamespaceAccessState =
+    import('../../../pages/team-management').TeamNamespaceAccessState;
+  type TeamPackageAccessState =
+    import('../../../pages/team-management').TeamPackageAccessState;
+  type TeamRepositoryAccessState =
+    import('../../../pages/team-management').TeamRepositoryAccessState;
 
   const ORG_AUDIT_PAGE_SIZE = 20;
   const DEFAULT_NAMESPACE_ECOSYSTEM = 'npm';
@@ -1054,6 +1064,7 @@
         website: normalizeFormOptionalText(formData.get('website')),
         email: normalizeFormOptionalText(formData.get('email')),
         mfaRequired: formData.has('mfa_required'),
+        memberDirectoryIsPrivate: formData.has('member_directory_is_private'),
       });
       await loadOrganizationPage({ notice: 'Organization profile updated.' });
     } catch (caughtError: unknown) {
@@ -2067,6 +2078,9 @@
             {#if org.mfa_required}<span class="badge badge-ecosystem"
                 >MFA required</span
               >{/if}
+            {#if org.member_directory_is_private}<span
+                class="badge badge-ecosystem">Private directory</span
+              >{/if}
           </div>
           <p class="text-muted">@{org.slug || slug}</p>
           <p class="settings-copy">
@@ -2284,9 +2298,7 @@
             </div>
           </div>
           <div class="form-group">
-            <label for="org-profile-mfa-required"
-              >Organization security policy</label
-            >
+            <label for="org-profile-mfa-required">Organization policies</label>
             <label
               for="org-profile-mfa-required"
               class="settings-copy"
@@ -2302,6 +2314,24 @@
                 <strong>Require MFA for maintainers</strong><br />
                 Record an organization-level MFA requirement for elevated roles including
                 owners, admins, maintainers, publishers, and security managers.
+              </span>
+            </label>
+            <label
+              for="org-profile-member-directory-private"
+              class="settings-copy"
+              style="display:flex; gap:12px; align-items:flex-start; margin-top:12px;"
+            >
+              <input
+                id="org-profile-member-directory-private"
+                name="member_directory_is_private"
+                type="checkbox"
+                checked={Boolean(org.member_directory_is_private)}
+              />
+              <span>
+                <strong>Restrict member and team directories</strong><br />
+                Limit the people and team directory to organization owners and admins
+                while keeping other non-public organization resources available to
+                members.
               </span>
             </label>
           </div>
@@ -3365,8 +3395,13 @@
       <section class="card settings-section">
         <h2>People and teams</h2>
         <p class="settings-copy">
-          Organization membership and team structure are only visible to current
-          organization members.
+          {#if org.member_directory_is_private}
+            This organization restricts member and team directories to owners
+            and admins.
+          {:else}
+            Organization membership and team structure are only visible to
+            current organization members.
+          {/if}
         </p>
       </section>
     {/if}

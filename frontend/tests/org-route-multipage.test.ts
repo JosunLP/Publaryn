@@ -118,6 +118,7 @@ interface FetchScenario {
   orgUpdateCalls: MutationCall[];
   ownershipTransfers: MutationCall[];
   orgMfaRequired: boolean;
+  orgMemberDirectoryIsPrivate: boolean;
   teamRepositoryAccessUpdates: MutationCall[];
   teamPackageAccessUpdates: MutationCall[];
   teamDeleteCalls: string[];
@@ -136,9 +137,12 @@ const NAMESPACE_CLAIM_ID = 'claim-001';
 const NAMESPACE_CLAIM_VALUE = '@source-org';
 const ACTIVE_INVITATION_ID = 'invite-001';
 const ACTIVE_INVITEE_EMAIL = 'new-maintainer@example.test';
-const apiClientModuleUrl = new URL('../src/api/client.ts', import.meta.url).href;
+const apiClientModuleUrl = new URL('../src/api/client.ts', import.meta.url)
+  .href;
 const gotoCalls: string[] = [];
-const pageStore = writable<TestPageState>(buildPageState('https://example.test/'));
+const pageStore = writable<TestPageState>(
+  buildPageState('https://example.test/')
+);
 let currentAuthToken: string | null = null;
 let currentScenario: FetchScenario | null = null;
 
@@ -323,14 +327,16 @@ describe('route-level multi-page org dataset coverage', () => {
           '#org-package-transfer-package'
         );
 
-        expect(optionValues(repositoryGrantSelect)).toContain(finalRepository?.slug);
+        expect(optionValues(repositoryGrantSelect)).toContain(
+          finalRepository?.slug
+        );
         expect(optionValues(packageGrantSelect)).toContain(finalPackageKey);
-        expect(optionValues(repositoryTransferSelect)).toContain(finalRepository?.slug);
+        expect(optionValues(repositoryTransferSelect)).toContain(
+          finalRepository?.slug
+        );
         expect(optionValues(packageTransferSelect)).toContain(finalPackageKey);
         expect(
-          target.querySelector(
-            `a[href="/orgs/${ORG_SLUG}/teams/${TEAM_SLUG}"]`
-          )
+          target.querySelector(`a[href="/orgs/${ORG_SLUG}/teams/${TEAM_SLUG}"]`)
         ).not.toBeNull();
         expect(target.textContent).toContain('@admin-user');
         expect(
@@ -385,7 +391,9 @@ describe('route-level multi-page org dataset coverage', () => {
         expect(scenario.repositoryPackageCoverageRequests).toEqual([]);
         expect(target.textContent).toContain('repo-package-001');
         expect(
-          target.querySelector('a[href="/packages/npm/repo-package-001?tab=security"]')
+          target.querySelector(
+            'a[href="/packages/npm/repo-package-001?tab=security"]'
+          )
         ).not.toBeNull();
         expect(
           target.querySelector('a[href="/packages/npm/repo-package-001"]')
@@ -405,7 +413,10 @@ describe('route-level multi-page org dataset coverage', () => {
         expect(target.textContent).toContain('Organization profile');
       });
 
-      const profileCheckbox = queryCheckbox(target, '#org-profile-mfa-required');
+      const profileCheckbox = queryCheckbox(
+        target,
+        '#org-profile-mfa-required'
+      );
       expect(profileCheckbox.checked).toBe(false);
 
       const profileForm = queryRequiredForm(profileCheckbox.closest('form'));
@@ -425,9 +436,55 @@ describe('route-level multi-page org dataset coverage', () => {
           website: null,
           email: null,
           mfa_required: true,
+          member_directory_is_private: false,
         },
       });
-      expect(queryCheckbox(target, '#org-profile-mfa-required').checked).toBe(true);
+      expect(queryCheckbox(target, '#org-profile-mfa-required').checked).toBe(
+        true
+      );
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace saves and reloads private member-directory policy', async () => {
+    const scenario = createFetchScenario();
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Organization profile');
+      });
+
+      const directoryCheckbox = queryCheckbox(
+        target,
+        '#org-profile-member-directory-private'
+      );
+      expect(directoryCheckbox.checked).toBe(false);
+
+      const profileForm = queryRequiredForm(directoryCheckbox.closest('form'));
+      setChecked(directoryCheckbox, true);
+      submitForm(profileForm);
+
+      await waitFor(() => {
+        expect(scenario.orgUpdateCalls).toHaveLength(1);
+        expect(target.textContent).toContain('Organization profile updated.');
+        expect(target.textContent).toContain('Private directory');
+      });
+
+      expect(scenario.orgUpdateCalls[0]).toEqual({
+        path: `/v1/orgs/${ORG_SLUG}`,
+        body: {
+          description: 'Source organization',
+          website: null,
+          email: null,
+          mfa_required: false,
+          member_directory_is_private: true,
+        },
+      });
+      expect(
+        queryCheckbox(target, '#org-profile-member-directory-private').checked
+      ).toBe(true);
     } finally {
       unmount();
     }
@@ -472,10 +529,14 @@ describe('route-level multi-page org dataset coverage', () => {
       click(queryRequiredButton(target, `#team-delete-toggle-${TEAM_SLUG}`));
 
       await waitFor(() => {
-        expect(queryRequiredFormBySelector(target, `#team-delete-form-${TEAM_SLUG}`)).toBeDefined();
+        expect(
+          queryRequiredFormBySelector(target, `#team-delete-form-${TEAM_SLUG}`)
+        ).toBeDefined();
       });
 
-      submitForm(queryRequiredFormBySelector(target, `#team-delete-form-${TEAM_SLUG}`));
+      submitForm(
+        queryRequiredFormBySelector(target, `#team-delete-form-${TEAM_SLUG}`)
+      );
 
       await waitFor(() => {
         expect(target.textContent).toContain(
@@ -485,7 +546,9 @@ describe('route-level multi-page org dataset coverage', () => {
 
       expect(scenario.teamDeleteCalls).toEqual([]);
       expect(scenario.teams.map((team) => team.slug)).toContain(TEAM_SLUG);
-      expect(queryRequiredFormBySelector(target, `#team-delete-form-${TEAM_SLUG}`)).toBeDefined();
+      expect(
+        queryRequiredFormBySelector(target, `#team-delete-form-${TEAM_SLUG}`)
+      ).toBeDefined();
     } finally {
       unmount();
     }
@@ -503,14 +566,18 @@ describe('route-level multi-page org dataset coverage', () => {
       click(queryRequiredButton(target, `#team-delete-toggle-${TEAM_SLUG}`));
 
       await waitFor(() => {
-        expect(queryRequiredFormBySelector(target, `#team-delete-form-${TEAM_SLUG}`)).toBeDefined();
+        expect(
+          queryRequiredFormBySelector(target, `#team-delete-form-${TEAM_SLUG}`)
+        ).toBeDefined();
       });
 
       setChecked(
         queryCheckbox(target, `#team-delete-confirm-${TEAM_SLUG}`),
         true
       );
-      submitForm(queryRequiredFormBySelector(target, `#team-delete-form-${TEAM_SLUG}`));
+      submitForm(
+        queryRequiredFormBySelector(target, `#team-delete-form-${TEAM_SLUG}`)
+      );
 
       await waitFor(() => {
         expect(scenario.teamDeleteCalls).toEqual([
@@ -538,19 +605,25 @@ describe('route-level multi-page org dataset coverage', () => {
       click(queryRequiredButton(target, `#team-delete-toggle-${TEAM_SLUG}`));
 
       await waitFor(() => {
-        expect(queryRequiredFormBySelector(target, `#team-delete-form-${TEAM_SLUG}`)).toBeDefined();
+        expect(
+          queryRequiredFormBySelector(target, `#team-delete-form-${TEAM_SLUG}`)
+        ).toBeDefined();
       });
 
       setChecked(
         queryCheckbox(target, `#team-delete-confirm-${TEAM_SLUG}`),
         true
       );
-      submitForm(queryRequiredFormBySelector(target, `#team-delete-form-${TEAM_SLUG}`));
+      submitForm(
+        queryRequiredFormBySelector(target, `#team-delete-form-${TEAM_SLUG}`)
+      );
 
       await waitFor(() => {
         expect(target.textContent).toContain('Failed to delete team.');
         expect(scenario.teamDeleteCalls).toEqual([]);
-        expect(queryRequiredFormBySelector(target, `#team-delete-form-${TEAM_SLUG}`)).toBeDefined();
+        expect(
+          queryRequiredFormBySelector(target, `#team-delete-form-${TEAM_SLUG}`)
+        ).toBeDefined();
       });
 
       expect(scenario.teams.map((team) => team.slug)).toContain(TEAM_SLUG);
@@ -569,16 +642,27 @@ describe('route-level multi-page org dataset coverage', () => {
         expect(target.textContent).toContain(NAMESPACE_CLAIM_VALUE);
       });
 
-      click(queryRequiredButton(target, `#namespace-delete-toggle-${NAMESPACE_CLAIM_ID}`));
+      click(
+        queryRequiredButton(
+          target,
+          `#namespace-delete-toggle-${NAMESPACE_CLAIM_ID}`
+        )
+      );
 
       await waitFor(() => {
         expect(
-          queryRequiredFormBySelector(target, `#namespace-delete-form-${NAMESPACE_CLAIM_ID}`)
+          queryRequiredFormBySelector(
+            target,
+            `#namespace-delete-form-${NAMESPACE_CLAIM_ID}`
+          )
         ).toBeDefined();
       });
 
       submitForm(
-        queryRequiredFormBySelector(target, `#namespace-delete-form-${NAMESPACE_CLAIM_ID}`)
+        queryRequiredFormBySelector(
+          target,
+          `#namespace-delete-form-${NAMESPACE_CLAIM_ID}`
+        )
       );
 
       await waitFor(() => {
@@ -588,9 +672,14 @@ describe('route-level multi-page org dataset coverage', () => {
       });
 
       expect(scenario.namespaceDeleteCalls).toEqual([]);
-      expect(scenario.namespaces.map((claim) => claim.id)).toContain(NAMESPACE_CLAIM_ID);
+      expect(scenario.namespaces.map((claim) => claim.id)).toContain(
+        NAMESPACE_CLAIM_ID
+      );
       expect(
-        queryRequiredFormBySelector(target, `#namespace-delete-form-${NAMESPACE_CLAIM_ID}`)
+        queryRequiredFormBySelector(
+          target,
+          `#namespace-delete-form-${NAMESPACE_CLAIM_ID}`
+        )
       ).toBeDefined();
     } finally {
       unmount();
@@ -606,20 +695,34 @@ describe('route-level multi-page org dataset coverage', () => {
         expect(target.textContent).toContain(NAMESPACE_CLAIM_VALUE);
       });
 
-      click(queryRequiredButton(target, `#namespace-delete-toggle-${NAMESPACE_CLAIM_ID}`));
+      click(
+        queryRequiredButton(
+          target,
+          `#namespace-delete-toggle-${NAMESPACE_CLAIM_ID}`
+        )
+      );
 
       await waitFor(() => {
         expect(
-          queryRequiredFormBySelector(target, `#namespace-delete-form-${NAMESPACE_CLAIM_ID}`)
+          queryRequiredFormBySelector(
+            target,
+            `#namespace-delete-form-${NAMESPACE_CLAIM_ID}`
+          )
         ).toBeDefined();
       });
 
       setChecked(
-        queryCheckbox(target, `#namespace-delete-confirm-${NAMESPACE_CLAIM_ID}`),
+        queryCheckbox(
+          target,
+          `#namespace-delete-confirm-${NAMESPACE_CLAIM_ID}`
+        ),
         true
       );
       submitForm(
-        queryRequiredFormBySelector(target, `#namespace-delete-form-${NAMESPACE_CLAIM_ID}`)
+        queryRequiredFormBySelector(
+          target,
+          `#namespace-delete-form-${NAMESPACE_CLAIM_ID}`
+        )
       );
 
       await waitFor(() => {
@@ -649,31 +752,52 @@ describe('route-level multi-page org dataset coverage', () => {
         expect(target.textContent).toContain(NAMESPACE_CLAIM_VALUE);
       });
 
-      click(queryRequiredButton(target, `#namespace-delete-toggle-${NAMESPACE_CLAIM_ID}`));
+      click(
+        queryRequiredButton(
+          target,
+          `#namespace-delete-toggle-${NAMESPACE_CLAIM_ID}`
+        )
+      );
 
       await waitFor(() => {
         expect(
-          queryRequiredFormBySelector(target, `#namespace-delete-form-${NAMESPACE_CLAIM_ID}`)
+          queryRequiredFormBySelector(
+            target,
+            `#namespace-delete-form-${NAMESPACE_CLAIM_ID}`
+          )
         ).toBeDefined();
       });
 
       setChecked(
-        queryCheckbox(target, `#namespace-delete-confirm-${NAMESPACE_CLAIM_ID}`),
+        queryCheckbox(
+          target,
+          `#namespace-delete-confirm-${NAMESPACE_CLAIM_ID}`
+        ),
         true
       );
       submitForm(
-        queryRequiredFormBySelector(target, `#namespace-delete-form-${NAMESPACE_CLAIM_ID}`)
+        queryRequiredFormBySelector(
+          target,
+          `#namespace-delete-form-${NAMESPACE_CLAIM_ID}`
+        )
       );
 
       await waitFor(() => {
-        expect(target.textContent).toContain('Failed to delete namespace claim.');
+        expect(target.textContent).toContain(
+          'Failed to delete namespace claim.'
+        );
         expect(scenario.namespaceDeleteCalls).toEqual([]);
         expect(
-          queryRequiredFormBySelector(target, `#namespace-delete-form-${NAMESPACE_CLAIM_ID}`)
+          queryRequiredFormBySelector(
+            target,
+            `#namespace-delete-form-${NAMESPACE_CLAIM_ID}`
+          )
         ).toBeDefined();
       });
 
-      expect(scenario.namespaces.map((claim) => claim.id)).toContain(NAMESPACE_CLAIM_ID);
+      expect(scenario.namespaces.map((claim) => claim.id)).toContain(
+        NAMESPACE_CLAIM_ID
+      );
       expect(target.textContent).toContain(NAMESPACE_CLAIM_VALUE);
     } finally {
       unmount();
@@ -851,7 +975,9 @@ describe('route-level multi-page org dataset coverage', () => {
         ).toBeDefined();
       });
 
-      submitForm(queryRequiredFormBySelector(target, '#member-remove-form-admin-user'));
+      submitForm(
+        queryRequiredFormBySelector(target, '#member-remove-form-admin-user')
+      );
 
       await waitFor(() => {
         expect(target.textContent).toContain(
@@ -887,7 +1013,9 @@ describe('route-level multi-page org dataset coverage', () => {
         queryCheckbox(target, '#member-remove-confirm-admin-user'),
         true
       );
-      submitForm(queryRequiredFormBySelector(target, '#member-remove-form-admin-user'));
+      submitForm(
+        queryRequiredFormBySelector(target, '#member-remove-form-admin-user')
+      );
 
       await waitFor(() => {
         expect(scenario.memberRemoveCalls).toEqual([
@@ -898,7 +1026,9 @@ describe('route-level multi-page org dataset coverage', () => {
         );
       });
 
-      expect(target.querySelector('#member-remove-toggle-admin-user')).toBeNull();
+      expect(
+        target.querySelector('#member-remove-toggle-admin-user')
+      ).toBeNull();
     } finally {
       unmount();
     }
@@ -926,7 +1056,9 @@ describe('route-level multi-page org dataset coverage', () => {
         queryCheckbox(target, '#member-remove-confirm-admin-user'),
         true
       );
-      submitForm(queryRequiredFormBySelector(target, '#member-remove-form-admin-user'));
+      submitForm(
+        queryRequiredFormBySelector(target, '#member-remove-form-admin-user')
+      );
 
       await waitFor(() => {
         expect(target.textContent).toContain('Failed to remove member.');
@@ -963,10 +1095,16 @@ describe('route-level multi-page org dataset coverage', () => {
         ).toBeDefined();
       });
 
-      submitForm(queryRequiredForm(queryRequiredInput(target, '#org-transfer-owner').closest('form')));
+      submitForm(
+        queryRequiredForm(
+          queryRequiredInput(target, '#org-transfer-owner').closest('form')
+        )
+      );
 
       await waitFor(() => {
-        expect(target.textContent).toContain('Please confirm the ownership transfer.');
+        expect(target.textContent).toContain(
+          'Please confirm the ownership transfer.'
+        );
       });
 
       expect(scenario.ownershipTransfers).toEqual([]);
@@ -988,7 +1126,10 @@ describe('route-level multi-page org dataset coverage', () => {
       });
 
       const targetUsername = members[1]?.username || 'admin-user';
-      changeValue(queryRequiredInput(target, '#org-transfer-owner'), targetUsername);
+      changeValue(
+        queryRequiredInput(target, '#org-transfer-owner'),
+        targetUsername
+      );
       click(queryRequiredButton(target, '#org-ownership-transfer-toggle'));
 
       await waitFor(() => {
@@ -997,8 +1138,15 @@ describe('route-level multi-page org dataset coverage', () => {
         ).toBeDefined();
       });
 
-      setChecked(queryCheckbox(target, '#org-ownership-transfer-confirm'), true);
-      submitForm(queryRequiredForm(queryRequiredInput(target, '#org-transfer-owner').closest('form')));
+      setChecked(
+        queryCheckbox(target, '#org-ownership-transfer-confirm'),
+        true
+      );
+      submitForm(
+        queryRequiredForm(
+          queryRequiredInput(target, '#org-transfer-owner').closest('form')
+        )
+      );
 
       await waitFor(() => {
         expect(scenario.ownershipTransfers).toEqual([
@@ -1007,7 +1155,9 @@ describe('route-level multi-page org dataset coverage', () => {
             body: { username: targetUsername },
           },
         ]);
-        expect(target.textContent).toContain(`Ownership transferred to @${targetUsername}.`);
+        expect(target.textContent).toContain(
+          `Ownership transferred to @${targetUsername}.`
+        );
       });
     } finally {
       unmount();
@@ -1016,7 +1166,8 @@ describe('route-level multi-page org dataset coverage', () => {
 
   test('org workspace keeps ownership transfer confirmation open when transfer fails', async () => {
     const scenario = createFetchScenario();
-    scenario.ownershipTransferError = 'Failed to transfer organization ownership.';
+    scenario.ownershipTransferError =
+      'Failed to transfer organization ownership.';
     const { target, unmount } = await mountOrgPage(scenario);
 
     try {
@@ -1036,11 +1187,20 @@ describe('route-level multi-page org dataset coverage', () => {
         ).toBeDefined();
       });
 
-      setChecked(queryCheckbox(target, '#org-ownership-transfer-confirm'), true);
-      submitForm(queryRequiredForm(queryRequiredInput(target, '#org-transfer-owner').closest('form')));
+      setChecked(
+        queryCheckbox(target, '#org-ownership-transfer-confirm'),
+        true
+      );
+      submitForm(
+        queryRequiredForm(
+          queryRequiredInput(target, '#org-transfer-owner').closest('form')
+        )
+      );
 
       await waitFor(() => {
-        expect(target.textContent).toContain('Failed to transfer organization ownership.');
+        expect(target.textContent).toContain(
+          'Failed to transfer organization ownership.'
+        );
         expect(scenario.ownershipTransfers).toEqual([]);
         expect(
           queryRequiredButton(target, '#org-ownership-transfer-submit')
@@ -1060,8 +1220,14 @@ describe('route-level multi-page org dataset coverage', () => {
         expect(target.textContent).toContain('Transfer a namespace');
       });
 
-      changeValue(queryRequiredSelect(target, '#org-namespace-transfer-claim'), NAMESPACE_CLAIM_ID);
-      changeValue(queryRequiredSelect(target, '#org-namespace-transfer-target'), TARGET_ORG_SLUG);
+      changeValue(
+        queryRequiredSelect(target, '#org-namespace-transfer-claim'),
+        NAMESPACE_CLAIM_ID
+      );
+      changeValue(
+        queryRequiredSelect(target, '#org-namespace-transfer-target'),
+        TARGET_ORG_SLUG
+      );
       click(queryRequiredButton(target, '#org-namespace-transfer-toggle'));
 
       await waitFor(() => {
@@ -1070,10 +1236,18 @@ describe('route-level multi-page org dataset coverage', () => {
         ).toBeDefined();
       });
 
-      submitForm(queryRequiredForm(queryRequiredSelect(target, '#org-namespace-transfer-claim').closest('form')));
+      submitForm(
+        queryRequiredForm(
+          queryRequiredSelect(target, '#org-namespace-transfer-claim').closest(
+            'form'
+          )
+        )
+      );
 
       await waitFor(() => {
-        expect(target.textContent).toContain('Please confirm the namespace transfer.');
+        expect(target.textContent).toContain(
+          'Please confirm the namespace transfer.'
+        );
       });
 
       expect(scenario.namespaceTransfers).toEqual([]);
@@ -1094,8 +1268,14 @@ describe('route-level multi-page org dataset coverage', () => {
         expect(target.textContent).toContain('Transfer a namespace');
       });
 
-      changeValue(queryRequiredSelect(target, '#org-namespace-transfer-claim'), NAMESPACE_CLAIM_ID);
-      changeValue(queryRequiredSelect(target, '#org-namespace-transfer-target'), TARGET_ORG_SLUG);
+      changeValue(
+        queryRequiredSelect(target, '#org-namespace-transfer-claim'),
+        NAMESPACE_CLAIM_ID
+      );
+      changeValue(
+        queryRequiredSelect(target, '#org-namespace-transfer-target'),
+        TARGET_ORG_SLUG
+      );
       click(queryRequiredButton(target, '#org-namespace-transfer-toggle'));
 
       await waitFor(() => {
@@ -1104,8 +1284,17 @@ describe('route-level multi-page org dataset coverage', () => {
         ).toBeDefined();
       });
 
-      setChecked(queryCheckbox(target, '#org-namespace-transfer-confirm'), true);
-      submitForm(queryRequiredForm(queryRequiredSelect(target, '#org-namespace-transfer-claim').closest('form')));
+      setChecked(
+        queryCheckbox(target, '#org-namespace-transfer-confirm'),
+        true
+      );
+      submitForm(
+        queryRequiredForm(
+          queryRequiredSelect(target, '#org-namespace-transfer-claim').closest(
+            'form'
+          )
+        )
+      );
 
       await waitFor(() => {
         expect(scenario.namespaceTransfers).toEqual([
@@ -1125,7 +1314,8 @@ describe('route-level multi-page org dataset coverage', () => {
 
   test('org workspace keeps namespace transfer confirmation open when transfer fails', async () => {
     const scenario = createFetchScenario();
-    scenario.namespaceTransferError = 'Failed to transfer namespace claim ownership.';
+    scenario.namespaceTransferError =
+      'Failed to transfer namespace claim ownership.';
     const { target, unmount } = await mountOrgPage(scenario);
 
     try {
@@ -1133,8 +1323,14 @@ describe('route-level multi-page org dataset coverage', () => {
         expect(target.textContent).toContain('Transfer a namespace');
       });
 
-      changeValue(queryRequiredSelect(target, '#org-namespace-transfer-claim'), NAMESPACE_CLAIM_ID);
-      changeValue(queryRequiredSelect(target, '#org-namespace-transfer-target'), TARGET_ORG_SLUG);
+      changeValue(
+        queryRequiredSelect(target, '#org-namespace-transfer-claim'),
+        NAMESPACE_CLAIM_ID
+      );
+      changeValue(
+        queryRequiredSelect(target, '#org-namespace-transfer-target'),
+        TARGET_ORG_SLUG
+      );
       click(queryRequiredButton(target, '#org-namespace-transfer-toggle'));
 
       await waitFor(() => {
@@ -1143,11 +1339,22 @@ describe('route-level multi-page org dataset coverage', () => {
         ).toBeDefined();
       });
 
-      setChecked(queryCheckbox(target, '#org-namespace-transfer-confirm'), true);
-      submitForm(queryRequiredForm(queryRequiredSelect(target, '#org-namespace-transfer-claim').closest('form')));
+      setChecked(
+        queryCheckbox(target, '#org-namespace-transfer-confirm'),
+        true
+      );
+      submitForm(
+        queryRequiredForm(
+          queryRequiredSelect(target, '#org-namespace-transfer-claim').closest(
+            'form'
+          )
+        )
+      );
 
       await waitFor(() => {
-        expect(target.textContent).toContain('Failed to transfer namespace claim ownership.');
+        expect(target.textContent).toContain(
+          'Failed to transfer namespace claim ownership.'
+        );
         expect(scenario.namespaceTransfers).toEqual([]);
         expect(
           queryRequiredButton(target, '#org-namespace-transfer-submit')
@@ -1167,8 +1374,14 @@ describe('route-level multi-page org dataset coverage', () => {
         expect(target.textContent).toContain('Transfer repository ownership');
       });
 
-      changeValue(queryRequiredSelect(target, '#org-repository-transfer-repository'), repositories[0]?.slug || '');
-      changeValue(queryRequiredSelect(target, '#org-repository-transfer-target'), TARGET_ORG_SLUG);
+      changeValue(
+        queryRequiredSelect(target, '#org-repository-transfer-repository'),
+        repositories[0]?.slug || ''
+      );
+      changeValue(
+        queryRequiredSelect(target, '#org-repository-transfer-target'),
+        TARGET_ORG_SLUG
+      );
       click(queryRequiredButton(target, '#org-repository-transfer-toggle'));
 
       await waitFor(() => {
@@ -1177,10 +1390,19 @@ describe('route-level multi-page org dataset coverage', () => {
         ).toBeDefined();
       });
 
-      submitForm(queryRequiredForm(queryRequiredSelect(target, '#org-repository-transfer-repository').closest('form')));
+      submitForm(
+        queryRequiredForm(
+          queryRequiredSelect(
+            target,
+            '#org-repository-transfer-repository'
+          ).closest('form')
+        )
+      );
 
       await waitFor(() => {
-        expect(target.textContent).toContain('Please confirm the repository transfer.');
+        expect(target.textContent).toContain(
+          'Please confirm the repository transfer.'
+        );
       });
 
       expect(scenario.repositoryTransfers).toEqual([]);
@@ -1194,7 +1416,8 @@ describe('route-level multi-page org dataset coverage', () => {
 
   test('org workspace keeps repository transfer confirmation open when transfer fails', async () => {
     const scenario = createFetchScenario();
-    scenario.repositoryTransferError = 'Failed to transfer repository ownership.';
+    scenario.repositoryTransferError =
+      'Failed to transfer repository ownership.';
     const { target, unmount } = await mountOrgPage(scenario);
 
     try {
@@ -1202,8 +1425,14 @@ describe('route-level multi-page org dataset coverage', () => {
         expect(target.textContent).toContain('Transfer repository ownership');
       });
 
-      changeValue(queryRequiredSelect(target, '#org-repository-transfer-repository'), repositories[0]?.slug || '');
-      changeValue(queryRequiredSelect(target, '#org-repository-transfer-target'), TARGET_ORG_SLUG);
+      changeValue(
+        queryRequiredSelect(target, '#org-repository-transfer-repository'),
+        repositories[0]?.slug || ''
+      );
+      changeValue(
+        queryRequiredSelect(target, '#org-repository-transfer-target'),
+        TARGET_ORG_SLUG
+      );
       click(queryRequiredButton(target, '#org-repository-transfer-toggle'));
 
       await waitFor(() => {
@@ -1212,11 +1441,23 @@ describe('route-level multi-page org dataset coverage', () => {
         ).toBeDefined();
       });
 
-      setChecked(queryCheckbox(target, '#org-repository-transfer-confirm'), true);
-      submitForm(queryRequiredForm(queryRequiredSelect(target, '#org-repository-transfer-repository').closest('form')));
+      setChecked(
+        queryCheckbox(target, '#org-repository-transfer-confirm'),
+        true
+      );
+      submitForm(
+        queryRequiredForm(
+          queryRequiredSelect(
+            target,
+            '#org-repository-transfer-repository'
+          ).closest('form')
+        )
+      );
 
       await waitFor(() => {
-        expect(target.textContent).toContain('Failed to transfer repository ownership.');
+        expect(target.textContent).toContain(
+          'Failed to transfer repository ownership.'
+        );
         expect(scenario.repositoryTransfers).toEqual([]);
         expect(
           queryRequiredButton(target, '#org-repository-transfer-submit')
@@ -1240,7 +1481,10 @@ describe('route-level multi-page org dataset coverage', () => {
         queryRequiredSelect(target, '#org-package-transfer-package'),
         renderPackageSelectionValue(packages[0]?.ecosystem, packages[0]?.name)
       );
-      changeValue(queryRequiredSelect(target, '#org-package-transfer-target'), TARGET_ORG_SLUG);
+      changeValue(
+        queryRequiredSelect(target, '#org-package-transfer-target'),
+        TARGET_ORG_SLUG
+      );
       click(queryRequiredButton(target, '#org-package-transfer-toggle'));
 
       await waitFor(() => {
@@ -1249,10 +1493,18 @@ describe('route-level multi-page org dataset coverage', () => {
         ).toBeDefined();
       });
 
-      submitForm(queryRequiredForm(queryRequiredSelect(target, '#org-package-transfer-package').closest('form')));
+      submitForm(
+        queryRequiredForm(
+          queryRequiredSelect(target, '#org-package-transfer-package').closest(
+            'form'
+          )
+        )
+      );
 
       await waitFor(() => {
-        expect(target.textContent).toContain('Please confirm the package transfer.');
+        expect(target.textContent).toContain(
+          'Please confirm the package transfer.'
+        );
       });
 
       expect(scenario.packageTransfers).toEqual([]);
@@ -1278,7 +1530,10 @@ describe('route-level multi-page org dataset coverage', () => {
         queryRequiredSelect(target, '#org-package-transfer-package'),
         renderPackageSelectionValue(packages[0]?.ecosystem, packages[0]?.name)
       );
-      changeValue(queryRequiredSelect(target, '#org-package-transfer-target'), TARGET_ORG_SLUG);
+      changeValue(
+        queryRequiredSelect(target, '#org-package-transfer-target'),
+        TARGET_ORG_SLUG
+      );
       click(queryRequiredButton(target, '#org-package-transfer-toggle'));
 
       await waitFor(() => {
@@ -1288,10 +1543,18 @@ describe('route-level multi-page org dataset coverage', () => {
       });
 
       setChecked(queryCheckbox(target, '#org-package-transfer-confirm'), true);
-      submitForm(queryRequiredForm(queryRequiredSelect(target, '#org-package-transfer-package').closest('form')));
+      submitForm(
+        queryRequiredForm(
+          queryRequiredSelect(target, '#org-package-transfer-package').closest(
+            'form'
+          )
+        )
+      );
 
       await waitFor(() => {
-        expect(target.textContent).toContain('Failed to transfer package ownership.');
+        expect(target.textContent).toContain(
+          'Failed to transfer package ownership.'
+        );
         expect(scenario.packageTransfers).toEqual([]);
         expect(
           queryRequiredButton(target, '#org-package-transfer-submit')
@@ -1376,8 +1639,12 @@ describe('route-level multi-page org dataset coverage', () => {
       expect(target.querySelector(`#team-package-${TEAM_SLUG}`)).not.toBeNull();
       expect(target.querySelector(`#team-repository-${TEAM_SLUG}`)).toBeNull();
       expect(target.querySelector('#repository-create-name')).toBeNull();
-      expect(target.querySelector('#org-repository-transfer-repository')).toBeNull();
-      expect(target.querySelector('#repository-visibility-repo-001')).toBeNull();
+      expect(
+        target.querySelector('#org-repository-transfer-repository')
+      ).toBeNull();
+      expect(
+        target.querySelector('#repository-visibility-repo-001')
+      ).toBeNull();
       expect(target.textContent).not.toContain('Create repository');
       expect(target.textContent).not.toContain('Transfer repository ownership');
     } finally {
@@ -1396,7 +1663,9 @@ describe('route-level multi-page org dataset coverage', () => {
         expect(target.textContent).toContain('Teams');
       });
 
-      expect(target.querySelector(`#team-repository-${TEAM_SLUG}`)).not.toBeNull();
+      expect(
+        target.querySelector(`#team-repository-${TEAM_SLUG}`)
+      ).not.toBeNull();
       expect(target.querySelector(`#team-namespace-${TEAM_SLUG}`)).toBeNull();
       expect(target.querySelector('#namespace-value')).toBeNull();
       expect(target.textContent).not.toContain('Create namespace claim');
@@ -1461,7 +1730,10 @@ describe('route-level multi-page org dataset coverage', () => {
       await waitFor(() => {
         expect(
           optionValues(
-            queryRequiredSelect(packageRender.target, `#team-package-${TEAM_SLUG}`)
+            queryRequiredSelect(
+              packageRender.target,
+              `#team-package-${TEAM_SLUG}`
+            )
           )
         ).toContain(finalPackageKey);
       });
@@ -1470,7 +1742,9 @@ describe('route-level multi-page org dataset coverage', () => {
         packageRender.target,
         `#team-package-${TEAM_SLUG}`
       );
-      const packageGrantForm = queryRequiredForm(packageGrantSelect.closest('form'));
+      const packageGrantForm = queryRequiredForm(
+        packageGrantSelect.closest('form')
+      );
       const packageGrantPublish = queryCheckbox(
         packageGrantForm,
         'input[value="publish"]'
@@ -1530,10 +1804,18 @@ describe('route-level multi-page org dataset coverage', () => {
       );
       changeValue(repositoryTransferSelect, finalRepository?.slug || '');
       changeValue(repositoryTransferTarget, TARGET_ORG_SLUG);
-      click(queryRequiredButton(repositoryTransferForm, '#org-repository-transfer-toggle'));
+      click(
+        queryRequiredButton(
+          repositoryTransferForm,
+          '#org-repository-transfer-toggle'
+        )
+      );
       await waitFor(() => {
         expect(
-          queryCheckbox(repositoryTransferForm, '#org-repository-transfer-confirm')
+          queryCheckbox(
+            repositoryTransferForm,
+            '#org-repository-transfer-confirm'
+          )
         ).toBeDefined();
       });
       const repositoryTransferConfirm = queryCheckbox(
@@ -1585,7 +1867,9 @@ describe('route-level multi-page org dataset coverage', () => {
       );
       changeValue(packageTransferSelect, finalPackageKey);
       changeValue(packageTransferTarget, TARGET_ORG_SLUG);
-      click(queryRequiredButton(packageTransferForm, '#org-package-transfer-toggle'));
+      click(
+        queryRequiredButton(packageTransferForm, '#org-package-transfer-toggle')
+      );
       await waitFor(() => {
         expect(
           queryCheckbox(packageTransferForm, '#org-package-transfer-confirm')
@@ -1645,7 +1929,9 @@ describe('route-level multi-page org dataset coverage', () => {
       submitForm(form);
 
       await waitFor(() => {
-        expect(gotoCalls).toEqual(['/search?org=source-org&repository=repo-101']);
+        expect(gotoCalls).toEqual([
+          '/search?org=source-org&repository=repo-101',
+        ]);
       });
     } finally {
       unmount();
@@ -1664,7 +1950,9 @@ describe('route-level multi-page org dataset coverage', () => {
     try {
       await waitFor(() => {
         expect(
-          target.querySelector('a[href="/packages/npm/example-package?tab=security"]')
+          target.querySelector(
+            'a[href="/packages/npm/example-package?tab=security"]'
+          )
         ).not.toBeNull();
         expect(
           target.querySelector('a[href="/packages/npm/example-package"]')
@@ -1765,6 +2053,7 @@ function createFetchScenario(): FetchScenario {
     orgUpdateCalls: [],
     ownershipTransfers: [],
     orgMfaRequired: false,
+    orgMemberDirectoryIsPrivate: false,
     teamRepositoryAccessUpdates: [],
     teamPackageAccessUpdates: [],
     teamDeleteCalls: [],
@@ -1805,6 +2094,7 @@ async function handleApiRequest(
         description: 'Source organization',
         is_verified: true,
         mfa_required: scenario.orgMfaRequired,
+        member_directory_is_private: scenario.orgMemberDirectoryIsPrivate,
         website: null,
         email: null,
         created_at: '2026-04-01T00:00:00Z',
@@ -1922,6 +2212,7 @@ async function handleApiRequest(
       description: 'Source organization',
       is_verified: true,
       mfa_required: scenario.orgMfaRequired,
+      member_directory_is_private: scenario.orgMemberDirectoryIsPrivate,
       website: null,
       email: null,
       created_at: '2026-04-01T00:00:00Z',
@@ -2006,19 +2297,19 @@ async function handleApiRequest(
     requestPath === `/v1/orgs/${ORG_SLUG}/security-findings`
   ) {
     return apiResponse({
-        summary: {
-          open_findings: 0,
-          affected_packages: 0,
-          severities: {
-            critical: 0,
-            high: 0,
-            medium: 0,
-            low: 0,
-            info: 0,
-          },
+      summary: {
+        open_findings: 0,
+        affected_packages: 0,
+        severities: {
+          critical: 0,
+          high: 0,
+          medium: 0,
+          low: 0,
+          info: 0,
         },
-        packages: [],
-      });
+      },
+      packages: [],
+    });
   }
 
   if (method === 'GET' && requestPath === `/v1/orgs/${ORG_SLUG}/invitations`) {
@@ -2060,15 +2351,15 @@ async function handleApiRequest(
 
   if (method === 'GET' && requestPath === `/v1/orgs/${ORG_SLUG}/teams`) {
     return apiResponse({
-        teams: [
-          {
-            name: 'Release Engineering',
-            slug: TEAM_SLUG,
-            description: 'Owns release governance',
-            created_at: '2026-04-01T00:00:00Z',
-          },
-        ],
-      });
+      teams: [
+        {
+          name: 'Release Engineering',
+          slug: TEAM_SLUG,
+          description: 'Owns release governance',
+          created_at: '2026-04-01T00:00:00Z',
+        },
+      ],
+    });
   }
 
   if (method === 'GET' && requestPath === `/v1/orgs/${ORG_SLUG}/audit`) {
@@ -2116,12 +2407,11 @@ async function handleApiRequest(
     return apiResponse({ namespaces: [] });
   }
 
-  if (
-    method === 'PATCH' &&
-    requestPath === `/v1/orgs/${ORG_SLUG}`
-  ) {
+  if (method === 'PATCH' && requestPath === `/v1/orgs/${ORG_SLUG}`) {
     scenario.orgUpdateCalls.push({ path: requestPath, body });
     scenario.orgMfaRequired = body.mfa_required === true;
+    scenario.orgMemberDirectoryIsPrivate =
+      body.member_directory_is_private === true;
     return apiResponse({ message: 'Organization updated' });
   }
 
@@ -2160,7 +2450,10 @@ async function handleApiRequest(
     return apiResponse({ message: 'Saved package access' });
   }
 
-  if (method === 'DELETE' && requestPath === `/v1/orgs/${ORG_SLUG}/teams/${TEAM_SLUG}`) {
+  if (
+    method === 'DELETE' &&
+    requestPath === `/v1/orgs/${ORG_SLUG}/teams/${TEAM_SLUG}`
+  ) {
     if (scenario.teamDeleteError) {
       throw new TestApiError(500, { error: scenario.teamDeleteError });
     }
@@ -2169,7 +2462,10 @@ async function handleApiRequest(
     return apiResponse({ message: 'Deleted team' });
   }
 
-  if (method === 'DELETE' && requestPath === `/v1/namespaces/${NAMESPACE_CLAIM_ID}`) {
+  if (
+    method === 'DELETE' &&
+    requestPath === `/v1/namespaces/${NAMESPACE_CLAIM_ID}`
+  ) {
     if (scenario.namespaceDeleteError) {
       throw new TestApiError(500, { error: scenario.namespaceDeleteError });
     }
@@ -2385,8 +2681,10 @@ async function mountOrgPage(
   const OrgPage = await import('../src/routes/orgs/[slug]/+page.svelte');
   currentScenario = scenario;
   currentAuthToken = 'pub_test_token';
-  pageStore.set(buildPageState(`https://example.test/orgs/${ORG_SLUG}`, {
-    slug: ORG_SLUG,
-  }));
+  pageStore.set(
+    buildPageState(`https://example.test/orgs/${ORG_SLUG}`, {
+      slug: ORG_SLUG,
+    })
+  );
   return renderSvelte(OrgPage);
 }

@@ -426,10 +426,7 @@ fn parse_keywords(values: &[String]) -> Vec<String> {
     deduplicated.into_iter().collect()
 }
 
-fn collect_metadata_values(
-    fields: &BTreeMap<String, Vec<String>>,
-    keys: &[&str],
-) -> Vec<String> {
+fn collect_metadata_values(fields: &BTreeMap<String, Vec<String>>, keys: &[&str]) -> Vec<String> {
     let mut values = Vec::new();
 
     for key in keys {
