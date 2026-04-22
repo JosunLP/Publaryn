@@ -272,8 +272,6 @@ mock.module(apiClientModuleUrl, () => {
   };
 });
 
-const OrgPage = await import('../src/routes/orgs/[slug]/+page.svelte');
-
 afterEach(() => {
   gotoCalls.length = 0;
   currentAuthToken = null;
@@ -450,6 +448,7 @@ describe('route-level multi-page org dataset coverage', () => {
       )
     );
 
+    const OrgPage = await import('../src/routes/orgs/[slug]/+page.svelte');
     const { target, unmount } = await renderSvelte(OrgPage);
 
     try {
@@ -960,7 +959,7 @@ describe('route-level multi-page org dataset coverage', () => {
 
       await waitFor(() => {
         expect(
-        queryCheckbox(target, '#org-ownership-transfer-confirm')
+          queryCheckbox(target, '#org-ownership-transfer-confirm')
         ).toBeDefined();
       });
 
@@ -994,7 +993,7 @@ describe('route-level multi-page org dataset coverage', () => {
 
       await waitFor(() => {
         expect(
-        queryCheckbox(target, '#org-ownership-transfer-confirm')
+          queryCheckbox(target, '#org-ownership-transfer-confirm')
         ).toBeDefined();
       });
 
@@ -1033,7 +1032,7 @@ describe('route-level multi-page org dataset coverage', () => {
 
       await waitFor(() => {
         expect(
-        queryCheckbox(target, '#org-ownership-transfer-confirm')
+          queryCheckbox(target, '#org-ownership-transfer-confirm')
         ).toBeDefined();
       });
 
@@ -1067,7 +1066,7 @@ describe('route-level multi-page org dataset coverage', () => {
 
       await waitFor(() => {
         expect(
-        queryCheckbox(target, '#org-namespace-transfer-confirm')
+          queryCheckbox(target, '#org-namespace-transfer-confirm')
         ).toBeDefined();
       });
 
@@ -1101,7 +1100,7 @@ describe('route-level multi-page org dataset coverage', () => {
 
       await waitFor(() => {
         expect(
-        queryCheckbox(target, '#org-namespace-transfer-confirm')
+          queryCheckbox(target, '#org-namespace-transfer-confirm')
         ).toBeDefined();
       });
 
@@ -1140,7 +1139,7 @@ describe('route-level multi-page org dataset coverage', () => {
 
       await waitFor(() => {
         expect(
-        queryCheckbox(target, '#org-namespace-transfer-confirm')
+          queryCheckbox(target, '#org-namespace-transfer-confirm')
         ).toBeDefined();
       });
 
@@ -1174,7 +1173,7 @@ describe('route-level multi-page org dataset coverage', () => {
 
       await waitFor(() => {
         expect(
-        queryCheckbox(target, '#org-repository-transfer-confirm')
+          queryCheckbox(target, '#org-repository-transfer-confirm')
         ).toBeDefined();
       });
 
@@ -1209,7 +1208,7 @@ describe('route-level multi-page org dataset coverage', () => {
 
       await waitFor(() => {
         expect(
-        queryCheckbox(target, '#org-repository-transfer-confirm')
+          queryCheckbox(target, '#org-repository-transfer-confirm')
         ).toBeDefined();
       });
 
@@ -1246,7 +1245,7 @@ describe('route-level multi-page org dataset coverage', () => {
 
       await waitFor(() => {
         expect(
-        queryCheckbox(target, '#org-package-transfer-confirm')
+          queryCheckbox(target, '#org-package-transfer-confirm')
         ).toBeDefined();
       });
 
@@ -1284,7 +1283,7 @@ describe('route-level multi-page org dataset coverage', () => {
 
       await waitFor(() => {
         expect(
-        queryCheckbox(target, '#org-package-transfer-confirm')
+          queryCheckbox(target, '#org-package-transfer-confirm')
         ).toBeDefined();
       });
 
@@ -2383,6 +2382,7 @@ function optionValues(select: HTMLSelectElement): string[] {
 async function mountOrgPage(
   scenario: FetchScenario
 ): Promise<Awaited<ReturnType<typeof renderSvelte>>> {
+  const OrgPage = await import('../src/routes/orgs/[slug]/+page.svelte');
   currentScenario = scenario;
   currentAuthToken = 'pub_test_token';
   pageStore.set(buildPageState(`https://example.test/orgs/${ORG_SLUG}`, {
