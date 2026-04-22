@@ -212,6 +212,8 @@
   const ORG_AUDIT_PAGE_SIZE = 20;
   const DEFAULT_NAMESPACE_ECOSYSTEM = 'npm';
   const DEFAULT_PACKAGE_ECOSYSTEM = 'npm';
+  const NAMESPACE_DELETE_CONFIRMATION_MESSAGE =
+    'Please confirm that you understand deleting this namespace claim is immediate and cannot be undone.';
   const REVIEW_TEAM_FALLBACK_LABEL = 'Team (no name)';
   const SECURITY_FINDING_NOTE_PLACEHOLDER =
     'Optional note (recorded in audit log)';
@@ -360,6 +362,9 @@
   let teamDeleteTargetSlug: string | null = null;
   let teamDeleteConfirmed = false;
   let deletingTeamSlug: string | null = null;
+  let namespaceDeleteTargetId: string | null = null;
+  let namespaceDeleteConfirmed = false;
+  let deletingNamespaceClaimId: string | null = null;
 
   $: slug = $page.params.slug ?? '';
   $: pageNotice = $page.url.searchParams.get('notice')?.trim() || null;
@@ -595,6 +600,9 @@
     teamDeleteTargetSlug = null;
     teamDeleteConfirmed = false;
     deletingTeamSlug = null;
+    namespaceDeleteTargetId = null;
+    namespaceDeleteConfirmed = false;
+    deletingNamespaceClaimId = null;
 
     isAuthenticated = Boolean(getAuthToken());
 
@@ -1247,10 +1255,28 @@
     }
   }
 
+  function openNamespaceDeleteConfirmation(claimId: string): void {
+    namespaceDeleteTargetId = claimId;
+    namespaceDeleteConfirmed = false;
+    deletingNamespaceClaimId = null;
+    notice = null;
+    error = null;
+  }
+
+  function cancelNamespaceDeleteConfirmation(): void {
+    namespaceDeleteTargetId = null;
+    namespaceDeleteConfirmed = false;
+    deletingNamespaceClaimId = null;
+    error = null;
+  }
+
   async function handleDeleteNamespace(
+    event: SubmitEvent,
     claimId: string | null | undefined,
     namespace: string
   ): Promise<void> {
+    event.preventDefault();
+
     if (!claimId) {
       await loadOrganizationPage({
         error: 'Failed to delete namespace claim because the claim id is unavailable.',
@@ -1258,15 +1284,24 @@
       return;
     }
 
+    if (!namespaceDeleteConfirmed || namespaceDeleteTargetId !== claimId) {
+      notice = null;
+      error = NAMESPACE_DELETE_CONFIRMATION_MESSAGE;
+      return;
+    }
+
+    deletingNamespaceClaimId = claimId;
+    notice = null;
+    error = null;
+
     try {
       await deleteNamespaceClaim(claimId);
       await loadOrganizationPage({
         notice: `Deleted namespace claim ${namespace}.`,
       });
     } catch (caughtError: unknown) {
-      await loadOrganizationPage({
-        error: toErrorMessage(caughtError, 'Failed to delete namespace claim.'),
-      });
+      error = toErrorMessage(caughtError, 'Failed to delete namespace claim.');
+      deletingNamespaceClaimId = null;
     }
   }
 
@@ -3509,38 +3544,99 @@
         {:else}
           <div class="token-list">
             {#each [...namespaceClaims].sort( (left, right) => `${left.ecosystem || ''}:${left.namespace || ''}`.localeCompare(`${right.ecosystem || ''}:${right.namespace || ''}`) ) as claim}
-              <div class="token-row">
-                <div class="token-row__main">
-                  <div class="token-row__title">
-                    {claim.namespace || 'Unnamed claim'}
+              <div>
+                <div class="token-row">
+                  <div class="token-row__main">
+                    <div class="token-row__title">
+                      {claim.namespace || 'Unnamed claim'}
+                    </div>
+                    <div class="token-row__meta">
+                      <span>{ecosystemLabel(claim.ecosystem)}</span>
+                      {#if claim.created_at}<span
+                          >created {formatDate(claim.created_at)}</span
+                        >{/if}
+                    </div>
                   </div>
-                  <div class="token-row__meta">
-                    <span>{ecosystemLabel(claim.ecosystem)}</span>
-                    {#if claim.created_at}<span
-                        >created {formatDate(claim.created_at)}</span
-                      >{/if}
+                  <div class="token-row__actions">
+                    {#if claim.is_verified}
+                      <span class="badge badge-verified">Verified</span>
+                    {:else}
+                      <span class="badge badge-ecosystem"
+                        >Pending verification</span
+                      >
+                    {/if}
+                    {#if claim.can_manage && claim.id}
+                      {#if namespaceDeleteTargetId === claim.id}
+                        <button
+                          class="btn btn-secondary btn-sm"
+                          type="button"
+                          on:click={cancelNamespaceDeleteConfirmation}
+                          disabled={deletingNamespaceClaimId === claim.id}
+                          >Cancel</button
+                        >
+                      {:else}
+                        <button
+                          class="btn btn-secondary btn-sm"
+                          id={`namespace-delete-toggle-${claim.id}`}
+                          type="button"
+                          on:click={() => openNamespaceDeleteConfirmation(claim.id || '')}
+                          >Delete…</button
+                        >
+                      {/if}
+                    {/if}
                   </div>
                 </div>
-                <div class="token-row__actions">
-                  {#if claim.is_verified}
-                    <span class="badge badge-verified">Verified</span>
-                  {:else}
-                    <span class="badge badge-ecosystem"
-                      >Pending verification</span
-                    >
-                  {/if}
-                  {#if claim.can_manage && claim.id}
-                    <button
-                      class="btn btn-secondary btn-sm"
-                      type="button"
-                      on:click={() =>
-                        handleDeleteNamespace(
-                          claim.id,
-                          claim.namespace || 'this claim'
-                        )}>Delete</button
-                    >
-                  {/if}
-                </div>
+
+                {#if claim.can_manage && claim.id && namespaceDeleteTargetId === claim.id}
+                  <form
+                    class="alert alert-warning mt-4"
+                    id={`namespace-delete-form-${claim.id}`}
+                    on:submit={(event) =>
+                      handleDeleteNamespace(
+                        event,
+                        claim.id,
+                        claim.namespace || 'this claim'
+                      )}
+                  >
+                    <p class="mb-3">
+                      Deleting this namespace claim immediately removes the organization's claim to
+                      this ecosystem namespace.
+                    </p>
+                    <label class="mb-3 flex items-start gap-2">
+                      <input
+                        id={`namespace-delete-confirm-${claim.id}`}
+                        bind:checked={namespaceDeleteConfirmed}
+                        type="checkbox"
+                        name="confirm_delete"
+                        disabled={deletingNamespaceClaimId === claim.id}
+                      />
+                      <span>
+                        I understand deleting this namespace claim is immediate and cannot be
+                        undone.
+                      </span>
+                    </label>
+                    <div class="token-row__actions">
+                      <button
+                        class="btn btn-danger btn-sm"
+                        id={`namespace-delete-submit-${claim.id}`}
+                        type="submit"
+                        disabled={deletingNamespaceClaimId === claim.id}
+                      >
+                        {deletingNamespaceClaimId === claim.id
+                          ? 'Deleting…'
+                          : 'Delete namespace claim'}
+                      </button>
+                      <button
+                        class="btn btn-secondary btn-sm"
+                        type="button"
+                        on:click={cancelNamespaceDeleteConfirmation}
+                        disabled={deletingNamespaceClaimId === claim.id}
+                      >
+                        Keep claim
+                      </button>
+                    </div>
+                  </form>
+                {/if}
               </div>
             {/each}
           </div>

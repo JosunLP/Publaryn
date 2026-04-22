@@ -60,11 +60,22 @@ interface FetchScenario {
   canManageRepositories: boolean;
   canManageNamespaces: boolean;
   teamDeleteError: string | null;
+  namespaceDeleteError: string | null;
   teams: Array<{
     name: string;
     slug: string;
     description: string;
     created_at: string;
+  }>;
+  namespaces: Array<{
+    id?: string | null;
+    ecosystem?: string | null;
+    namespace?: string | null;
+    owner_org_id?: string | null;
+    is_verified?: boolean | null;
+    created_at?: string | null;
+    can_manage?: boolean | null;
+    can_transfer?: boolean | null;
   }>;
   workspaceBootstrapRequests: string[];
   teamMemberRequests: string[];
@@ -80,6 +91,7 @@ interface FetchScenario {
   teamRepositoryAccessUpdates: MutationCall[];
   teamPackageAccessUpdates: MutationCall[];
   teamDeleteCalls: string[];
+  namespaceDeleteCalls: string[];
   repositoryTransfers: MutationCall[];
   packageTransfers: MutationCall[];
   searchCalls: SearchCall[];
@@ -89,6 +101,8 @@ const ORG_ID = '11111111-1111-4111-8111-111111111111';
 const TEAM_SLUG = 'release-engineering';
 const ORG_SLUG = 'source-org';
 const TARGET_ORG_SLUG = 'target-org';
+const NAMESPACE_CLAIM_ID = 'claim-001';
+const NAMESPACE_VALUE = '@source-org';
 const apiClientModuleUrl = new URL('../src/api/client.ts', import.meta.url).href;
 const gotoCalls: string[] = [];
 const pageStore = writable<TestPageState>(buildPageState('https://example.test/'));
@@ -520,6 +534,129 @@ describe('route-level multi-page org dataset coverage', () => {
     }
   });
 
+  test('org workspace requires explicit confirmation before deleting a namespace claim', async () => {
+    const scenario = createFetchScenario();
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain(NAMESPACE_VALUE);
+      });
+
+      click(queryRequiredButton(target, `#namespace-delete-toggle-${NAMESPACE_CLAIM_ID}`));
+
+      await waitFor(() => {
+        expect(
+          queryRequiredForm(
+            target.querySelector(`#namespace-delete-form-${NAMESPACE_CLAIM_ID}`)
+          )
+        ).toBeDefined();
+      });
+
+      submitForm(
+        queryRequiredForm(target.querySelector(`#namespace-delete-form-${NAMESPACE_CLAIM_ID}`))
+      );
+
+      await waitFor(() => {
+        expect(target.textContent).toContain(
+          'Please confirm that you understand deleting this namespace claim is immediate and cannot be undone.'
+        );
+      });
+
+      expect(scenario.namespaceDeleteCalls).toEqual([]);
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace deletes a namespace claim after explicit confirmation', async () => {
+    const scenario = createFetchScenario();
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain(NAMESPACE_VALUE);
+      });
+
+      click(queryRequiredButton(target, `#namespace-delete-toggle-${NAMESPACE_CLAIM_ID}`));
+
+      await waitFor(() => {
+        expect(
+          queryRequiredForm(
+            target.querySelector(`#namespace-delete-form-${NAMESPACE_CLAIM_ID}`)
+          )
+        ).toBeDefined();
+      });
+
+      setChecked(
+        queryRequiredCheckbox(target, `#namespace-delete-confirm-${NAMESPACE_CLAIM_ID}`),
+        true
+      );
+      submitForm(
+        queryRequiredForm(target.querySelector(`#namespace-delete-form-${NAMESPACE_CLAIM_ID}`))
+      );
+
+      await waitFor(() => {
+        expect(scenario.namespaceDeleteCalls).toEqual([
+          `/v1/namespaces/${NAMESPACE_CLAIM_ID}`,
+        ]);
+        expect(target.textContent).toContain(
+          `Deleted namespace claim ${NAMESPACE_VALUE}.`
+        );
+      });
+
+      expect(
+        target.querySelector(`#namespace-delete-toggle-${NAMESPACE_CLAIM_ID}`)
+      ).toBeNull();
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace keeps namespace delete confirmation open when deletion fails', async () => {
+    const scenario = createFetchScenario();
+    scenario.namespaceDeleteError = 'Failed to delete namespace claim.';
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain(NAMESPACE_VALUE);
+      });
+
+      click(queryRequiredButton(target, `#namespace-delete-toggle-${NAMESPACE_CLAIM_ID}`));
+
+      await waitFor(() => {
+        expect(
+          queryRequiredForm(
+            target.querySelector(`#namespace-delete-form-${NAMESPACE_CLAIM_ID}`)
+          )
+        ).toBeDefined();
+      });
+
+      setChecked(
+        queryRequiredCheckbox(target, `#namespace-delete-confirm-${NAMESPACE_CLAIM_ID}`),
+        true
+      );
+      submitForm(
+        queryRequiredForm(target.querySelector(`#namespace-delete-form-${NAMESPACE_CLAIM_ID}`))
+      );
+
+      await waitFor(() => {
+        expect(target.textContent).toContain('Failed to delete namespace claim.');
+        expect(scenario.namespaceDeleteCalls).toEqual([]);
+        expect(
+          queryRequiredForm(
+            target.querySelector(`#namespace-delete-form-${NAMESPACE_CLAIM_ID}`)
+          )
+        ).toBeDefined();
+      });
+
+      expect(target.textContent).toContain(NAMESPACE_VALUE);
+    } finally {
+      unmount();
+    }
+  });
+
   test('org workspace does not load invitation management UI when the explicit invitation capability is absent', async () => {
     const scenario = createFetchScenario();
     scenario.canManageInvitations = false;
@@ -911,12 +1048,25 @@ function createFetchScenario(): FetchScenario {
     canManageRepositories: true,
     canManageNamespaces: true,
     teamDeleteError: null,
+    namespaceDeleteError: null,
     teams: [
       {
         name: 'Release Engineering',
         slug: TEAM_SLUG,
         description: 'Owns release governance',
         created_at: '2026-04-01T00:00:00Z',
+      },
+    ],
+    namespaces: [
+      {
+        id: NAMESPACE_CLAIM_ID,
+        ecosystem: 'npm',
+        namespace: NAMESPACE_VALUE,
+        owner_org_id: ORG_ID,
+        is_verified: true,
+        created_at: '2026-04-01T00:00:00Z',
+        can_manage: true,
+        can_transfer: true,
       },
     ],
     workspaceBootstrapRequests: [],
@@ -933,6 +1083,7 @@ function createFetchScenario(): FetchScenario {
     teamRepositoryAccessUpdates: [],
     teamPackageAccessUpdates: [],
     teamDeleteCalls: [],
+    namespaceDeleteCalls: [],
     repositoryTransfers: [],
     packageTransfers: [],
     searchCalls: [],
@@ -1002,7 +1153,7 @@ async function handleApiRequest(
         },
       ],
       packages,
-      namespaces: [],
+      namespaces: scenario.namespaces,
       invitations: scenario.canManageInvitations ? [] : [],
       team_management: {
         members_by_team_slug: scenario.canManageTeams
@@ -1287,6 +1438,17 @@ async function handleApiRequest(
     scenario.teamDeleteCalls.push(requestPath);
     scenario.teams = scenario.teams.filter((team) => team.slug !== TEAM_SLUG);
     return apiResponse({ message: 'Deleted team' });
+  }
+
+  if (method === 'DELETE' && requestPath === `/v1/namespaces/${NAMESPACE_CLAIM_ID}`) {
+    if (scenario.namespaceDeleteError) {
+      throw new TestApiError(500, { error: scenario.namespaceDeleteError });
+    }
+    scenario.namespaceDeleteCalls.push(requestPath);
+    scenario.namespaces = scenario.namespaces.filter(
+      (claim) => claim.id !== NAMESPACE_CLAIM_ID
+    );
+    return apiResponse(null);
   }
 
   if (
