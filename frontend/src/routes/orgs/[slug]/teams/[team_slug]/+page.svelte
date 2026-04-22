@@ -295,12 +295,12 @@
           <a
             href={`/orgs/${encodeURIComponent(slug)}`}
             class="btn btn-secondary"
-            data-sveltekit-preload-data="hover">Open organization overview</a
+            data-sveltekit-preload-data="hover">Back to organization</a
           >
           <a
             href={teamWorkspaceAnchor}
             class="btn btn-primary"
-            data-sveltekit-preload-data="hover">Open this team in org workspace</a
+            data-sveltekit-preload-data="hover">Manage in org workspace</a
           >
         </div>
       </div>
@@ -475,11 +475,10 @@
 
         <section class="surface-card">
           <div class="surface-card__header">
-            <h2 class="surface-card__title">Workspace scope</h2>
+            <h2 class="surface-card__title">Workspace guidance</h2>
             <p class="surface-card__copy">
-              Use this page for focused team edits, membership changes, delegated access updates,
-              and safe deletion. Jump back to the organization workspace when you need broader
-              cross-team context.
+              Use this page for focused team edits. For broader org-level context, go back to the
+              organization workspace.
             </p>
           </div>
           <div class="surface-card__body stack-sm">
@@ -506,7 +505,7 @@
             <a
               href={teamWorkspaceAnchor}
               class="btn btn-primary"
-              data-sveltekit-preload-data="hover">Open org workspace context</a
+              data-sveltekit-preload-data="hover">Manage in org workspace</a
             >
           </div>
         </section>

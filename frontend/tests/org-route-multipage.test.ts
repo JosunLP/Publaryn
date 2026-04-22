@@ -522,6 +522,7 @@ describe('route-level multi-page org dataset coverage', () => {
         expect(queryRequiredFormBySelector(target, `#team-delete-form-${TEAM_SLUG}`)).toBeDefined();
       });
 
+      expect(scenario.teams.map((team) => team.slug)).toContain(TEAM_SLUG);
       expect(target.textContent).toContain('Release Engineering');
     } finally {
       unmount();
@@ -637,6 +638,7 @@ describe('route-level multi-page org dataset coverage', () => {
         ).toBeDefined();
       });
 
+      expect(scenario.namespaces.map((claim) => claim.id)).toContain(NAMESPACE_CLAIM_ID);
       expect(target.textContent).toContain(NAMESPACE_VALUE);
     } finally {
       unmount();
