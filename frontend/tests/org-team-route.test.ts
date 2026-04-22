@@ -180,6 +180,13 @@ describe('organization team workspace route', () => {
         expect(target.textContent).toContain('source-package');
         expect(target.textContent).toContain('Repository Alpha');
         expect(target.textContent).toContain('@source');
+        expect(
+          target.querySelector('a[href="/packages/npm/source-package?tab=security"]')
+        ).not.toBeNull();
+        expect(
+          target.querySelector('a[href="/packages/npm/source-package"]')
+        ).not.toBeNull();
+        expect(target.textContent).toContain('Open package details');
         expect(queryRequiredForm(target, '#team-settings-form')).toBeDefined();
         expect(queryRequiredForm(target, '#team-member-form')).toBeDefined();
         expect(queryRequiredInput(target, '#team-name').value).toBe(

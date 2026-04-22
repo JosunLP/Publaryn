@@ -4,6 +4,10 @@
     TeamAccessGrantTargetOption,
     TeamAccessPermissionOption,
   } from '../../pages/team-management';
+  import {
+    buildPackageDetailsPath,
+    buildPackageSecurityPath,
+  } from '../../pages/package-security-links';
   import { formatTeamPermission } from '../../pages/team-management';
   import TeamAccessGrantForm from './TeamAccessGrantForm.svelte';
   import { ecosystemLabel } from '../../utils/ecosystem';
@@ -32,11 +36,19 @@
 {:else}
   <div class="token-list">
     {#each grants as grant}
+      {@const packageSecurityPath = buildPackageSecurityPath(
+        grant.ecosystem || 'unknown',
+        grant.name || ''
+      )}
+      {@const packageDetailsPath = buildPackageDetailsPath(
+        grant.ecosystem || 'unknown',
+        grant.name || ''
+      )}
       <div class="token-row">
         <div class="token-row__main">
           <div class="token-row__title">
             <a
-              href={`/packages/${encodeURIComponent(grant.ecosystem || 'unknown')}/${encodeURIComponent(grant.name || '')}`}
+              href={packageSecurityPath}
               data-sveltekit-preload-data="hover">{grant.name || 'Unnamed package'}</a
             >
           </div>
@@ -52,6 +64,13 @@
         </div>
         {#if grant.ecosystem && grant.name}
           <div class="token-row__actions">
+            <a
+              href={packageDetailsPath}
+              class="btn btn-secondary btn-sm"
+              data-sveltekit-preload-data="hover"
+            >
+              Open package details
+            </a>
             <button
               id={`team-package-revoke-${encodeURIComponent(`${grant.ecosystem}-${grant.name}`)}`}
               class="btn btn-secondary btn-sm"
