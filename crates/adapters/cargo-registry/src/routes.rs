@@ -59,7 +59,8 @@ pub trait CargoAppState: Clone + Send + Sync + 'static {
         query: &str,
         per_page: u32,
         offset: u32,
-    ) -> impl std::future::Future<Output = Result<Vec<CargoSearchHit>, Error>> + Send;
+        actor_user_id: Option<Uuid>,
+    ) -> impl std::future::Future<Output = Result<CargoSearchResults, Error>> + Send;
 }
 
 /// A retrieved object from artifact storage.
@@ -75,6 +76,13 @@ pub struct CargoSearchHit {
     pub name: String,
     pub max_version: String,
     pub description: Option<String>,
+}
+
+/// Search results projected for the Cargo search response.
+#[derive(Debug, Clone)]
+pub struct CargoSearchResults {
+    pub total: u64,
+    pub hits: Vec<CargoSearchHit>,
 }
 
 /// Identity extracted from a bearer token.
@@ -1174,17 +1182,25 @@ struct CargoSearchQuery {
 async fn search_crates<S: CargoAppState>(
     State(state): State<S>,
     Query(params): Query<CargoSearchQuery>,
+    headers: HeaderMap,
 ) -> Response {
     let q = params.q.unwrap_or_default();
     let per_page = params.per_page.unwrap_or(10).min(100);
-
-    let hits: Vec<CargoSearchHit> = state
-        .search_crates(&q, per_page, 0)
+    let actor_user_id = authenticate(&state, &headers)
         .await
-        .unwrap_or_default();
+        .ok()
+        .map(|id| id.user_id);
 
-    let total = hits.len();
-    let crates: Vec<serde_json::Value> = hits
+    let results = state
+        .search_crates(&q, per_page, 0, actor_user_id)
+        .await
+        .unwrap_or_else(|_| CargoSearchResults {
+            total: 0,
+            hits: Vec::new(),
+        });
+
+    let crates: Vec<serde_json::Value> = results
+        .hits
         .into_iter()
         .map(|hit| {
             serde_json::json!({
@@ -1199,7 +1215,7 @@ async fn search_crates<S: CargoAppState>(
         StatusCode::OK,
         Json(serde_json::json!({
             "crates": crates,
-            "meta": { "total": total },
+            "meta": { "total": results.total },
         })),
     )
         .into_response()
