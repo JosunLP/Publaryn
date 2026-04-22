@@ -370,7 +370,6 @@ jobs:
     needs:
       - prepare-release
       - release-contract
-      - sync-release-notes
     permissions:
       contents: read
       packages: write
