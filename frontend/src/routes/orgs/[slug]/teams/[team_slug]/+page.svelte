@@ -535,6 +535,8 @@
               id="team-delete-submit"
               type="submit"
               class="btn btn-danger"
+              aria-busy={deletingTeam}
+              aria-live="polite"
               disabled={deletingTeam}
             >
               {deletingTeam ? 'Deleting…' : 'Delete team'}

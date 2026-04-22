@@ -2601,6 +2601,7 @@
                             class="btn btn-danger btn-sm"
                             id={`team-delete-toggle-${teamSlug}`}
                             type="button"
+                            aria-label={`Delete team ${teamSlug}`}
                             on:click={() => openTeamDeleteConfirmation(teamSlug)}
                             >Delete…</button
                           >
@@ -3585,6 +3586,7 @@
                           class="btn btn-secondary btn-sm"
                           id={`namespace-delete-toggle-${claim.id}`}
                           type="button"
+                          aria-label={`Delete namespace claim ${claim.namespace || 'Unnamed claim'}`}
                           on:click={() => openNamespaceDeleteConfirmation(claim.id || '')}
                           >Delete…</button
                         >
