@@ -3074,7 +3074,7 @@ dependencies = [
 
 [[package]]
 name = "publaryn-adapter-cargo-registry"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3096,7 +3096,7 @@ dependencies = [
 
 [[package]]
 name = "publaryn-adapter-composer"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3119,7 +3119,7 @@ dependencies = [
 
 [[package]]
 name = "publaryn-adapter-maven"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3143,7 +3143,7 @@ dependencies = [
 
 [[package]]
 name = "publaryn-adapter-npm"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3167,7 +3167,7 @@ dependencies = [
 
 [[package]]
 name = "publaryn-adapter-nuget"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3192,7 +3192,7 @@ dependencies = [
 
 [[package]]
 name = "publaryn-adapter-oci"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3214,7 +3214,7 @@ dependencies = [
 
 [[package]]
 name = "publaryn-adapter-pypi"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3239,7 +3239,7 @@ dependencies = [
 
 [[package]]
 name = "publaryn-adapter-rubygems"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3265,7 +3265,7 @@ dependencies = [
 
 [[package]]
 name = "publaryn-api"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3321,7 +3321,7 @@ dependencies = [
 
 [[package]]
 name = "publaryn-auth"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "argon2",
@@ -3346,7 +3346,7 @@ dependencies = [
 
 [[package]]
 name = "publaryn-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "chrono",
  "hex",
@@ -3366,7 +3366,7 @@ dependencies = [
 
 [[package]]
 name = "publaryn-search"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3383,7 +3383,7 @@ dependencies = [
 
 [[package]]
 name = "publaryn-test-utils"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -3403,7 +3403,7 @@ dependencies = [
 
 [[package]]
 name = "publaryn-workers"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "async-trait",

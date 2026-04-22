@@ -1,6 +1,7 @@
 /// <reference path="./bun-test.d.ts" />
 
 import { afterEach, describe, expect, mock, test } from 'bun:test';
+import { fileURLToPath } from 'node:url';
 import { writable } from 'svelte/store';
 
 import { renderPackageSelectionValue } from '../src/pages/org-workspace-actions';
@@ -137,6 +138,12 @@ const NAMESPACE_CLAIM_ID = 'claim-001';
 const NAMESPACE_CLAIM_VALUE = '@source-org';
 const ACTIVE_INVITATION_ID = 'invite-001';
 const ACTIVE_INVITEE_EMAIL = 'new-maintainer@example.test';
+const ORG_PAGE_PATH = fileURLToPath(
+  new URL('../src/routes/orgs/[slug]/+page.svelte', import.meta.url)
+);
+const SEARCH_PAGE_PATH = fileURLToPath(
+  new URL('../src/routes/search/+page.svelte', import.meta.url)
+);
 const apiClientModuleUrl = new URL('../src/api/client.ts', import.meta.url)
   .href;
 const gotoCalls: string[] = [];
@@ -505,8 +512,7 @@ describe('route-level multi-page org dataset coverage', () => {
       )
     );
 
-    const OrgPage = await import('../src/routes/orgs/[slug]/+page.svelte');
-    const { target, unmount } = await renderSvelte(OrgPage);
+    const { target, unmount } = await renderSvelte(ORG_PAGE_PATH);
 
     try {
       await waitFor(() => {
@@ -1895,7 +1901,6 @@ describe('route-level multi-page org dataset coverage', () => {
   });
 
   test('org-scoped search loads repository filter options across multiple pages and submits the selected repository', async () => {
-    const SearchPage = await import('../src/routes/search/+page.svelte');
     const scenario = createFetchScenario();
     currentScenario = scenario;
     currentAuthToken = 'pub_test_token';
@@ -1905,7 +1910,7 @@ describe('route-level multi-page org dataset coverage', () => {
       )
     );
 
-    const { target, unmount, flush } = await renderSvelte(SearchPage);
+    const { target, unmount, flush } = await renderSvelte(SEARCH_PAGE_PATH);
 
     try {
       await waitFor(() => {
@@ -1939,13 +1944,12 @@ describe('route-level multi-page org dataset coverage', () => {
   });
 
   test('search results expose a secondary package-details link alongside security navigation', async () => {
-    const SearchPage = await import('../src/routes/search/+page.svelte');
     const scenario = createFetchScenario();
     currentScenario = scenario;
     currentAuthToken = 'pub_test_token';
     pageStore.set(buildPageState('https://example.test/search?q=example'));
 
-    const { target, unmount } = await renderSvelte(SearchPage);
+    const { target, unmount } = await renderSvelte(SEARCH_PAGE_PATH);
 
     try {
       await waitFor(() => {
@@ -2678,7 +2682,6 @@ function optionValues(select: HTMLSelectElement): string[] {
 async function mountOrgPage(
   scenario: FetchScenario
 ): Promise<Awaited<ReturnType<typeof renderSvelte>>> {
-  const OrgPage = await import('../src/routes/orgs/[slug]/+page.svelte');
   currentScenario = scenario;
   currentAuthToken = 'pub_test_token';
   pageStore.set(
@@ -2686,5 +2689,5 @@ async function mountOrgPage(
       slug: ORG_SLUG,
     })
   );
-  return renderSvelte(OrgPage);
+  return renderSvelte(ORG_PAGE_PATH);
 }

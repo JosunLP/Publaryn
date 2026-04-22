@@ -21,21 +21,38 @@
     createRelease,
     createTrustedPublisher as createTrustedPublisherForPackage,
     deleteTrustedPublisher as deleteTrustedPublisherForPackage,
+    deprecateRelease,
     getPackage,
     listReleases,
     listSecurityFindings,
     listTags,
     listTrustedPublishers as listTrustedPublishersForPackage,
+    publishRelease,
     severityLevel,
     transferPackageOwnership,
+    unyankRelease,
     updatePackage,
     updateSecurityFinding,
+    yankRelease,
   } from '../../../../api/packages';
   import type { PackageDetailTab } from '../../../../pages/package-detail-tabs';
   import {
     buildPackageDetailPath,
     getPackageDetailTabFromQuery,
   } from '../../../../pages/package-detail-tabs';
+  import {
+    buildPackageSecurityEmptyStateMessage,
+    buildPackageSecurityFilterSummary,
+    countPackageSecurityFindingsBySeverity,
+    filterPackageSecurityFindings,
+    normalizePackageSecuritySearchQuery,
+    type PackageSecurityFocusMode,
+  } from '../../../../pages/package-security';
+  import { getPackageSecurityViewFromQuery } from '../../../../pages/pkg-security-url';
+  import {
+    TEAM_PERMISSION_OPTIONS,
+    formatTeamPermission,
+  } from '../../../../pages/team-management';
   import {
     ecosystemIcon,
     ecosystemLabel,
@@ -53,26 +70,17 @@
     createPackageMetadataFormValues,
     packageMetadataHasChanges,
   } from '../../../../utils/package-metadata';
-  import {
-    buildPackageSecurityEmptyStateMessage,
-    buildPackageSecurityFilterSummary,
-    countPackageSecurityFindingsBySeverity,
-    filterPackageSecurityFindings,
-    normalizePackageSecuritySearchQuery,
-    type PackageSecurityFocusMode,
-  } from '../../../../pages/package-security';
-  import { getPackageSecurityViewFromQuery } from '../../../../pages/pkg-security-url';
-  import {
-    TEAM_PERMISSION_OPTIONS,
-    formatTeamPermission,
-  } from '../../../../pages/team-management';
   import { selectPackageTransferTargets } from '../../../../utils/package-transfer';
+  import {
+    getReleaseActionAvailability,
+    getRestoreReleaseLabel,
+  } from '../../../../utils/releases';
+  import { SECURITY_SEVERITIES } from '../../../../utils/security';
   import {
     normalizeTrustedPublisherInput,
     trustedPublisherBindingFields,
     trustedPublisherHeading,
   } from '../../../../utils/trusted-publishers';
-  import { SECURITY_SEVERITIES } from '../../../../utils/security';
 
   interface TransferState {
     showTransfer: boolean;
@@ -91,7 +99,9 @@
     loadError: string | null;
   }
 
-  type PackageTeamAccessGrant = NonNullable<PackageDetail['team_access']>[number];
+  type PackageTeamAccessGrant = NonNullable<
+    PackageDetail['team_access']
+  >[number];
 
   const SECURITY_REVIEW_PERMISSIONS = new Set(['admin', 'security_review']);
 
@@ -119,6 +129,9 @@
   };
   let releaseNotice: string | null = null;
   let releaseError: string | null = null;
+  let releaseActionNotice: string | null = null;
+  let releaseActionError: string | null = null;
+  let activeReleaseActionVersion: string | null = null;
   let transferNotice: string | null = null;
   let transferError: string | null = null;
   let teamAccessNotice: string | null = null;
@@ -170,7 +183,9 @@
   $: ecosystem = $page.params.ecosystem ?? '';
   $: name = $page.params.name ?? '';
   $: activeTab = getPackageDetailTabFromQuery($page.url.searchParams);
-  $: packageSecurityView = getPackageSecurityViewFromQuery($page.url.searchParams);
+  $: packageSecurityView = getPackageSecurityViewFromQuery(
+    $page.url.searchParams
+  );
   $: {
     const nextSyncKey = [
       packageSecurityView.focusMode,
@@ -217,6 +232,9 @@
     };
     releaseNotice = null;
     releaseError = null;
+    releaseActionNotice = null;
+    releaseActionError = null;
+    activeReleaseActionVersion = null;
     transferNotice = null;
     transferError = null;
     teamAccessNotice = null;
@@ -264,9 +282,7 @@
       listTags(ecosystem, name).catch(() => [] as Tag[]),
       listSecurityFindings(ecosystem, name, {
         includeResolved: includeResolvedFindings,
-      }).catch(
-        () => [] as SecurityFinding[]
-      ),
+      }).catch(() => [] as SecurityFinding[]),
       loadTransferState(pkg),
       loadTrustedPublisherState(pkg),
       loadTeamAccessManagementState(pkg),
@@ -387,11 +403,7 @@
   async function loadTeamAccessManagementState(
     currentPackage: PackageDetail | null
   ): Promise<TeamAccessManagementState> {
-    if (
-      !currentPackage ||
-      !getAuthToken() ||
-      !currentPackage.owner_org_slug
-    ) {
+    if (!currentPackage || !getAuthToken() || !currentPackage.owner_org_slug) {
       return {
         showManagement: false,
         teams: [],
@@ -417,7 +429,9 @@
         const teamResponse = await listTeams(currentPackage.owner_org_slug);
         return {
           showManagement: true,
-          teams: (teamResponse.teams || []).filter((team) => Boolean(team.slug)),
+          teams: (teamResponse.teams || []).filter((team) =>
+            Boolean(team.slug)
+          ),
           loadError: teamResponse.load_error || null,
         };
       } catch (caughtError: unknown) {
@@ -476,7 +490,8 @@
           tab: 'security',
           securityView: {
             focusMode: overrides.focusMode ?? findingFocusMode,
-            includeResolved: overrides.includeResolved ?? includeResolvedFindings,
+            includeResolved:
+              overrides.includeResolved ?? includeResolvedFindings,
             searchQuery: overrides.searchQuery ?? findingSearchQuery,
             severities: overrides.severities ?? findingSeverityFilters,
           },
@@ -615,6 +630,108 @@
     }
   }
 
+  async function handleReleaseListPublish(release: Release): Promise<void> {
+    activeReleaseActionVersion = release.version;
+    releaseActionError = null;
+    releaseActionNotice = null;
+
+    try {
+      const result = await publishRelease(ecosystem, name, release.version);
+      await loadPackagePage();
+      releaseActionNotice =
+        result.message || `Submitted ${release.version} for scanning.`;
+    } catch (caughtError: unknown) {
+      releaseActionError = toErrorMessage(
+        caughtError,
+        'Failed to publish release.'
+      );
+    } finally {
+      activeReleaseActionVersion = null;
+    }
+  }
+
+  async function handleReleaseListYank(release: Release): Promise<void> {
+    const reason = window.prompt(
+      `Optional yank reason for ${release.version}`,
+      release.yank_reason || ''
+    );
+
+    if (reason === null) {
+      return;
+    }
+
+    activeReleaseActionVersion = release.version;
+    releaseActionError = null;
+    releaseActionNotice = null;
+
+    try {
+      const result = await yankRelease(ecosystem, name, release.version, {
+        reason: reason.trim() || undefined,
+      });
+      await loadPackagePage();
+      releaseActionNotice =
+        result.message || `Yanked ${release.version} successfully.`;
+    } catch (caughtError: unknown) {
+      releaseActionError = toErrorMessage(
+        caughtError,
+        'Failed to yank release.'
+      );
+    } finally {
+      activeReleaseActionVersion = null;
+    }
+  }
+
+  async function handleReleaseListRestore(release: Release): Promise<void> {
+    activeReleaseActionVersion = release.version;
+    releaseActionError = null;
+    releaseActionNotice = null;
+
+    try {
+      const result = await unyankRelease(ecosystem, name, release.version);
+      await loadPackagePage();
+      releaseActionNotice =
+        result.message || `Restored ${release.version} successfully.`;
+    } catch (caughtError: unknown) {
+      releaseActionError = toErrorMessage(
+        caughtError,
+        'Failed to restore release.'
+      );
+    } finally {
+      activeReleaseActionVersion = null;
+    }
+  }
+
+  async function handleReleaseListDeprecate(release: Release): Promise<void> {
+    const message = window.prompt(
+      `Optional deprecation message for ${release.version}`,
+      release.deprecation_message || ''
+    );
+
+    if (message === null) {
+      return;
+    }
+
+    activeReleaseActionVersion = release.version;
+    releaseActionError = null;
+    releaseActionNotice = null;
+
+    try {
+      const result = await deprecateRelease(ecosystem, name, release.version, {
+        message: message.trim() || undefined,
+      });
+      await loadPackagePage();
+      releaseActionNotice =
+        result.message || `Deprecated ${release.version} successfully.`;
+    } catch (caughtError: unknown) {
+      releaseActionError = toErrorMessage(
+        caughtError,
+        'Failed to deprecate release.'
+      );
+    } finally {
+      activeReleaseActionVersion = null;
+    }
+  }
+
   async function handleReplacePackageTeamAccess(
     event: SubmitEvent
   ): Promise<void> {
@@ -654,13 +771,18 @@
     teamAccessNotice = null;
 
     try {
-      await replaceTeamPackageAccess(pkg.owner_org_slug, teamSlug, ecosystem, name, {
-        permissions,
-      });
+      await replaceTeamPackageAccess(
+        pkg.owner_org_slug,
+        teamSlug,
+        ecosystem,
+        name,
+        {
+          permissions,
+        }
+      );
       const teamLabel =
         teamAccessManagementState.teams.find((team) => team.slug === teamSlug)
-          ?.name ||
-        teamSlug;
+          ?.name || teamSlug;
       await loadPackagePage();
       teamAccessNotice = `Saved package access for ${teamLabel}.`;
       form.reset();
@@ -674,7 +796,9 @@
     }
   }
 
-  async function handleRemovePackageTeamAccess(teamSlug: string): Promise<void> {
+  async function handleRemovePackageTeamAccess(
+    teamSlug: string
+  ): Promise<void> {
     if (
       !pkg ||
       !pkg.owner_org_slug ||
@@ -689,10 +813,15 @@
     teamAccessNotice = null;
 
     try {
-      await removeTeamPackageAccess(pkg.owner_org_slug, teamSlug, ecosystem, name);
+      await removeTeamPackageAccess(
+        pkg.owner_org_slug,
+        teamSlug,
+        ecosystem,
+        name
+      );
       const teamLabel =
-        pkg.team_access?.find((grant) => grant.team_slug === teamSlug)?.team_name ||
-        teamSlug;
+        pkg.team_access?.find((grant) => grant.team_slug === teamSlug)
+          ?.team_name || teamSlug;
       await loadPackagePage();
       teamAccessNotice = `Revoked package access for ${teamLabel}.`;
     } catch (caughtError: unknown) {
@@ -940,17 +1069,15 @@
 
   $: packageMetadata = pkg?.ecosystem_metadata ?? null;
   $: canonicalPackageEcosystem = pkg?.ecosystem ?? ecosystem;
-  $: normalizedFindingSearchQuery = normalizePackageSecuritySearchQuery(
-    findingSearchQuery
-  );
+  $: normalizedFindingSearchQuery =
+    normalizePackageSecuritySearchQuery(findingSearchQuery);
   $: filteredFindings = filterPackageSecurityFindings(findings, {
     searchQuery: normalizedFindingSearchQuery,
     severities: findingSeverityFilters,
     focusMode: findingFocusMode,
   });
-  $: filteredFindingSeverityCounts = countPackageSecurityFindingsBySeverity(
-    filteredFindings
-  );
+  $: filteredFindingSeverityCounts =
+    countPackageSecurityFindingsBySeverity(filteredFindings);
   $: findingFiltersSummary = buildPackageSecurityFilterSummary({
     totalLoadedCount: findings.length,
     visibleCount: filteredFindings.length,
@@ -1115,7 +1242,8 @@
           >
             Security
             {#if openFindings.length > 0}
-              <span class={`badge badge-severity-${worstSeverity(openFindings)}`}
+              <span
+                class={`badge badge-severity-${worstSeverity(openFindings)}`}
                 >{openFindings.length}</span
               >
             {/if}
@@ -1126,17 +1254,24 @@
           {#if readmeHtml}
             <div class="readme-content">{@html readmeHtml}</div>
           {:else}
-              <div class="empty-state surface-card">
-                <p>No README available for this package.</p>
-              </div>
+            <div class="empty-state surface-card">
+              <p>No README available for this package.</p>
+            </div>
           {/if}
         {/if}
 
         {#if activeTab === 'versions'}
+          {#if releaseActionNotice}
+            <div class="alert alert-success mb-4">{releaseActionNotice}</div>
+          {/if}
+          {#if releaseActionError}
+            <div class="alert alert-error mb-4">{releaseActionError}</div>
+          {/if}
           {#if releases.length === 0}
-              <div class="empty-state surface-card"><p>No releases yet.</p></div>
+            <div class="empty-state surface-card"><p>No releases yet.</p></div>
           {:else}
             {#each releases as release}
+              {@const releaseActions = getReleaseActionAvailability(release, 0)}
               <div class="release-row">
                 <div>
                   <a
@@ -1152,10 +1287,77 @@
                   {#if release.status === 'deprecated'}
                     <span class="badge badge-deprecated">deprecated</span>
                   {/if}
+                  {#if release.status && release.status !== 'deprecated'}
+                    <span class="badge badge-ecosystem">{release.status}</span>
+                  {/if}
                 </div>
                 <div class="release-row__meta">
                   {formatDate(release.published_at || release.created_at)}
                 </div>
+                {#if pkg.can_manage_releases && (releaseActions.canUploadArtifact || releaseActions.canYank || releaseActions.canRestore || releaseActions.canDeprecate)}
+                  <div class="release-row__actions">
+                    {#if releaseActions.canUploadArtifact}
+                      <a
+                        href={`/packages/${encodeURIComponent(ecosystem)}/${encodeURIComponent(name)}/versions/${encodeURIComponent(release.version)}`}
+                        class="btn btn-secondary btn-sm"
+                        data-sveltekit-preload-data="hover"
+                        >Manage publish flow</a
+                      >
+                    {/if}
+                    {#if releaseActions.canYank}
+                      <button
+                        type="button"
+                        class="btn btn-secondary btn-sm"
+                        disabled={activeReleaseActionVersion ===
+                          release.version}
+                        on:click={() => handleReleaseListYank(release)}
+                      >
+                        {activeReleaseActionVersion === release.version
+                          ? 'Working…'
+                          : 'Yank'}
+                      </button>
+                    {/if}
+                    {#if releaseActions.canRestore}
+                      <button
+                        type="button"
+                        class="btn btn-secondary btn-sm"
+                        disabled={activeReleaseActionVersion ===
+                          release.version}
+                        on:click={() => handleReleaseListRestore(release)}
+                      >
+                        {activeReleaseActionVersion === release.version
+                          ? 'Working…'
+                          : getRestoreReleaseLabel(release)}
+                      </button>
+                    {/if}
+                    {#if releaseActions.canDeprecate}
+                      <button
+                        type="button"
+                        class="btn btn-secondary btn-sm"
+                        disabled={activeReleaseActionVersion ===
+                          release.version}
+                        on:click={() => handleReleaseListDeprecate(release)}
+                      >
+                        {activeReleaseActionVersion === release.version
+                          ? 'Working…'
+                          : 'Deprecate'}
+                      </button>
+                    {/if}
+                    {#if release.status?.toLowerCase() === 'quarantine'}
+                      <button
+                        type="button"
+                        class="btn btn-primary btn-sm"
+                        disabled={activeReleaseActionVersion ===
+                          release.version}
+                        on:click={() => handleReleaseListPublish(release)}
+                      >
+                        {activeReleaseActionVersion === release.version
+                          ? 'Working…'
+                          : 'Publish'}
+                      </button>
+                    {/if}
+                  </div>
+                {/if}
               </div>
             {/each}
           {/if}
@@ -1171,20 +1373,24 @@
                 <h3>Security review access</h3>
                 <p class="settings-copy" style="margin-bottom:0.75rem;">
                   {#if securityReviewerTeams.length > 0}
-                    Teams with <strong>Security review</strong> or <strong>Admin</strong> package
-                    grants can resolve and reopen findings for this package.
+                    Teams with <strong>Security review</strong> or
+                    <strong>Admin</strong> package grants can resolve and reopen
+                    findings for this package.
                   {:else}
-                    Security findings on this package can be triaged with your current package
-                    access.
+                    Security findings on this package can be triaged with your
+                    current package access.
                   {/if}
                 </p>
                 <div class="token-row__scopes" style="margin-bottom:0.75rem;">
                   {#if pkg.can_manage_security}
-                    <span class="badge badge-verified">You can triage findings</span>
+                    <span class="badge badge-verified"
+                      >You can triage findings</span
+                    >
                   {/if}
                   {#if securityReviewerTeams.length > 0}
                     <span class="badge badge-ecosystem"
-                      >{securityReviewerTeams.length} review team{securityReviewerTeams.length === 1
+                      >{securityReviewerTeams.length} review team{securityReviewerTeams.length ===
+                      1
                         ? ''
                         : 's'}</span
                     >
@@ -1196,14 +1402,20 @@
                       <div class="token-row">
                         <div class="token-row__main">
                           <div class="token-row__title">
-                            {grant.team_name || grant.team_slug || 'Unnamed team'}
+                            {grant.team_name ||
+                              grant.team_slug ||
+                              'Unnamed team'}
                           </div>
                           <div class="token-row__meta">
                             {#if grant.team_slug}
                               <span>{grant.team_slug}</span>
                             {/if}
                             {#if grant.granted_at}
-                              <span>latest grant {formatDate(grant.granted_at)}</span>
+                              <span
+                                >latest grant {formatDate(
+                                  grant.granted_at
+                                )}</span
+                              >
                             {/if}
                           </div>
                           <div class="token-row__scopes">
@@ -1228,7 +1440,10 @@
                 class="flex flex-wrap items-end gap-4"
                 style="margin-bottom:0.75rem;"
               >
-                <div class="form-group" style="margin-bottom:0; min-width:220px;">
+                <div
+                  class="form-group"
+                  style="margin-bottom:0; min-width:220px;"
+                >
                   <label for="package-security-focus">Focus</label>
                   <select
                     id="package-security-focus"
@@ -1241,7 +1456,10 @@
                     <option value="resolved">Resolved history</option>
                   </select>
                 </div>
-                <div class="form-group" style="margin-bottom:0; min-width:260px; flex:1;">
+                <div
+                  class="form-group"
+                  style="margin-bottom:0; min-width:260px; flex:1;"
+                >
                   <label for="package-security-search">Search findings</label>
                   <input
                     id="package-security-search"
@@ -1252,7 +1470,10 @@
                     autocomplete="off"
                   />
                 </div>
-                <label class="badge badge-ecosystem" for="package-security-include-resolved">
+                <label
+                  class="badge badge-ecosystem"
+                  for="package-security-include-resolved"
+                >
                   <input
                     id="package-security-include-resolved"
                     type="checkbox"
@@ -1266,7 +1487,8 @@
                   <button
                     type="button"
                     class="btn btn-secondary"
-                    on:click={() => void clearFindingFilters()}>Clear filters</button
+                    on:click={() => void clearFindingFilters()}
+                    >Clear filters</button
                   >
                 {/if}
               </div>
@@ -1301,22 +1523,28 @@
           {/if}
 
           {#if filteredFindings.length === 0}
-              <div class="empty-state surface-card">
-                <h3>{findings.length === 0 ? 'No security findings' : 'No findings match current filters'}</h3>
-                <p>{findingFiltersEmptyMessage}</p>
-                {#if hasActiveFindingFilters}
-                  <button
-                    type="button"
-                    class="btn btn-secondary"
-                    on:click={() => void clearFindingFilters()}>Clear filters</button
-                  >
-                {/if}
-              </div>
+            <div class="empty-state surface-card">
+              <h3>
+                {findings.length === 0
+                  ? 'No security findings'
+                  : 'No findings match current filters'}
+              </h3>
+              <p>{findingFiltersEmptyMessage}</p>
+              {#if hasActiveFindingFilters}
+                <button
+                  type="button"
+                  class="btn btn-secondary"
+                  on:click={() => void clearFindingFilters()}
+                  >Clear filters</button
+                >
+              {/if}
+            </div>
           {:else}
             <div class="token-row__scopes" style="margin-bottom:1rem;">
               {#each SECURITY_SEVERITIES.filter((severity) => filteredFindingSeverityCounts[severity] > 0) as severity}
                 <span class={`badge badge-severity-${severity}`}
-                  >{formatNumber(filteredFindingSeverityCounts[severity])} {severity}</span
+                  >{formatNumber(filteredFindingSeverityCounts[severity])}
+                  {severity}</span
                 >
               {/each}
             </div>
@@ -1628,22 +1856,24 @@
                             <span>{grant.team_slug}</span>
                           {/if}
                           {#if grant.granted_at}
-                            <span>latest grant {formatDate(grant.granted_at)}</span>
+                            <span
+                              >latest grant {formatDate(grant.granted_at)}</span
+                            >
                           {/if}
                         </div>
-                         <div class="token-row__scopes">
-                           {#each grant.permissions || [] as permission}
-                             <span class="badge badge-ecosystem"
-                               >{formatPermission(permission)}</span
-                             >
-                           {/each}
-                           {#if canGrantReviewSecurity(grant)}
-                             <span class="badge badge-verified"
-                               >Can triage findings</span
-                             >
-                           {/if}
-                         </div>
-                       </div>
+                        <div class="token-row__scopes">
+                          {#each grant.permissions || [] as permission}
+                            <span class="badge badge-ecosystem"
+                              >{formatPermission(permission)}</span
+                            >
+                          {/each}
+                          {#if canGrantReviewSecurity(grant)}
+                            <span class="badge badge-verified"
+                              >Can triage findings</span
+                            >
+                          {/if}
+                        </div>
+                      </div>
                       {#if teamAccessManagementState.showManagement && grant.team_slug}
                         <div class="token-row__actions">
                           <button
@@ -1651,7 +1881,9 @@
                             class="btn btn-secondary btn-sm"
                             disabled={Boolean(revokingTeamSlug)}
                             on:click={() =>
-                              handleRemovePackageTeamAccess(grant.team_slug || '')}
+                              handleRemovePackageTeamAccess(
+                                grant.team_slug || ''
+                              )}
                           >
                             {#if revokingTeamSlug === grant.team_slug}
                               Revoking…
@@ -1689,7 +1921,8 @@
                           name="team_slug"
                           class="form-input"
                           required
-                          disabled={savingTeamAccess || Boolean(revokingTeamSlug)}
+                          disabled={savingTeamAccess ||
+                            Boolean(revokingTeamSlug)}
                         >
                           <option value="">Select a team</option>
                           {#each sortedTeamOptions as option}
@@ -1699,7 +1932,9 @@
                           {/each}
                         </select>
                       </div>
-                      <fieldset style="margin:0 0 12px; padding:0; border:none;">
+                      <fieldset
+                        style="margin:0 0 12px; padding:0; border:none;"
+                      >
                         <legend
                           style="font-size:0.875rem; font-weight:600; margin-bottom:8px;"
                         >

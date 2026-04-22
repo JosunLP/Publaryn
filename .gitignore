@@ -28,6 +28,8 @@ data/
 
 */node_modules/
 */dist/
+*/.vitepress/cache/
+*/.vitepress/dist/
 */.svelte-kit/
 */.cache/
 */.parcel-cache/
@@ -35,3 +37,4 @@ data/
 */.nuxt/
 */.vercel/
 */.vercel_build_output/
+.compiled-svelte-test-modules/

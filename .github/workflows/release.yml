@@ -1,66 +1,338 @@
-name: Release image
+name: Release
 
 on:
-  push:
-    tags:
-      - v*.*.*
+  release:
+    types:
+      - created
+      - published
   workflow_dispatch:
     inputs:
+      version:
+        description: Release version to validate or publish (for example 1.0.0)
+        required: true
+        type: string
       publish:
-        description: Push the built image to GHCR
+        description: Push the built image to GHCR after building it
         required: false
         default: false
         type: boolean
       platforms:
         description: Comma-separated Docker build platforms
         required: false
-        default: linux/amd64
+        default: linux/amd64,linux/arm64
         type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.workflow }}-${{ github.ref }}
+  group: release-${{ github.workflow }}-${{ github.event.release.tag_name ||
+    inputs.version || github.ref }}
   cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
 
 jobs:
   prepare-release:
     name: Prepare release metadata
     runs-on: ubuntu-latest
     outputs:
+      version: ${{ steps.vars.outputs.version }}
+      tag: ${{ steps.vars.outputs.tag }}
+      major: ${{ steps.vars.outputs.major }}
+      major_minor: ${{ steps.vars.outputs.major_minor }}
       image: ${{ steps.vars.outputs.image }}
       platforms: ${{ steps.vars.outputs.platforms }}
-      should-push: ${{ steps.vars.outputs.should-push }}
+      should_push: ${{ steps.vars.outputs.should_push }}
+      should_validate: ${{ steps.vars.outputs.should_validate }}
+      is_stable: ${{ steps.vars.outputs.is_stable }}
+      release_notes_path: ${{ steps.vars.outputs.release_notes_path }}
     steps:
-      - name: Derive image settings
+      - name: Derive release settings
         id: vars
         shell: bash
         env:
-          REQUESTED_PUBLISH: ${{ inputs.publish }}
-          REQUESTED_PLATFORMS: ${{ inputs.platforms }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_PLATFORMS: ${{ inputs.platforms }}
+          INPUT_PUBLISH: ${{ inputs.publish }}
         run: |
+          set -euo pipefail
+
+          if [[ "$EVENT_NAME" == "release" ]]; then
+            tag="$RELEASE_TAG"
+          else
+            raw_version="$INPUT_VERSION"
+            if [[ "$raw_version" == v* ]]; then
+              tag="$raw_version"
+            else
+              tag="v$raw_version"
+            fi
+          fi
+
+          if [[ ! "$tag" =~ ^v([0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?)$ ]]; then
+            echo "Unsupported release tag or version: $tag" >&2
+            exit 1
+          fi
+
+          version="${BASH_REMATCH[1]}"
+          IFS='.' read -r major minor _ <<< "$version"
+          major_minor="${major}.${minor}"
+          is_stable="true"
+
+          if [[ "$version" == *-* || "$version" == *+* ]]; then
+            is_stable="false"
+          fi
+
+          platforms="linux/amd64,linux/arm64"
+          if [[ -n "$INPUT_PLATFORMS" ]]; then
+            platforms="$INPUT_PLATFORMS"
+          fi
+
+          should_push="false"
+          if [[ "$EVENT_NAME" == "release" && "$EVENT_ACTION" == "published" ]]; then
+            should_push="true"
+          elif [[ "$EVENT_NAME" == "workflow_dispatch" && "$INPUT_PUBLISH" == "true" ]]; then
+            should_push="true"
+          fi
+
+          should_validate="false"
+          if [[ "$EVENT_NAME" == "workflow_dispatch" || "$EVENT_ACTION" == "created" ]]; then
+            should_validate="true"
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "major=$major" >> "$GITHUB_OUTPUT"
+          echo "major_minor=$major_minor" >> "$GITHUB_OUTPUT"
           echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          echo "platforms=$platforms" >> "$GITHUB_OUTPUT"
+          echo "should_push=$should_push" >> "$GITHUB_OUTPUT"
+          echo "should_validate=$should_validate" >> "$GITHUB_OUTPUT"
+          echo "is_stable=$is_stable" >> "$GITHUB_OUTPUT"
+          echo "release_notes_path=docs/releases/${version}.md" >> "$GITHUB_OUTPUT"
 
-          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
-            echo "should-push=true" >> "$GITHUB_OUTPUT"
-          elif [[ "$REQUESTED_PUBLISH" == "true" ]]; then
-            echo "should-push=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "should-push=false" >> "$GITHUB_OUTPUT"
-          fi
+  release-contract:
+    name: Validate release metadata
+    runs-on: ubuntu-latest
+    needs: prepare-release
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
 
-          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && -n "$REQUESTED_PLATFORMS" ]]; then
-            echo "platforms=$REQUESTED_PLATFORMS" >> "$GITHUB_OUTPUT"
-          else
-            echo "platforms=linux/amd64" >> "$GITHUB_OUTPUT"
-          fi
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.12
+
+      - name: Verify manifest versions
+        run: bun scripts/release/manifest-version.mjs check --version ${{
+          needs.prepare-release.outputs.version }}
+
+      - name: Verify release artifacts
+        run: bun scripts/release/release-artifacts.mjs --version ${{
+          needs.prepare-release.outputs.version }}
+
+  rust-format-and-lint:
+    name: Rust format & lint
+    if: needs.prepare-release.outputs.should_validate == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: prepare-release
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lint workspace
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+  rust-unit-tests:
+    name: Rust unit tests
+    if: needs.prepare-release.outputs.should_validate == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: prepare-release
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Test core crate
+        run: cargo test -p publaryn-core
+
+      - name: Test auth library
+        run: cargo test -p publaryn-auth --lib
+
+      - name: Test API library
+        run: cargo test -p publaryn-api --lib
+
+  rust-integration-tests:
+    name: Rust integration tests
+    if: needs.prepare-release.outputs.should_validate == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: prepare-release
+    env:
+      DATABASE_URL: postgres://publaryn:publaryn_test@localhost:5432/publaryn_test
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: publaryn
+          POSTGRES_PASSWORD: publaryn_test
+          POSTGRES_DB: publaryn_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U publaryn" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run API integration tests
+        run: cargo test -p publaryn-api --test integration_tests
+
+      - name: Run auth integration tests
+        run: cargo test -p publaryn-auth --test auth_tests
+
+  frontend-validation:
+    name: Frontend validation
+    if: needs.prepare-release.outputs.should_validate == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: prepare-release
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.12
+
+      - name: Restore Bun cache
+        uses: actions/cache@v5
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-frontend-${{ hashFiles('frontend/bun.lock',
+            'frontend/package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-frontend-
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: bun install --frozen-lockfile
+
+      - name: Run frontend typecheck
+        working-directory: frontend
+        run: bun run typecheck
+
+      - name: Run frontend tests
+        working-directory: frontend
+        run: bun test
+
+      - name: Build frontend
+        working-directory: frontend
+        run: bun run build
+
+  docs-build:
+    name: Docs build
+    if: needs.prepare-release.outputs.should_validate == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: prepare-release
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.12
+
+      - name: Restore Bun cache
+        uses: actions/cache@v5
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-docs-${{ hashFiles('docs/bun.lock',
+            'docs/package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-docs-
+
+      - name: Install docs dependencies
+        working-directory: docs
+        run: bun install --frozen-lockfile
+
+      - name: Build docs site
+        working-directory: docs
+        run: bun run build
+
+  docker-smoke-build:
+    name: Docker smoke build
+    if: needs.prepare-release.outputs.should_validate == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs:
+      - prepare-release
+      - release-contract
+      - rust-format-and-lint
+      - rust-unit-tests
+      - rust-integration-tests
+      - frontend-validation
+      - docs-build
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build release smoke image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          tags: publaryn:release-smoke
+          cache-from: type=gha,scope=release-docker-smoke
+          cache-to: type=gha,mode=max,scope=release-docker-smoke
 
   build-release-image:
-    name: Build release image
+    name: Build and publish release image
+    if: needs.prepare-release.outputs.should_push == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    needs: prepare-release
+    needs:
+      - prepare-release
+      - release-contract
     permissions:
       contents: read
       packages: write
@@ -80,28 +352,27 @@ jobs:
         with:
           images: ${{ needs.prepare-release.outputs.image }}
           tags: |
-            type=ref,event=branch
-            type=ref,event=tag
+            type=raw,value=${{ needs.prepare-release.outputs.tag }}
+            type=raw,value=${{ needs.prepare-release.outputs.version }}
+            type=raw,value=${{ needs.prepare-release.outputs.major_minor }},enable=${{ needs.prepare-release.outputs.is_stable == 'true' }}
+            type=raw,value=${{ needs.prepare-release.outputs.major }},enable=${{ needs.prepare-release.outputs.is_stable == 'true' }}
+            type=raw,value=latest,enable=${{ needs.prepare-release.outputs.is_stable == 'true' }}
             type=sha,prefix=sha-
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable=${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
 
       - name: Log in to GHCR
-        if: needs.prepare-release.outputs.should-push == 'true'
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and optionally publish image
+      - name: Build and publish image
         uses: docker/build-push-action@v7
         with:
           context: .
           file: ./Dockerfile
           platforms: ${{ needs.prepare-release.outputs.platforms }}
-          push: ${{ needs.prepare-release.outputs.should-push == 'true' }}
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=release-image

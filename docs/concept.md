@@ -1612,7 +1612,11 @@ Publaryn 1.0 should include:
 - monetization and billing systems
 - federated or globally replicated registry behavior
 - proxy, mirror, and virtual repositories unless explicitly completed and documented
+- Maven snapshot repositories and promotion workflows
 - full-featured provenance and attestation product workflows
+- air-gapped synchronization and offline replication tooling
+- operator-facing abuse and takedown consoles beyond the current quarantine and audit primitives
+- richer discovery, ranking, and recommendation surfaces
 
 ## 30.3 API and Adapter Matrix for 1.0
 

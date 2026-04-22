@@ -30,7 +30,7 @@ product surface it governs.
 
 ## How to use this index
 
-- Start with [README.md](../../README.md) for the product baseline.
+- Start with the [repository README](https://github.com/JosunLP/Publaryn/blob/main/README.md) for the repository baseline.
 - Use [docs/1.0.md](../1.0.md) for the current release contract.
 - Read the relevant ADRs before changing authentication, visibility, release,
   governance, or protocol behavior.
@@ -38,7 +38,7 @@ product surface it governs.
 ## 1.0 contract map
 
 - **Scope, support posture, and release criteria:** [docs/1.0.md](../1.0.md)
-  and [README.md](../../README.md)
+  and the [repository README](https://github.com/JosunLP/Publaryn/blob/main/README.md)
 - **Repository lifecycle baseline:** hosted `public`, `private`, `staging`, and `release`
   repositories in 1.0; proxy and virtual repositories remain post-1.0 lifecycle work
 - **Visibility and actor-aware search:** [0007](0007-package-and-repository-read-visibility.md)
