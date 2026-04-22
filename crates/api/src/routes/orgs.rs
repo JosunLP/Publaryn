@@ -27,9 +27,9 @@ use crate::{
     request_auth::{
         actor_can_access_org_member_directory_by_id, actor_can_manage_namespace_claim_by_id,
         actor_can_transfer_namespace_claim_by_id, actor_can_transfer_package_by_id,
-        actor_can_transfer_repository_by_id, actor_org_capabilities_by_id, OrgActorCapabilities,
+        actor_can_transfer_repository_by_id, actor_org_capabilities_by_id,
         ensure_org_admin_by_slug, ensure_org_audit_access_by_slug, ensure_org_member_by_slug,
-        AuthenticatedIdentity, OptionalAuthenticatedIdentity,
+        AuthenticatedIdentity, OptionalAuthenticatedIdentity, OrgActorCapabilities,
     },
     routes::org_invitations::load_org_invitation_admin_payloads,
     scopes::{ensure_scope, SCOPE_ORGS_TRANSFER, SCOPE_ORGS_WRITE, SCOPE_PACKAGES_WRITE},
@@ -91,7 +91,10 @@ pub fn router() -> Router<AppState> {
             put(replace_team_namespace_access).delete(remove_team_namespace_access),
         )
         .route("/v1/orgs/{slug}/repositories", get(list_org_repositories))
-        .route("/v1/orgs/{slug}/workspace", get(get_org_workspace_bootstrap))
+        .route(
+            "/v1/orgs/{slug}/workspace",
+            get(get_org_workspace_bootstrap),
+        )
         .route(
             "/v1/orgs/{slug}/repository-package-coverage",
             get(list_org_repository_package_coverage),
@@ -192,8 +195,7 @@ async fn get_org(
     identity: OptionalAuthenticatedIdentity,
     Path(slug): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let (_, _, org_payload) =
-        load_org_detail_payload(&state.db, &slug, identity.user_id()).await?;
+    let (_, _, org_payload) = load_org_detail_payload(&state.db, &slug, identity.user_id()).await?;
     Ok(Json(org_payload))
 }
 
@@ -232,16 +234,23 @@ async fn get_org_workspace_bootstrap(
         &security_filters,
     );
 
-    let (teams, repositories, repository_package_coverage, packages, namespaces, invitations, security) =
-        tokio::try_join!(
-            teams_future,
-            load_all_org_repository_payloads(&state.db, org_id, can_view_non_public, actor_user_id),
-            load_org_repository_package_coverage_payloads(&state.db, org_id, can_view_non_public),
-            load_all_org_package_payloads(&state.db, org_id, can_view_non_public, actor_user_id),
-            load_org_namespace_payloads(&state.db, org_id, actor_user_id),
-            invitations_future,
-            security_future,
-        )?;
+    let (
+        teams,
+        repositories,
+        repository_package_coverage,
+        packages,
+        namespaces,
+        invitations,
+        security,
+    ) = tokio::try_join!(
+        teams_future,
+        load_all_org_repository_payloads(&state.db, org_id, can_view_non_public, actor_user_id),
+        load_org_repository_package_coverage_payloads(&state.db, org_id, can_view_non_public),
+        load_all_org_package_payloads(&state.db, org_id, can_view_non_public, actor_user_id),
+        load_org_namespace_payloads(&state.db, org_id, actor_user_id),
+        invitations_future,
+        security_future,
+    )?;
 
     Ok(Json(serde_json::json!({
         "org": org_payload,
@@ -2648,9 +2657,12 @@ async fn list_org_repository_package_coverage(
     } = resolve_org_read_scope(&state.db, &slug, identity.user_id()).await?;
 
     let repository_entries =
-        load_org_repository_package_coverage_payloads(&state.db, org_id, can_view_non_public).await?;
+        load_org_repository_package_coverage_payloads(&state.db, org_id, can_view_non_public)
+            .await?;
 
-    Ok(Json(serde_json::json!({ "repositories": repository_entries })))
+    Ok(Json(
+        serde_json::json!({ "repositories": repository_entries }),
+    ))
 }
 
 async fn load_org_detail_payload(
@@ -3482,14 +3494,8 @@ async fn list_org_security_findings(
         resolve_org_security_scope(&state.db, &slug, identity.user_id()).await?;
     let filters = resolve_org_security_filters(&query)?;
     Ok(Json(
-        load_org_security_payload(
-            &state.db,
-            org_id,
-            can_view_non_public,
-            &identity,
-            &filters,
-        )
-        .await?,
+        load_org_security_payload(&state.db, org_id, can_view_non_public, &identity, &filters)
+            .await?,
     ))
 }
 

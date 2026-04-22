@@ -3759,8 +3759,13 @@ async fn test_org_workspace_bootstrap_aggregates_initial_workspace_data(pool: Pg
         "expected internal repository coverage in response: {owner_bootstrap_body}"
     );
 
-    let (status, anonymous_bootstrap_body) = get_org_workspace_bootstrap(&app, None, "acme-corp").await;
-    assert_eq!(status, StatusCode::OK, "response: {anonymous_bootstrap_body}");
+    let (status, anonymous_bootstrap_body) =
+        get_org_workspace_bootstrap(&app, None, "acme-corp").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "response: {anonymous_bootstrap_body}"
+    );
     assert_eq!(
         anonymous_bootstrap_body["teams"]
             .as_array()

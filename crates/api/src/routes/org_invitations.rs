@@ -230,9 +230,12 @@ async fn list_org_invitations(
     ensure_scope(&identity, SCOPE_ORGS_WRITE)?;
 
     let org_id = ensure_org_admin_by_slug(&state.db, &slug, identity.user_id).await?;
-    let invitations =
-        load_org_invitation_admin_payloads(&state.db, org_id, query.include_inactive.unwrap_or(false))
-            .await?;
+    let invitations = load_org_invitation_admin_payloads(
+        &state.db,
+        org_id,
+        query.include_inactive.unwrap_or(false),
+    )
+    .await?;
 
     Ok(Json(serde_json::json!({ "invitations": invitations })))
 }
