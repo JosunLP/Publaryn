@@ -2318,6 +2318,94 @@ async fn get_oci_referrers(
     send_oci_request(app, Method::GET, uri, token, None, vec![]).await
 }
 
+async fn get_oci_catalog(
+    app: &axum::Router,
+    token: Option<&str>,
+    query: Option<&str>,
+) -> axum::response::Response {
+    let uri = match query {
+        Some(query) if !query.trim().is_empty() => format!("/oci/v2/_catalog?{query}"),
+        _ => "/oci/v2/_catalog".to_owned(),
+    };
+
+    send_oci_request(app, Method::GET, uri, token, None, vec![]).await
+}
+
+async fn get_oci_tags_list(
+    app: &axum::Router,
+    token: Option<&str>,
+    package_name: &str,
+    query: Option<&str>,
+) -> axum::response::Response {
+    let uri = match query {
+        Some(query) if !query.trim().is_empty() => {
+            format!("/oci/v2/{package_name}/tags/list?{query}")
+        }
+        _ => format!("/oci/v2/{package_name}/tags/list"),
+    };
+
+    send_oci_request(app, Method::GET, uri, token, None, vec![]).await
+}
+
+fn extract_oci_next_link_uri(link_value: &str) -> String {
+    link_value
+        .split(';')
+        .next()
+        .and_then(|part| part.strip_prefix('<'))
+        .and_then(|part| part.strip_suffix('>'))
+        .expect("link header should wrap the next URI in angle brackets")
+        .to_owned()
+}
+
+async fn publish_oci_image_manifest_tag(
+    app: &axum::Router,
+    token: &str,
+    package_name: &str,
+    tag: &str,
+    config_bytes: &[u8],
+    layer_bytes: &[u8],
+) -> String {
+    let (config_digest, config_resp) =
+        upload_oci_blob_monolithic(app, token, package_name, config_bytes).await;
+    assert_eq!(
+        config_resp.status(),
+        StatusCode::CREATED,
+        "config blob upload should succeed"
+    );
+
+    let (layer_digest, layer_resp) =
+        upload_oci_blob_monolithic(app, token, package_name, layer_bytes).await;
+    assert_eq!(
+        layer_resp.status(),
+        StatusCode::CREATED,
+        "layer blob upload should succeed"
+    );
+
+    let manifest_bytes = build_oci_image_manifest(
+        &config_digest,
+        config_bytes.len(),
+        &layer_digest,
+        layer_bytes.len(),
+    );
+    let manifest_digest = oci_digest(&manifest_bytes);
+    let manifest_resp = send_oci_request(
+        app,
+        Method::PUT,
+        format!("/oci/v2/{package_name}/manifests/{tag}"),
+        Some(token),
+        Some("application/vnd.oci.image.manifest.v1+json"),
+        manifest_bytes,
+    )
+    .await;
+    assert_eq!(
+        manifest_resp.status(),
+        StatusCode::CREATED,
+        "manifest upload should succeed"
+    );
+
+    manifest_digest
+}
+
 async fn upload_oci_blob_monolithic(
     app: &axum::Router,
     token: &str,
@@ -15344,6 +15432,303 @@ async fn test_native_oci_referrers_require_auth_for_private_repositories_and_ret
     assert_eq!(invalid_digest_resp.status(), StatusCode::BAD_REQUEST);
     let invalid_digest_body = body_json(invalid_digest_resp).await;
     assert_eq!(invalid_digest_body["errors"][0]["code"], "DIGEST_INVALID");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_native_oci_catalog_pagination_respects_visibility_and_ordering(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    for (repository_name, repository_slug, visibility, package_name) in [
+        (
+            "Alpha OCI Packages",
+            "alpha-oci-packages",
+            "public",
+            "acme/alpha-widget",
+        ),
+        (
+            "Bravo OCI Packages",
+            "bravo-oci-packages",
+            "private",
+            "acme/bravo-widget",
+        ),
+        (
+            "Zulu OCI Packages",
+            "zulu-oci-packages",
+            "public",
+            "acme/zulu-widget",
+        ),
+    ] {
+        let (status, repository_body) = create_repository_with_options(
+            &app,
+            &alice_jwt,
+            repository_name,
+            repository_slug,
+            None,
+            Some(visibility),
+            Some(visibility),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected repository response: {repository_body}"
+        );
+
+        let (status, package_body) = create_package_with_options(
+            &app,
+            &alice_jwt,
+            "oci",
+            package_name,
+            repository_slug,
+            Some(visibility),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected package response: {package_body}"
+        );
+    }
+
+    let (status, token_body) =
+        create_personal_access_token(&app, &alice_jwt, "alice-oci-catalog", &["packages:write"])
+            .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
+    let oci_token = token_body["token"]
+        .as_str()
+        .expect("oci token should be returned")
+        .to_owned();
+
+    for (tag, package_name) in [
+        ("1.0.0", "acme/alpha-widget"),
+        ("1.0.0", "acme/bravo-widget"),
+        ("1.0.0", "acme/zulu-widget"),
+    ] {
+        let config_bytes = format!(
+            "{{\"architecture\":\"amd64\",\"os\":\"linux\",\"tag\":\"{tag}\",\"package\":\"{package_name}\"}}"
+        );
+        let layer_bytes = format!("layer-{package_name}-{tag}");
+        publish_oci_image_manifest_tag(
+            &app,
+            &oci_token,
+            package_name,
+            tag,
+            config_bytes.as_bytes(),
+            layer_bytes.as_bytes(),
+        )
+        .await;
+    }
+
+    let anonymous_first_page_resp = get_oci_catalog(&app, None, Some("n=1")).await;
+    assert_eq!(anonymous_first_page_resp.status(), StatusCode::OK);
+    let anonymous_first_page_link = anonymous_first_page_resp
+        .headers()
+        .get(header::LINK)
+        .expect("paginated anonymous catalog responses should include a next link")
+        .to_str()
+        .expect("catalog next link should be utf-8")
+        .to_owned();
+    assert!(anonymous_first_page_link.contains("rel=\"next\""));
+    assert!(anonymous_first_page_link.contains("last=acme%2Falpha-widget"));
+    let anonymous_first_page_body = body_json(anonymous_first_page_resp).await;
+    assert_eq!(
+        anonymous_first_page_body["repositories"],
+        json!(["acme/alpha-widget"])
+    );
+
+    let anonymous_second_page_resp = send_oci_request(
+        &app,
+        Method::GET,
+        extract_oci_next_link_uri(&anonymous_first_page_link),
+        None,
+        None,
+        vec![],
+    )
+    .await;
+    assert_eq!(anonymous_second_page_resp.status(), StatusCode::OK);
+    assert!(
+        anonymous_second_page_resp
+            .headers()
+            .get(header::LINK)
+            .is_none(),
+        "the final anonymous catalog page should not expose another next link"
+    );
+    let anonymous_second_page_body = body_json(anonymous_second_page_resp).await;
+    assert_eq!(
+        anonymous_second_page_body["repositories"],
+        json!(["acme/zulu-widget"])
+    );
+
+    let anonymous_after_private_last_resp =
+        get_oci_catalog(&app, None, Some("last=acme%2Fbravo-widget&n=10")).await;
+    assert_eq!(anonymous_after_private_last_resp.status(), StatusCode::OK);
+    let anonymous_after_private_last_body = body_json(anonymous_after_private_last_resp).await;
+    assert_eq!(
+        anonymous_after_private_last_body["repositories"],
+        json!(["acme/zulu-widget"])
+    );
+
+    let authenticated_first_page_resp = get_oci_catalog(&app, Some(&alice_jwt), Some("n=2")).await;
+    assert_eq!(authenticated_first_page_resp.status(), StatusCode::OK);
+    let authenticated_first_page_link = authenticated_first_page_resp
+        .headers()
+        .get(header::LINK)
+        .expect("paginated authenticated catalog responses should include a next link")
+        .to_str()
+        .expect("authenticated catalog next link should be utf-8")
+        .to_owned();
+    assert!(authenticated_first_page_link.contains("last=acme%2Fbravo-widget"));
+    let authenticated_first_page_body = body_json(authenticated_first_page_resp).await;
+    assert_eq!(
+        authenticated_first_page_body["repositories"],
+        json!(["acme/alpha-widget", "acme/bravo-widget"])
+    );
+
+    let authenticated_second_page_resp = send_oci_request(
+        &app,
+        Method::GET,
+        extract_oci_next_link_uri(&authenticated_first_page_link),
+        Some(&alice_jwt),
+        None,
+        vec![],
+    )
+    .await;
+    assert_eq!(authenticated_second_page_resp.status(), StatusCode::OK);
+    assert!(
+        authenticated_second_page_resp
+            .headers()
+            .get(header::LINK)
+            .is_none(),
+        "the final authenticated catalog page should not expose another next link"
+    );
+    let authenticated_second_page_body = body_json(authenticated_second_page_resp).await;
+    assert_eq!(
+        authenticated_second_page_body["repositories"],
+        json!(["acme/zulu-widget"])
+    );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_native_oci_tags_list_pagination_respects_n_last_and_ordering(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Paged OCI Tags",
+        "paged-oci-tags",
+        None,
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let package_name = "acme/paged-tags-widget";
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "oci",
+        package_name,
+        "paged-oci-tags",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let (status, token_body) =
+        create_personal_access_token(&app, &alice_jwt, "alice-oci-tags", &["packages:write"]).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
+    let oci_token = token_body["token"]
+        .as_str()
+        .expect("oci token should be returned")
+        .to_owned();
+
+    for tag in ["0.9.0", "1.0.0", "1.0.1"] {
+        let config_bytes =
+            format!("{{\"architecture\":\"amd64\",\"os\":\"linux\",\"tag\":\"{tag}\"}}");
+        let layer_bytes = format!("layer-{tag}");
+        publish_oci_image_manifest_tag(
+            &app,
+            &oci_token,
+            package_name,
+            tag,
+            config_bytes.as_bytes(),
+            layer_bytes.as_bytes(),
+        )
+        .await;
+    }
+
+    let clamped_first_page_resp = get_oci_tags_list(&app, None, package_name, Some("n=0")).await;
+    assert_eq!(clamped_first_page_resp.status(), StatusCode::OK);
+    let clamped_first_page_link = clamped_first_page_resp
+        .headers()
+        .get(header::LINK)
+        .expect("clamped paginated tag responses should include a next link")
+        .to_str()
+        .expect("tag next link should be utf-8")
+        .to_owned();
+    assert!(clamped_first_page_link.contains("n=1"));
+    assert!(clamped_first_page_link.contains("last=0.9.0"));
+    let clamped_first_page_body = body_json(clamped_first_page_resp).await;
+    assert_eq!(clamped_first_page_body["name"], package_name);
+    assert_eq!(clamped_first_page_body["tags"], json!(["0.9.0"]));
+
+    let paged_first_page_resp = get_oci_tags_list(&app, None, package_name, Some("n=2")).await;
+    assert_eq!(paged_first_page_resp.status(), StatusCode::OK);
+    let paged_first_page_link = paged_first_page_resp
+        .headers()
+        .get(header::LINK)
+        .expect("multi-page tag responses should include a next link")
+        .to_str()
+        .expect("paged tag next link should be utf-8")
+        .to_owned();
+    assert!(paged_first_page_link.contains("last=1.0.0"));
+    let paged_first_page_body = body_json(paged_first_page_resp).await;
+    assert_eq!(paged_first_page_body["tags"], json!(["0.9.0", "1.0.0"]));
+
+    let paged_second_page_resp = send_oci_request(
+        &app,
+        Method::GET,
+        extract_oci_next_link_uri(&paged_first_page_link),
+        None,
+        None,
+        vec![],
+    )
+    .await;
+    assert_eq!(paged_second_page_resp.status(), StatusCode::OK);
+    assert!(
+        paged_second_page_resp.headers().get(header::LINK).is_none(),
+        "the final tag page should not expose another next link"
+    );
+    let paged_second_page_body = body_json(paged_second_page_resp).await;
+    assert_eq!(paged_second_page_body["tags"], json!(["1.0.1"]));
+
+    let manual_last_resp =
+        get_oci_tags_list(&app, None, package_name, Some("last=0.9.0&n=10")).await;
+    assert_eq!(manual_last_resp.status(), StatusCode::OK);
+    let manual_last_body = body_json(manual_last_resp).await;
+    assert_eq!(manual_last_body["tags"], json!(["1.0.0", "1.0.1"]));
 }
 
 #[sqlx::test(migrations = "../../migrations")]

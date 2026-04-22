@@ -3,7 +3,7 @@ use axum::{
     extract::{DefaultBodyLimit, Path, Query, State},
     http::{
         header::{CONTENT_LENGTH, CONTENT_TYPE, LINK, LOCATION},
-        HeaderMap, HeaderName, StatusCode,
+        HeaderMap, HeaderName, HeaderValue, StatusCode,
     },
     response::{IntoResponse, Response},
     routing::get,
@@ -254,22 +254,36 @@ async fn catalog<S: OciAppState>(
 
     repositories.sort_by(|left, right| left.0.cmp(&right.0));
     let last = query.last.as_deref().map(name::normalize_repository_name);
-    let repositories = repositories
+    let limit = query.limit();
+    let mut repositories = repositories
         .into_iter()
         .filter(|(normalized, _)| last.as_ref().map(|last| normalized > last).unwrap_or(true))
-        .take(query.limit())
+        .collect::<Vec<_>>();
+    let next_link = if repositories.len() > limit {
+        let last_repository = repositories[limit - 1].1.clone();
+        repositories.truncate(limit);
+        Some(build_catalog_next_link(limit, &last_repository))
+    } else {
+        None
+    };
+    let repositories = repositories
+        .into_iter()
         .map(|(_, package_name)| package_name)
         .collect::<Vec<_>>();
 
-    auth::with_registry_headers(
-        (
-            StatusCode::OK,
-            Json(serde_json::json!({
-                "repositories": repositories,
-            })),
-        )
-            .into_response(),
+    let mut response = (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "repositories": repositories,
+        })),
     )
+        .into_response();
+    if let Some(next_link) = next_link {
+        if let Ok(link_value) = HeaderValue::from_str(&next_link) {
+            response.headers_mut().insert(LINK, link_value);
+        }
+    }
+    auth::with_registry_headers(response)
 }
 
 async fn get_dispatch<S: OciAppState>(
@@ -478,23 +492,38 @@ async fn tags_list<S: OciAppState>(
     };
 
     let last = query.last.as_deref();
-    let tags = rows
+    let limit = query.limit();
+    let mut tags = rows
         .into_iter()
         .filter_map(|row| row.try_get::<String, _>("name").ok())
         .filter(|tag| last.map(|last| tag.as_str() > last).unwrap_or(true))
-        .take(query.limit())
         .collect::<Vec<_>>();
+    let next_link = if tags.len() > limit {
+        let last_tag = tags[limit - 1].clone();
+        tags.truncate(limit);
+        Some(build_tags_next_link(
+            &package.package_name,
+            limit,
+            &last_tag,
+        ))
+    } else {
+        None
+    };
 
-    auth::with_registry_headers(
-        (
-            StatusCode::OK,
-            Json(serde_json::json!({
-                "name": package.package_name,
-                "tags": tags,
-            })),
-        )
-            .into_response(),
+    let mut response = (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "name": package.package_name,
+            "tags": tags,
+        })),
     )
+        .into_response();
+    if let Some(next_link) = next_link {
+        if let Ok(link_value) = HeaderValue::from_str(&next_link) {
+            response.headers_mut().insert(LINK, link_value);
+        }
+    }
+    auth::with_registry_headers(response)
 }
 
 async fn referrers_list<S: OciAppState>(
@@ -2355,6 +2384,20 @@ fn build_referrers_next_link(
     format!(
         "</oci/v2/{package_name}/referrers/{subject_digest}?{}>; rel=\"next\"",
         query.join("&")
+    )
+}
+
+fn build_catalog_next_link(limit: usize, last_repository: &str) -> String {
+    format!(
+        "</oci/v2/_catalog?n={limit}&last={}>; rel=\"next\"",
+        percent_encode_query_value(last_repository)
+    )
+}
+
+fn build_tags_next_link(package_name: &str, limit: usize, last_tag: &str) -> String {
+    format!(
+        "</oci/v2/{package_name}/tags/list?n={limit}&last={}>; rel=\"next\"",
+        percent_encode_query_value(last_tag)
     )
 }
 
