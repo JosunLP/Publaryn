@@ -54,6 +54,14 @@
     packageMetadataHasChanges,
   } from '../../../../utils/package-metadata';
   import {
+    buildPackageSecurityEmptyStateMessage,
+    buildPackageSecurityFilterSummary,
+    countPackageSecurityFindingsBySeverity,
+    filterPackageSecurityFindings,
+    normalizePackageSecuritySearchQuery,
+    type PackageSecurityFocusMode,
+  } from '../../../../pages/package-security';
+  import {
     TEAM_PERMISSION_OPTIONS,
     formatTeamPermission,
   } from '../../../../pages/team-management';
@@ -63,6 +71,7 @@
     trustedPublisherBindingFields,
     trustedPublisherHeading,
   } from '../../../../utils/trusted-publishers';
+  import { SECURITY_SEVERITIES } from '../../../../utils/security';
 
   interface TransferState {
     showTransfer: boolean;
@@ -118,6 +127,9 @@
   let trustedPublisherNotice: string | null = null;
   let trustedPublisherError: string | null = null;
   let includeResolvedFindings = false;
+  let findingSearchQuery = '';
+  let findingSeverityFilters: string[] = [];
+  let findingFocusMode: PackageSecurityFocusMode = 'triage';
   let activeTab: PackageDetailTab = 'readme';
   let findingsNotice: string | null = null;
   let findingsError: string | null = null;
@@ -195,6 +207,9 @@
     trustedPublisherNotice = null;
     trustedPublisherError = null;
     includeResolvedFindings = false;
+    findingSearchQuery = '';
+    findingSeverityFilters = [];
+    findingFocusMode = 'triage';
     resetReleaseForm();
     resetTransferForm();
     resetPackageSettingsForm();
@@ -432,6 +447,12 @@
     } catch {
       findings = [];
     }
+  }
+
+  function clearFindingFilters(): void {
+    findingSearchQuery = '';
+    findingSeverityFilters = [];
+    findingFocusMode = 'triage';
   }
 
   async function handleToggleFindingResolution(
@@ -840,6 +861,40 @@
 
   $: packageMetadata = pkg?.ecosystem_metadata ?? null;
   $: canonicalPackageEcosystem = pkg?.ecosystem ?? ecosystem;
+  $: normalizedFindingSearchQuery = normalizePackageSecuritySearchQuery(
+    findingSearchQuery
+  );
+  $: filteredFindings = filterPackageSecurityFindings(findings, {
+    searchQuery: findingSearchQuery,
+    severities: findingSeverityFilters,
+    focusMode: findingFocusMode,
+  });
+  $: filteredFindingSeverityCounts = countPackageSecurityFindingsBySeverity(
+    filteredFindings
+  );
+  $: findingFiltersSummary = buildPackageSecurityFilterSummary({
+    totalLoadedCount: findings.length,
+    visibleCount: filteredFindings.length,
+    includeResolvedFindings,
+    filters: {
+      searchQuery: findingSearchQuery,
+      severities: findingSeverityFilters,
+      focusMode: findingFocusMode,
+    },
+  });
+  $: findingFiltersEmptyMessage = buildPackageSecurityEmptyStateMessage({
+    totalLoadedCount: findings.length,
+    includeResolvedFindings,
+    filters: {
+      searchQuery: findingSearchQuery,
+      severities: findingSeverityFilters,
+      focusMode: findingFocusMode,
+    },
+  });
+  $: hasActiveFindingFilters =
+    normalizedFindingSearchQuery.length > 0 ||
+    findingSeverityFilters.length > 0 ||
+    findingFocusMode !== 'triage';
   $: showsRegistryFamily = Boolean(
     pkg?.ecosystem && pkg.ecosystem.toLowerCase() !== ecosystem.toLowerCase()
   );
@@ -1087,15 +1142,73 @@
               </div>
             </div>
           {/if}
-          <div class="findings-toggle">
-            <label>
-              <input
-                type="checkbox"
-                bind:checked={includeResolvedFindings}
-                on:change={handleResolvedToggleChange}
-              />
-              Show resolved findings
-            </label>
+          <div class="surface-card" style="margin-bottom:1rem;">
+            <div class="surface-card__body">
+              <h3>Filter findings</h3>
+              <div
+                class="flex flex-wrap items-end gap-4"
+                style="margin-bottom:0.75rem;"
+              >
+                <div class="form-group" style="margin-bottom:0; min-width:220px;">
+                  <label for="package-security-focus">Focus</label>
+                  <select
+                    id="package-security-focus"
+                    class="form-input"
+                    bind:value={findingFocusMode}
+                  >
+                    <option value="triage">Unresolved triage queue</option>
+                    <option value="all">All loaded findings</option>
+                    <option value="resolved">Resolved history</option>
+                  </select>
+                </div>
+                <div class="form-group" style="margin-bottom:0; min-width:260px; flex:1;">
+                  <label for="package-security-search">Search findings</label>
+                  <input
+                    id="package-security-search"
+                    class="form-input"
+                    bind:value={findingSearchQuery}
+                    placeholder="Match title, advisory, version, or artifact"
+                    autocomplete="off"
+                  />
+                </div>
+                <label class="badge badge-ecosystem" for="package-security-include-resolved">
+                  <input
+                    id="package-security-include-resolved"
+                    type="checkbox"
+                    bind:checked={includeResolvedFindings}
+                    on:change={handleResolvedToggleChange}
+                    style="margin-right:0.35rem;"
+                  />
+                  Load resolved findings
+                </label>
+                {#if hasActiveFindingFilters}
+                  <button
+                    type="button"
+                    class="btn btn-secondary"
+                    on:click={clearFindingFilters}>Clear filters</button
+                  >
+                {/if}
+              </div>
+              <fieldset class="form-group" style="margin-bottom:0.75rem;">
+                <legend>Severity</legend>
+                <div class="token-row__scopes">
+                  {#each SECURITY_SEVERITIES as severity}
+                    <label class="badge badge-ecosystem">
+                      <input
+                        type="checkbox"
+                        bind:group={findingSeverityFilters}
+                        value={severity}
+                        style="margin-right:0.35rem;"
+                      />
+                      {formatIdentifierLabel(severity)}
+                    </label>
+                  {/each}
+                </div>
+              </fieldset>
+              <p class="settings-copy" style="margin:0;" aria-live="polite">
+                {findingFiltersSummary}
+              </p>
+            </div>
           </div>
 
           {#if findingsNotice}
@@ -1105,10 +1218,27 @@
             <div class="notice notice--error">{findingsError}</div>
           {/if}
 
-          {#if findings.length === 0}
-              <div class="empty-state surface-card"><p>No security findings.</p></div>
+          {#if filteredFindings.length === 0}
+              <div class="empty-state surface-card">
+                <h3>{findings.length === 0 ? 'No security findings' : 'No findings match current filters'}</h3>
+                <p>{findingFiltersEmptyMessage}</p>
+                {#if hasActiveFindingFilters}
+                  <button
+                    type="button"
+                    class="btn btn-secondary"
+                    on:click={clearFindingFilters}>Clear filters</button
+                  >
+                {/if}
+              </div>
           {:else}
-            {#each [...findings].sort((left, right) => severityLevel(right.severity) - severityLevel(left.severity)) as finding}
+            <div class="token-row__scopes" style="margin-bottom:1rem;">
+              {#each SECURITY_SEVERITIES.filter((severity) => filteredFindingSeverityCounts[severity] > 0) as severity}
+                <span class={`badge badge-severity-${severity}`}
+                  >{formatNumber(filteredFindingSeverityCounts[severity])} {severity}</span
+                >
+              {/each}
+            </div>
+            {#each filteredFindings as finding}
               {@const severity = finding.severity?.toLowerCase() || 'info'}
               <div
                 class={`finding-row ${finding.is_resolved ? 'finding-resolved' : ''}`}

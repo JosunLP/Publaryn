@@ -3,7 +3,7 @@
 import { afterEach, describe, expect, mock, test } from 'bun:test';
 import { writable } from 'svelte/store';
 
-import { renderSvelte } from './svelte-dom';
+import { changeValue, renderSvelte, setChecked } from './svelte-dom';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -106,7 +106,7 @@ afterEach(() => {
 });
 
 describe('package detail security access route', () => {
-  test('surfaces delegated security review teams and current triage access', async () => {
+  test('surfaces delegated security review teams and filters large finding sets for triage', async () => {
     currentScenario = createScenario();
 
     const { target, unmount } = await renderSvelte(PackagePage.default);
@@ -140,6 +140,57 @@ describe('package detail security access route', () => {
       expect(delegatedAccessSection.textContent).toContain('Readers Team');
       expect(delegatedAccessSection.textContent).toContain('Can triage findings');
 
+      await waitFor(() => {
+        expect(normalizeWhitespace(target.textContent)).toContain(
+          'Showing 2 of 2 loaded findings, in the unresolved triage queue.'
+        );
+        expect(target.textContent).toContain('Prototype pollution');
+        expect(target.textContent).toContain('Unsigned artifact');
+        expect(target.textContent).not.toContain('Known malicious payload');
+      });
+
+      setChecked(
+        queryRequiredCheckbox(target, '#package-security-include-resolved'),
+        true
+      );
+
+      await waitFor(() => {
+        expect(normalizeWhitespace(target.textContent)).toContain(
+          'Showing 2 of 4 loaded findings, in the unresolved triage queue.'
+        );
+      });
+
+      await waitFor(() => {
+        expect(normalizeWhitespace(target.textContent)).toContain(
+          'Showing 2 of 4 loaded findings, in the unresolved triage queue.'
+        );
+        expect(target.textContent).not.toContain('Known malicious payload');
+      });
+
+      changeValue(queryRequiredInput(target, '#package-security-search'), 'prototype');
+
+      await waitFor(() => {
+        expect(normalizeWhitespace(target.textContent)).toContain(
+          'Showing 1 of 4 loaded findings, in the unresolved triage queue, matching "prototype".'
+        );
+        expect(target.textContent).toContain('Prototype pollution');
+        expect(target.textContent).not.toContain('Unsigned artifact');
+      });
+
+      setChecked(
+        queryRequiredCheckbox(
+          target,
+          'input[type="checkbox"][value="high"]'
+        ),
+        true
+      );
+
+      await waitFor(() => {
+        expect(normalizeWhitespace(target.textContent)).toContain(
+          'Showing 1 of 4 loaded findings, in the unresolved triage queue, filtered to High severity, matching "prototype".'
+        );
+      });
+
       expect(currentScenario.requests).toEqual([
         `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}`,
         `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/releases`,
@@ -147,6 +198,7 @@ describe('package detail security access route', () => {
         `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/security-findings`,
         '/v1/users/me/organizations',
         `/v1/orgs/${ORG_SLUG}/teams`,
+        `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/security-findings`,
       ]);
     } finally {
       unmount();
@@ -187,10 +239,12 @@ async function handleApiRequest(
     method === 'GET' &&
     path === `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/security-findings`
   ) {
-    expect(options?.query).toEqual({
-      include_resolved: undefined,
+    const includeResolved = options?.query?.include_resolved === true;
+    return apiResponse({
+      findings: includeResolved
+        ? currentScenario.findings
+        : currentScenario.findings.filter((finding) => finding.is_resolved !== true),
     });
-    return apiResponse({ findings: currentScenario.findings });
   }
 
   if (method === 'GET' && path === '/v1/users/me/organizations') {
@@ -263,6 +317,43 @@ function createScenario(): Scenario {
         release_version: '1.2.3',
         artifact_filename: 'demo-widget-1.2.3.tgz',
       },
+      {
+        id: 'finding-3',
+        kind: 'policy_violation',
+        severity: 'low',
+        title: 'Unsigned artifact',
+        description: 'Artifact was published without a detached signature.',
+        is_resolved: false,
+        detected_at: '2026-04-12T00:00:00Z',
+        release_version: '1.2.2',
+        artifact_filename: 'demo-widget-1.2.2.tgz',
+      },
+      {
+        id: 'finding-2',
+        kind: 'malware',
+        severity: 'critical',
+        title: 'Known malicious payload',
+        description: 'Scanner detected a malicious embedded payload.',
+        advisory_id: 'PUB-2026-0007',
+        is_resolved: true,
+        resolved_at: '2026-04-15T00:00:00Z',
+        detected_at: '2026-04-14T00:00:00Z',
+        release_version: '1.2.4',
+        artifact_filename: 'demo-widget-1.2.4.tgz',
+      },
+      {
+        id: 'finding-4',
+        kind: 'license_issue',
+        severity: 'info',
+        title: 'Legacy advisory',
+        description: 'Legacy advisory retained for audit visibility.',
+        advisory_id: 'ADV-2026-0009',
+        is_resolved: true,
+        resolved_at: '2026-04-16T00:00:00Z',
+        detected_at: '2026-04-10T00:00:00Z',
+        release_version: '1.2.1',
+        artifact_filename: 'demo-widget-1.2.1.tgz',
+      },
     ],
     organizations: [
       {
@@ -320,6 +411,22 @@ function querySectionByHeading(target: HTMLElement, headingText: string): HTMLEl
   }
 
   return container;
+}
+
+function queryRequiredInput(target: HTMLElement, selector: string): HTMLInputElement {
+  const element = target.querySelector(selector);
+  if (!(element instanceof HTMLInputElement)) {
+    throw new Error(`Missing input for selector ${selector}.`);
+  }
+  return element;
+}
+
+function queryRequiredCheckbox(target: ParentNode, selector: string): HTMLInputElement {
+  const element = target.querySelector(selector);
+  if (!(element instanceof HTMLInputElement)) {
+    throw new Error(`Missing checkbox for selector ${selector}.`);
+  }
+  return element;
 }
 
 async function waitFor(
