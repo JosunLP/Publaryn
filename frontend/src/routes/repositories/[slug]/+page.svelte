@@ -25,7 +25,10 @@
     formatRepositoryVisibilityLabel,
     resolveRepositoryOwnerSummary,
   } from '../../../utils/repositories';
-  import { buildPackageSecurityPath } from '../../../pages/package-security-links';
+  import {
+    buildPackageDetailsPath,
+    buildPackageSecurityPath,
+  } from '../../../pages/package-security-links';
   import { deriveRepositoryDetailCapabilities } from '../../../utils/repository-detail';
 
   const MAX_VISIBLE_PACKAGES = 100;
@@ -359,13 +362,18 @@
             </div>
           {:else}
             {#each packages as pkg}
+              {@const packageSecurityPath = buildPackageSecurityPath(
+                pkg.ecosystem || 'unknown',
+                pkg.name || ''
+              )}
+              {@const packageDetailsPath = buildPackageDetailsPath(
+                pkg.ecosystem || 'unknown',
+                pkg.name || ''
+              )}
               <div class="release-row">
                 <div>
                   <a
-                    href={buildPackageSecurityPath(
-                      pkg.ecosystem || 'unknown',
-                      pkg.name || ''
-                    )}
+                    href={packageSecurityPath}
                     class="release-row__version"
                     data-sveltekit-preload-data="hover"
                   >
@@ -386,15 +394,23 @@
                     </div>
                   {/if}
                 </div>
-                <div class="release-row__meta">
-                  {#if pkg.download_count != null}{formatNumber(
-                      pkg.download_count
-                    )} downloads{/if}
-                  {#if pkg.created_at}
-                    {pkg.download_count != null ? ' · ' : ''}created {formatDate(
-                      pkg.created_at
-                    )}
-                  {/if}
+                <div class="release-row__actions">
+                  <div class="release-row__meta">
+                    {#if pkg.download_count != null}{formatNumber(
+                        pkg.download_count
+                      )} downloads{/if}
+                    {#if pkg.created_at}
+                      {pkg.download_count != null ? ' · ' : ''}created {formatDate(
+                        pkg.created_at
+                      )}
+                    {/if}
+                  </div>
+                  <a
+                    href={packageDetailsPath}
+                    class="btn btn-secondary btn-sm"
+                    data-sveltekit-preload-data="hover"
+                    >Open package details</a
+                  >
                 </div>
               </div>
             {/each}

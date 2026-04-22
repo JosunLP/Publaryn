@@ -2,11 +2,20 @@ import { describe, expect, test } from 'bun:test';
 
 import type { SecurityFinding } from '../src/api/packages';
 import {
+  buildPackageDetailsPath,
   buildPackageSecurityFindingPath,
   buildPackageSecurityPath,
 } from '../src/pages/package-security-links';
 
 describe('package security link builders', () => {
+  test('builds package details paths without forcing the security tab', () => {
+    const path = buildPackageDetailsPath('npm', '@acme/widget');
+    const url = new URL(path, 'https://example.test');
+
+    expect(url.pathname).toBe('/packages/npm/%40acme%2Fwidget');
+    expect(url.search).toBe('');
+  });
+
   test('builds package security paths with normalized filter state', () => {
     const path = buildPackageSecurityPath('npm', '@acme/widget', {
       focusMode: 'resolved',

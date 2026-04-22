@@ -2,6 +2,13 @@ import type { SecurityFinding } from '../api/packages';
 
 import { buildPackageDetailPath } from './package-detail-tabs';
 
+export function buildPackageDetailsPath(
+  ecosystem: string,
+  name: string
+): string {
+  return buildPackageDetailPath(ecosystem, name);
+}
+
 export function buildPackageSecurityPath(
   ecosystem: string,
   name: string,

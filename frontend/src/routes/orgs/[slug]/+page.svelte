@@ -139,6 +139,7 @@
     getOrgSecurityViewFromQuery,
   } from '../../../pages/org-security-query';
   import {
+    buildPackageDetailsPath,
     buildPackageSecurityFindingPath,
     buildPackageSecurityPath,
   } from '../../../pages/package-security-links';
@@ -2809,17 +2810,22 @@
                 {@const reviewerTeams = pkg.reviewer_teams || []}
                 {@const packageKey = getSecurityPackageKey(pkg)}
                 {@const packageFindingState = getOrgSecurityFindingState(pkg)}
+                {@const packageSecurityPath = buildPackageSecurityPath(
+                  pkg.ecosystem || 'unknown',
+                  pkg.name || '',
+                  {
+                    severities: securityView.severities,
+                  }
+                )}
+                {@const packageDetailsPath = buildPackageDetailsPath(
+                  pkg.ecosystem || 'unknown',
+                  pkg.name || ''
+                )}
                 <div class="token-row">
                   <div class="token-row__main">
                     <div class="token-row__title">
                       <a
-                        href={buildPackageSecurityPath(
-                          pkg.ecosystem || 'unknown',
-                          pkg.name || '',
-                          {
-                            severities: securityView.severities,
-                          }
-                        )}
+                        href={packageSecurityPath}
                         data-sveltekit-preload-data="hover"
                         >{pkg.name || 'Unnamed package'}</a
                       >
@@ -2885,6 +2891,12 @@
                           })}
                           data-sveltekit-preload-data="hover"
                           >{pkg.can_manage_security ? 'Review findings' : 'Open findings'}</a
+                        >
+                        <a
+                          class="btn btn-secondary btn-sm"
+                          href={packageDetailsPath}
+                          data-sveltekit-preload-data="hover"
+                          >Open package details</a
                         >
                     </div>
                   {/if}
@@ -3041,17 +3053,22 @@
                   {:else}
                     <div class="token-list">
                       {#each repositoryPackages as pkg}
+                        {@const packageSecurityPath = buildPackageSecurityPath(
+                          pkg.ecosystem || 'unknown',
+                          pkg.name || '',
+                          {
+                            severities: securityView.severities,
+                          }
+                        )}
+                        {@const packageDetailsPath = buildPackageDetailsPath(
+                          pkg.ecosystem || 'unknown',
+                          pkg.name || ''
+                        )}
                         <div class="token-row">
                           <div class="token-row__main">
                             <div class="token-row__title">
                               <a
-                                href={buildPackageSecurityPath(
-                                  pkg.ecosystem || 'unknown',
-                                  pkg.name || '',
-                                  {
-                                    severities: securityView.severities,
-                                  }
-                                )}
+                                href={packageSecurityPath}
                                 data-sveltekit-preload-data="hover"
                                 >{pkg.name || 'Unnamed package'}</a
                               >
@@ -3067,6 +3084,14 @@
                                 >{formatNumber(pkg.download_count)} downloads</span
                               >
                             </div>
+                          </div>
+                          <div class="token-row__actions">
+                            <a
+                              href={packageDetailsPath}
+                              class="btn btn-secondary btn-sm"
+                              data-sveltekit-preload-data="hover"
+                              >Open package details</a
+                            >
                           </div>
                         </div>
                       {/each}
@@ -3637,17 +3662,22 @@
       {:else}
         <div class="token-list">
           {#each packages as pkg}
+            {@const packageSecurityPath = buildPackageSecurityPath(
+              pkg.ecosystem || 'unknown',
+              pkg.name || '',
+              {
+                severities: securityView.severities,
+              }
+            )}
+            {@const packageDetailsPath = buildPackageDetailsPath(
+              pkg.ecosystem || 'unknown',
+              pkg.name || ''
+            )}
             <div class="token-row">
               <div class="token-row__main">
                 <div class="token-row__title">
                   <a
-                    href={buildPackageSecurityPath(
-                      pkg.ecosystem || 'unknown',
-                      pkg.name || '',
-                      {
-                        severities: securityView.severities,
-                      }
-                    )}
+                    href={packageSecurityPath}
                     data-sveltekit-preload-data="hover"
                     >{pkg.name || 'Unnamed package'}</a
                   >
@@ -3660,6 +3690,14 @@
                 {#if pkg.description}<p class="settings-copy">
                     {pkg.description}
                   </p>{/if}
+              </div>
+              <div class="token-row__actions">
+                <a
+                  href={packageDetailsPath}
+                  class="btn btn-secondary btn-sm"
+                  data-sveltekit-preload-data="hover"
+                  >Open package details</a
+                >
               </div>
             </div>
           {/each}

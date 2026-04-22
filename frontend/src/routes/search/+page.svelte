@@ -15,7 +15,10 @@
     buildSearchPath,
     getSearchViewFromQuery,
   } from '../../pages/search-query';
-  import { buildPackageSecurityPath } from '../../pages/package-security-links';
+  import {
+    buildPackageDetailsPath,
+    buildPackageSecurityPath,
+  } from '../../pages/package-security-links';
   import { formatSearchResultRepository } from '../../pages/search-results';
   import {
     ECOSYSTEMS,
@@ -357,16 +360,22 @@
           </div>
         {:else}
           {#each results.packages as pkg}
-            <a
-              href={buildPackageSecurityPath(
-                pkg.ecosystem || 'unknown',
-                pkg.name
-              )}
-              class="package-card"
-              data-sveltekit-preload-data="hover"
-            >
+            {@const packageSecurityPath = buildPackageSecurityPath(
+              pkg.ecosystem || 'unknown',
+              pkg.name
+            )}
+            {@const packageDetailsPath = buildPackageDetailsPath(
+              pkg.ecosystem || 'unknown',
+              pkg.name
+            )}
+            <article class="package-card">
               <div class="package-card__header">
-                <span class="package-card__name">{pkg.display_name || pkg.name}</span>
+                <a
+                  href={packageSecurityPath}
+                  class="package-card__name"
+                  data-sveltekit-preload-data="hover"
+                  >{pkg.display_name || pkg.name}</a
+                >
                 <span class="badge badge-ecosystem"
                   >{ecosystemIcon(pkg.ecosystem)} {ecosystemLabel(pkg.ecosystem)}</span
                 >
@@ -395,7 +404,15 @@
                   >{/if}
                 {#if pkg.updated_at}<span>updated {formatDate(pkg.updated_at)}</span>{/if}
               </div>
-            </a>
+              <div class="package-card__actions">
+                <a
+                  href={packageDetailsPath}
+                  class="btn btn-secondary btn-sm"
+                  data-sveltekit-preload-data="hover"
+                  >Open package details</a
+                >
+              </div>
+            </article>
           {/each}
         {/if}
       </div>

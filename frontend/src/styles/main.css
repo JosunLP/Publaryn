@@ -1000,6 +1000,11 @@ bq-badge {
   font-size: 0.8125rem;
   color: var(--color-text-muted);
 }
+.package-card__actions {
+  margin-top: 12px;
+  display: flex;
+  justify-content: flex-end;
+}
 
 /* ── Package detail page ───────────────────────────────── */
 .pkg-detail {
@@ -1653,6 +1658,12 @@ bq-badge {
 }
 .release-row__meta {
   color: var(--color-text-muted);
+}
+.release-row__actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
 }
 
 /* ── Security findings ─────────────────────────────────── */
