@@ -358,6 +358,7 @@
   let creatingPackage = false;
 
   $: slug = $page.params.slug ?? '';
+  $: pageNotice = $page.url.searchParams.get('notice')?.trim() || null;
   $: transferCandidates = members.filter(
     (member) =>
       member.role !== 'owner' &&
@@ -581,7 +582,7 @@
     loading = true;
     notFound = false;
     loadError = null;
-    notice = options.notice ?? null;
+    notice = options.notice ?? pageNotice;
     error = options.error ?? null;
     canViewPeopleWorkspace = false;
     securityFindingsByPackageKey = {};

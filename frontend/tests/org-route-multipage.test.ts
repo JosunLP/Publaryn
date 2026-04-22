@@ -380,6 +380,32 @@ describe('route-level multi-page org dataset coverage', () => {
     }
   });
 
+  test('org workspace surfaces redirect notices from focused team actions', async () => {
+    const scenario = createFetchScenario();
+    currentScenario = scenario;
+    currentAuthToken = 'pub_test_token';
+    pageStore.set(
+      buildPageState(
+        `https://example.test/orgs/${ORG_SLUG}?notice=${encodeURIComponent(
+          `Deleted team ${TEAM_SLUG}.`
+        )}`,
+        {
+          slug: ORG_SLUG,
+        }
+      )
+    );
+
+    const { target, unmount } = await renderSvelte(OrgPage);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain(`Deleted team ${TEAM_SLUG}.`);
+      });
+    } finally {
+      unmount();
+    }
+  });
+
   test('org workspace does not load invitation management UI when the explicit invitation capability is absent', async () => {
     const scenario = createFetchScenario();
     scenario.canManageInvitations = false;

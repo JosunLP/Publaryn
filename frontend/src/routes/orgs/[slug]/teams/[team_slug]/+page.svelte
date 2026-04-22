@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { goto } from '$app/navigation';
   import { page } from '$app/stores';
 
   import { ApiError } from '../../../../../api/client';
@@ -14,6 +15,7 @@
     TeamRepositoryAccessGrant,
   } from '../../../../../api/orgs';
   import {
+    deleteTeam,
     getOrg,
     listTeams,
   } from '../../../../../api/orgs';
@@ -46,6 +48,8 @@
   let notice: string | null = null;
   let error: string | null = null;
   let notFound = false;
+  let deleteConfirmed = false;
+  let deletingTeam = false;
 
   let org:
     | Awaited<ReturnType<typeof getOrg>>
@@ -95,6 +99,8 @@
     notice = options.notice ?? null;
     error = options.error ?? null;
     notFound = false;
+    deleteConfirmed = false;
+    deletingTeam = false;
     org = null;
     team = null;
     orgMembers = [];
@@ -189,6 +195,38 @@
       : fallback;
   }
 
+  async function handleDeleteTeam(event: SubmitEvent): Promise<void> {
+    event.preventDefault();
+
+    if (!team) {
+      return;
+    }
+
+    if (!deleteConfirmed) {
+      notice = null;
+      error =
+        'Please confirm that you understand deleting this team revokes its delegated access.';
+      return;
+    }
+
+    deletingTeam = true;
+    notice = null;
+    error = null;
+
+    const resolvedTeamSlug = team.slug?.trim() || teamSlug;
+
+    try {
+      await deleteTeam(slug, resolvedTeamSlug);
+      const params = new URLSearchParams({
+        notice: `Deleted team ${resolvedTeamSlug}.`,
+      });
+      await goto(`/orgs/${encodeURIComponent(slug)}?${params.toString()}`);
+    } catch (caughtError: unknown) {
+      error = toErrorMessage(caughtError, 'Failed to delete team.');
+      deletingTeam = false;
+    }
+  }
+
   const teamManagement = createTeamManagementController({
     getOrgSlug: () => slug,
     reload: loadTeamWorkspace,
@@ -257,12 +295,12 @@
           <a
             href={`/orgs/${encodeURIComponent(slug)}`}
             class="btn btn-secondary"
-            data-sveltekit-preload-data="hover">Back to organization</a
+            data-sveltekit-preload-data="hover">Open org overview</a
           >
           <a
             href={teamWorkspaceAnchor}
             class="btn btn-primary"
-            data-sveltekit-preload-data="hover">Manage in org workspace</a
+            data-sveltekit-preload-data="hover">Open org team section</a
           >
         </div>
       </div>
@@ -437,10 +475,11 @@
 
         <section class="surface-card">
           <div class="surface-card__header">
-            <h2 class="surface-card__title">Workspace guidance</h2>
+            <h2 class="surface-card__title">Workspace scope</h2>
             <p class="surface-card__copy">
-              Use the organization workspace for edits, membership changes, and delegated access
-              updates.
+              Use this page for focused team edits, membership changes, delegated access updates,
+              and safe deletion. Jump back to the organization workspace when you need broader
+              cross-team context.
             </p>
           </div>
           <div class="surface-card__body stack-sm">
@@ -467,9 +506,41 @@
             <a
               href={teamWorkspaceAnchor}
               class="btn btn-primary"
-              data-sveltekit-preload-data="hover">Open editable team section</a
+              data-sveltekit-preload-data="hover">Open org workspace context</a
             >
           </div>
+        </section>
+
+        <section class="surface-card">
+          <div class="surface-card__header">
+            <h2 class="surface-card__title">Danger zone</h2>
+            <p class="surface-card__copy">
+              Deleting a team removes its memberships and all delegated package, repository, and
+              namespace grants immediately.
+            </p>
+          </div>
+          <form class="surface-card__body stack-sm" id="team-delete-form" on:submit={handleDeleteTeam}>
+            <label class="flex items-start gap-2">
+              <input
+                id="team-delete-confirm"
+                bind:checked={deleteConfirmed}
+                type="checkbox"
+                name="confirm_delete"
+                disabled={deletingTeam}
+              />
+              <span>
+                I understand deleting this team revokes its delegated access and cannot be undone.
+              </span>
+            </label>
+            <button
+              id="team-delete-submit"
+              type="submit"
+              class="btn btn-danger"
+              disabled={deletingTeam}
+            >
+              {deletingTeam ? 'Deleting…' : 'Delete team'}
+            </button>
+          </form>
         </section>
       </aside>
     </div>
