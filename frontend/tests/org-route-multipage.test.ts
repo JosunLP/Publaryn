@@ -505,16 +505,14 @@ describe('route-level multi-page org dataset coverage', () => {
       click(queryRequiredButton(target, `#team-delete-toggle-${TEAM_SLUG}`));
 
       await waitFor(() => {
-        expect(
-          queryRequiredForm(target.querySelector(`#team-delete-form-${TEAM_SLUG}`))
-        ).toBeDefined();
+        expect(queryRequiredFormBySelector(target, `#team-delete-form-${TEAM_SLUG}`)).toBeDefined();
       });
 
       setChecked(
         queryRequiredCheckbox(target, `#team-delete-confirm-${TEAM_SLUG}`),
         true
       );
-      submitForm(queryRequiredForm(target.querySelector(`#team-delete-form-${TEAM_SLUG}`)));
+      submitForm(queryRequiredFormBySelector(target, `#team-delete-form-${TEAM_SLUG}`));
 
       await waitFor(() => {
         expect(target.textContent).toContain('Failed to delete team.');

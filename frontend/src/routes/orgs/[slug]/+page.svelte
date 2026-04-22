@@ -1206,7 +1206,7 @@
   async function handleDeleteTeam(event: SubmitEvent, teamSlug: string): Promise<void> {
     event.preventDefault();
 
-    if (!teamDeleteConfirmed || teamDeleteTargetSlug !== teamSlug) {
+    if (!teamDeleteConfirmed) {
       notice = null;
       error = TEAM_DELETE_CONFIRMATION_MESSAGE;
       return;
@@ -1290,7 +1290,7 @@
       return;
     }
 
-    if (!namespaceDeleteConfirmed || namespaceDeleteTargetId !== claimId) {
+    if (!namespaceDeleteConfirmed) {
       notice = null;
       error = NAMESPACE_DELETE_CONFIRMATION_MESSAGE;
       return;

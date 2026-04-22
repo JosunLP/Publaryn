@@ -477,8 +477,8 @@
           <div class="surface-card__header">
             <h2 class="surface-card__title">Workspace guidance</h2>
             <p class="surface-card__copy">
-              Use this page for focused team edits. For broader org-level context, go back to the
-              organization workspace.
+              Use this page for focused team edits. Return to the organization workspace to manage
+              teams, members, and delegated access in context.
             </p>
           </div>
           <div class="surface-card__body stack-sm">
