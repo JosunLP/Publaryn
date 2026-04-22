@@ -223,7 +223,7 @@ export const TEAM_PERMISSION_OPTIONS: readonly TeamAccessPermissionOption[] = [
   {
     value: 'security_review',
     label: 'Security review',
-    description: 'Reserved for future security workflows.',
+    description: 'Review and triage package security findings.',
   },
   {
     value: 'transfer_ownership',

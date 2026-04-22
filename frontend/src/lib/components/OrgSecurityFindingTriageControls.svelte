@@ -17,11 +17,15 @@
   export let handleToggleResolution: (
     finding: SecurityFinding
   ) => void | Promise<void> = () => {};
+  export let buildPackageSecurityHref: (
+    finding: SecurityFinding
+  ) => string | null = () => null;
 </script>
 
 <div class="token-list">
   {#each findings as finding}
     {@const severity = normalizeSeverity(finding.severity)}
+    {@const packageSecurityHref = buildPackageSecurityHref(finding)}
     <div class="token-row">
       <div class="token-row__main">
         <div class="token-row__title">
@@ -69,6 +73,15 @@
         </label>
       </div>
       <div class="token-row__actions">
+        {#if packageSecurityHref}
+          <a
+            href={packageSecurityHref}
+            class="btn btn-secondary btn-sm"
+            data-sveltekit-preload-data="hover"
+          >
+            Open package security
+          </a>
+        {/if}
         <button
           type="button"
           class="btn btn-secondary btn-sm"

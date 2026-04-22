@@ -53,12 +53,26 @@
     createPackageMetadataFormValues,
     packageMetadataHasChanges,
   } from '../../../../utils/package-metadata';
+  import {
+    buildPackageSecurityEmptyStateMessage,
+    buildPackageSecurityFilterSummary,
+    countPackageSecurityFindingsBySeverity,
+    filterPackageSecurityFindings,
+    normalizePackageSecuritySearchQuery,
+    type PackageSecurityFocusMode,
+  } from '../../../../pages/package-security';
+  import { getPackageSecurityViewFromQuery } from '../../../../pages/pkg-security-url';
+  import {
+    TEAM_PERMISSION_OPTIONS,
+    formatTeamPermission,
+  } from '../../../../pages/team-management';
   import { selectPackageTransferTargets } from '../../../../utils/package-transfer';
   import {
     normalizeTrustedPublisherInput,
     trustedPublisherBindingFields,
     trustedPublisherHeading,
   } from '../../../../utils/trusted-publishers';
+  import { SECURITY_SEVERITIES } from '../../../../utils/security';
 
   interface TransferState {
     showTransfer: boolean;
@@ -77,38 +91,9 @@
     loadError: string | null;
   }
 
-  const TEAM_PERMISSION_OPTIONS = [
-    {
-      value: 'admin',
-      label: 'Admin',
-      description: 'Manage package administration workflows.',
-    },
-    {
-      value: 'publish',
-      label: 'Publish',
-      description: 'Create releases and publish artifacts.',
-    },
-    {
-      value: 'write_metadata',
-      label: 'Write metadata',
-      description: 'Update package readmes and metadata.',
-    },
-    {
-      value: 'read_private',
-      label: 'Read private',
-      description: 'Read non-public package data.',
-    },
-    {
-      value: 'security_review',
-      label: 'Security review',
-      description: 'Reserved for future security workflows.',
-    },
-    {
-      value: 'transfer_ownership',
-      label: 'Transfer ownership',
-      description: 'Transfer a package to another owner.',
-    },
-  ] as const;
+  type PackageTeamAccessGrant = NonNullable<PackageDetail['team_access']>[number];
+
+  const SECURITY_REVIEW_PERMISSIONS = new Set(['admin', 'security_review']);
 
   let lastLoadKey = '';
   let loading = true;
@@ -143,6 +128,9 @@
   let trustedPublisherNotice: string | null = null;
   let trustedPublisherError: string | null = null;
   let includeResolvedFindings = false;
+  let findingSearchQuery = '';
+  let findingSeverityFilters: string[] = [];
+  let findingFocusMode: PackageSecurityFocusMode = 'triage';
   let activeTab: PackageDetailTab = 'readme';
   let findingsNotice: string | null = null;
   let findingsError: string | null = null;
@@ -177,10 +165,28 @@
   let deletingTrustedPublisherId: string | null = null;
   let savingTeamAccess = false;
   let revokingTeamSlug: string | null = null;
+  let lastPackageSecurityQuerySyncKey = '';
 
   $: ecosystem = $page.params.ecosystem ?? '';
   $: name = $page.params.name ?? '';
   $: activeTab = getPackageDetailTabFromQuery($page.url.searchParams);
+  $: packageSecurityView = getPackageSecurityViewFromQuery($page.url.searchParams);
+  $: {
+    const nextSyncKey = [
+      packageSecurityView.focusMode,
+      packageSecurityView.includeResolved ? '1' : '0',
+      packageSecurityView.searchQuery,
+      packageSecurityView.severities.join(','),
+    ].join('|');
+
+    if (nextSyncKey !== lastPackageSecurityQuerySyncKey) {
+      lastPackageSecurityQuerySyncKey = nextSyncKey;
+      includeResolvedFindings = packageSecurityView.includeResolved;
+      findingSearchQuery = packageSecurityView.searchQuery;
+      findingSeverityFilters = [...packageSecurityView.severities];
+      findingFocusMode = packageSecurityView.focusMode;
+    }
+  }
   $: loadKey = `${ecosystem}|${name}`;
   $: if (ecosystem && name && loadKey !== lastLoadKey) {
     lastLoadKey = loadKey;
@@ -219,7 +225,10 @@
     packageSettingsError = null;
     trustedPublisherNotice = null;
     trustedPublisherError = null;
-    includeResolvedFindings = false;
+    includeResolvedFindings = packageSecurityView.includeResolved;
+    findingSearchQuery = packageSecurityView.searchQuery;
+    findingSeverityFilters = [...packageSecurityView.severities];
+    findingFocusMode = packageSecurityView.focusMode;
     resetReleaseForm();
     resetTransferForm();
     resetPackageSettingsForm();
@@ -253,7 +262,9 @@
         () => [] as Release[]
       ),
       listTags(ecosystem, name).catch(() => [] as Tag[]),
-      listSecurityFindings(ecosystem, name).catch(
+      listSecurityFindings(ecosystem, name, {
+        includeResolved: includeResolvedFindings,
+      }).catch(
         () => [] as SecurityFinding[]
       ),
       loadTransferState(pkg),
@@ -449,7 +460,42 @@
     );
   }
 
+  async function syncPackageSecurityQueryState(
+    overrides: {
+      focusMode?: PackageSecurityFocusMode;
+      includeResolved?: boolean;
+      searchQuery?: string;
+      severities?: string[];
+    } = {}
+  ): Promise<void> {
+    await goto(
+      buildPackageDetailPath(
+        ecosystem,
+        name,
+        {
+          tab: 'security',
+          securityView: {
+            focusMode: overrides.focusMode ?? findingFocusMode,
+            includeResolved: overrides.includeResolved ?? includeResolvedFindings,
+            searchQuery: overrides.searchQuery ?? findingSearchQuery,
+            severities: overrides.severities ?? findingSeverityFilters,
+          },
+        },
+        $page.url.searchParams
+      ),
+      {
+        replaceState: true,
+        noScroll: true,
+        keepFocus: true,
+      }
+    );
+  }
+
   async function handleResolvedToggleChange(): Promise<void> {
+    await syncPackageSecurityQueryState({
+      includeResolved: includeResolvedFindings,
+    });
+
     try {
       findings = await listSecurityFindings(ecosystem, name, {
         includeResolved: includeResolvedFindings,
@@ -457,6 +503,35 @@
     } catch {
       findings = [];
     }
+  }
+
+  async function handleFindingSearchInput(): Promise<void> {
+    await syncPackageSecurityQueryState({
+      searchQuery: findingSearchQuery,
+    });
+  }
+
+  async function handleFindingFocusModeChange(): Promise<void> {
+    await syncPackageSecurityQueryState({
+      focusMode: findingFocusMode,
+    });
+  }
+
+  async function handleFindingSeverityFilterChange(): Promise<void> {
+    await syncPackageSecurityQueryState({
+      severities: findingSeverityFilters,
+    });
+  }
+
+  async function clearFindingFilters(): Promise<void> {
+    findingSearchQuery = '';
+    findingSeverityFilters = [];
+    findingFocusMode = 'triage';
+    await syncPackageSecurityQueryState({
+      searchQuery: '',
+      severities: [],
+      focusMode: 'triage',
+    });
   }
 
   async function handleToggleFindingResolution(
@@ -825,11 +900,27 @@
   }
 
   function formatPermission(permission: string): string {
-    return formatIdentifierLabel(permission);
+    return formatTeamPermission(permission);
   }
 
   function isOrgAdminRole(role: string | null | undefined): boolean {
     return role === 'owner' || role === 'admin';
+  }
+
+  function canGrantReviewSecurity(
+    grant: Pick<PackageTeamAccessGrant, 'permissions'> | null | undefined
+  ): boolean {
+    return (grant?.permissions || []).some((permission) =>
+      SECURITY_REVIEW_PERMISSIONS.has(permission)
+    );
+  }
+
+  function securityReviewPermissions(
+    grant: Pick<PackageTeamAccessGrant, 'permissions'> | null | undefined
+  ): string[] {
+    return (grant?.permissions || []).filter((permission) =>
+      SECURITY_REVIEW_PERMISSIONS.has(permission)
+    );
   }
 
   function formatTeamOption(team: Team): string {
@@ -849,6 +940,40 @@
 
   $: packageMetadata = pkg?.ecosystem_metadata ?? null;
   $: canonicalPackageEcosystem = pkg?.ecosystem ?? ecosystem;
+  $: normalizedFindingSearchQuery = normalizePackageSecuritySearchQuery(
+    findingSearchQuery
+  );
+  $: filteredFindings = filterPackageSecurityFindings(findings, {
+    searchQuery: normalizedFindingSearchQuery,
+    severities: findingSeverityFilters,
+    focusMode: findingFocusMode,
+  });
+  $: filteredFindingSeverityCounts = countPackageSecurityFindingsBySeverity(
+    filteredFindings
+  );
+  $: findingFiltersSummary = buildPackageSecurityFilterSummary({
+    totalLoadedCount: findings.length,
+    visibleCount: filteredFindings.length,
+    includeResolvedFindings,
+    filters: {
+      searchQuery: normalizedFindingSearchQuery,
+      severities: findingSeverityFilters,
+      focusMode: findingFocusMode,
+    },
+  });
+  $: findingFiltersEmptyMessage = buildPackageSecurityEmptyStateMessage({
+    totalLoadedCount: findings.length,
+    includeResolvedFindings,
+    filters: {
+      searchQuery: normalizedFindingSearchQuery,
+      severities: findingSeverityFilters,
+      focusMode: findingFocusMode,
+    },
+  });
+  $: hasActiveFindingFilters =
+    normalizedFindingSearchQuery.length > 0 ||
+    findingSeverityFilters.length > 0 ||
+    findingFocusMode !== 'triage';
   $: showsRegistryFamily = Boolean(
     pkg?.ecosystem && pkg.ecosystem.toLowerCase() !== ecosystem.toLowerCase()
   );
@@ -1037,15 +1162,135 @@
         {/if}
 
         {#if activeTab === 'security'}
-          <div class="findings-toggle">
-            <label>
-              <input
-                type="checkbox"
-                bind:checked={includeResolvedFindings}
-                on:change={handleResolvedToggleChange}
-              />
-              Show resolved findings
-            </label>
+          {@const securityReviewerTeams = (pkg?.team_access || []).filter(
+            (grant) => canGrantReviewSecurity(grant)
+          )}
+          {#if pkg?.owner_org_slug && (pkg.can_manage_security || securityReviewerTeams.length > 0)}
+            <div class="surface-card" style="margin-bottom:1rem;">
+              <div class="surface-card__body">
+                <h3>Security review access</h3>
+                <p class="settings-copy" style="margin-bottom:0.75rem;">
+                  {#if securityReviewerTeams.length > 0}
+                    Teams with <strong>Security review</strong> or <strong>Admin</strong> package
+                    grants can resolve and reopen findings for this package.
+                  {:else}
+                    Security findings on this package can be triaged with your current package
+                    access.
+                  {/if}
+                </p>
+                <div class="token-row__scopes" style="margin-bottom:0.75rem;">
+                  {#if pkg.can_manage_security}
+                    <span class="badge badge-verified">You can triage findings</span>
+                  {/if}
+                  {#if securityReviewerTeams.length > 0}
+                    <span class="badge badge-ecosystem"
+                      >{securityReviewerTeams.length} review team{securityReviewerTeams.length === 1
+                        ? ''
+                        : 's'}</span
+                    >
+                  {/if}
+                </div>
+                {#if securityReviewerTeams.length > 0}
+                  <div class="token-list">
+                    {#each securityReviewerTeams as grant}
+                      <div class="token-row">
+                        <div class="token-row__main">
+                          <div class="token-row__title">
+                            {grant.team_name || grant.team_slug || 'Unnamed team'}
+                          </div>
+                          <div class="token-row__meta">
+                            {#if grant.team_slug}
+                              <span>{grant.team_slug}</span>
+                            {/if}
+                            {#if grant.granted_at}
+                              <span>latest grant {formatDate(grant.granted_at)}</span>
+                            {/if}
+                          </div>
+                          <div class="token-row__scopes">
+                            {#each securityReviewPermissions(grant) as permission}
+                              <span class="badge badge-ecosystem"
+                                >{formatPermission(permission)}</span
+                              >
+                            {/each}
+                          </div>
+                        </div>
+                      </div>
+                    {/each}
+                  </div>
+                {/if}
+              </div>
+            </div>
+          {/if}
+          <div class="surface-card" style="margin-bottom:1rem;">
+            <div class="surface-card__body">
+              <h3>Filter findings</h3>
+              <div
+                class="flex flex-wrap items-end gap-4"
+                style="margin-bottom:0.75rem;"
+              >
+                <div class="form-group" style="margin-bottom:0; min-width:220px;">
+                  <label for="package-security-focus">Focus</label>
+                  <select
+                    id="package-security-focus"
+                    class="form-input"
+                    bind:value={findingFocusMode}
+                    on:change={handleFindingFocusModeChange}
+                  >
+                    <option value="triage">Unresolved triage queue</option>
+                    <option value="all">All loaded findings</option>
+                    <option value="resolved">Resolved history</option>
+                  </select>
+                </div>
+                <div class="form-group" style="margin-bottom:0; min-width:260px; flex:1;">
+                  <label for="package-security-search">Search findings</label>
+                  <input
+                    id="package-security-search"
+                    class="form-input"
+                    bind:value={findingSearchQuery}
+                    on:input={handleFindingSearchInput}
+                    placeholder="Match title, advisory, version, or artifact"
+                    autocomplete="off"
+                  />
+                </div>
+                <label class="badge badge-ecosystem" for="package-security-include-resolved">
+                  <input
+                    id="package-security-include-resolved"
+                    type="checkbox"
+                    bind:checked={includeResolvedFindings}
+                    on:change={handleResolvedToggleChange}
+                    style="margin-right:0.35rem;"
+                  />
+                  Load resolved findings
+                </label>
+                {#if hasActiveFindingFilters}
+                  <button
+                    type="button"
+                    class="btn btn-secondary"
+                    on:click={() => void clearFindingFilters()}>Clear filters</button
+                  >
+                {/if}
+              </div>
+              <fieldset class="form-group" style="margin-bottom:0.75rem;">
+                <legend>Severity</legend>
+                <div class="token-row__scopes">
+                  {#each SECURITY_SEVERITIES as severity}
+                    <label class="badge badge-ecosystem">
+                      <input
+                        type="checkbox"
+                        bind:group={findingSeverityFilters}
+                        value={severity}
+                        on:change={handleFindingSeverityFilterChange}
+                        style="margin-right:0.35rem;"
+                      />
+                      {formatIdentifierLabel(severity)}
+                    </label>
+                  {/each}
+                </div>
+              </fieldset>
+              <p class="settings-copy" style="margin:0;" aria-live="polite">
+                {findingFiltersSummary}
+              </p>
+            </div>
           </div>
 
           {#if findingsNotice}
@@ -1055,10 +1300,27 @@
             <div class="notice notice--error">{findingsError}</div>
           {/if}
 
-          {#if findings.length === 0}
-              <div class="empty-state surface-card"><p>No security findings.</p></div>
+          {#if filteredFindings.length === 0}
+              <div class="empty-state surface-card">
+                <h3>{findings.length === 0 ? 'No security findings' : 'No findings match current filters'}</h3>
+                <p>{findingFiltersEmptyMessage}</p>
+                {#if hasActiveFindingFilters}
+                  <button
+                    type="button"
+                    class="btn btn-secondary"
+                    on:click={() => void clearFindingFilters()}>Clear filters</button
+                  >
+                {/if}
+              </div>
           {:else}
-            {#each [...findings].sort((left, right) => severityLevel(right.severity) - severityLevel(left.severity)) as finding}
+            <div class="token-row__scopes" style="margin-bottom:1rem;">
+              {#each SECURITY_SEVERITIES.filter((severity) => filteredFindingSeverityCounts[severity] > 0) as severity}
+                <span class={`badge badge-severity-${severity}`}
+                  >{formatNumber(filteredFindingSeverityCounts[severity])} {severity}</span
+                >
+              {/each}
+            </div>
+            {#each filteredFindings as finding}
               {@const severity = finding.severity?.toLowerCase() || 'info'}
               <div
                 class={`finding-row ${finding.is_resolved ? 'finding-resolved' : ''}`}
@@ -1369,14 +1631,19 @@
                             <span>latest grant {formatDate(grant.granted_at)}</span>
                           {/if}
                         </div>
-                        <div class="token-row__scopes">
-                          {#each grant.permissions || [] as permission}
-                            <span class="badge badge-ecosystem"
-                              >{formatPermission(permission)}</span
-                            >
-                          {/each}
-                        </div>
-                      </div>
+                         <div class="token-row__scopes">
+                           {#each grant.permissions || [] as permission}
+                             <span class="badge badge-ecosystem"
+                               >{formatPermission(permission)}</span
+                             >
+                           {/each}
+                           {#if canGrantReviewSecurity(grant)}
+                             <span class="badge badge-verified"
+                               >Can triage findings</span
+                             >
+                           {/if}
+                         </div>
+                       </div>
                       {#if teamAccessManagementState.showManagement && grant.team_slug}
                         <div class="token-row__actions">
                           <button

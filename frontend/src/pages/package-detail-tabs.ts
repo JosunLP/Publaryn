@@ -1,3 +1,5 @@
+import { applyPackageSecurityViewToSearchParams } from './pkg-security-url';
+
 export const PACKAGE_DETAIL_TAB_VALUES = [
   'readme',
   'versions',
@@ -30,8 +32,15 @@ export function buildPackageDetailPath(
   name: string,
   {
     tab,
+    securityView,
   }: {
     tab?: string | null | undefined;
+    securityView?: {
+      focusMode?: string | null | undefined;
+      includeResolved?: boolean | null | undefined;
+      searchQuery?: string | null | undefined;
+      severities?: string | readonly string[] | null | undefined;
+    };
   } = {},
   currentSearch: string | URLSearchParams = ''
 ): string {
@@ -45,6 +54,10 @@ export function buildPackageDetailPath(
     params.delete('tab');
   } else {
     params.set('tab', normalizedTab);
+  }
+
+  if (securityView) {
+    applyPackageSecurityViewToSearchParams(params, securityView);
   }
 
   const queryString = params.toString();

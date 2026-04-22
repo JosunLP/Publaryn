@@ -75,6 +75,37 @@ describe('org security finding triage controls', () => {
     unmount();
   });
 
+  test('renders deep links back to package security when a builder is provided', async () => {
+    const finding = makeFinding('finding-3', {
+      advisory_id: 'PUB-2026-0007',
+      title: 'Prototype pollution',
+    });
+
+    const { target, unmount } = await renderSvelte(
+      OrgSecurityFindingTriageControls,
+      {
+        findings: [finding],
+        notePlaceholder: 'Optional note (recorded in audit log)',
+        formatDateValue: (value: string | null | undefined) => value || '',
+        normalizeSeverity: (value: string) => value.toLowerCase(),
+        buildPackageSecurityHref: () =>
+          '/packages/npm/demo-widget?tab=security&security_search=PUB-2026-0007',
+      }
+    );
+
+    const link = target.querySelector('a');
+    if (!link || link.tagName !== 'A') {
+      throw new Error('Expected a package security link.');
+    }
+
+    expect(link.textContent?.trim()).toBe('Open package security');
+    expect(link.getAttribute('href')).toBe(
+      '/packages/npm/demo-widget?tab=security&security_search=PUB-2026-0007'
+    );
+
+    unmount();
+  });
+
   test('shows reopening state for an updating resolved finding', async () => {
     const finding = makeFinding('finding-2', {
       is_resolved: true,

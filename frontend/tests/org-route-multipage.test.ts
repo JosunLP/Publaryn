@@ -265,6 +265,16 @@ describe('route-level multi-page org dataset coverage', () => {
             `a[href="/orgs/${ORG_SLUG}/teams/${TEAM_SLUG}"]`
           )
         ).not.toBeNull();
+        expect(
+          target.querySelector(
+            `a[href="/packages/${finalPackage?.ecosystem}/${finalPackage?.name}?tab=security"]`
+          )
+        ).not.toBeNull();
+        expect(
+          target.querySelector(
+            `a[href="/packages/${finalPackage?.ecosystem}/${finalPackage?.name}"]`
+          )
+        ).not.toBeNull();
       });
     } finally {
       unmount();
@@ -640,6 +650,36 @@ describe('route-level multi-page org dataset coverage', () => {
       await waitFor(() => {
         expect(gotoCalls).toEqual(['/search?org=source-org&repository=repo-101']);
       });
+    } finally {
+      unmount();
+    }
+  });
+
+  test('search results expose a secondary package-details link alongside security navigation', async () => {
+    const scenario = createFetchScenario();
+    currentScenario = scenario;
+    currentAuthToken = 'pub_test_token';
+    pageStore.set(buildPageState('https://example.test/search?q=example'));
+
+    const { target, unmount } = await renderSvelte(SearchPage);
+
+    try {
+      await waitFor(() => {
+        expect(
+          target.querySelector('a[href="/packages/npm/example-package?tab=security"]')
+        ).not.toBeNull();
+        expect(
+          target.querySelector('a[href="/packages/npm/example-package"]')
+        ).not.toBeNull();
+        expect(target.textContent).toContain('Open package details');
+      });
+
+      expect(scenario.searchCalls).toEqual([
+        {
+          org: '',
+          repository: '',
+        },
+      ]);
     } finally {
       unmount();
     }
