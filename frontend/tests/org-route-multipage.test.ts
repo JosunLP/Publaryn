@@ -40,6 +40,10 @@ interface FetchScenario {
   canManageRepositories: boolean;
   canManageNamespaces: boolean;
   workspaceBootstrapRequests: string[];
+  teamMemberRequests: string[];
+  teamPackageAccessRequests: string[];
+  teamRepositoryAccessRequests: string[];
+  teamNamespaceAccessRequests: string[];
   repositoryPageRequests: number[];
   repositoryPackageCoverageRequests: string[];
   packagePageRequests: number[];
@@ -235,6 +239,10 @@ describe('route-level multi-page org dataset coverage', () => {
         expect(scenario.repositoryPageRequests).toEqual([]);
         expect(scenario.packagePageRequests).toEqual([]);
         expect(scenario.repositoryPackageCoverageRequests).toEqual([]);
+        expect(scenario.teamMemberRequests).toEqual([]);
+        expect(scenario.teamPackageAccessRequests).toEqual([]);
+        expect(scenario.teamRepositoryAccessRequests).toEqual([]);
+        expect(scenario.teamNamespaceAccessRequests).toEqual([]);
       }, 5_000);
 
       const finalRepository = repositories.at(-1);
@@ -269,6 +277,31 @@ describe('route-level multi-page org dataset coverage', () => {
         expect(
           target.querySelector(
             `a[href="/orgs/${ORG_SLUG}/teams/${TEAM_SLUG}"]`
+          )
+        ).not.toBeNull();
+        expect(target.textContent).toContain('@admin-user');
+        expect(
+          target.querySelector(
+            `#team-member-remove-${encodeURIComponent('admin-user')}`
+          )
+        ).not.toBeNull();
+        expect(
+          target.querySelector(
+            `#team-package-revoke-${encodeURIComponent(
+              `${finalPackage?.ecosystem}-${finalPackage?.name}`
+            )}`
+          )
+        ).not.toBeNull();
+        expect(
+          target.querySelector(
+            `#team-repository-revoke-${encodeURIComponent(
+              finalRepository?.slug || ''
+            )}`
+          )
+        ).not.toBeNull();
+        expect(
+          target.querySelector(
+            `#team-namespace-revoke-${encodeURIComponent('claim-001')}`
           )
         ).not.toBeNull();
         expect(
@@ -738,6 +771,10 @@ function createFetchScenario(): FetchScenario {
     canManageRepositories: true,
     canManageNamespaces: true,
     workspaceBootstrapRequests: [],
+    teamMemberRequests: [],
+    teamPackageAccessRequests: [],
+    teamRepositoryAccessRequests: [],
+    teamNamespaceAccessRequests: [],
     repositoryPageRequests: [],
     repositoryPackageCoverageRequests: [],
     packagePageRequests: [],
@@ -824,6 +861,62 @@ async function handleApiRequest(
       packages,
       namespaces: [],
       invitations: scenario.canManageInvitations ? [] : [],
+      team_management: {
+        members_by_team_slug: scenario.canManageTeams
+          ? {
+              [TEAM_SLUG]: [
+                {
+                  display_name: 'Admin User',
+                  username: 'admin-user',
+                  added_at: '2026-04-03T00:00:00Z',
+                },
+              ],
+            }
+          : {},
+        package_access_by_team_slug: scenario.canManageTeams
+          ? {
+              [TEAM_SLUG]: [
+                {
+                  package_id: packages.at(-1)?.id,
+                  ecosystem: packages.at(-1)?.ecosystem,
+                  name: packages.at(-1)?.name,
+                  normalized_name: packages.at(-1)?.name,
+                  permissions: ['write_metadata'],
+                  granted_at: '2026-04-03T00:00:00Z',
+                },
+              ],
+            }
+          : {},
+        repository_access_by_team_slug: scenario.canManageRepositories
+          ? {
+              [TEAM_SLUG]: [
+                {
+                  repository_id: repositories.at(-1)?.id,
+                  name: repositories.at(-1)?.name,
+                  slug: repositories.at(-1)?.slug,
+                  kind: repositories.at(-1)?.kind,
+                  visibility: repositories.at(-1)?.visibility,
+                  permissions: ['publish'],
+                  granted_at: '2026-04-03T00:00:00Z',
+                },
+              ],
+            }
+          : {},
+        namespace_access_by_team_slug: scenario.canManageNamespaces
+          ? {
+              [TEAM_SLUG]: [
+                {
+                  namespace_claim_id: 'claim-001',
+                  ecosystem: 'npm',
+                  namespace: '@source-org',
+                  is_verified: true,
+                  permissions: ['admin'],
+                  granted_at: '2026-04-03T00:00:00Z',
+                },
+              ],
+            }
+          : {},
+      },
       security: {
         summary: {
           open_findings: 0,
@@ -983,6 +1076,7 @@ async function handleApiRequest(
     method === 'GET' &&
     requestPath === `/v1/orgs/${ORG_SLUG}/teams/${TEAM_SLUG}/members`
   ) {
+    scenario.teamMemberRequests.push(requestPath);
     return apiResponse({ members: [] });
   }
 
@@ -990,6 +1084,7 @@ async function handleApiRequest(
     method === 'GET' &&
     requestPath === `/v1/orgs/${ORG_SLUG}/teams/${TEAM_SLUG}/package-access`
   ) {
+    scenario.teamPackageAccessRequests.push(requestPath);
     return apiResponse({ package_access: [] });
   }
 
@@ -997,6 +1092,7 @@ async function handleApiRequest(
     method === 'GET' &&
     requestPath === `/v1/orgs/${ORG_SLUG}/teams/${TEAM_SLUG}/repository-access`
   ) {
+    scenario.teamRepositoryAccessRequests.push(requestPath);
     return apiResponse({ repository_access: [] });
   }
 
@@ -1004,6 +1100,7 @@ async function handleApiRequest(
     method === 'GET' &&
     requestPath === `/v1/orgs/${ORG_SLUG}/teams/${TEAM_SLUG}/namespace-access`
   ) {
+    scenario.teamNamespaceAccessRequests.push(requestPath);
     return apiResponse({ namespace_access: [] });
   }
 

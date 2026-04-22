@@ -215,7 +215,17 @@ export interface OrgWorkspaceBootstrapResponse {
   packages: OrgPackageSummary[];
   namespaces: NamespaceClaim[];
   invitations: OrgInvitation[];
+  team_management?: OrgWorkspaceTeamManagementBootstrap | null;
   security?: OrgSecurityFindingsResponse | null;
+}
+
+export interface OrgWorkspaceTeamManagementBootstrap {
+  members_by_team_slug?: Record<string, TeamMember[]> | null;
+  package_access_by_team_slug?: Record<string, TeamPackageAccessGrant[]> | null;
+  repository_access_by_team_slug?:
+    | Record<string, TeamRepositoryAccessGrant[]>
+    | null;
+  namespace_access_by_team_slug?: Record<string, TeamNamespaceAccessGrant[]> | null;
 }
 
 export interface OrgSecuritySeverityCounts {

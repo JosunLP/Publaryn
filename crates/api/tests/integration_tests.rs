@@ -3573,6 +3573,7 @@ async fn test_org_workspace_bootstrap_aggregates_initial_workspace_data(pool: Pg
     let app = app(pool.clone());
     register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
     register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    register_user(&app, "charlie", "charlie@test.dev", "super_secret_pw!").await;
     let owner_jwt = login_user(&app, "alice", "super_secret_pw!").await;
 
     let (status, org_body) = create_org(&app, &owner_jwt, "Acme Corp", "acme-corp").await;
@@ -3593,6 +3594,22 @@ async fn test_org_workspace_bootstrap_aggregates_initial_workspace_data(pool: Pg
         status,
         StatusCode::CREATED,
         "unexpected team response: {team_body}"
+    );
+
+    let (status, member_body) =
+        add_org_member(&app, &owner_jwt, "acme-corp", "bob", "viewer").await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected org member response: {member_body}"
+    );
+
+    let (status, team_member_body) =
+        add_team_member_to_team(&app, &owner_jwt, "acme-corp", "release-engineering", "bob").await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected team member response: {team_member_body}"
     );
 
     let (status, public_repository_body) = create_repository_with_options(
@@ -3683,9 +3700,58 @@ async fn test_org_workspace_bootstrap_aggregates_initial_workspace_data(pool: Pg
         StatusCode::CREATED,
         "unexpected namespace response: {namespace_body}"
     );
+    let namespace_claim_id = namespace_body["id"]
+        .as_str()
+        .expect("namespace claim id should be returned");
+
+    let (status, team_package_access_body) = grant_team_package_access(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        "release-engineering",
+        "npm",
+        "acme-public-widget",
+        &["write_metadata"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team package access response: {team_package_access_body}"
+    );
+
+    let (status, team_repository_access_body) = grant_team_repository_access(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        "release-engineering",
+        "acme-internal",
+        &["publish"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team repository access response: {team_repository_access_body}"
+    );
+
+    let (status, team_namespace_access_body) = grant_team_namespace_access(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        "release-engineering",
+        namespace_claim_id,
+        &["admin"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team namespace access response: {team_namespace_access_body}"
+    );
 
     let (status, invitation_body) =
-        send_org_invitation(&app, &owner_jwt, "acme-corp", "bob", "viewer", 7).await;
+        send_org_invitation(&app, &owner_jwt, "acme-corp", "charlie", "viewer", 7).await;
     assert_eq!(
         status,
         StatusCode::CREATED,
@@ -3749,6 +3815,57 @@ async fn test_org_workspace_bootstrap_aggregates_initial_workspace_data(pool: Pg
     assert_eq!(
         owner_bootstrap_body["security"]["summary"]["affected_packages"],
         1
+    );
+    assert_eq!(
+        owner_bootstrap_body["team_management"]["members_by_team_slug"]["release-engineering"]
+            .as_array()
+            .expect("team members should be an array")
+            .len(),
+        1
+    );
+    assert_eq!(
+        owner_bootstrap_body["team_management"]["members_by_team_slug"]["release-engineering"][0]
+            ["username"],
+        "bob"
+    );
+    assert_eq!(
+        owner_bootstrap_body["team_management"]["package_access_by_team_slug"]
+            ["release-engineering"]
+            .as_array()
+            .expect("team package access should be an array")
+            .len(),
+        1
+    );
+    assert_eq!(
+        owner_bootstrap_body["team_management"]["package_access_by_team_slug"]
+            ["release-engineering"][0]["name"],
+        "acme-public-widget"
+    );
+    assert_eq!(
+        owner_bootstrap_body["team_management"]["repository_access_by_team_slug"]
+            ["release-engineering"]
+            .as_array()
+            .expect("team repository access should be an array")
+            .len(),
+        1
+    );
+    assert_eq!(
+        owner_bootstrap_body["team_management"]["repository_access_by_team_slug"]
+            ["release-engineering"][0]["slug"],
+        "acme-internal"
+    );
+    assert_eq!(
+        owner_bootstrap_body["team_management"]["namespace_access_by_team_slug"]
+            ["release-engineering"]
+            .as_array()
+            .expect("team namespace access should be an array")
+            .len(),
+        1
+    );
+    assert_eq!(
+        owner_bootstrap_body["team_management"]["namespace_access_by_team_slug"]
+            ["release-engineering"][0]["namespace"],
+        "@acme"
     );
     assert!(
         owner_bootstrap_body["repository_package_coverage"]
@@ -3815,6 +3932,22 @@ async fn test_org_workspace_bootstrap_aggregates_initial_workspace_data(pool: Pg
     assert_eq!(
         anonymous_bootstrap_body["security"]["summary"]["affected_packages"],
         1
+    );
+    assert_eq!(
+        anonymous_bootstrap_body["team_management"]["members_by_team_slug"],
+        json!({})
+    );
+    assert_eq!(
+        anonymous_bootstrap_body["team_management"]["package_access_by_team_slug"],
+        json!({})
+    );
+    assert_eq!(
+        anonymous_bootstrap_body["team_management"]["repository_access_by_team_slug"],
+        json!({})
+    );
+    assert_eq!(
+        anonymous_bootstrap_body["team_management"]["namespace_access_by_team_slug"],
+        json!({})
     );
 
     let namespace_owner_org_id = anonymous_bootstrap_body["namespaces"][0]["owner_org_id"]

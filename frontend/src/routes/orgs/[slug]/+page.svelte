@@ -149,13 +149,13 @@
     resolveTeamRepositoryAccessSubmission,
   } from '../../../pages/org-workspace-actions';
   import {
+    buildTeamManagementStateMapsFromBootstrap,
     buildEligibleTeamMemberOptions,
     buildNamespaceGrantOptions,
     buildPackageGrantOptions,
     buildRepositoryGrantOptions,
     createTeamManagementController,
     loadOrgMembersState,
-    loadTeamManagementStateMaps,
     type TeamMemberState,
     type TeamNamespaceAccessState,
     type TeamPackageAccessState,
@@ -695,13 +695,9 @@
 
       members = memberState.members;
       membersError = memberState.load_error;
-      const teamManagementStateMaps = await loadTeamManagementStateMaps(slug, teams, {
-        includeMembers: canManageTeams,
-        includePackageAccess: canManageTeams,
-        includeRepositoryAccess: canManageRepositories,
-        includeNamespaceAccess: canManageNamespaces,
-        toErrorMessage,
-      });
+      const teamManagementStateMaps = buildTeamManagementStateMapsFromBootstrap(
+        bootstrapData.team_management
+      );
       teamMembersBySlug = teamManagementStateMaps.teamMembersBySlug;
       teamPackageAccessBySlug = teamManagementStateMaps.teamPackageAccessBySlug;
       teamRepositoryAccessBySlug = teamManagementStateMaps.teamRepositoryAccessBySlug;

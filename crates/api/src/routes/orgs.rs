@@ -8,7 +8,7 @@ use axum::{
 use csv::WriterBuilder;
 use serde::Deserialize;
 use sqlx::{PgPool, Postgres, QueryBuilder, Row};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::str::FromStr;
 use uuid::Uuid;
 
@@ -233,6 +233,8 @@ async fn get_org_workspace_bootstrap(
         &identity,
         &security_filters,
     );
+    let team_management_future =
+        load_org_team_management_payload(&state.db, &capabilities, actor_user_id, org_id);
 
     let (
         teams,
@@ -241,6 +243,7 @@ async fn get_org_workspace_bootstrap(
         packages,
         namespaces,
         invitations,
+        team_management,
         security,
     ) = tokio::try_join!(
         teams_future,
@@ -249,6 +252,7 @@ async fn get_org_workspace_bootstrap(
         load_all_org_package_payloads(&state.db, org_id, can_view_non_public, actor_user_id),
         load_org_namespace_payloads(&state.db, org_id, actor_user_id),
         invitations_future,
+        team_management_future,
         security_future,
     )?;
 
@@ -260,6 +264,7 @@ async fn get_org_workspace_bootstrap(
         "packages": packages,
         "namespaces": namespaces,
         "invitations": invitations,
+        "team_management": team_management,
         "security": security,
     })))
 }
@@ -2726,6 +2731,230 @@ async fn load_org_team_payloads(db: &PgPool, org_id: Uuid) -> ApiResult<Vec<serd
             })
         })
         .collect())
+}
+
+async fn load_org_team_management_payload(
+    db: &PgPool,
+    capabilities: &OrgActorCapabilities,
+    actor_user_id: Option<Uuid>,
+    org_id: Uuid,
+) -> ApiResult<serde_json::Value> {
+    let members_and_package_access_allowed =
+        capabilities.can_manage_teams && actor_user_id.is_some();
+    let repository_access_allowed = capabilities.can_manage_repositories && actor_user_id.is_some();
+    let namespace_access_allowed = capabilities.can_manage_namespaces && actor_user_id.is_some();
+
+    let (
+        members_by_team_slug,
+        package_access_by_team_slug,
+        repository_access_by_team_slug,
+        namespace_access_by_team_slug,
+    ) = tokio::try_join!(
+        async {
+            if members_and_package_access_allowed {
+                load_org_team_members_by_slug(db, org_id).await
+            } else {
+                Ok(BTreeMap::new())
+            }
+        },
+        async {
+            if members_and_package_access_allowed {
+                load_org_team_package_access_by_slug(db, org_id).await
+            } else {
+                Ok(BTreeMap::new())
+            }
+        },
+        async {
+            if repository_access_allowed {
+                load_org_team_repository_access_by_slug(db, org_id).await
+            } else {
+                Ok(BTreeMap::new())
+            }
+        },
+        async {
+            if namespace_access_allowed {
+                load_org_team_namespace_access_by_slug(db, org_id).await
+            } else {
+                Ok(BTreeMap::new())
+            }
+        },
+    )?;
+
+    Ok(serde_json::json!({
+        "members_by_team_slug": members_by_team_slug,
+        "package_access_by_team_slug": package_access_by_team_slug,
+        "repository_access_by_team_slug": repository_access_by_team_slug,
+        "namespace_access_by_team_slug": namespace_access_by_team_slug,
+    }))
+}
+
+async fn load_org_team_members_by_slug(
+    db: &PgPool,
+    org_id: Uuid,
+) -> ApiResult<BTreeMap<String, Vec<serde_json::Value>>> {
+    let rows = sqlx::query(
+        "SELECT t.slug AS team_slug, u.id, u.username, u.display_name, tm.added_at \
+         FROM teams t \
+         JOIN team_memberships tm ON tm.team_id = t.id \
+         JOIN users u ON u.id = tm.user_id \
+         WHERE t.org_id = $1 \
+         ORDER BY LOWER(t.slug), tm.added_at ASC",
+    )
+    .bind(org_id)
+    .fetch_all(db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let mut members_by_team_slug = BTreeMap::new();
+    for row in rows {
+        let team_slug: String = row
+            .try_get("team_slug")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+        members_by_team_slug
+            .entry(team_slug)
+            .or_insert_with(Vec::new)
+            .push(serde_json::json!({
+                "id": row.try_get::<Uuid, _>("id").ok(),
+                "username": row.try_get::<String, _>("username").ok(),
+                "display_name": row.try_get::<Option<String>, _>("display_name").ok().flatten(),
+                "added_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("added_at").ok(),
+            }));
+    }
+
+    Ok(members_by_team_slug)
+}
+
+async fn load_org_team_package_access_by_slug(
+    db: &PgPool,
+    org_id: Uuid,
+) -> ApiResult<BTreeMap<String, Vec<serde_json::Value>>> {
+    let rows = sqlx::query(
+        "SELECT t.slug AS team_slug, p.id, p.name, p.normalized_name, p.ecosystem, \
+                ARRAY_AGG(tpa.permission::text ORDER BY tpa.permission::text) AS permissions, \
+                MAX(tpa.granted_at) AS granted_at \
+         FROM team_package_access tpa \
+         JOIN teams t ON t.id = tpa.team_id \
+         JOIN packages p ON p.id = tpa.package_id \
+         WHERE t.org_id = $1 AND p.owner_org_id = $1 \
+         GROUP BY t.slug, p.id, p.name, p.normalized_name, p.ecosystem \
+         ORDER BY LOWER(t.slug), p.ecosystem ASC, p.name ASC",
+    )
+    .bind(org_id)
+    .fetch_all(db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let mut package_access_by_team_slug = BTreeMap::new();
+    for row in rows {
+        let team_slug: String = row
+            .try_get("team_slug")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+        package_access_by_team_slug
+            .entry(team_slug)
+            .or_insert_with(Vec::new)
+            .push(serde_json::json!({
+                "package_id": row.try_get::<Uuid, _>("id").ok(),
+                "name": row.try_get::<String, _>("name").ok(),
+                "normalized_name": row.try_get::<String, _>("normalized_name").ok(),
+                "ecosystem": row.try_get::<String, _>("ecosystem").ok(),
+                "permissions": row.try_get::<Vec<String>, _>("permissions").ok(),
+                "granted_at": row
+                    .try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("granted_at")
+                    .ok()
+                    .flatten(),
+            }));
+    }
+
+    Ok(package_access_by_team_slug)
+}
+
+async fn load_org_team_repository_access_by_slug(
+    db: &PgPool,
+    org_id: Uuid,
+) -> ApiResult<BTreeMap<String, Vec<serde_json::Value>>> {
+    let rows = sqlx::query(
+        "SELECT t.slug AS team_slug, r.id, r.name, r.slug, r.kind::text AS kind, r.visibility::text AS visibility, \
+                ARRAY_AGG(tra.permission::text ORDER BY tra.permission::text) AS permissions, \
+                MAX(tra.granted_at) AS granted_at \
+         FROM team_repository_access tra \
+         JOIN teams t ON t.id = tra.team_id \
+         JOIN repositories r ON r.id = tra.repository_id \
+         WHERE t.org_id = $1 AND r.owner_org_id = $1 \
+         GROUP BY t.slug, r.id, r.name, r.slug, r.kind, r.visibility \
+         ORDER BY LOWER(t.slug), r.name ASC, r.slug ASC",
+    )
+    .bind(org_id)
+    .fetch_all(db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let mut repository_access_by_team_slug = BTreeMap::new();
+    for row in rows {
+        let team_slug: String = row
+            .try_get("team_slug")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+        repository_access_by_team_slug
+            .entry(team_slug)
+            .or_insert_with(Vec::new)
+            .push(serde_json::json!({
+                "repository_id": row.try_get::<Uuid, _>("id").ok(),
+                "name": row.try_get::<String, _>("name").ok(),
+                "slug": row.try_get::<String, _>("slug").ok(),
+                "kind": row.try_get::<String, _>("kind").ok(),
+                "visibility": row.try_get::<String, _>("visibility").ok(),
+                "permissions": row.try_get::<Vec<String>, _>("permissions").ok(),
+                "granted_at": row
+                    .try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("granted_at")
+                    .ok()
+                    .flatten(),
+            }));
+    }
+
+    Ok(repository_access_by_team_slug)
+}
+
+async fn load_org_team_namespace_access_by_slug(
+    db: &PgPool,
+    org_id: Uuid,
+) -> ApiResult<BTreeMap<String, Vec<serde_json::Value>>> {
+    let rows = sqlx::query(
+        "SELECT t.slug AS team_slug, nc.id, nc.ecosystem::text AS ecosystem, nc.namespace, nc.is_verified, \
+                ARRAY_AGG(tna.permission::text ORDER BY tna.permission::text) AS permissions, \
+                MAX(tna.granted_at) AS granted_at \
+         FROM team_namespace_access tna \
+         JOIN teams t ON t.id = tna.team_id \
+         JOIN namespace_claims nc ON nc.id = tna.namespace_claim_id \
+         WHERE t.org_id = $1 AND nc.owner_org_id = $1 \
+         GROUP BY t.slug, nc.id, nc.ecosystem, nc.namespace, nc.is_verified \
+         ORDER BY LOWER(t.slug), nc.ecosystem ASC, nc.namespace ASC",
+    )
+    .bind(org_id)
+    .fetch_all(db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let mut namespace_access_by_team_slug = BTreeMap::new();
+    for row in rows {
+        let team_slug: String = row
+            .try_get("team_slug")
+            .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+        namespace_access_by_team_slug
+            .entry(team_slug)
+            .or_insert_with(Vec::new)
+            .push(serde_json::json!({
+                "namespace_claim_id": row.try_get::<Uuid, _>("id").ok(),
+                "ecosystem": row.try_get::<String, _>("ecosystem").ok(),
+                "namespace": row.try_get::<String, _>("namespace").ok(),
+                "is_verified": row.try_get::<bool, _>("is_verified").ok(),
+                "permissions": row.try_get::<Vec<String>, _>("permissions").ok(),
+                "granted_at": row
+                    .try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("granted_at")
+                    .ok()
+                    .flatten(),
+            }));
+    }
+
+    Ok(namespace_access_by_team_slug)
 }
 
 async fn load_all_org_package_payloads(
