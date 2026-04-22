@@ -1,4 +1,4 @@
-# WIP - Publaryn
+# Publaryn
 
 **Publaryn** — secure, independent package registry across ecosystems. Developed by AI Agents, built on Rust, and designed for security-conscious teams who want to host their own package registry without sacrificing the native experience of their ecosystem's tools.
 
@@ -21,7 +21,49 @@ A self-hostable, security-first package registry platform that speaks the native
 
 > **Note:** Bun uses the npm adapter — no separate protocol implementation is required.
 
-The current documented baseline includes native publish/read flows for every ecosystem above, shared quarantine → scan → publish lifecycle controls, ecosystem-aware package/release detail responses, and a SvelteKit web portal that can browse package metadata, releases, security findings, trusted publishers, and OCI manifest references. The OCI adapter now also exposes native referrers discovery for subject-linked manifests (for example SBOMs or signatures already pushed through the registry), while broader attestation policy, signing UX, proxy/virtual repositories, and broader actor-aware discovery remain intentionally separate follow-on work.
+The current documented baseline includes native publish/read flows for every ecosystem above, shared quarantine → scan → publish lifecycle controls, ecosystem-aware package/release detail responses, and a SvelteKit web portal that can browse package metadata, releases, security findings, trusted publishers, and OCI manifest references. The OCI adapter now also exposes native referrers discovery for subject-linked manifests (for example SBOMs or signatures already pushed through the registry), while broader attestation policy, signing UX, proxy/virtual repositories, and richer discovery/ranking features remain intentionally separate follow-on work.
+
+---
+
+## 1.0 Product Contract
+
+Publaryn is now targeting **1.0.0** as a production-ready baseline for:
+
+- self-hosted multi-ecosystem package hosting
+- native client compatibility across all currently mounted adapters
+- organization-centric governance and delegated team access
+- quarantine-first publication with background scanning and security findings
+- an integrated web portal for package discovery, package details, version details, settings, and organization workspaces
+
+The detailed 1.0 contract lives in [docs/1.0.md](docs/1.0.md). It defines:
+
+- the **1.0 scope**
+- what is **explicitly deferred until after 1.0**
+- the **API and adapter matrix**
+- visibility, search, and security-flow behavior
+- the **release criteria**
+- the support and compatibility policy
+
+For architecture decisions, use the indexed ADR catalog in [docs/adr/README.md](docs/adr/README.md).
+
+### In scope for 1.0
+
+- management API for auth, users, organizations, teams, repositories, packages, releases, tokens, audit, search, security findings, trusted publishers, and namespace claims
+- native protocol adapters for npm/Bun, PyPI, Cargo, NuGet, Maven, RubyGems, Composer, and OCI
+- actor-aware visibility enforcement for control-plane reads and package search
+- delegated package, repository, and namespace access for organization teams
+- background jobs for scanning, reindexing, cleanup, and operational queue handling
+- documented validation, CI, and container build pipeline
+
+### Explicitly out of scope for 1.0
+
+- proxy, mirror, and virtual repositories
+- Maven snapshot repositories and promotion workflows
+- enterprise SSO, SAML, and SCIM
+- billing, quotas as a product tiering system, and monetization features
+- full attestation policy, signing UX, and deep Sigstore integration
+- federated registries, regional replication, and air-gapped synchronization
+- operator-facing abuse and takedown consoles beyond the current quarantine and audit primitives
 
 ---
 
@@ -368,11 +410,15 @@ Current PyPI upload behavior:
 ### Search
 
 ```http
-GET /v1/search?q=<query>&ecosystem=<eco>&page=1&per_page=20
+GET /v1/search?q=<query>&ecosystem=<eco>&org=<slug>&repository=<slug>&page=1&per_page=20
 ```
 
-The current search endpoint returns only publicly discoverable packages.
-Authenticated discovery for private and organization-internal packages will be added in a later slice with actor-aware indexing.
+The current search endpoint is actor-aware:
+
+- anonymous callers only see publicly discoverable packages
+- authenticated callers can also see private and `internal_org` packages when they already have visibility through direct ownership, organization membership, or delegated team access
+- `org` and `repository` filters scope the visible search result set by owner organization slug and repository slug
+- `unlisted` and `quarantined` packages remain excluded from search
 
 ### Tokens
 
@@ -473,6 +519,7 @@ Contributions are welcome.
 - Read [CONTRIBUTING.md](CONTRIBUTING.md) for local setup, validation steps, and contribution expectations.
 - Review [SUPPORT.md](SUPPORT.md) before opening a usage question or bug report.
 - Use [SECURITY.md](SECURITY.md) for responsible vulnerability disclosure instead of public issues.
+- Review [docs/1.0.md](docs/1.0.md) for the current release contract and [docs/adr/README.md](docs/adr/README.md) for the indexed decision record map.
 - Please open an issue first to discuss major changes before starting implementation work.
 
 ---
