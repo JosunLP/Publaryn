@@ -2603,7 +2603,7 @@
                             type="button"
                             aria-label={`Delete team ${teamSlug}`}
                             on:click={() => openTeamDeleteConfirmation(teamSlug)}
-                            >Delete…</button
+                            >Delete...</button
                           >
                         {/if}
                       </div>
@@ -3588,7 +3588,7 @@
                           type="button"
                           aria-label={`Delete namespace claim ${claim.namespace || 'Unnamed claim'}`}
                           on:click={() => openNamespaceDeleteConfirmation(claim.id || '')}
-                          >Delete…</button
+                          >Delete...</button
                         >
                       {/if}
                     {/if}
