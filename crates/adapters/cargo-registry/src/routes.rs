@@ -1601,9 +1601,11 @@ mod tests {
 
     impl TestState {
         fn new() -> Self {
+            let database_url = std::env::var("DATABASE_URL")
+                .unwrap_or_else(|_| "postgres://unused:unused@localhost/unused".to_owned());
             Self {
                 db: PgPoolOptions::new()
-                    .connect_lazy("postgres://publaryn:publaryn_dev@localhost/publaryn")
+                    .connect_lazy(&database_url)
                     .expect("lazy postgres pool should be constructible"),
                 jwt_secret: "test-secret-with-at-least-thirty-two-bytes".to_owned(),
                 jwt_issuer: "http://publaryn.test".to_owned(),
@@ -1630,11 +1632,11 @@ mod tests {
             _content_type: String,
             _bytes: Bytes,
         ) -> Result<(), Error> {
-            unreachable!("artifact_put is not exercised in these route tests")
+            unreachable!("artifact_put should not be called in cargo search route tests")
         }
 
         async fn artifact_get(&self, _key: &str) -> Result<Option<StoredObject>, Error> {
-            unreachable!("artifact_get is not exercised in these route tests")
+            unreachable!("artifact_get should not be called in cargo search route tests")
         }
 
         fn base_url(&self) -> &str {
