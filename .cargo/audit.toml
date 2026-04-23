@@ -4,7 +4,9 @@ ignore = [
   # Remove once sqlx-mysql no longer depends on the vulnerable rsa release, or when a patched upstream release is available. Re-evaluate by 2026-12-31.
   "RUSTSEC-2023-0071",
   # TEMPORARY: rustls-webpki 0.101.x required via aws-smithy-http-client's hyper-rustls 0.24.x stack.
-  # Remove once the dependency chain is upgraded off rustls-webpki 0.101.x / hyper-rustls 0.24.x. Re-evaluate by 2026-12-31.
+  # rustls-webpki 0.103.12 is also pulled in transitively via reqwest/rustls-platform-verifier.
+  # Remove once both dependency chains are upgraded to a patched rustls-webpki release. Re-evaluate by 2026-12-31.
   "RUSTSEC-2026-0098",
   "RUSTSEC-2026-0099",
+  "RUSTSEC-2026-0104",
 ]
