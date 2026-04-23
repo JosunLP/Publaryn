@@ -1596,6 +1596,7 @@ mod tests {
         db: PgPool,
         jwt_secret: String,
         jwt_issuer: String,
+        fail_search: bool,
         search_calls: Arc<Mutex<Vec<SearchCall>>>,
     }
 
@@ -1609,8 +1610,15 @@ mod tests {
                     .expect("lazy postgres pool should be constructible"),
                 jwt_secret: "test-secret-with-at-least-thirty-two-bytes".to_owned(),
                 jwt_issuer: "http://publaryn.test".to_owned(),
+                fail_search: false,
                 search_calls: Arc::new(Mutex::new(Vec::new())),
             }
+        }
+
+        fn with_failed_search() -> Self {
+            let mut state = Self::new();
+            state.fail_search = true;
+            state
         }
 
         fn search_calls(&self) -> Vec<SearchCall> {
@@ -1667,6 +1675,10 @@ mod tests {
                     offset,
                     actor_user_id,
                 });
+
+            if self.fail_search {
+                return Err(Error::Internal("search backend unavailable".to_owned()));
+            }
 
             let hit = if actor_user_id.is_some() {
                 CargoSearchHit {
@@ -1754,6 +1766,64 @@ mod tests {
                     actor_user_id: Some(actor_user_id),
                 },
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn cargo_search_route_treats_invalid_auth_as_anonymous_visibility() {
+        let state = TestState::new();
+        let router = api_router::<TestState>().with_state(state.clone());
+
+        let invalid_auth_request = Request::builder()
+            .method("GET")
+            .uri("/crates?q=widget&per_page=3")
+            .header(AUTHORIZATION, "not-a-valid-token")
+            .body(Body::empty())
+            .unwrap();
+        let response = router.clone().oneshot(invalid_auth_request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 16 * 1024).await.unwrap())
+                .expect("cargo search response should be valid JSON");
+        assert_eq!(body["crates"][0]["name"], "public_widget");
+        assert_eq!(body["crates"][0]["max_version"], "1.0.0");
+
+        assert_eq!(
+            state.search_calls(),
+            vec![SearchCall {
+                query: "widget".to_owned(),
+                per_page: 3,
+                offset: 0,
+                actor_user_id: None,
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn cargo_search_route_returns_empty_results_when_backend_fails() {
+        let state = TestState::with_failed_search();
+        let router = api_router::<TestState>().with_state(state.clone());
+
+        let request = Request::builder()
+            .method("GET")
+            .uri("/crates?q=widget")
+            .body(Body::empty())
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 16 * 1024).await.unwrap())
+                .expect("cargo search fallback response should be valid JSON");
+        assert_eq!(body, serde_json::json!({ "crates": [], "meta": { "total": 0 } }));
+
+        assert_eq!(
+            state.search_calls(),
+            vec![SearchCall {
+                query: "widget".to_owned(),
+                per_page: 10,
+                offset: 0,
+                actor_user_id: None,
+            }]
         );
     }
 }

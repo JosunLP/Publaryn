@@ -72,6 +72,14 @@ fn enc_path_segment(value: &str) -> String {
     url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
 }
 
+fn cargo_error_detail(body: &Value) -> &str {
+    body["errors"]
+        .as_array()
+        .and_then(|errors| errors.first())
+        .and_then(|error| error["detail"].as_str())
+        .expect("cargo error response should contain one detail message")
+}
+
 /// Register a user via POST /v1/auth/register and return the JSON response.
 async fn register_user(
     app: &axum::Router,
@@ -13525,6 +13533,245 @@ async fn test_cargo_owner_endpoints_list_org_admins_and_acknowledge_mutations(po
         .as_str()
         .expect("cargo remove owners response should include a message")
         .contains("Requested removal: [\"alice\"]"));
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_cargo_yank_and_unyank_negative_auth_scope_and_ownership_paths(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+
+    let (status, repository_body) = create_repository(
+        &app,
+        &alice_jwt,
+        "Alice Cargo Packages",
+        "alice-cargo-packages",
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, write_token_body) =
+        create_personal_access_token(&app, &alice_jwt, "cargo-write", &["packages:write"]).await;
+    assert_eq!(status, StatusCode::CREATED, "{write_token_body}");
+    let alice_cargo_token = write_token_body["token"]
+        .as_str()
+        .expect("write-scoped cargo token should be returned")
+        .to_owned();
+
+    let (status, read_only_token_body) =
+        create_personal_access_token(&app, &alice_jwt, "cargo-read-only", &["tokens:read"]).await;
+    assert_eq!(status, StatusCode::CREATED, "{read_only_token_body}");
+    let alice_read_only_token = read_only_token_body["token"]
+        .as_str()
+        .expect("read-only cargo token should be returned")
+        .to_owned();
+
+    let (status, bob_token_body) =
+        create_personal_access_token(&app, &bob_jwt, "bob-cargo-write", &["packages:write"]).await;
+    assert_eq!(status, StatusCode::CREATED, "{bob_token_body}");
+    let bob_cargo_token = bob_token_body["token"]
+        .as_str()
+        .expect("bob cargo token should be returned")
+        .to_owned();
+
+    let payload = build_cargo_publish_payload(
+        json!({
+            "name": "locked_widget",
+            "vers": "0.1.0",
+            "deps": [],
+            "features": {},
+            "authors": ["Alice <alice@test.dev>"],
+            "description": "Cargo negative-path yank coverage",
+            "license": "MIT"
+        }),
+        b"locked-cargo-crate",
+    );
+    let (status, publish_body) = publish_cargo_crate(&app, &alice_cargo_token, payload).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected cargo publish response: {publish_body}"
+    );
+
+    let missing_auth_yank_req = Request::builder()
+        .method(Method::DELETE)
+        .uri("/cargo/api/v1/crates/locked_widget/0.1.0/yank")
+        .body(Body::empty())
+        .unwrap();
+    let missing_auth_yank_resp = app.clone().oneshot(missing_auth_yank_req).await.unwrap();
+    assert_eq!(missing_auth_yank_resp.status(), StatusCode::UNAUTHORIZED);
+    let missing_auth_yank_body = body_json(missing_auth_yank_resp).await;
+    assert_eq!(
+        cargo_error_detail(&missing_auth_yank_body),
+        "Authentication required. Run `cargo login --registry <name>` to authenticate."
+    );
+
+    let (status, insufficient_scope_yank_body) =
+        yank_cargo_crate_version(&app, &alice_read_only_token, "locked_widget", "0.1.0").await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        cargo_error_detail(&insufficient_scope_yank_body),
+        "Token does not have the packages:write scope"
+    );
+
+    let (status, missing_crate_yank_body) =
+        yank_cargo_crate_version(&app, &alice_cargo_token, "missing_widget", "0.1.0").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(cargo_error_detail(&missing_crate_yank_body), "Crate not found");
+
+    let (status, missing_version_unyank_body) =
+        unyank_cargo_crate_version(&app, &alice_cargo_token, "locked_widget", "9.9.9").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(cargo_error_detail(&missing_version_unyank_body), "Version not found");
+
+    let (status, unauthorized_unyank_body) =
+        unyank_cargo_crate_version(&app, &bob_cargo_token, "locked_widget", "0.1.0").await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        cargo_error_detail(&unauthorized_unyank_body),
+        "You do not have permission to modify this crate"
+    );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_cargo_owner_negative_auth_scope_and_ownership_paths(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+
+    let (status, repository_body) = create_repository(
+        &app,
+        &alice_jwt,
+        "Alice Cargo Packages",
+        "alice-cargo-packages",
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "cargo",
+        "owner_locked_widget",
+        "alice-cargo-packages",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let (status, write_token_body) =
+        create_personal_access_token(&app, &alice_jwt, "cargo-owners-write", &["packages:write"])
+            .await;
+    assert_eq!(status, StatusCode::CREATED, "{write_token_body}");
+    let alice_cargo_token = write_token_body["token"]
+        .as_str()
+        .expect("write-scoped cargo token should be returned")
+        .to_owned();
+
+    let (status, read_only_token_body) = create_personal_access_token(
+        &app,
+        &alice_jwt,
+        "cargo-owners-read-only",
+        &["tokens:read"],
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{read_only_token_body}");
+    let alice_read_only_token = read_only_token_body["token"]
+        .as_str()
+        .expect("read-only cargo token should be returned")
+        .to_owned();
+
+    let (status, bob_token_body) =
+        create_personal_access_token(&app, &bob_jwt, "bob-cargo-owners", &["packages:write"])
+            .await;
+    assert_eq!(status, StatusCode::CREATED, "{bob_token_body}");
+    let bob_cargo_token = bob_token_body["token"]
+        .as_str()
+        .expect("bob cargo token should be returned")
+        .to_owned();
+
+    let missing_auth_list_req = Request::builder()
+        .method(Method::GET)
+        .uri("/cargo/api/v1/crates/owner_locked_widget/owners")
+        .body(Body::empty())
+        .unwrap();
+    let missing_auth_list_resp = app.clone().oneshot(missing_auth_list_req).await.unwrap();
+    assert_eq!(missing_auth_list_resp.status(), StatusCode::UNAUTHORIZED);
+    let missing_auth_list_body = body_json(missing_auth_list_resp).await;
+    assert_eq!(
+        cargo_error_detail(&missing_auth_list_body),
+        "Authentication required. Run `cargo login --registry <name>` to authenticate."
+    );
+
+    let (status, missing_crate_list_body) =
+        list_cargo_crate_owners(&app, &alice_cargo_token, "missing_widget").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(cargo_error_detail(&missing_crate_list_body), "Crate not found");
+
+    let (status, insufficient_scope_add_body) = add_cargo_crate_owners(
+        &app,
+        &alice_read_only_token,
+        "owner_locked_widget",
+        &["carol"],
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        cargo_error_detail(&insufficient_scope_add_body),
+        "Token does not have the packages:write scope"
+    );
+
+    let (status, insufficient_scope_remove_body) = remove_cargo_crate_owners(
+        &app,
+        &alice_read_only_token,
+        "owner_locked_widget",
+        &["carol"],
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        cargo_error_detail(&insufficient_scope_remove_body),
+        "Token does not have the packages:write scope"
+    );
+
+    let (status, unauthorized_add_body) =
+        add_cargo_crate_owners(&app, &bob_cargo_token, "owner_locked_widget", &["carol"]).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        cargo_error_detail(&unauthorized_add_body),
+        "You do not have permission to modify this crate"
+    );
+
+    let (status, unauthorized_remove_body) = remove_cargo_crate_owners(
+        &app,
+        &bob_cargo_token,
+        "owner_locked_widget",
+        &["alice"],
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        cargo_error_detail(&unauthorized_remove_body),
+        "You do not have permission to modify this crate"
+    );
 }
 
 #[sqlx::test(migrations = "../../migrations")]
