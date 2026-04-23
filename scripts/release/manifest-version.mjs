@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { semverPattern } from './semver.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -25,7 +26,7 @@ function parseArgs() {
 
   const version = rest[versionFlagIndex + 1];
 
-  if (!version || !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)) {
+  if (!version || !semverPattern.test(version)) {
     console.error(`Invalid version: ${version ?? '<missing>'}`);
     process.exit(1);
   }

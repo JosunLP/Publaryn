@@ -84,12 +84,236 @@ function absolutizeDocsLink(target, sourceDocPath, docsBaseUrl) {
   return `${docsBaseUrl}${sitePath}${suffix}`;
 }
 
-function rewriteMarkdownLinks(markdown, sourceDocPath, docsBaseUrl) {
-  return markdown.replace(
-    /(!?\[[^\]]*]\()([^)]+)(\))/g,
-    (_, prefix, target, suffix) =>
-      `${prefix}${absolutizeDocsLink(target, sourceDocPath, docsBaseUrl)}${suffix}`
+function findClosingBracket(markdown, openBracketIndex) {
+  let escape = false;
+  let depth = 0;
+
+  for (let index = openBracketIndex; index < markdown.length; index += 1) {
+    const char = markdown[index];
+
+    if (escape) {
+      escape = false;
+      continue;
+    }
+
+    if (char === '\\') {
+      escape = true;
+      continue;
+    }
+
+    if (char === '[') {
+      depth += 1;
+      continue;
+    }
+
+    if (char === ']') {
+      depth -= 1;
+      if (depth === 0) {
+        return index;
+      }
+    }
+  }
+
+  return -1;
+}
+
+function findClosingParen(markdown, openParenIndex) {
+  let escape = false;
+  let depth = 1;
+  let inAngle = false;
+  let quoteChar = null;
+
+  for (let index = openParenIndex + 1; index < markdown.length; index += 1) {
+    const char = markdown[index];
+
+    if (escape) {
+      escape = false;
+      continue;
+    }
+
+    if (char === '\\') {
+      escape = true;
+      continue;
+    }
+
+    if (quoteChar) {
+      if (char === quoteChar) {
+        quoteChar = null;
+      }
+      continue;
+    }
+
+    if (inAngle) {
+      if (char === '>') {
+        inAngle = false;
+      }
+      continue;
+    }
+
+    if (char === '<') {
+      inAngle = true;
+      continue;
+    }
+
+    if (char === '"' || char === "'") {
+      quoteChar = char;
+      continue;
+    }
+
+    if (char === '(') {
+      depth += 1;
+      continue;
+    }
+
+    if (char === ')') {
+      depth -= 1;
+      if (depth === 0) {
+        return index;
+      }
+    }
+  }
+
+  return -1;
+}
+
+function splitMarkdownLinkTarget(content) {
+  let index = 0;
+
+  while (index < content.length && /\s/.test(content[index])) {
+    index += 1;
+  }
+
+  if (index >= content.length) {
+    return null;
+  }
+
+  if (content[index] === '<') {
+    let escape = false;
+
+    for (let end = index + 1; end < content.length; end += 1) {
+      const char = content[end];
+
+      if (escape) {
+        escape = false;
+        continue;
+      }
+
+      if (char === '\\') {
+        escape = true;
+        continue;
+      }
+
+      if (char === '>') {
+        return {
+          leadingWhitespace: content.slice(0, index),
+          target: content.slice(index + 1, end),
+          suffix: content.slice(end + 1),
+          wrapInAngles: true,
+        };
+      }
+    }
+
+    return null;
+  }
+
+  let escape = false;
+  let depth = 0;
+  let end = index;
+
+  for (; end < content.length; end += 1) {
+    const char = content[end];
+
+    if (escape) {
+      escape = false;
+      continue;
+    }
+
+    if (char === '\\') {
+      escape = true;
+      continue;
+    }
+
+    if (/\s/.test(char) && depth === 0) {
+      break;
+    }
+
+    if (char === '(') {
+      depth += 1;
+      continue;
+    }
+
+    if (char === ')' && depth > 0) {
+      depth -= 1;
+    }
+  }
+
+  return {
+    leadingWhitespace: content.slice(0, index),
+    target: content.slice(index, end),
+    suffix: content.slice(end),
+    wrapInAngles: false,
+  };
+}
+
+function rewriteMarkdownLinkContent(content, sourceDocPath, docsBaseUrl) {
+  const parsed = splitMarkdownLinkTarget(content);
+
+  if (!parsed) {
+    return content;
+  }
+
+  const rewrittenTarget = absolutizeDocsLink(
+    parsed.target,
+    sourceDocPath,
+    docsBaseUrl
   );
+  const renderedTarget = parsed.wrapInAngles
+    ? `<${rewrittenTarget}>`
+    : rewrittenTarget;
+  return `${parsed.leadingWhitespace}${renderedTarget}${parsed.suffix}`;
+}
+
+function rewriteMarkdownLinks(markdown, sourceDocPath, docsBaseUrl) {
+  let rewritten = '';
+  let index = 0;
+
+  while (index < markdown.length) {
+    const isImageLink = markdown[index] === '!' && markdown[index + 1] === '[';
+    const isLink = markdown[index] === '[';
+
+    if (!isImageLink && !isLink) {
+      rewritten += markdown[index];
+      index += 1;
+      continue;
+    }
+
+    const openBracketIndex = isImageLink ? index + 1 : index;
+    const closeBracketIndex = findClosingBracket(markdown, openBracketIndex);
+
+    if (
+      closeBracketIndex === -1 ||
+      markdown[closeBracketIndex + 1] !== '('
+    ) {
+      rewritten += markdown[index];
+      index += 1;
+      continue;
+    }
+
+    const closeParenIndex = findClosingParen(markdown, closeBracketIndex + 1);
+
+    if (closeParenIndex === -1) {
+      rewritten += markdown[index];
+      index += 1;
+      continue;
+    }
+
+    const prefix = markdown.slice(index, closeBracketIndex + 2);
+    const content = markdown.slice(closeBracketIndex + 2, closeParenIndex);
+    rewritten += `${prefix}${rewriteMarkdownLinkContent(content, sourceDocPath, docsBaseUrl)})`;
+    index = closeParenIndex + 1;
+  }
+
+  return rewritten;
 }
 
 function main() {
