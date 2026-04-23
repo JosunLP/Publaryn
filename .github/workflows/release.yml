@@ -26,7 +26,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.workflow }}-${{ github.event.release.tag_name ||
+  group: release-${{ github.workflow }}-${{ github.event_name }}-${{
+    github.event.action || 'manual' }}-${{ github.event.release.tag_name ||
     inputs.version || github.ref }}
   cancel-in-progress: true
 
