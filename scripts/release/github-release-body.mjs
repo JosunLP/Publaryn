@@ -28,7 +28,7 @@ function defaultDocsBaseUrl() {
     return 'https://josunlp.github.io/Publaryn';
   }
 
-  return `https://${owner.toLowerCase()}.github.io/${repo.toLowerCase()}`;
+  return `https://${owner.toLowerCase()}.github.io/${repo}`;
 }
 
 function usage() {
