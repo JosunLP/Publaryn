@@ -13405,7 +13405,7 @@ async fn test_cargo_yank_and_unyank_update_sparse_index_and_audit_log(pool: PgPo
     assert_eq!(restored_index_entry["yanked"], false);
 
     let audit_actions: Vec<String> = sqlx::query_scalar(
-        "SELECT action \
+        "SELECT action::text \
          FROM audit_logs \
          WHERE target_release_id = $1 AND action IN ('release_yank', 'release_unyank') \
          ORDER BY occurred_at ASC",
