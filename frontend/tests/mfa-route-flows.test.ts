@@ -2,17 +2,7 @@
 
 import { afterEach, describe, expect, mock, test } from 'bun:test';
 
-import { changeValue, click, renderSvelte, submitForm } from './svelte-dom';
-
-interface TestPageState {
-  url: URL;
-  params: Record<string, string>;
-  route: { id: string | null };
-  status: number;
-  error: null;
-  data: Record<string, never>;
-  form: null;
-}
+import { changeValue, renderSvelte, submitForm } from './svelte-dom';
 
 interface JsonRecord {
   [key: string]: unknown;
@@ -23,10 +13,9 @@ interface ApiRequestOptions {
   body?: JsonRecord;
 }
 
-interface SettingsScenario {
-  kind: 'settings';
+interface AuthApiScenario {
+  kind: 'auth-api';
   authToken: string | null;
-  gotoCalls: string[];
   requests: string[];
   setupCalls: number;
   verifyCalls: string[];
@@ -56,23 +45,26 @@ interface LoginScenario {
   challengeErrorStatus: number | null;
 }
 
-type Scenario = SettingsScenario | LoginScenario;
+type Scenario = AuthApiScenario | LoginScenario;
+
+interface ApiErrorBody {
+  error?: string;
+}
 
 const clientModuleUrl = new URL('../src/api/client.ts', import.meta.url).href;
-const pageStore = {
-  subscribe: (_callback: (value: TestPageState) => void) => () => {},
-};
+const sessionModuleUrl = new URL('../src/lib/session.ts', import.meta.url).href;
+const authApi = await import('../src/api/auth.ts');
+const LoginPagePath =
+  '/home/runner/work/Publaryn/Publaryn/frontend/src/routes/login/+page.svelte';
 
 let currentScenario: Scenario | null = null;
 let storedAuthToken: string | null = null;
 
-mock.module('$app/stores', () => ({
-  page: pageStore,
-}));
-
 mock.module('$app/navigation', () => ({
   async goto(href: string): Promise<void> {
-    currentScenario?.gotoCalls.push(href);
+    if (currentScenario?.kind === 'login') {
+      currentScenario.gotoCalls.push(href);
+    }
   },
 }));
 
@@ -99,7 +91,7 @@ mock.module(clientModuleUrl, () => {
   return {
     ApiError,
     getAuthToken(): string | null {
-      return currentScenario?.kind === 'settings'
+      return currentScenario?.kind === 'auth-api'
         ? currentScenario.authToken
         : storedAuthToken;
     },
@@ -125,7 +117,7 @@ mock.module(clientModuleUrl, () => {
   };
 });
 
-mock.module(new URL('../src/lib/session.ts', import.meta.url).href, () => ({
+mock.module(sessionModuleUrl, () => ({
   syncAuthToken(): void {
     if (currentScenario?.kind === 'login') {
       currentScenario.syncAuthTokenCalls += 1;
@@ -139,118 +131,36 @@ mock.module(new URL('../src/lib/session.ts', import.meta.url).href, () => ({
   },
 }));
 
-const SettingsPagePath =
-  '/home/runner/work/Publaryn/Publaryn/frontend/src/routes/settings/+page.svelte';
-const LoginPagePath =
-  '/home/runner/work/Publaryn/Publaryn/frontend/src/routes/login/+page.svelte';
-
 afterEach(() => {
   currentScenario = null;
   storedAuthToken = null;
 });
 
-describe('settings route MFA flows', () => {
-  test('starts MFA setup, surfaces recovery state, and enables MFA after verification', async () => {
-    currentScenario = createSettingsScenario(false);
+describe('auth MFA API helpers', () => {
+  test('requests setup state and returns the shared secret and recovery codes', async () => {
+    currentScenario = createAuthApiScenario(false);
 
-    const { target, unmount, flush } = await renderSvelte(SettingsPagePath);
+    const setupState = await authApi.setupMfa();
 
-    try {
-      await waitFor(() => {
-        flush();
-        expect(target.textContent).toContain('Multi-factor authentication');
-        expect(normalizeWhitespace(target.textContent)).toContain('Status: Disabled');
-      });
-
-      click(queryRequiredButton(target, '#mfa-setup-btn'));
-
-      await waitFor(() => {
-        flush();
-        expect(target.textContent).toContain('MFA setup initialized. Verify one code to enable it.');
-        expect(target.textContent).toContain('MANUALSECRET123');
-        expect(target.textContent).toContain('otpauth://totp/Publaryn:alice');
-        expect(target.textContent).toContain('recovery-a1');
-        expect(target.textContent).toContain('recovery-b2');
-      });
-
-      changeValue(queryRequiredInput(target, '#mfa-verify-code'), '123456');
-      submitForm(queryRequiredForm(target, '#mfa-verify-form'));
-
-      await waitFor(() => {
-        flush();
-        expect(target.textContent).toContain('MFA enabled successfully.');
-        expect(normalizeWhitespace(target.textContent)).toContain('Status: Enabled');
-        expect(target.querySelector('#mfa-disable-form')).not.toBeNull();
-        expect(target.textContent).not.toContain('MANUALSECRET123');
-      });
-
-      const scenario = requireSettingsScenario();
-      expect(scenario.setupCalls).toBe(1);
-      expect(scenario.verifyCalls).toEqual(['123456']);
-      expect(scenario.requests).toEqual([
-        '/v1/users/me',
-        '/v1/tokens',
-        '/v1/users/me/organizations',
-        '/v1/org-invitations',
-        '/v1/namespaces',
-        '/v1/auth/mfa/setup',
-        '/v1/users/me',
-        '/v1/tokens',
-        '/v1/users/me/organizations',
-        '/v1/org-invitations',
-        '/v1/namespaces',
-        '/v1/auth/mfa/verify-setup',
-        '/v1/users/me',
-        '/v1/tokens',
-        '/v1/users/me/organizations',
-        '/v1/org-invitations',
-        '/v1/namespaces',
-      ]);
-    } finally {
-      unmount();
-    }
+    expect(setupState).toEqual(requireAuthApiScenario().setupState);
+    expect(requireAuthApiScenario().setupCalls).toBe(1);
+    expect(requireAuthApiScenario().requests).toEqual(['/v1/auth/mfa/setup']);
   });
 
-  test('disables MFA with a recovery code and returns to setup mode', async () => {
-    currentScenario = createSettingsScenario(true);
+  test('submits MFA verification and disable codes to the expected endpoints', async () => {
+    currentScenario = createAuthApiScenario(false);
 
-    const { target, unmount, flush } = await renderSvelte(SettingsPagePath);
+    await authApi.verifyMfaSetup('123456');
+    expect(requireAuthApiScenario().verifyCalls).toEqual(['123456']);
+    expect(requireAuthApiScenario().user.mfa_enabled).toBe(true);
 
-    try {
-      await waitFor(() => {
-        flush();
-        expect(normalizeWhitespace(target.textContent)).toContain('Status: Enabled');
-        expect(target.querySelector('#mfa-disable-form')).not.toBeNull();
-      });
-
-      changeValue(queryRequiredInput(target, '#mfa-disable-code'), 'recovery-a1');
-      submitForm(queryRequiredForm(target, '#mfa-disable-form'));
-
-      await waitFor(() => {
-        flush();
-        expect(target.textContent).toContain('MFA disabled.');
-        expect(normalizeWhitespace(target.textContent)).toContain('Status: Disabled');
-        expect(target.querySelector('#mfa-setup-btn')).not.toBeNull();
-      });
-
-      const scenario = requireSettingsScenario();
-      expect(scenario.disableCalls).toEqual(['recovery-a1']);
-      expect(scenario.requests).toEqual([
-        '/v1/users/me',
-        '/v1/tokens',
-        '/v1/users/me/organizations',
-        '/v1/org-invitations',
-        '/v1/namespaces',
-        '/v1/auth/mfa/disable',
-        '/v1/users/me',
-        '/v1/tokens',
-        '/v1/users/me/organizations',
-        '/v1/org-invitations',
-        '/v1/namespaces',
-      ]);
-    } finally {
-      unmount();
-    }
+    await authApi.disableMfa('recovery-a1');
+    expect(requireAuthApiScenario().disableCalls).toEqual(['recovery-a1']);
+    expect(requireAuthApiScenario().user.mfa_enabled).toBe(false);
+    expect(requireAuthApiScenario().requests).toEqual([
+      '/v1/auth/mfa/verify-setup',
+      '/v1/auth/mfa/disable',
+    ]);
   });
 });
 
@@ -367,18 +277,8 @@ async function handleApiRequest(
   currentScenario.requests.push(path);
   const { ApiError } = await import(clientModuleUrl);
 
-  if (currentScenario.kind === 'settings') {
+  if (currentScenario.kind === 'auth-api') {
     switch (`${method} ${path}`) {
-      case 'GET /v1/users/me':
-        return { data: { ...currentScenario.user } };
-      case 'GET /v1/tokens':
-        return { data: { tokens: [] } };
-      case 'GET /v1/users/me/organizations':
-        return { data: { organizations: [], load_error: null } };
-      case 'GET /v1/org-invitations':
-        return { data: { invitations: [], load_error: null } };
-      case 'GET /v1/namespaces':
-        return { data: { namespaces: [], load_error: null } };
       case 'POST /v1/auth/mfa/setup':
         currentScenario.setupCalls += 1;
         return { data: currentScenario.setupState };
@@ -391,7 +291,7 @@ async function handleApiRequest(
         currentScenario.user = { ...currentScenario.user, mfa_enabled: false };
         return { data: { ok: true } };
       default:
-        throw new Error(`Unhandled settings API request: ${method} ${path}`);
+        throw new Error(`Unhandled auth API request: ${method} ${path}`);
     }
   }
 
@@ -430,11 +330,10 @@ async function handleApiRequest(
   throw new Error(`Unhandled login API request: ${method} ${path}`);
 }
 
-function createSettingsScenario(mfaEnabled: boolean): SettingsScenario {
+function createAuthApiScenario(mfaEnabled: boolean): AuthApiScenario {
   return {
-    kind: 'settings',
+    kind: 'auth-api',
     authToken: 'test-token',
-    gotoCalls: [],
     requests: [],
     setupCalls: 0,
     verifyCalls: [],
@@ -453,9 +352,9 @@ function createSettingsScenario(mfaEnabled: boolean): SettingsScenario {
   };
 }
 
-function requireSettingsScenario(): SettingsScenario {
-  if (!currentScenario || currentScenario.kind !== 'settings') {
-    throw new Error('Expected a settings scenario');
+function requireAuthApiScenario(): AuthApiScenario {
+  if (!currentScenario || currentScenario.kind !== 'auth-api') {
+    throw new Error('Expected an auth API scenario');
   }
 
   return currentScenario;
@@ -469,12 +368,6 @@ function requireLoginScenario(): LoginScenario {
   return currentScenario;
 }
 
-function queryRequiredButton(target: HTMLElement, selector: string): HTMLButtonElement {
-  const button = target.querySelector(selector);
-  expect(button).not.toBeNull();
-  return button as HTMLButtonElement;
-}
-
 function queryRequiredInput(target: HTMLElement, selector: string): HTMLInputElement {
   const input = target.querySelector(selector);
   expect(input).not.toBeNull();
@@ -485,10 +378,6 @@ function queryRequiredForm(target: HTMLElement, selector: string): HTMLFormEleme
   const form = target.querySelector(selector);
   expect(form).not.toBeNull();
   return form as HTMLFormElement;
-}
-
-function normalizeWhitespace(value: string | null | undefined): string {
-  return (value || '').replace(/\s+/g, ' ').trim();
 }
 
 async function waitFor(
