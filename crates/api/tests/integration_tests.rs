@@ -2025,6 +2025,25 @@ async fn get_release_id(
     .expect("release id should be queryable")
 }
 
+async fn promote_release_to_published(
+    pool: &PgPool,
+    ecosystem: &str,
+    normalized_name: &str,
+    version: &str,
+) {
+    sqlx::query(
+        "UPDATE releases SET status = 'published', updated_at = NOW() \
+         WHERE package_id = (SELECT id FROM packages WHERE ecosystem = $1 AND normalized_name = $2) \
+           AND version = $3",
+    )
+    .bind(ecosystem)
+    .bind(normalized_name)
+    .bind(version)
+    .execute(pool)
+    .await
+    .expect("release should be promoted to published for lifecycle mutations");
+}
+
 /// Build a minimal valid PyPI legacy upload multipart body (with metadata_version 2.4
 /// and sha256 digest validation) and return `(content_type, body)`.
 fn build_pypi_legacy_upload_multipart(
@@ -19354,16 +19373,7 @@ async fn test_release_lifecycle_audit_sets_target_org_id_for_org_owned_packages(
         "unexpected publish response: {publish_body}"
     );
 
-    sqlx::query(
-        "UPDATE releases SET status = 'published', updated_at = NOW() \
-         WHERE package_id = (SELECT id FROM packages WHERE ecosystem = 'npm' AND normalized_name = $1) \
-           AND version = $2",
-    )
-    .bind("acme-release-widget")
-    .bind("1.0.0")
-    .execute(&pool)
-    .await
-    .expect("release should be promoted to published for lifecycle mutations");
+    promote_release_to_published(&pool, "npm", "acme-release-widget", "1.0.0").await;
 
     let release_id = get_release_id(&pool, "npm", "acme-release-widget", "1.0.0").await;
 
@@ -19471,16 +19481,7 @@ async fn test_release_lifecycle_audit_leaves_target_org_id_null_for_personal_pac
             .await;
     assert_eq!(status, StatusCode::OK);
 
-    sqlx::query(
-        "UPDATE releases SET status = 'published', updated_at = NOW() \
-         WHERE package_id = (SELECT id FROM packages WHERE ecosystem = 'npm' AND normalized_name = $1) \
-           AND version = $2",
-    )
-    .bind("personal-release-widget")
-    .bind("1.0.0")
-    .execute(&pool)
-    .await
-    .expect("release should be promoted to published for lifecycle mutations");
+    promote_release_to_published(&pool, "npm", "personal-release-widget", "1.0.0").await;
 
     let release_id = get_release_id(&pool, "npm", "personal-release-widget", "1.0.0").await;
 
@@ -19589,16 +19590,7 @@ async fn test_org_audit_includes_release_lifecycle_events_for_org_owned_packages
             .await;
     assert_eq!(status, StatusCode::OK);
 
-    sqlx::query(
-        "UPDATE releases SET status = 'published', updated_at = NOW() \
-         WHERE package_id = (SELECT id FROM packages WHERE ecosystem = 'npm' AND normalized_name = $1) \
-           AND version = $2",
-    )
-    .bind("acme-lifecycle-widget")
-    .bind("1.0.0")
-    .execute(&pool)
-    .await
-    .expect("release should be promoted to published for lifecycle mutations");
+    promote_release_to_published(&pool, "npm", "acme-lifecycle-widget", "1.0.0").await;
 
     let (status, _) = yank_release_for_package(
         &app,
