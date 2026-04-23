@@ -14093,7 +14093,7 @@ async fn test_native_cargo_search_respects_private_visibility_and_team_access(po
         .to_owned();
 
     let (status, bob_token_body) =
-        create_personal_access_token(&app, &bob_jwt, "bob-cargo-read", &["packages:write"]).await;
+        create_personal_access_token(&app, &bob_jwt, "bob-cargo-token", &["packages:write"]).await;
     assert_eq!(
         status,
         StatusCode::CREATED,
@@ -14105,7 +14105,7 @@ async fn test_native_cargo_search_respects_private_visibility_and_team_access(po
         .to_owned();
 
     let (status, carol_token_body) =
-        create_personal_access_token(&app, &carol_jwt, "carol-cargo-read", &["packages:write"])
+        create_personal_access_token(&app, &carol_jwt, "carol-cargo-token", &["packages:write"])
             .await;
     assert_eq!(
         status,
