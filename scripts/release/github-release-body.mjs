@@ -15,7 +15,14 @@ function defaultDocsBaseUrl() {
     return 'https://josunlp.github.io/Publaryn';
   }
 
-  const [owner, repo] = repository.split('/', 2);
+  const separatorIndex = repository.indexOf('/');
+
+  if (separatorIndex === -1) {
+    return 'https://josunlp.github.io/Publaryn';
+  }
+
+  const owner = repository.slice(0, separatorIndex);
+  const repo = repository.slice(separatorIndex + 1);
 
   if (!owner || !repo) {
     return 'https://josunlp.github.io/Publaryn';
