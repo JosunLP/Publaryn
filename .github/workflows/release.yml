@@ -381,7 +381,7 @@ jobs:
   build-release-image:
     name: Build and publish release image
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 240
     needs:
       - prepare-release
       - release-contract
