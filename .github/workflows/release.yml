@@ -74,6 +74,7 @@ jobs:
             fi
           fi
 
+          # Bash regex uses ERE, so it mirrors scripts/release/semver.mjs without JS non-capturing groups.
           if [[ ! "$tag" =~ ^v([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?)$ ]]; then
             echo "Unsupported release tag or version: $tag" >&2
             exit 1

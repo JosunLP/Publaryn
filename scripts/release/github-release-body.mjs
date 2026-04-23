@@ -2,14 +2,13 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { semverPattern } from './semver.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const repoRoot = join(__dirname, '..', '..');
 const docsRoot = join(repoRoot, 'docs');
 const defaultDocsBaseUrl = 'https://josunlp.github.io/Publaryn';
-const semverPattern =
-  /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
 function usage() {
   console.error(
