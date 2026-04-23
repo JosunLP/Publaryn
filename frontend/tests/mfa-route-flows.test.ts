@@ -53,7 +53,8 @@ interface ApiErrorBody {
 
 const clientModuleUrl = new URL('../src/api/client.ts', import.meta.url).href;
 const sessionModuleUrl = new URL('../src/lib/session.ts', import.meta.url).href;
-const authApi = await import('../src/api/auth.ts');
+const authModuleUrl = new URL('../src/api/auth.ts', import.meta.url).href;
+const authApi = (await import(authModuleUrl)) as typeof import('../src/api/auth');
 const LoginPagePath =
   '/home/runner/work/Publaryn/Publaryn/frontend/src/routes/login/+page.svelte';
 
@@ -315,7 +316,7 @@ async function handleApiRequest(
     });
 
     if (currentScenario.challengeErrorStatus != null) {
-      throw new ApiError<ApiErrorBody>(currentScenario.challengeErrorStatus, {
+      throw new ApiError(currentScenario.challengeErrorStatus, {
         error: 'Invalid challenge',
       });
     }
