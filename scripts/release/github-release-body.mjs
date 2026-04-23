@@ -7,25 +7,26 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const repoRoot = join(__dirname, '..', '..');
 const docsRoot = join(repoRoot, 'docs');
+const fallbackDocsBaseUrl = 'https://josunlp.github.io/Publaryn';
 
 function defaultDocsBaseUrl() {
   const repository = process.env.GITHUB_REPOSITORY;
 
   if (!repository) {
-    return 'https://josunlp.github.io/Publaryn';
+    return fallbackDocsBaseUrl;
   }
 
   const separatorIndex = repository.indexOf('/');
 
   if (separatorIndex === -1) {
-    return 'https://josunlp.github.io/Publaryn';
+    return fallbackDocsBaseUrl;
   }
 
   const owner = repository.slice(0, separatorIndex);
   const repo = repository.slice(separatorIndex + 1);
 
   if (!owner || !repo) {
-    return 'https://josunlp.github.io/Publaryn';
+    return fallbackDocsBaseUrl;
   }
 
   return `https://${owner.toLowerCase()}.github.io/${repo}`;
