@@ -970,17 +970,11 @@ mod tests {
 
         sqlx::query(
             "INSERT INTO org_memberships (id, org_id, user_id, role, invited_by, joined_at) \
-             VALUES ($1, $4, $2, 'owner', NULL, NOW()), \
-                    ($3, $4, $5, 'viewer', NULL, NOW()), \
-                    ($6, $4, $7, 'viewer', NULL, NOW())",
+             VALUES ($1, $2, $3, 'owner', NULL, NOW())",
         )
         .bind(Uuid::new_v4())
-        .bind(owner_id)
-        .bind(Uuid::new_v4())
         .bind(org_id)
-        .bind(package_grantee_id)
-        .bind(Uuid::new_v4())
-        .bind(repository_grantee_id)
+        .bind(owner_id)
         .execute(&pool)
         .await
         .expect("memberships should insert");

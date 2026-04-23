@@ -9352,6 +9352,11 @@ async fn test_team_repository_admin_permission_allows_repository_updates_and_tea
         "https://github.com/acme/source-packages"
     );
 
+    sqlx::query("UPDATE users SET mfa_enabled = true WHERE username = 'alice'")
+        .execute(&pool)
+        .await
+        .expect("should enable MFA for alice");
+
     let req = Request::builder()
         .method(Method::DELETE)
         .uri("/v1/orgs/source-org/teams/repository-admins")
@@ -12951,6 +12956,7 @@ async fn test_cargo_publish_populates_sparse_index_and_supports_conditional_fetc
     let index_req = Request::builder()
         .method(Method::GET)
         .uri("/cargo/index/de/mo/demo_widget")
+        .header(header::AUTHORIZATION, cargo_token.as_str())
         .body(Body::empty())
         .unwrap();
     let index_resp = app.clone().oneshot(index_req).await.unwrap();
@@ -12993,6 +12999,7 @@ async fn test_cargo_publish_populates_sparse_index_and_supports_conditional_fetc
     let conditional_req = Request::builder()
         .method(Method::GET)
         .uri("/cargo/index/de/mo/demo_widget")
+        .header(header::AUTHORIZATION, cargo_token.as_str())
         .header("if-none-match", &etag)
         .body(Body::empty())
         .unwrap();
@@ -13010,6 +13017,7 @@ async fn test_cargo_publish_populates_sparse_index_and_supports_conditional_fetc
     let download_req = Request::builder()
         .method(Method::GET)
         .uri("/cargo/api/v1/crates/demo_widget/0.1.0/download")
+        .header(header::AUTHORIZATION, cargo_token.as_str())
         .body(Body::empty())
         .unwrap();
     let download_resp = app.clone().oneshot(download_req).await.unwrap();
@@ -13668,7 +13676,12 @@ async fn test_native_npm_private_reads_allow_team_package_and_repository_grants(
     let (status, anonymous_headers, anonymous_tarball) =
         download_npm_tarball(&app, None, "secret-team-widget", tarball_filename).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-    assert!(anonymous_headers.get(header::CONTENT_TYPE).is_none());
+    assert_eq!(
+        anonymous_headers
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("application/json")
+    );
     assert_eq!(anonymous_tarball, b"{\"error\":\"Package not found\"}");
 
     let (status, bob_packument) =
@@ -14038,7 +14051,7 @@ async fn test_native_cargo_search_respects_private_visibility_and_team_access(po
         "source-org",
         "crate-search",
         "source-crates",
-        &["read"],
+        &["read_private"],
     )
     .await;
     assert_eq!(
@@ -19341,6 +19354,17 @@ async fn test_release_lifecycle_audit_sets_target_org_id_for_org_owned_packages(
         "unexpected publish response: {publish_body}"
     );
 
+    sqlx::query(
+        "UPDATE releases SET status = 'published', updated_at = NOW() \
+         WHERE package_id = (SELECT id FROM packages WHERE ecosystem = 'npm' AND normalized_name = $1) \
+           AND version = $2",
+    )
+    .bind("acme-release-widget")
+    .bind("1.0.0")
+    .execute(&pool)
+    .await
+    .expect("release should be promoted to published for lifecycle mutations");
+
     let release_id = get_release_id(&pool, "npm", "acme-release-widget", "1.0.0").await;
 
     let (status, _) = yank_release_for_package(
@@ -19446,6 +19470,17 @@ async fn test_release_lifecycle_audit_leaves_target_org_id_null_for_personal_pac
         publish_release_for_package(&app, &owner_jwt, "npm", "personal-release-widget", "1.0.0")
             .await;
     assert_eq!(status, StatusCode::OK);
+
+    sqlx::query(
+        "UPDATE releases SET status = 'published', updated_at = NOW() \
+         WHERE package_id = (SELECT id FROM packages WHERE ecosystem = 'npm' AND normalized_name = $1) \
+           AND version = $2",
+    )
+    .bind("personal-release-widget")
+    .bind("1.0.0")
+    .execute(&pool)
+    .await
+    .expect("release should be promoted to published for lifecycle mutations");
 
     let release_id = get_release_id(&pool, "npm", "personal-release-widget", "1.0.0").await;
 
@@ -19553,6 +19588,17 @@ async fn test_org_audit_includes_release_lifecycle_events_for_org_owned_packages
         publish_release_for_package(&app, &owner_jwt, "npm", "acme-lifecycle-widget", "1.0.0")
             .await;
     assert_eq!(status, StatusCode::OK);
+
+    sqlx::query(
+        "UPDATE releases SET status = 'published', updated_at = NOW() \
+         WHERE package_id = (SELECT id FROM packages WHERE ecosystem = 'npm' AND normalized_name = $1) \
+           AND version = $2",
+    )
+    .bind("acme-lifecycle-widget")
+    .bind("1.0.0")
+    .execute(&pool)
+    .await
+    .expect("release should be promoted to published for lifecycle mutations");
 
     let (status, _) = yank_release_for_package(
         &app,
