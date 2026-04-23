@@ -61,6 +61,10 @@ function docsPathToSitePath(relativeDocPath) {
   return normalized ? `/${normalized}` : '/';
 }
 
+function isWhitespace(char) {
+  return /\s/.test(char);
+}
+
 function absolutizeDocsLink(target, sourceDocPath, docsBaseUrl) {
   if (/^(?:[a-z]+:|#)/i.test(target)) {
     return target;
@@ -179,7 +183,7 @@ function findClosingParen(markdown, openParenIndex) {
 function splitMarkdownLinkTarget(content) {
   let index = 0;
 
-  while (index < content.length && /\s/.test(content[index])) {
+  while (index < content.length && isWhitespace(content[index])) {
     index += 1;
   }
 
@@ -233,7 +237,7 @@ function splitMarkdownLinkTarget(content) {
       continue;
     }
 
-    if (/\s/.test(char) && depth === 0) {
+    if (isWhitespace(char) && depth === 0) {
       break;
     }
 
@@ -242,7 +246,10 @@ function splitMarkdownLinkTarget(content) {
       continue;
     }
 
-    if (char === ')' && depth > 0) {
+    if (char === ')') {
+      if (depth === 0) {
+        break;
+      }
       depth -= 1;
     }
   }
