@@ -1,6 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
-import path from 'node:path';
-import { dirname, join } from 'node:path';
+import path, { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { semverPattern } from './semver.mjs';
 
