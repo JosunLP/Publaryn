@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const repoRoot = join(__dirname, '..', '..');
+const semverPattern =
+  /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
 function usage() {
   console.error(
@@ -23,7 +25,7 @@ function parseArgs() {
 
   const version = args[versionFlagIndex + 1];
 
-  if (!version || !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)) {
+  if (!version || !semverPattern.test(version)) {
     console.error(`Invalid version: ${version ?? '<missing>'}`);
     process.exit(1);
   }
@@ -70,8 +72,11 @@ function main() {
     throw new Error(`Release notes still marked as draft: docs/releases/${version}.md`);
   }
 
-  if (changelog.includes(`## [${version}] - Planned`)) {
-    throw new Error(`Changelog entry for ${version} is still marked as planned.`);
+  const plannedChangelogMarker = `## [${version}] - Planned`;
+  if (changelog.includes(plannedChangelogMarker)) {
+    throw new Error(
+      `Changelog entry still marked as planned: CHANGELOG.md contains "${plannedChangelogMarker}".`
+    );
   }
 
   console.log(`Release artifacts for ${version} are present.`);

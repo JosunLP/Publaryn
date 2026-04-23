@@ -23,7 +23,7 @@ on:
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.workflow }}-${{ github.event.release.tag_name ||
@@ -74,7 +74,7 @@ jobs:
             fi
           fi
 
-          if [[ ! "$tag" =~ ^v([0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?)$ ]]; then
+          if [[ ! "$tag" =~ ^v([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?)$ ]]; then
             echo "Unsupported release tag or version: $tag" >&2
             exit 1
           fi
@@ -364,15 +364,23 @@ jobs:
 
   build-release-image:
     name: Build and publish release image
-    if: needs.prepare-release.outputs.should_push == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     needs:
       - prepare-release
       - release-contract
+      - sync-release-notes
     permissions:
       contents: read
       packages: write
+    if: >-
+      ${{
+        always() &&
+        needs.prepare-release.result == 'success' &&
+        needs.release-contract.result == 'success' &&
+        needs.prepare-release.outputs.should_push == 'true' &&
+        (github.event_name != 'release' || needs.sync-release-notes.result == 'success')
+      }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v6

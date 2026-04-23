@@ -8,6 +8,8 @@ const __dirname = dirname(__filename);
 const repoRoot = join(__dirname, '..', '..');
 const docsRoot = join(repoRoot, 'docs');
 const defaultDocsBaseUrl = 'https://josunlp.github.io/Publaryn';
+const semverPattern =
+  /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
 function usage() {
   console.error(
@@ -26,7 +28,7 @@ function parseArgs() {
   }
 
   const version = args[versionFlagIndex + 1];
-  if (!version || !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)) {
+  if (!version || !semverPattern.test(version)) {
     console.error(`Invalid version: ${version ?? '<missing>'}`);
     process.exit(1);
   }
