@@ -22,3 +22,6 @@ bytes = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 sqlx = { workspace = true }
+
+[dev-dependencies]
+tower = { workspace = true }

@@ -193,6 +193,115 @@ async fn publish_cargo_crate(
     (status, body)
 }
 
+/// Yank a Cargo crate version through the native adapter.
+async fn yank_cargo_crate_version(
+    app: &axum::Router,
+    token: &str,
+    name: &str,
+    version: &str,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::DELETE)
+        .uri(format!(
+            "/cargo/api/v1/crates/{}/{}/yank",
+            enc_path_segment(name),
+            enc_path_segment(version)
+        ))
+        .header(header::AUTHORIZATION, token)
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// Restore a yanked Cargo crate version through the native adapter.
+async fn unyank_cargo_crate_version(
+    app: &axum::Router,
+    token: &str,
+    name: &str,
+    version: &str,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::PUT)
+        .uri(format!(
+            "/cargo/api/v1/crates/{}/{}/unyank",
+            enc_path_segment(name),
+            enc_path_segment(version)
+        ))
+        .header(header::AUTHORIZATION, token)
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// List Cargo crate owners through the native compatibility endpoint.
+async fn list_cargo_crate_owners(
+    app: &axum::Router,
+    token: &str,
+    name: &str,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/cargo/api/v1/crates/{}/owners", enc_path_segment(name)))
+        .header(header::AUTHORIZATION, token)
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// Request Cargo crate owner additions through the native compatibility endpoint.
+async fn add_cargo_crate_owners(
+    app: &axum::Router,
+    token: &str,
+    name: &str,
+    users: &[&str],
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::PUT)
+        .uri(format!("/cargo/api/v1/crates/{}/owners", enc_path_segment(name)))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, token)
+        .body(Body::from(json!({ "users": users }).to_string()))
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// Request Cargo crate owner removals through the native compatibility endpoint.
+async fn remove_cargo_crate_owners(
+    app: &axum::Router,
+    token: &str,
+    name: &str,
+    users: &[&str],
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::DELETE)
+        .uri(format!("/cargo/api/v1/crates/{}/owners", enc_path_segment(name)))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, token)
+        .body(Body::from(json!({ "users": users }).to_string()))
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
 /// Create an organization via POST /v1/orgs and return the response.
 async fn create_org(app: &axum::Router, jwt: &str, name: &str, slug: &str) -> (StatusCode, Value) {
     let req = Request::builder()
@@ -13148,6 +13257,265 @@ async fn test_cargo_private_sparse_index_and_download_require_authentication(poo
     assert_eq!(
         body_bytes(authenticated_download_resp).await,
         b"private-cargo-crate"
+    );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_cargo_yank_and_unyank_update_sparse_index_and_audit_log(pool: PgPool) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, repository_body) = create_repository(
+        &app,
+        &alice_jwt,
+        "Alice Cargo Packages",
+        "alice-cargo-packages",
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, token_body) =
+        create_personal_access_token(&app, &alice_jwt, "cargo-yank", &["packages:write"]).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
+    let cargo_token = token_body["token"]
+        .as_str()
+        .expect("cargo token should be returned")
+        .to_owned();
+
+    let crate_bytes = b"cargo-yankable-crate";
+    let payload = build_cargo_publish_payload(
+        json!({
+            "name": "toggle_widget",
+            "vers": "0.1.0",
+            "deps": [],
+            "features": {},
+            "authors": ["Alice <alice@test.dev>"],
+            "description": "Cargo yank and unyank coverage",
+            "license": "MIT"
+        }),
+        crate_bytes,
+    );
+
+    let (status, publish_body) = publish_cargo_crate(&app, &cargo_token, payload).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected cargo publish response: {publish_body}"
+    );
+
+    let release_id = get_release_id(&pool, "cargo", "toggle_widget", "0.1.0").await;
+
+    let (status, yank_body) =
+        yank_cargo_crate_version(&app, &cargo_token, "toggle_widget", "0.1.0").await;
+    assert_eq!(status, StatusCode::OK, "unexpected yank response: {yank_body}");
+    assert_eq!(yank_body, json!({ "ok": true }));
+
+    let release_state_after_yank: (String, bool) = sqlx::query_as(
+        "SELECT status::text, is_yanked FROM releases WHERE id = $1",
+    )
+    .bind(release_id)
+    .fetch_one(&pool)
+    .await
+    .expect("cargo release should be queryable after yank");
+    assert_eq!(release_state_after_yank, ("yanked".to_owned(), true));
+
+    let yanked_index_req = Request::builder()
+        .method(Method::GET)
+        .uri("/cargo/index/to/gg/toggle_widget")
+        .header(header::AUTHORIZATION, cargo_token.as_str())
+        .body(Body::empty())
+        .unwrap();
+    let yanked_index_resp = app.clone().oneshot(yanked_index_req).await.unwrap();
+    assert_eq!(yanked_index_resp.status(), StatusCode::OK);
+    let yanked_index_body = body_text(yanked_index_resp).await;
+    let yanked_index_entry: Value = serde_json::from_str(
+        yanked_index_body
+            .lines()
+            .next()
+            .expect("yanked sparse index entry should exist"),
+    )
+    .expect("yanked sparse index entry should be valid JSON");
+    assert_eq!(yanked_index_entry["yanked"], true);
+
+    let yanked_download_req = Request::builder()
+        .method(Method::GET)
+        .uri("/cargo/api/v1/crates/toggle_widget/0.1.0/download")
+        .header(header::AUTHORIZATION, cargo_token.as_str())
+        .body(Body::empty())
+        .unwrap();
+    let yanked_download_resp = app.clone().oneshot(yanked_download_req).await.unwrap();
+    assert_eq!(yanked_download_resp.status(), StatusCode::OK);
+    assert_eq!(body_bytes(yanked_download_resp).await, crate_bytes);
+
+    let (status, unyank_body) =
+        unyank_cargo_crate_version(&app, &cargo_token, "toggle_widget", "0.1.0").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected unyank response: {unyank_body}"
+    );
+    assert_eq!(unyank_body, json!({ "ok": true }));
+
+    let release_state_after_unyank: (String, bool) = sqlx::query_as(
+        "SELECT status::text, is_yanked FROM releases WHERE id = $1",
+    )
+    .bind(release_id)
+    .fetch_one(&pool)
+    .await
+    .expect("cargo release should be queryable after unyank");
+    assert_eq!(release_state_after_unyank, ("published".to_owned(), false));
+
+    let restored_index_req = Request::builder()
+        .method(Method::GET)
+        .uri("/cargo/index/to/gg/toggle_widget")
+        .header(header::AUTHORIZATION, cargo_token.as_str())
+        .body(Body::empty())
+        .unwrap();
+    let restored_index_resp = app.clone().oneshot(restored_index_req).await.unwrap();
+    assert_eq!(restored_index_resp.status(), StatusCode::OK);
+    let restored_index_body = body_text(restored_index_resp).await;
+    let restored_index_entry: Value = serde_json::from_str(
+        restored_index_body
+            .lines()
+            .next()
+            .expect("restored sparse index entry should exist"),
+    )
+    .expect("restored sparse index entry should be valid JSON");
+    assert_eq!(restored_index_entry["yanked"], false);
+
+    let audit_actions: Vec<String> = sqlx::query_scalar(
+        "SELECT action \
+         FROM audit_logs \
+         WHERE target_release_id = $1 AND action IN ('release_yank', 'release_unyank') \
+         ORDER BY occurred_at ASC",
+    )
+    .bind(release_id)
+    .fetch_all(&pool)
+    .await
+    .expect("cargo yank audit actions should be queryable");
+    assert_eq!(
+        audit_actions,
+        vec!["release_yank".to_owned(), "release_unyank".to_owned()]
+    );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_cargo_owner_endpoints_list_org_admins_and_acknowledge_mutations(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &alice_jwt, "Acme Cargo", "acme-cargo").await;
+    assert_eq!(status, StatusCode::CREATED, "{org_body}");
+    let org_id = org_body["id"]
+        .as_str()
+        .expect("organization id should be returned")
+        .to_owned();
+
+    let (status, add_member_body) = add_member(&app, &alice_jwt, "acme-cargo", "bob", "admin").await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected member add response: {add_member_body}"
+    );
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Acme Cargo Packages",
+        "acme-cargo-packages",
+        Some(&org_id),
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "cargo",
+        "org_widget",
+        "acme-cargo-packages",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let (status, token_body) =
+        create_personal_access_token(&app, &alice_jwt, "cargo-owners", &["packages:write"]).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
+    let cargo_token = token_body["token"]
+        .as_str()
+        .expect("cargo token should be returned")
+        .to_owned();
+
+    let (status, owners_body) = list_cargo_crate_owners(&app, &cargo_token, "org_widget").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected cargo owners response: {owners_body}"
+    );
+    let owners = owners_body["users"]
+        .as_array()
+        .expect("cargo owners response should include a users array");
+    let owner_logins = owners
+        .iter()
+        .filter_map(|entry| entry["login"].as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(owner_logins, vec!["alice", "bob"]);
+
+    let (status, add_owners_body) =
+        add_cargo_crate_owners(&app, &cargo_token, "org_widget", &["carol", "dave"]).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected cargo add owners response: {add_owners_body}"
+    );
+    assert_eq!(add_owners_body["ok"], true);
+    assert!(
+        add_owners_body["msg"]
+            .as_str()
+            .expect("cargo add owners response should include a message")
+            .contains("Requested users: [\"carol\", \"dave\"]")
+    );
+
+    let (status, remove_owners_body) =
+        remove_cargo_crate_owners(&app, &cargo_token, "org_widget", &["alice"]).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected cargo remove owners response: {remove_owners_body}"
+    );
+    assert_eq!(remove_owners_body["ok"], true);
+    assert!(
+        remove_owners_body["msg"]
+            .as_str()
+            .expect("cargo remove owners response should include a message")
+            .contains("Requested removal: [\"alice\"]")
     );
 }
 
