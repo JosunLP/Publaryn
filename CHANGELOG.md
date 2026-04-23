@@ -7,9 +7,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
-- Continue release hardening for the 1.0.0 baseline.
+- Post-1.0 release follow-up work.
 
-## [1.0.0] - Planned
+## [1.0.0] - 2026-04-23
 
 ### Added
 

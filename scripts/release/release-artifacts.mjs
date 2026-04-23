@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { semverPattern } from './semver.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -23,7 +24,7 @@ function parseArgs() {
 
   const version = args[versionFlagIndex + 1];
 
-  if (!version || !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)) {
+  if (!version || !semverPattern.test(version)) {
     console.error(`Invalid version: ${version ?? '<missing>'}`);
     process.exit(1);
   }
@@ -65,6 +66,17 @@ function main() {
     '## Explicitly not part of',
     'release notes unsupported section'
   );
+
+  if (releaseNotes.includes('(Draft)')) {
+    throw new Error(`Release notes still marked as draft: docs/releases/${version}.md`);
+  }
+
+  const plannedChangelogMarker = `## [${version}] - Planned`;
+  if (changelog.includes(plannedChangelogMarker)) {
+    throw new Error(
+      `Changelog entry still marked as planned: CHANGELOG.md contains "${plannedChangelogMarker}".`
+    );
+  }
 
   console.log(`Release artifacts for ${version} are present.`);
 }

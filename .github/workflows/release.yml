@@ -74,7 +74,8 @@ jobs:
             fi
           fi
 
-          if [[ ! "$tag" =~ ^v([0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?)$ ]]; then
+          # Bash regex uses ERE, so it mirrors scripts/release/semver.mjs without JS non-capturing groups.
+          if [[ ! "$tag" =~ ^v([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?)$ ]]; then
             echo "Unsupported release tag or version: $tag" >&2
             exit 1
           fi
@@ -137,6 +138,43 @@ jobs:
       - name: Verify release artifacts
         run: bun scripts/release/release-artifacts.mjs --version ${{
           needs.prepare-release.outputs.version }}
+
+  sync-release-notes:
+    name: Sync GitHub release notes from docs
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs:
+      - prepare-release
+      - release-contract
+    permissions:
+      contents: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.12
+
+      - name: Render release body from docs
+        run: bun scripts/release/github-release-body.mjs --version ${{
+          needs.prepare-release.outputs.version }} > /tmp/github-release-body.md
+
+      - name: Update GitHub release body
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('node:fs');
+            const body = fs.readFileSync('/tmp/github-release-body.md', 'utf8');
+
+            await github.rest.repos.updateRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: context.payload.release.id,
+              body,
+            });
 
   rust-format-and-lint:
     name: Rust format & lint
@@ -327,15 +365,23 @@ jobs:
 
   build-release-image:
     name: Build and publish release image
-    if: needs.prepare-release.outputs.should_push == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     needs:
       - prepare-release
       - release-contract
+      - sync-release-notes
     permissions:
       contents: read
       packages: write
+    if: >-
+      ${{
+        always() &&
+        needs.prepare-release.result == 'success' &&
+        needs.release-contract.result == 'success' &&
+        needs.prepare-release.outputs.should_push == 'true' &&
+        (github.event_name != 'release' || needs.sync-release-notes.result == 'success')
+      }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
