@@ -1640,11 +1640,11 @@ mod tests {
             _content_type: String,
             _bytes: Bytes,
         ) -> Result<(), Error> {
-            unreachable!("artifact_put should not be called in cargo search route tests")
+            unreachable!("artifact_put should not be called in these adapter route tests")
         }
 
         async fn artifact_get(&self, _key: &str) -> Result<Option<StoredObject>, Error> {
-            unreachable!("artifact_get should not be called in cargo search route tests")
+            unreachable!("artifact_get should not be called in these adapter route tests")
         }
 
         fn base_url(&self) -> &str {
@@ -1782,9 +1782,12 @@ mod tests {
             .unwrap();
         let response = router.clone().oneshot(invalid_auth_request).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        let body: serde_json::Value =
-            serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 16 * 1024).await.unwrap())
-                .expect("cargo search response should be valid JSON");
+        let body: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), 16 * 1024)
+                .await
+                .unwrap(),
+        )
+        .expect("cargo search response should be valid JSON");
         assert_eq!(body["crates"][0]["name"], "public_widget");
         assert_eq!(body["crates"][0]["max_version"], "1.0.0");
 
@@ -1811,10 +1814,16 @@ mod tests {
             .unwrap();
         let response = router.clone().oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        let body: serde_json::Value =
-            serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 16 * 1024).await.unwrap())
-                .expect("cargo search fallback response should be valid JSON");
-        assert_eq!(body, serde_json::json!({ "crates": [], "meta": { "total": 0 } }));
+        let body: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), 16 * 1024)
+                .await
+                .unwrap(),
+        )
+        .expect("cargo search fallback response should be valid JSON");
+        assert_eq!(
+            body,
+            serde_json::json!({ "crates": [], "meta": { "total": 0 } })
+        );
 
         assert_eq!(
             state.search_calls(),
