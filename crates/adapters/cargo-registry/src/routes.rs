@@ -1699,9 +1699,12 @@ mod tests {
             .unwrap();
         let anonymous_response = router.clone().oneshot(anonymous_request).await.unwrap();
         assert_eq!(anonymous_response.status(), StatusCode::OK);
-        let anonymous_body: serde_json::Value =
-            serde_json::from_slice(&axum::body::to_bytes(anonymous_response.into_body(), 16 * 1024).await.unwrap())
-                .expect("anonymous cargo search response should be valid JSON");
+        let anonymous_body: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(anonymous_response.into_body(), 16 * 1024)
+                .await
+                .unwrap(),
+        )
+        .expect("anonymous cargo search response should be valid JSON");
         assert_eq!(anonymous_body["crates"][0]["name"], "public_widget");
         assert_eq!(anonymous_body["meta"]["total"], 1);
 
@@ -1722,11 +1725,7 @@ mod tests {
             .header(AUTHORIZATION, jwt)
             .body(Body::empty())
             .unwrap();
-        let authenticated_response = router
-            .clone()
-            .oneshot(authenticated_request)
-            .await
-            .unwrap();
+        let authenticated_response = router.clone().oneshot(authenticated_request).await.unwrap();
         assert_eq!(authenticated_response.status(), StatusCode::OK);
         let authenticated_body: serde_json::Value = serde_json::from_slice(
             &axum::body::to_bytes(authenticated_response.into_body(), 16 * 1024)

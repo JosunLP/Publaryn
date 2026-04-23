@@ -249,7 +249,10 @@ async fn list_cargo_crate_owners(
 ) -> (StatusCode, Value) {
     let req = Request::builder()
         .method(Method::GET)
-        .uri(format!("/cargo/api/v1/crates/{}/owners", enc_path_segment(name)))
+        .uri(format!(
+            "/cargo/api/v1/crates/{}/owners",
+            enc_path_segment(name)
+        ))
         .header(header::AUTHORIZATION, token)
         .body(Body::empty())
         .unwrap();
@@ -269,7 +272,10 @@ async fn add_cargo_crate_owners(
 ) -> (StatusCode, Value) {
     let req = Request::builder()
         .method(Method::PUT)
-        .uri(format!("/cargo/api/v1/crates/{}/owners", enc_path_segment(name)))
+        .uri(format!(
+            "/cargo/api/v1/crates/{}/owners",
+            enc_path_segment(name)
+        ))
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::AUTHORIZATION, token)
         .body(Body::from(json!({ "users": users }).to_string()))
@@ -290,7 +296,10 @@ async fn remove_cargo_crate_owners(
 ) -> (StatusCode, Value) {
     let req = Request::builder()
         .method(Method::DELETE)
-        .uri(format!("/cargo/api/v1/crates/{}/owners", enc_path_segment(name)))
+        .uri(format!(
+            "/cargo/api/v1/crates/{}/owners",
+            enc_path_segment(name)
+        ))
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::AUTHORIZATION, token)
         .body(Body::from(json!({ "users": users }).to_string()))
@@ -13317,16 +13326,19 @@ async fn test_cargo_yank_and_unyank_update_sparse_index_and_audit_log(pool: PgPo
 
     let (status, yank_body) =
         yank_cargo_crate_version(&app, &cargo_token, "toggle_widget", "0.1.0").await;
-    assert_eq!(status, StatusCode::OK, "unexpected yank response: {yank_body}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected yank response: {yank_body}"
+    );
     assert_eq!(yank_body, json!({ "ok": true }));
 
-    let release_state_after_yank: (String, bool) = sqlx::query_as(
-        "SELECT status::text, is_yanked FROM releases WHERE id = $1",
-    )
-    .bind(release_id)
-    .fetch_one(&pool)
-    .await
-    .expect("cargo release should be queryable after yank");
+    let release_state_after_yank: (String, bool) =
+        sqlx::query_as("SELECT status::text, is_yanked FROM releases WHERE id = $1")
+            .bind(release_id)
+            .fetch_one(&pool)
+            .await
+            .expect("cargo release should be queryable after yank");
     assert_eq!(release_state_after_yank, ("yanked".to_owned(), true));
 
     let yanked_index_req = Request::builder()
@@ -13366,13 +13378,12 @@ async fn test_cargo_yank_and_unyank_update_sparse_index_and_audit_log(pool: PgPo
     );
     assert_eq!(unyank_body, json!({ "ok": true }));
 
-    let release_state_after_unyank: (String, bool) = sqlx::query_as(
-        "SELECT status::text, is_yanked FROM releases WHERE id = $1",
-    )
-    .bind(release_id)
-    .fetch_one(&pool)
-    .await
-    .expect("cargo release should be queryable after unyank");
+    let release_state_after_unyank: (String, bool) =
+        sqlx::query_as("SELECT status::text, is_yanked FROM releases WHERE id = $1")
+            .bind(release_id)
+            .fetch_one(&pool)
+            .await
+            .expect("cargo release should be queryable after unyank");
     assert_eq!(release_state_after_unyank, ("published".to_owned(), false));
 
     let restored_index_req = Request::builder()
@@ -13423,7 +13434,8 @@ async fn test_cargo_owner_endpoints_list_org_admins_and_acknowledge_mutations(po
         .expect("organization id should be returned")
         .to_owned();
 
-    let (status, add_member_body) = add_member(&app, &alice_jwt, "acme-cargo", "bob", "admin").await;
+    let (status, add_member_body) =
+        add_org_member(&app, &alice_jwt, "acme-cargo", "bob", "admin").await;
     assert_eq!(
         status,
         StatusCode::CREATED,
@@ -13496,12 +13508,10 @@ async fn test_cargo_owner_endpoints_list_org_admins_and_acknowledge_mutations(po
         "unexpected cargo add owners response: {add_owners_body}"
     );
     assert_eq!(add_owners_body["ok"], true);
-    assert!(
-        add_owners_body["msg"]
-            .as_str()
-            .expect("cargo add owners response should include a message")
-            .contains("Requested users: [\"carol\", \"dave\"]")
-    );
+    assert!(add_owners_body["msg"]
+        .as_str()
+        .expect("cargo add owners response should include a message")
+        .contains("Requested users: [\"carol\", \"dave\"]"));
 
     let (status, remove_owners_body) =
         remove_cargo_crate_owners(&app, &cargo_token, "org_widget", &["alice"]).await;
@@ -13511,12 +13521,10 @@ async fn test_cargo_owner_endpoints_list_org_admins_and_acknowledge_mutations(po
         "unexpected cargo remove owners response: {remove_owners_body}"
     );
     assert_eq!(remove_owners_body["ok"], true);
-    assert!(
-        remove_owners_body["msg"]
-            .as_str()
-            .expect("cargo remove owners response should include a message")
-            .contains("Requested removal: [\"alice\"]")
-    );
+    assert!(remove_owners_body["msg"]
+        .as_str()
+        .expect("cargo remove owners response should include a message")
+        .contains("Requested removal: [\"alice\"]"));
 }
 
 #[sqlx::test(migrations = "../../migrations")]
