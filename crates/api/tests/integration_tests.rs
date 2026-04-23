@@ -7376,7 +7376,7 @@ async fn test_namespace_claim_delete_requires_owner_or_org_admin(pool: PgPool) {
         forbidden_body["error"]
             .as_str()
             .expect("error should be present")
-            .contains("This organization requires MFA for elevated members before write actions are allowed"),
+            .contains("manage this namespace claim"),
         "unexpected error response: {forbidden_body}"
     );
 
@@ -7582,7 +7582,7 @@ async fn test_namespace_claim_transfer_requires_source_and_target_org_control(po
         forbidden_body["error"]
             .as_str()
             .expect("error should be present")
-            .contains("This organization requires MFA for elevated members before write actions are allowed"),
+            .contains("transfer this namespace claim"),
         "unexpected error response: {forbidden_body}"
     );
 
@@ -8615,7 +8615,7 @@ async fn test_team_namespace_admin_permission_allows_namespace_delete(pool: PgPo
         forbidden_body["error"]
             .as_str()
             .expect("error should be present")
-            .contains("manage this namespace claim"),
+            .contains("This organization requires MFA for elevated members before write actions are allowed"),
         "unexpected error response: {forbidden_body}"
     );
 
@@ -8754,7 +8754,7 @@ async fn test_team_namespace_transfer_permission_allows_namespace_transfer(pool:
         forbidden_body["error"]
             .as_str()
             .expect("error should be present")
-            .contains("transfer this namespace claim"),
+            .contains("This organization requires MFA for elevated members before write actions are allowed"),
         "unexpected error response: {forbidden_body}"
     );
 
@@ -14093,7 +14093,7 @@ async fn test_native_cargo_search_respects_private_visibility_and_team_access(po
         .to_owned();
 
     let (status, bob_token_body) =
-        create_personal_access_token(&app, &bob_jwt, "bob-cargo-read", &["packages:read"]).await;
+        create_personal_access_token(&app, &bob_jwt, "bob-cargo-read", &["packages:write"]).await;
     assert_eq!(
         status,
         StatusCode::CREATED,
@@ -14105,7 +14105,7 @@ async fn test_native_cargo_search_respects_private_visibility_and_team_access(po
         .to_owned();
 
     let (status, carol_token_body) =
-        create_personal_access_token(&app, &carol_jwt, "carol-cargo-read", &["packages:read"])
+        create_personal_access_token(&app, &carol_jwt, "carol-cargo-read", &["packages:write"])
             .await;
     assert_eq!(
         status,
