@@ -290,6 +290,10 @@ export function createOrgGovernanceController(options: OrgGovernanceControllerOp
   };
 }
 
+/**
+ * Normalize optional form text values by trimming strings and collapsing
+ * empty or non-string entries to null before sending them to the API.
+ */
 function normalizeOptionalFormText(
   value: FormDataEntryValue | null | undefined
 ): string | null {

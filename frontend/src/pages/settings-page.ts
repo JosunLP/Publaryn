@@ -396,6 +396,10 @@ export function createSettingsPageController(options: SettingsPageControllerOpti
   };
 }
 
+/**
+ * Collapse empty or whitespace-only settings form values to null while
+ * preserving trimmed non-empty strings for API payloads.
+ */
 export function optionalSettingsField(value: string): string | null {
   const trimmed = String(value ?? '').trim();
   return trimmed.length > 0 ? trimmed : null;
