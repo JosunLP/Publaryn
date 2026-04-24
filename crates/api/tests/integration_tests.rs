@@ -1973,6 +1973,95 @@ async fn deprecate_release_for_package(
     (status, body)
 }
 
+/// Remove deprecation from a release and return the response.
+async fn undeprecate_release_for_package(
+    app: &axum::Router,
+    jwt: &str,
+    ecosystem: &str,
+    name: &str,
+    version: &str,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::PUT)
+        .uri(format!(
+            "/v1/packages/{ecosystem}/{name}/releases/{version}/undeprecate"
+        ))
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// List package channel tags and return the response.
+async fn list_package_tags(
+    app: &axum::Router,
+    jwt: Option<&str>,
+    ecosystem: &str,
+    name: &str,
+) -> (StatusCode, Value) {
+    let mut request = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/v1/packages/{ecosystem}/{name}/tags"));
+
+    if let Some(jwt) = jwt {
+        request = request.header(header::AUTHORIZATION, format!("Bearer {jwt}"));
+    }
+
+    let req = request.body(Body::empty()).unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// Upsert a package channel tag and return the response.
+async fn upsert_package_tag(
+    app: &axum::Router,
+    jwt: &str,
+    ecosystem: &str,
+    name: &str,
+    tag: &str,
+    version: &str,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::PUT)
+        .uri(format!("/v1/packages/{ecosystem}/{name}/tags/{tag}"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::from(json!({ "version": version }).to_string()))
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// Delete a package channel tag and return the response.
+async fn delete_package_tag(
+    app: &axum::Router,
+    jwt: &str,
+    ecosystem: &str,
+    name: &str,
+    tag: &str,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::DELETE)
+        .uri(format!("/v1/packages/{ecosystem}/{name}/tags/{tag}"))
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
 /// Get a native npm packument and return the response.
 async fn get_npm_packument(
     app: &axum::Router,
@@ -19860,11 +19949,21 @@ async fn test_release_lifecycle_audit_sets_target_org_id_for_org_owned_packages(
     .await;
     assert_eq!(status, StatusCode::OK);
 
+    let (status, undeprecate_body) =
+        undeprecate_release_for_package(&app, &owner_jwt, "npm", "acme-release-widget", "1.0.0")
+            .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "undeprecate body: {undeprecate_body}"
+    );
+
     for action in [
         "release_publish",
         "release_yank",
         "release_unyank",
         "release_deprecate",
+        "release_undeprecate",
     ] {
         let target_org_id: Option<uuid::Uuid> = sqlx::query_scalar(
             "SELECT target_org_id FROM audit_logs \
@@ -19969,11 +20068,22 @@ async fn test_release_lifecycle_audit_leaves_target_org_id_null_for_personal_pac
     .await;
     assert_eq!(status, StatusCode::OK);
 
+    let (status, _) = undeprecate_release_for_package(
+        &app,
+        &owner_jwt,
+        "npm",
+        "personal-release-widget",
+        "1.0.0",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
     for action in [
         "release_publish",
         "release_yank",
         "release_unyank",
         "release_deprecate",
+        "release_undeprecate",
     ] {
         let target_org_id: Option<uuid::Uuid> = sqlx::query_scalar(
             "SELECT target_org_id FROM audit_logs \
@@ -20060,6 +20170,22 @@ async fn test_org_audit_includes_release_lifecycle_events_for_org_owned_packages
     .await;
     assert_eq!(status, StatusCode::OK);
 
+    let (status, _) = deprecate_release_for_package(
+        &app,
+        &owner_jwt,
+        "npm",
+        "acme-lifecycle-widget",
+        "1.0.0",
+        Some("prefer 2.0.0"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, _) =
+        undeprecate_release_for_package(&app, &owner_jwt, "npm", "acme-lifecycle-widget", "1.0.0")
+            .await;
+    assert_eq!(status, StatusCode::OK);
+
     // Also publish a personal-package release that must NOT appear in org audit.
     let (status, _) = create_repository_with_options(
         &app,
@@ -20118,6 +20244,29 @@ async fn test_org_audit_includes_release_lifecycle_events_for_org_owned_packages
     .await;
     assert_eq!(status, StatusCode::OK);
 
+    promote_release_to_published(&pool, "npm", "personal-lifecycle-widget", "1.0.0").await;
+
+    let (status, _) = deprecate_release_for_package(
+        &app,
+        &owner_jwt,
+        "npm",
+        "personal-lifecycle-widget",
+        "1.0.0",
+        Some("personal migration"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, _) = undeprecate_release_for_package(
+        &app,
+        &owner_jwt,
+        "npm",
+        "personal-lifecycle-widget",
+        "1.0.0",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
     let (status, publish_audit_body) = list_org_audit(
         &app,
         &owner_jwt,
@@ -20151,6 +20300,31 @@ async fn test_org_audit_includes_release_lifecycle_events_for_org_owned_packages
     assert_eq!(yank_logs[0]["target_org_id"].as_str(), Some(org_id));
     assert_eq!(yank_logs[0]["metadata"]["reason"], "supply chain issue");
 
+    let (status, undeprecate_audit_body) = list_org_audit(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        Some("action=release_undeprecate&per_page=20"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let undeprecate_logs = undeprecate_audit_body["logs"]
+        .as_array()
+        .expect("undeprecate audit logs response should be an array");
+    assert_eq!(
+        undeprecate_logs.len(),
+        1,
+        "response: {undeprecate_audit_body}"
+    );
+    assert_eq!(undeprecate_logs[0]["action"], "release_undeprecate");
+    assert_eq!(undeprecate_logs[0]["target_org_id"].as_str(), Some(org_id));
+    assert_eq!(
+        undeprecate_logs[0]["metadata"]["name"],
+        "acme-lifecycle-widget"
+    );
+    assert_eq!(undeprecate_logs[0]["metadata"]["version"], "1.0.0");
+    assert_eq!(undeprecate_logs[0]["metadata"]["restored_status"], "yanked");
+
     let publish_export_resp = export_org_audit_csv(
         &app,
         &owner_jwt,
@@ -20170,6 +20344,278 @@ async fn test_org_audit_includes_release_lifecycle_events_for_org_owned_packages
     assert!(publish_export_lines[1].contains(org_id));
     assert!(publish_export_body.contains("acme-lifecycle-widget"));
     assert!(!publish_export_body.contains("personal-lifecycle-widget"));
+
+    let undeprecate_export_resp = export_org_audit_csv(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        Some("action=release_undeprecate"),
+    )
+    .await;
+    assert_eq!(undeprecate_export_resp.status(), StatusCode::OK);
+    let undeprecate_export_body = body_text(undeprecate_export_resp).await;
+    let undeprecate_export_lines = undeprecate_export_body.lines().collect::<Vec<_>>();
+    assert_eq!(
+        undeprecate_export_lines.len(),
+        2,
+        "unexpected CSV export body: {undeprecate_export_body}"
+    );
+    assert!(undeprecate_export_lines[1].contains(",release_undeprecate,"));
+    assert!(undeprecate_export_lines[1].contains(org_id));
+    assert!(undeprecate_export_body.contains("acme-lifecycle-widget"));
+    assert!(undeprecate_export_body.contains("restored_status"));
+    assert!(undeprecate_export_body.contains("yanked"));
+    assert!(!undeprecate_export_body.contains("personal-lifecycle-widget"));
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_package_tag_lifecycle_supports_create_update_and_delete(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let owner_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, _) = create_repository_with_options(
+        &app,
+        &owner_jwt,
+        "Personal Pkgs",
+        "personal-pkgs",
+        None,
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_package_with_options(
+        &app,
+        &owner_jwt,
+        "npm",
+        "taggable-widget",
+        "personal-pkgs",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) =
+        create_release_for_package(&app, &owner_jwt, "npm", "taggable-widget", "1.0.0").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) =
+        create_release_for_package(&app, &owner_jwt, "npm", "taggable-widget", "1.1.0").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, initial_tags) = list_package_tags(&app, None, "npm", "taggable-widget").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected list response: {initial_tags}"
+    );
+    assert_eq!(initial_tags["tags"], json!({}));
+
+    let (status, create_body) = upsert_package_tag(
+        &app,
+        &owner_jwt,
+        "npm",
+        "taggable-widget",
+        "latest",
+        "1.0.0",
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected create tag response: {create_body}"
+    );
+    assert_eq!(create_body["message"], "Tag updated");
+    assert_eq!(create_body["tag"], "latest");
+    assert_eq!(create_body["version"], "1.0.0");
+
+    let (status, created_tags) = list_package_tags(&app, None, "npm", "taggable-widget").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected list response: {created_tags}"
+    );
+    assert_eq!(created_tags["tags"]["latest"]["version"], "1.0.0");
+    assert!(created_tags["tags"]["latest"]["updated_at"].is_string());
+
+    let (status, update_body) = upsert_package_tag(
+        &app,
+        &owner_jwt,
+        "npm",
+        "taggable-widget",
+        "latest",
+        "1.1.0",
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected update tag response: {update_body}"
+    );
+    assert_eq!(update_body["version"], "1.1.0");
+
+    let (status, updated_tags) = list_package_tags(&app, None, "npm", "taggable-widget").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected list response: {updated_tags}"
+    );
+    assert_eq!(updated_tags["tags"]["latest"]["version"], "1.1.0");
+
+    let (status, delete_body) =
+        delete_package_tag(&app, &owner_jwt, "npm", "taggable-widget", "latest").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected delete tag response: {delete_body}"
+    );
+    assert_eq!(delete_body["message"], "Tag deleted");
+    assert_eq!(delete_body["tag"], "latest");
+
+    let (status, final_tags) = list_package_tags(&app, None, "npm", "taggable-widget").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected list response: {final_tags}"
+    );
+    assert_eq!(final_tags["tags"], json!({}));
+
+    let (status, missing_delete_body) =
+        delete_package_tag(&app, &owner_jwt, "npm", "taggable-widget", "latest").await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "unexpected delete missing tag response: {missing_delete_body}"
+    );
+    assert!(missing_delete_body["error"]
+        .as_str()
+        .expect("missing tag error should be returned")
+        .contains("Tag 'latest' not found"));
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_undeprecate_release_restores_previous_visible_status(pool: PgPool) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let owner_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, _) = create_repository_with_options(
+        &app,
+        &owner_jwt,
+        "Personal Pkgs",
+        "personal-pkgs",
+        None,
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_package_with_options(
+        &app,
+        &owner_jwt,
+        "npm",
+        "undeprecate-widget",
+        "personal-pkgs",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) =
+        create_release_for_package(&app, &owner_jwt, "npm", "undeprecate-widget", "1.0.0").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) =
+        create_release_for_package(&app, &owner_jwt, "npm", "undeprecate-widget", "2.0.0").await;
+    assert_eq!(status, StatusCode::CREATED);
+    promote_release_to_published(&pool, "npm", "undeprecate-widget", "1.0.0").await;
+    promote_release_to_published(&pool, "npm", "undeprecate-widget", "2.0.0").await;
+
+    let (status, _) = deprecate_release_for_package(
+        &app,
+        &owner_jwt,
+        "npm",
+        "undeprecate-widget",
+        "1.0.0",
+        Some("use 2.0.0"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, undeprecate_body) =
+        undeprecate_release_for_package(&app, &owner_jwt, "npm", "undeprecate-widget", "1.0.0")
+            .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected undeprecate response: {undeprecate_body}"
+    );
+    assert_eq!(undeprecate_body["message"], "Release undeprecated");
+    assert_eq!(undeprecate_body["status"], "published");
+
+    let (status, release_body) =
+        get_release_detail(&app, Some(&owner_jwt), "npm", "undeprecate-widget", "1.0.0").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected release detail: {release_body}"
+    );
+    assert_eq!(release_body["status"], "published");
+    assert_eq!(release_body["is_deprecated"], false);
+    assert_eq!(release_body["deprecation_message"], Value::Null);
+
+    let (status, _) = deprecate_release_for_package(
+        &app,
+        &owner_jwt,
+        "npm",
+        "undeprecate-widget",
+        "2.0.0",
+        Some("paused rollout"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = yank_release_for_package(
+        &app,
+        &owner_jwt,
+        "npm",
+        "undeprecate-widget",
+        "2.0.0",
+        Some("investigating regression"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, yanked_undeprecate_body) =
+        undeprecate_release_for_package(&app, &owner_jwt, "npm", "undeprecate-widget", "2.0.0")
+            .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected yanked undeprecate response: {yanked_undeprecate_body}"
+    );
+    assert_eq!(yanked_undeprecate_body["status"], "yanked");
+
+    let (status, yanked_release_body) =
+        get_release_detail(&app, Some(&owner_jwt), "npm", "undeprecate-widget", "2.0.0").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected yanked release detail: {yanked_release_body}"
+    );
+    assert_eq!(yanked_release_body["status"], "yanked");
+    assert_eq!(yanked_release_body["is_yanked"], true);
+    assert_eq!(yanked_release_body["is_deprecated"], false);
+    assert_eq!(yanked_release_body["deprecation_message"], Value::Null);
+
+    let (status, conflict_body) =
+        undeprecate_release_for_package(&app, &owner_jwt, "npm", "undeprecate-widget", "1.0.0")
+            .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(conflict_body["error"]
+        .as_str()
+        .expect("conflict error should be present")
+        .contains("not deprecated"));
 }
 
 #[sqlx::test(migrations = "../../migrations")]

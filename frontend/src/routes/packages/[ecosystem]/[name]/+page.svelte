@@ -20,6 +20,7 @@
   import {
     createRelease,
     createTrustedPublisher as createTrustedPublisherForPackage,
+    deleteTag as deletePackageTag,
     deleteTrustedPublisher as deleteTrustedPublisherForPackage,
     deprecateRelease,
     getPackage,
@@ -30,7 +31,9 @@
     publishRelease,
     severityLevel,
     transferPackageOwnership,
+    undeprecateRelease,
     unyankRelease,
+    upsertTag as upsertPackageTag,
     updatePackage,
     updateSecurityFinding,
     yankRelease,
@@ -174,6 +177,12 @@
   let packageSettingsLicense = '';
   let packageSettingsKeywords = '';
   let updatingPackageSettings = false;
+  let tagName = '';
+  let tagVersion = '';
+  let savingTag = false;
+  let deletingTagName: string | null = null;
+  let tagNotice: string | null = null;
+  let tagError: string | null = null;
 
   let trustedPublisherIssuer = '';
   let trustedPublisherSubject = '';
@@ -247,6 +256,8 @@
     teamAccessError = null;
     packageSettingsNotice = null;
     packageSettingsError = null;
+    tagNotice = null;
+    tagError = null;
     trustedPublisherNotice = null;
     trustedPublisherError = null;
     includeResolvedFindings = packageSecurityView.includeResolved;
@@ -256,6 +267,7 @@
     resetReleaseForm();
     resetTransferForm();
     resetPackageSettingsForm();
+    resetTagForm();
     resetTrustedPublisherForm();
 
     try {
@@ -295,11 +307,12 @@
     ]);
 
     releases = loadedReleases;
-    tags = loadedTags;
+    tags = sortTags(loadedTags);
     findings = loadedFindings;
     transferState = loadedTransferState;
     trustedPublisherState = loadedTrustedPublisherState;
     teamAccessManagementState = loadedTeamAccessManagementState;
+    resetTagForm(latestVersionForPackage(pkg));
     loading = false;
   }
 
@@ -738,6 +751,26 @@
     }
   }
 
+  async function handleReleaseListUndeprecate(release: Release): Promise<void> {
+    activeReleaseActionVersion = release.version;
+    releaseActionError = null;
+    releaseActionNotice = null;
+
+    try {
+      const result = await undeprecateRelease(ecosystem, name, release.version);
+      await loadPackagePage();
+      releaseActionNotice =
+        result.message || `Removed deprecation from ${release.version}.`;
+    } catch (caughtError: unknown) {
+      releaseActionError = toErrorMessage(
+        caughtError,
+        'Failed to remove release deprecation.'
+      );
+    } finally {
+      activeReleaseActionVersion = null;
+    }
+  }
+
   async function handleReplacePackageTeamAccess(
     event: SubmitEvent
   ): Promise<void> {
@@ -950,6 +983,77 @@
     }
   }
 
+  async function handleSaveTag(event: SubmitEvent): Promise<void> {
+    event.preventDefault();
+
+    const resolvedTag = tagName.trim();
+    const resolvedVersion = tagVersion.trim();
+
+    if (!resolvedTag) {
+      tagError = 'Enter a tag name.';
+      tagNotice = null;
+      return;
+    }
+
+    if (!resolvedVersion) {
+      tagError = 'Select a release version to tag.';
+      tagNotice = null;
+      return;
+    }
+
+    savingTag = true;
+    tagError = null;
+    tagNotice = null;
+
+    try {
+      const result = await upsertPackageTag(ecosystem, name, resolvedTag, {
+        version: resolvedVersion,
+      });
+      tags = sortTags(
+        (await listTags(ecosystem, name)) || []
+      );
+      tagNotice =
+        result.message || `Tag ${resolvedTag} now points to ${resolvedVersion}.`;
+      resetTagForm(resolvedVersion);
+    } catch (caughtError: unknown) {
+      tagError = toErrorMessage(caughtError, 'Failed to save tag.');
+    } finally {
+      savingTag = false;
+    }
+  }
+
+  async function handleDeleteTag(tag: Tag): Promise<void> {
+    const resolvedTag = tag.tag?.trim() || tag.name?.trim() || '';
+    if (!resolvedTag || deletingTagName) {
+      return;
+    }
+
+    const confirmed = window.confirm(`Delete tag ${resolvedTag}?`);
+    if (!confirmed) {
+      return;
+    }
+
+    deletingTagName = resolvedTag;
+    tagError = null;
+    tagNotice = null;
+
+    try {
+      const result = await deletePackageTag(ecosystem, name, resolvedTag);
+      tags = tags.filter(
+        (currentTag) =>
+          (currentTag.tag?.trim() || currentTag.name?.trim() || '') !== resolvedTag
+      );
+      tagNotice = result.message || `Deleted tag ${resolvedTag}.`;
+      if (!tagName.trim()) {
+        resetTagForm(latestVersionForPackage(pkg));
+      }
+    } catch (caughtError: unknown) {
+      tagError = toErrorMessage(caughtError, 'Failed to delete tag.');
+    } finally {
+      deletingTagName = null;
+    }
+  }
+
   function resetReleaseForm(): void {
     newReleaseVersion = '';
     newReleaseDescription = '';
@@ -978,6 +1082,17 @@
     updatingPackageSettings = false;
   }
 
+  function resetTagForm(preferredVersion?: string | null): void {
+    tagName = '';
+    tagVersion =
+      preferredVersion?.trim() ||
+      latestVersionForPackage(pkg) ||
+      releases[0]?.version ||
+      '';
+    savingTag = false;
+    deletingTagName = null;
+  }
+
   function resetTrustedPublisherForm(): void {
     trustedPublisherIssuer = '';
     trustedPublisherSubject = '';
@@ -994,10 +1109,10 @@
   }
 
   function latestVersionForPackage(
-    currentPackage: PackageDetail
+    currentPackage: PackageDetail | null
   ): string | null {
     return (
-      currentPackage.latest_version ??
+      currentPackage?.latest_version ??
       (releases.length > 0 ? (releases[0]?.version ?? null) : null)
     );
   }
@@ -1067,6 +1182,12 @@
     }
 
     return name || slug || 'Unnamed team';
+  }
+
+  function sortTags(entries: Tag[]): Tag[] {
+    return [...entries].sort((left, right) =>
+      (left.tag || left.name || '').localeCompare(right.tag || right.name || '')
+    );
   }
 
   function toErrorMessage(error: unknown, fallback: string): string {
@@ -1308,7 +1429,7 @@
                 <div class="release-row__meta">
                   {formatDate(release.published_at || release.created_at)}
                 </div>
-                {#if pkg.can_manage_releases && (releaseActions.canUploadArtifact || releaseActions.canYank || releaseActions.canRestore || releaseActions.canDeprecate)}
+                {#if pkg.can_manage_releases && (releaseActions.canUploadArtifact || releaseActions.canYank || releaseActions.canRestore || releaseActions.canDeprecate || releaseActions.canUndeprecate)}
                   <div class="release-row__actions">
                     {#if releaseActions.canUploadArtifact}
                       <a
@@ -1355,6 +1476,20 @@
                         {activeReleaseActionVersion === release.version
                           ? 'Working…'
                           : 'Deprecate'}
+                      </button>
+                    {/if}
+                    {#if releaseActions.canUndeprecate}
+                      <button
+                        type="button"
+                        class="btn btn-secondary btn-sm"
+                        data-release-undeprecate={release.version}
+                        disabled={activeReleaseActionVersion ===
+                          release.version}
+                        on:click={() => handleReleaseListUndeprecate(release)}
+                      >
+                        {activeReleaseActionVersion === release.version
+                          ? 'Working…'
+                          : 'Remove deprecation'}
                       </button>
                     {/if}
                     {#if release.status?.toLowerCase() === 'quarantine'}
@@ -2611,18 +2746,111 @@
           </div>
         {/if}
 
-        {#if tags.length > 0}
+        {#if tags.length > 0 || pkg.can_manage_releases}
           <div class="card">
             <div class="sidebar-section">
               <h3>Tags</h3>
-              {#each tags as tag}
-                <div class="sidebar-row">
-                  <span class="sidebar-row__label"
-                    >{tag.tag || tag.name || ''}</span
-                  >
-                  <span class="sidebar-row__value">{tag.version}</span>
+              {#if tagNotice}
+                <div class="alert alert-success" style="margin-bottom:12px;">
+                  {tagNotice}
                 </div>
-              {/each}
+              {/if}
+              {#if tagError}
+                <div class="alert alert-error" style="margin-bottom:12px;">
+                  {tagError}
+                </div>
+              {/if}
+              {#if tags.length > 0}
+                {#each tags as tag}
+                  {@const resolvedTag = tag.tag || tag.name || ''}
+                  <div class="sidebar-row" style="align-items:center; gap:8px;">
+                    <div style="min-width:0; flex:1;">
+                      <div class="sidebar-row__label">{resolvedTag}</div>
+                      <div class="sidebar-row__value">{tag.version}</div>
+                    </div>
+                    {#if pkg.can_manage_releases && resolvedTag}
+                      <button
+                        type="button"
+                        class="btn btn-secondary btn-sm"
+                        data-tag-delete={resolvedTag}
+                        on:click={() => handleDeleteTag(tag)}
+                        disabled={savingTag || deletingTagName === resolvedTag}
+                      >
+                        {deletingTagName === resolvedTag ? 'Removing…' : 'Delete'}
+                      </button>
+                    {/if}
+                  </div>
+                {/each}
+              {:else}
+                <p class="settings-copy" style="margin-bottom:12px;">
+                  No tags published yet.
+                </p>
+              {/if}
+
+              {#if pkg.can_manage_releases}
+                <div
+                  style="padding-top:12px; margin-top:12px; border-top:1px solid var(--color-border);"
+                >
+                  <h4
+                    style="font-size:0.875rem; font-weight:600; margin-bottom:12px;"
+                  >
+                    Create or retarget a tag
+                  </h4>
+                  <p class="settings-copy" style="margin-bottom:12px;">
+                    Point a mutable channel tag at a published release version for
+                    installs and automation.
+                  </p>
+                  <form id="package-tag-form" on:submit={handleSaveTag}>
+                    <div class="form-group" style="margin-bottom:12px;">
+                      <label for="package-tag-name">Tag name</label>
+                      <input
+                        bind:value={tagName}
+                        id="package-tag-name"
+                        name="tag"
+                        class="form-input"
+                        placeholder="latest"
+                        required
+                      />
+                    </div>
+                    <div class="form-group" style="margin-bottom:12px;">
+                      <label for="package-tag-version">Release version</label>
+                      <select
+                        bind:value={tagVersion}
+                        id="package-tag-version"
+                        name="version"
+                        class="form-input"
+                        required
+                        disabled={releases.length === 0}
+                      >
+                        <option value="" disabled>
+                          Select a release version
+                        </option>
+                        {#each releases as release}
+                          <option value={release.version}>{release.version}</option>
+                        {/each}
+                      </select>
+                    </div>
+                    <div style="display:flex; gap:8px;">
+                      <button
+                        type="submit"
+                        class="btn btn-primary"
+                        style="flex:1; justify-content:center;"
+                        disabled={savingTag || releases.length === 0}
+                      >
+                        {savingTag ? 'Saving…' : 'Save tag'}
+                      </button>
+                      <button
+                        type="button"
+                        class="btn btn-secondary"
+                        disabled={savingTag}
+                        on:click={() => resetTagForm()}
+                      >
+                        Reset
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              {/if}
             </div>
           </div>
         {/if}

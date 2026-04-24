@@ -363,8 +363,10 @@ GET    /v1/packages/:ecosystem/:name/releases/:version/artifacts/:filename
 PUT    /v1/packages/:ecosystem/:name/releases/:version/yank
 PUT    /v1/packages/:ecosystem/:name/releases/:version/unyank
 PUT    /v1/packages/:ecosystem/:name/releases/:version/deprecate
+PUT    /v1/packages/:ecosystem/:name/releases/:version/undeprecate
 GET    /v1/packages/:ecosystem/:name/tags
 PUT    /v1/packages/:ecosystem/:name/tags/:tag
+DELETE /v1/packages/:ecosystem/:name/tags/:tag
 GET    /v1/packages/:ecosystem/:name/security-findings
 PATCH  /v1/packages/:ecosystem/:name/security-findings/:finding_id
 GET    /v1/packages/:ecosystem/:name/trusted-publishers

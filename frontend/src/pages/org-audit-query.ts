@@ -9,6 +9,7 @@ export const ORG_AUDIT_ACTION_VALUES = [
   'release_yank',
   'release_unyank',
   'release_deprecate',
+  'release_undeprecate',
   'trusted_publisher_create',
   'trusted_publisher_delete',
   'security_finding_resolve',

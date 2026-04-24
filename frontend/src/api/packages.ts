@@ -349,6 +349,12 @@ export interface Tag {
   version: string;
 }
 
+export interface TagMutationResult {
+  message?: NullableString;
+  tag?: NullableString;
+  version?: NullableString;
+}
+
 export interface TrustedPublisher {
   id?: NullableString;
   issuer?: NullableString;
@@ -606,6 +612,18 @@ export async function deprecateRelease(
   return data;
 }
 
+export async function undeprecateRelease(
+  ecosystem: string,
+  name: string,
+  version: string
+): Promise<ReleaseMutationResult> {
+  const { data } = await api.put<ReleaseMutationResult>(
+    `/v1/packages/${enc(ecosystem)}/${enc(name)}/releases/${enc(version)}/undeprecate`
+  );
+
+  return data;
+}
+
 export async function listTags(
   ecosystem: string,
   name: string
@@ -619,6 +637,36 @@ export async function listTags(
     name: tag,
     version: details?.version || '',
   }));
+}
+
+export async function upsertTag(
+  ecosystem: string,
+  name: string,
+  tag: string,
+  { version }: { version: string }
+): Promise<TagMutationResult> {
+  const { data } = await api.put<TagMutationResult>(
+    `/v1/packages/${enc(ecosystem)}/${enc(name)}/tags/${enc(tag)}`,
+    {
+      body: {
+        version,
+      },
+    }
+  );
+
+  return data;
+}
+
+export async function deleteTag(
+  ecosystem: string,
+  name: string,
+  tag: string
+): Promise<TagMutationResult> {
+  const { data } = await api.delete<TagMutationResult>(
+    `/v1/packages/${enc(ecosystem)}/${enc(name)}/tags/${enc(tag)}`
+  );
+
+  return data;
 }
 
 export async function transferPackageOwnership(
