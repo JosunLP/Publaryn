@@ -12,8 +12,12 @@ import {
 
 import type {
   SettingsPageLoaders,
+  SettingsPageOrganizationActions,
+  SettingsPageProfileActions,
   SettingsPageTokenActions,
 } from '../src/pages/settings-page';
+import type { UserProfile } from '../src/api/auth';
+import type { MyInvitation, OrganizationMembership } from '../src/api/orgs';
 import type { TokenRecord } from '../src/api/tokens';
 
 const HarnessPath =
@@ -48,6 +52,8 @@ describe('settings page controller harness', () => {
       authToken: null,
       loaders,
       tokenActions: createTokenActions(),
+      profileActions: createProfileActions(),
+      organizationActions: createOrganizationActions(),
     });
 
     try {
@@ -96,6 +102,8 @@ describe('settings page controller harness', () => {
           return { token: 'pub_secret_created_token' };
         },
       }),
+      profileActions: createProfileActions(),
+      organizationActions: createOrganizationActions(),
     });
 
     try {
@@ -148,6 +156,8 @@ describe('settings page controller harness', () => {
           scenario.tokens = scenario.tokens.filter((token) => token.id !== tokenId);
         },
       }),
+      profileActions: createProfileActions(),
+      organizationActions: createOrganizationActions(),
     });
 
     try {
@@ -166,6 +176,244 @@ describe('settings page controller harness', () => {
       });
 
       expect(scenario.revokeCalls).toEqual(['token-1']);
+    } finally {
+      unmount();
+    }
+  });
+
+  test('saves the profile and reloads refreshed profile details', async () => {
+    const scenario = createProfileScenario();
+    const { target, unmount, flush } = await renderSvelte(HarnessPath, {
+      loaders: createLoaders({
+        async getCurrentUser() {
+          return { ...scenario.user };
+        },
+      }),
+      tokenActions: createTokenActions(),
+      profileActions: createProfileActions({
+        async updateCurrentUser(updates) {
+          scenario.updateCalls.push(updates);
+          scenario.user = {
+            ...scenario.user,
+            ...updates,
+          };
+          return { ...scenario.user };
+        },
+      }),
+      organizationActions: createOrganizationActions(),
+    });
+
+    try {
+      await waitFor(() => {
+        flush();
+        expect(queryRequiredInput(target, '#settings-display-name').value).toBe(
+          'Alice'
+        );
+      });
+
+      changeValue(queryRequiredInput(target, '#settings-display-name'), 'Alice Admin');
+      changeValue(
+        queryRequiredInput(target, '#settings-avatar-url'),
+        'https://example.test/avatar.png'
+      );
+      changeValue(
+        queryRequiredInput(target, '#settings-website'),
+        'https://alice.example.test'
+      );
+      changeValue(
+        queryRequiredTextArea(target, '#settings-bio'),
+        'Maintains Publaryn settings.'
+      );
+      submitForm(queryRequiredForm(target, '#profile-form'));
+
+      await waitFor(() => {
+        flush();
+        expect(target.textContent).toContain('Profile updated successfully.');
+        expect(queryRequiredInput(target, '#settings-display-name').value).toBe(
+          'Alice Admin'
+        );
+      });
+
+      expect(scenario.updateCalls).toEqual([
+        {
+          display_name: 'Alice Admin',
+          avatar_url: 'https://example.test/avatar.png',
+          website: 'https://alice.example.test',
+          bio: 'Maintains Publaryn settings.',
+        },
+      ]);
+    } finally {
+      unmount();
+    }
+  });
+
+  test('creates an organization, resets the form, and reloads organization data', async () => {
+    const scenario = createOrganizationScenario();
+    const { target, unmount, flush } = await renderSvelte(HarnessPath, {
+      loaders: createLoaders({
+        async listMyOrganizations() {
+          return {
+            organizations: scenario.organizations.map((organization) => ({
+              ...organization,
+            })),
+            load_error: null,
+          };
+        },
+      }),
+      tokenActions: createTokenActions(),
+      profileActions: createProfileActions(),
+      organizationActions: createOrganizationActions({
+        async createOrg(input) {
+          scenario.createCalls.push({
+            ...input,
+          });
+          scenario.organizations = [
+            ...scenario.organizations,
+            {
+              slug: input.slug,
+              name: input.name,
+              description: input.description,
+              website: input.website,
+              email: input.email,
+              role: 'owner',
+              package_count: 0,
+              team_count: 0,
+              joined_at: '2026-04-24T00:00:00Z',
+            },
+          ];
+          return {
+            slug: input.slug,
+            name: input.name,
+          };
+        },
+      }),
+    });
+
+    try {
+      await waitFor(() => {
+        flush();
+        expect(normalizeWhitespace(target.textContent)).toContain(
+          'No pending invitations'
+        );
+      });
+
+      changeValue(queryRequiredInput(target, '#org-name'), 'Acme Platform');
+      await waitFor(() => {
+        flush();
+        expect(queryRequiredInput(target, '#org-slug').value).toBe('acme-platform');
+      });
+      changeValue(
+        queryRequiredTextArea(target, '#org-description'),
+        'Publishes adapters'
+      );
+      changeValue(
+        queryRequiredInput(target, '#org-website'),
+        'https://acme.example.test'
+      );
+      changeValue(
+        queryRequiredInput(target, '#org-email'),
+        'packages@acme.example.test'
+      );
+      submitForm(queryRequiredForm(target, '#org-create-form'));
+
+      await waitFor(() => {
+        flush();
+        expect(target.textContent).toContain(
+          'Organization created successfully. Slug: acme-platform.'
+        );
+      });
+
+      expect(queryRequiredInput(target, '#org-name').value).toBe('');
+      expect(queryRequiredInput(target, '#org-slug').value).toBe('');
+      expect(queryRequiredInput(target, '#org-website').value).toBe('');
+      expect(queryRequiredInput(target, '#org-email').value).toBe('');
+      expect(queryRequiredTextArea(target, '#org-description').value).toBe('');
+      expect(scenario.createCalls).toEqual([
+        {
+          name: 'Acme Platform',
+          slug: 'acme-platform',
+          description: 'Publishes adapters',
+          website: 'https://acme.example.test',
+          email: 'packages@acme.example.test',
+        },
+      ]);
+    } finally {
+      unmount();
+    }
+  });
+
+  test('accepts and declines invitations and reloads the invitation list', async () => {
+    const scenario = createInvitationScenario();
+    const { target, unmount, flush } = await renderSvelte(HarnessPath, {
+      loaders: createLoaders({
+        async listMyInvitations() {
+          return {
+            invitations: scenario.invitations.map((invitation) => ({ ...invitation })),
+            load_error: null,
+          };
+        },
+      }),
+      tokenActions: createTokenActions(),
+      profileActions: createProfileActions(),
+      organizationActions: createOrganizationActions({
+        async acceptInvitation(invitationId) {
+          scenario.acceptCalls.push(invitationId);
+          const invitation = scenario.invitations.find(
+            (candidate) => candidate.id === invitationId
+          );
+          scenario.invitations = scenario.invitations.filter(
+            (candidate) => candidate.id !== invitationId
+          );
+          return {
+            role: invitation?.role || 'member',
+            org: invitation?.org || null,
+          };
+        },
+        async declineInvitation(invitationId) {
+          scenario.declineCalls.push(invitationId);
+          scenario.invitations = scenario.invitations.filter(
+            (candidate) => candidate.id !== invitationId
+          );
+          return {};
+        },
+      }),
+    });
+
+    try {
+      await waitFor(() => {
+        flush();
+        expect(target.textContent).toContain('Docs Team');
+        expect(target.textContent).toContain('Build Team');
+      });
+
+      click(queryButtonByText(target, 'Accept'));
+
+      await waitFor(() => {
+        flush();
+        expect(target.textContent).toContain(
+          'Invitation accepted. You are now maintainer in Docs Team.'
+        );
+        expect(
+          target.querySelector('[data-test="invitation-invite-1"]')
+        ).toBeNull();
+        expect(
+          target.querySelector('[data-test="invitation-invite-2"]')
+        ).not.toBeNull();
+        expect(target.textContent).toContain('Build Team');
+      });
+
+      click(queryButtonByText(target, 'Decline'));
+
+      await waitFor(() => {
+        flush();
+        expect(target.textContent).toContain('Invitation declined.');
+        expect(normalizeWhitespace(target.textContent)).toContain(
+          'No pending invitations'
+        );
+      });
+
+      expect(scenario.acceptCalls).toEqual(['invite-1']);
+      expect(scenario.declineCalls).toEqual(['invite-2']);
     } finally {
       unmount();
     }
@@ -229,6 +477,43 @@ function createTokenActions(
   };
 }
 
+function createProfileActions(
+  overrides: Partial<SettingsPageProfileActions> = {}
+): SettingsPageProfileActions {
+  return {
+    async updateCurrentUser(updates) {
+      return {
+        ...buildUser(),
+        ...updates,
+      };
+    },
+    ...overrides,
+  };
+}
+
+function createOrganizationActions(
+  overrides: Partial<SettingsPageOrganizationActions> = {}
+): SettingsPageOrganizationActions {
+  return {
+    async createOrg(input) {
+      return {
+        slug: input.slug,
+        name: input.name,
+      };
+    },
+    async acceptInvitation() {
+      return {
+        role: 'member',
+        org: { name: 'Example Org', slug: 'example-org' },
+      };
+    },
+    async declineInvitation() {
+      return {};
+    },
+    ...overrides,
+  };
+}
+
 function createTokenScenario() {
   return {
     tokens: [
@@ -252,7 +537,50 @@ function createTokenScenario() {
   };
 }
 
-function buildUser() {
+function createProfileScenario() {
+  return {
+    user: buildUser(),
+    updateCalls: [] as Array<Record<string, unknown>>,
+  };
+}
+
+function createOrganizationScenario() {
+  return {
+    organizations: [] as OrganizationMembership[],
+    createCalls: [] as Array<Record<string, unknown>>,
+  };
+}
+
+function createInvitationScenario() {
+  return {
+    invitations: [
+      {
+        id: 'invite-1',
+        org: { name: 'Docs Team', slug: 'docs-team' },
+        role: 'maintainer',
+        invited_by: { username: 'owner-user' },
+        created_at: '2026-04-20T00:00:00Z',
+        expires_at: '2026-05-20T00:00:00Z',
+        status: 'pending',
+        actionable: true,
+      },
+      {
+        id: 'invite-2',
+        org: { name: 'Build Team', slug: 'build-team' },
+        role: 'viewer',
+        invited_by: { username: 'owner-user' },
+        created_at: '2026-04-21T00:00:00Z',
+        expires_at: '2026-05-21T00:00:00Z',
+        status: 'pending',
+        actionable: true,
+      },
+    ] as MyInvitation[],
+    acceptCalls: [] as string[],
+    declineCalls: [] as string[],
+  };
+}
+
+function buildUser(): UserProfile {
   return {
     id: 'user-1',
     username: 'alice',
@@ -269,6 +597,15 @@ function queryRequiredInput(target: HTMLElement, selector: string): HTMLInputEle
   const input = target.querySelector(selector);
   expect(input).not.toBeNull();
   return input as HTMLInputElement;
+}
+
+function queryRequiredTextArea(
+  target: HTMLElement,
+  selector: string
+): HTMLTextAreaElement {
+  const textarea = target.querySelector(selector);
+  expect(textarea).not.toBeNull();
+  return textarea as HTMLTextAreaElement;
 }
 
 function queryRequiredForm(target: HTMLElement, selector: string): HTMLFormElement {

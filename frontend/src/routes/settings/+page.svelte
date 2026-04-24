@@ -3,37 +3,15 @@
   import { onMount } from 'svelte';
 
   import type { MfaSetupState, UserProfile } from '../../api/auth';
-  import {
-    getCurrentUser,
-    updateCurrentUser,
-  } from '../../api/auth';
   import { getAuthToken } from '../../api/client';
-  import type {
-    MyInvitation,
-    MyInvitationListResponse,
-    OrganizationListResponse,
-    OrganizationMembership,
-  } from '../../api/orgs';
-  import {
-    acceptInvitation,
-    createOrg,
-    declineInvitation,
-    listMyInvitations,
-    listMyOrganizations,
-  } from '../../api/orgs';
-  import type {
-    NamespaceClaim,
-    NamespaceListResponse,
-    NamespaceTransferOwnershipResult,
-  } from '../../api/namespaces';
+  import type { MyInvitation, OrganizationMembership } from '../../api/orgs';
+  import type { NamespaceClaim, NamespaceTransferOwnershipResult } from '../../api/namespaces';
   import {
     deleteNamespaceClaim,
-    listUserNamespaces,
     transferNamespaceClaim,
   } from '../../api/namespaces';
   import {
     formatNamespaceClaimStatusLabel,
-    selectNamespaceTransferTargets,
     sortNamespaceClaims,
   } from '../../pages/personal-namespaces';
   import type { TokenRecord } from '../../api/tokens';
@@ -45,7 +23,7 @@
     DEFAULT_TOKEN_SCOPES,
     loadSettingsPageState,
   } from '../../pages/settings-page';
-  import { copyToClipboard, formatDate } from '../../utils/format';
+  import { formatDate } from '../../utils/format';
   import { ecosystemLabel } from '../../utils/ecosystem';
 
   const TOKEN_SCOPE_OPTIONS = [
@@ -148,32 +126,6 @@
     }
   }
 
-  async function handleProfileSubmit(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
-    profileSubmitting = true;
-
-    try {
-      await updateCurrentUser({
-        display_name: optional(displayName),
-        avatar_url: optional(avatarUrl),
-        website: optional(website),
-        bio: optional(bio),
-      });
-
-      await loadSettings({
-        notice: 'Profile updated successfully.',
-        mfaSetupState,
-      });
-    } catch (caughtError: unknown) {
-      await loadSettings({
-        error: toErrorMessage(caughtError, 'Failed to update profile.'),
-        mfaSetupState,
-      });
-    } finally {
-      profileSubmitting = false;
-    }
-  }
-
   function handleScopeToggle(scope: string, checked: boolean): void {
     if (checked) {
       selectedScopes.add(scope);
@@ -189,6 +141,13 @@
     loadSettings,
     toErrorMessage,
     getMfaSetupState: () => mfaSetupState,
+    getDisplayName: () => displayName,
+    getAvatarUrl: () => avatarUrl,
+    getWebsite: () => website,
+    getBio: () => bio,
+    setProfileSubmitting: (value) => {
+      profileSubmitting = value;
+    },
     getTokenName: () => tokenName,
     setTokenName: (value) => {
       tokenName = value;
@@ -204,7 +163,38 @@
     setCreatingToken: (value) => {
       creatingToken = value;
     },
+    getOrgName: () => orgName,
+    setOrgName: (value) => {
+      orgName = value;
+    },
+    getOrgSlug: () => orgSlug,
+    setOrgSlug: (value) => {
+      orgSlug = value;
+    },
+    getOrgDescription: () => orgDescription,
+    setOrgDescription: (value) => {
+      orgDescription = value;
+    },
+    getOrgWebsite: () => orgWebsite,
+    setOrgWebsite: (value) => {
+      orgWebsite = value;
+    },
+    getOrgEmail: () => orgEmail,
+    setOrgEmail: (value) => {
+      orgEmail = value;
+    },
+    getOrgSlugTouched: () => orgSlugTouched,
+    setOrgSlugTouched: (value) => {
+      orgSlugTouched = value;
+    },
+    setCreatingOrganization: (value) => {
+      creatingOrganization = value;
+    },
   });
+
+  async function handleProfileSubmit(event: SubmitEvent): Promise<void> {
+    await settingsPageController.submitProfile(event);
+  }
 
   async function handleTokenSubmit(event: SubmitEvent): Promise<void> {
     await settingsPageController.submitToken(event);
@@ -332,27 +322,12 @@
     await mfaController.disable(event);
   }
 
-  function normalizeOrgSlug(value: string): string {
-    return value
-      .toLowerCase()
-      .trim()
-      .replace(/[^a-z0-9-\s]/g, '')
-      .replace(/\s+/g, '-')
-      .replace(/-+/g, '-')
-      .replace(/^-+/, '')
-      .slice(0, 64);
-  }
-
   function handleOrgNameInput(value: string): void {
-    orgName = value;
-    if (!orgSlugTouched) {
-      orgSlug = normalizeOrgSlug(value);
-    }
+    settingsPageController.handleOrgNameInput(value);
   }
 
   function handleOrgSlugInput(value: string): void {
-    orgSlugTouched = true;
-    orgSlug = normalizeOrgSlug(value);
+    settingsPageController.handleOrgSlugInput(value);
   }
 
   function handleOrgNameInputEvent(event: Event): void {
@@ -364,80 +339,15 @@
   }
 
   async function handleCreateOrganization(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
-
-    const normalizedSlug = normalizeOrgSlug(orgSlug);
-    if (!orgName.trim() || !normalizedSlug) {
-      await loadSettings({
-        error: 'Organization name and a valid slug are required.',
-        mfaSetupState,
-      });
-      return;
-    }
-
-    creatingOrganization = true;
-
-    try {
-      const result = await createOrg({
-        name: orgName.trim(),
-        slug: normalizedSlug,
-        description: optional(orgDescription),
-        website: optional(orgWebsite),
-        email: optional(orgEmail),
-      });
-
-      orgName = '';
-      orgSlug = '';
-      orgDescription = '';
-      orgWebsite = '';
-      orgEmail = '';
-      orgSlugTouched = false;
-      await loadSettings({
-        notice: `Organization created successfully. Slug: ${result.slug}.`,
-        mfaSetupState,
-      });
-    } catch (caughtError: unknown) {
-      await loadSettings({
-        error: toErrorMessage(caughtError, 'Failed to create organization.'),
-        mfaSetupState,
-      });
-    } finally {
-      creatingOrganization = false;
-    }
+    await settingsPageController.createOrganization(event);
   }
 
   async function handleAcceptInvitation(invitationId: string): Promise<void> {
-    try {
-      const result = await acceptInvitation(invitationId);
-      await loadSettings({
-        notice: `Invitation accepted. You are now ${result.role || 'a member'} in ${
-          result.org?.name || result.org?.slug || 'the organization'
-        }.`,
-        mfaSetupState,
-      });
-    } catch (caughtError: unknown) {
-      await loadSettings({
-        error: toErrorMessage(caughtError, 'Failed to accept invitation.'),
-        mfaSetupState,
-      });
-    }
+    await settingsPageController.acceptInvitation(invitationId);
   }
 
   async function handleDeclineInvitation(invitationId: string): Promise<void> {
-    try {
-      await declineInvitation(invitationId);
-      await loadSettings({ notice: 'Invitation declined.', mfaSetupState });
-    } catch (caughtError: unknown) {
-      await loadSettings({
-        error: toErrorMessage(caughtError, 'Failed to decline invitation.'),
-        mfaSetupState,
-      });
-    }
-  }
-
-  function optional(value: string): string | null {
-    const trimmed = value.trim();
-    return trimmed.length > 0 ? trimmed : null;
+    await settingsPageController.declineInvitation(invitationId);
   }
 
   function toErrorMessage(caughtError: unknown, fallback: string): string {

@@ -1,17 +1,24 @@
-import type { MfaSetupState, UserProfile } from '../api/auth';
-import { getCurrentUser } from '../api/auth';
+import type { MfaSetupState, UserProfile, UserUpdate } from '../api/auth';
+import { getCurrentUser, updateCurrentUser } from '../api/auth';
 import type {
+  AcceptInvitationResult,
+  CreateOrgInput,
   MyInvitation,
   MyInvitationListResponse,
   OrganizationListResponse,
   OrganizationMembership,
 } from '../api/orgs';
-import { listMyInvitations, listMyOrganizations } from '../api/orgs';
+import {
+  acceptInvitation,
+  createOrg,
+  declineInvitation,
+  listMyInvitations,
+  listMyOrganizations,
+} from '../api/orgs';
 import type { NamespaceClaim, NamespaceListResponse } from '../api/namespaces';
 import { listUserNamespaces } from '../api/namespaces';
 import type {
   CreateTokenResponse,
-  TokenListResponse,
   TokenRecord,
 } from '../api/tokens';
 import { createToken, listTokens, revokeToken } from '../api/tokens';
@@ -55,12 +62,27 @@ export interface SettingsPageTokenActions {
   revokeToken: typeof revokeToken;
 }
 
+export interface SettingsPageProfileActions {
+  updateCurrentUser: typeof updateCurrentUser;
+}
+
+export interface SettingsPageOrganizationActions {
+  createOrg: typeof createOrg;
+  acceptInvitation: typeof acceptInvitation;
+  declineInvitation: typeof declineInvitation;
+}
+
 export interface SettingsPageControllerOptions {
   getAuthToken: () => string | null;
   gotoLogin: () => Promise<void>;
   loadSettings: (options?: SettingsPageReloadOptions) => Promise<void>;
   toErrorMessage: (caughtError: unknown, fallback: string) => string;
   getMfaSetupState: () => MfaSetupState | null;
+  getDisplayName: () => string;
+  getAvatarUrl: () => string;
+  getWebsite: () => string;
+  getBio: () => string;
+  setProfileSubmitting: (value: boolean) => void;
   getTokenName: () => string;
   setTokenName: (value: string) => void;
   getTokenExpiryDays: () => string;
@@ -68,7 +90,22 @@ export interface SettingsPageControllerOptions {
   getSelectedScopes: () => Set<string>;
   setSelectedScopes: (value: Set<string>) => void;
   setCreatingToken: (value: boolean) => void;
+  getOrgName: () => string;
+  setOrgName: (value: string) => void;
+  getOrgSlug: () => string;
+  setOrgSlug: (value: string) => void;
+  getOrgDescription: () => string;
+  setOrgDescription: (value: string) => void;
+  getOrgWebsite: () => string;
+  setOrgWebsite: (value: string) => void;
+  getOrgEmail: () => string;
+  setOrgEmail: (value: string) => void;
+  getOrgSlugTouched: () => boolean;
+  setOrgSlugTouched: (value: boolean) => void;
+  setCreatingOrganization: (value: boolean) => void;
   tokenActions?: SettingsPageTokenActions;
+  profileActions?: SettingsPageProfileActions;
+  organizationActions?: SettingsPageOrganizationActions;
 }
 
 const DEFAULT_SETTINGS_PAGE_LOADERS: SettingsPageLoaders = {
@@ -82,6 +119,16 @@ const DEFAULT_SETTINGS_PAGE_LOADERS: SettingsPageLoaders = {
 const DEFAULT_SETTINGS_PAGE_TOKEN_ACTIONS: SettingsPageTokenActions = {
   createToken,
   revokeToken,
+};
+
+const DEFAULT_SETTINGS_PAGE_PROFILE_ACTIONS: SettingsPageProfileActions = {
+  updateCurrentUser,
+};
+
+const DEFAULT_SETTINGS_PAGE_ORGANIZATION_ACTIONS: SettingsPageOrganizationActions = {
+  createOrg,
+  acceptInvitation,
+  declineInvitation,
 };
 
 export async function loadSettingsPageState(options: {
@@ -155,6 +202,10 @@ export async function loadSettingsPageState(options: {
 
 export function createSettingsPageController(options: SettingsPageControllerOptions) {
   const tokenActions = options.tokenActions || DEFAULT_SETTINGS_PAGE_TOKEN_ACTIONS;
+  const profileActions =
+    options.profileActions || DEFAULT_SETTINGS_PAGE_PROFILE_ACTIONS;
+  const organizationActions =
+    options.organizationActions || DEFAULT_SETTINGS_PAGE_ORGANIZATION_ACTIONS;
 
   return {
     async initialize(): Promise<void> {
@@ -164,6 +215,45 @@ export function createSettingsPageController(options: SettingsPageControllerOpti
       }
 
       await options.loadSettings();
+    },
+
+    handleOrgNameInput(value: string): void {
+      options.setOrgName(value);
+      if (!options.getOrgSlugTouched()) {
+        options.setOrgSlug(normalizeSettingsOrgSlug(value));
+      }
+    },
+
+    handleOrgSlugInput(value: string): void {
+      options.setOrgSlugTouched(true);
+      options.setOrgSlug(normalizeSettingsOrgSlug(value));
+    },
+
+    async submitProfile(event: SubmitEvent): Promise<void> {
+      event.preventDefault();
+      options.setProfileSubmitting(true);
+
+      try {
+        const updates: UserUpdate = {
+          display_name: optionalSettingsField(options.getDisplayName()),
+          avatar_url: optionalSettingsField(options.getAvatarUrl()),
+          website: optionalSettingsField(options.getWebsite()),
+          bio: optionalSettingsField(options.getBio()),
+        };
+
+        await profileActions.updateCurrentUser(updates);
+        await options.loadSettings({
+          notice: 'Profile updated successfully.',
+          mfaSetupState: options.getMfaSetupState(),
+        });
+      } catch (caughtError: unknown) {
+        await options.loadSettings({
+          error: options.toErrorMessage(caughtError, 'Failed to update profile.'),
+          mfaSetupState: options.getMfaSetupState(),
+        });
+      } finally {
+        options.setProfileSubmitting(false);
+      }
     },
 
     async submitToken(event: SubmitEvent): Promise<void> {
@@ -220,5 +310,104 @@ export function createSettingsPageController(options: SettingsPageControllerOpti
         });
       }
     },
+
+    async createOrganization(event: SubmitEvent): Promise<void> {
+      event.preventDefault();
+
+      const orgName = String(options.getOrgName() ?? '').trim();
+      const normalizedSlug = normalizeSettingsOrgSlug(options.getOrgSlug());
+      if (!orgName || !normalizedSlug) {
+        await options.loadSettings({
+          error: 'Organization name and a valid slug are required.',
+          mfaSetupState: options.getMfaSetupState(),
+        });
+        return;
+      }
+
+      options.setCreatingOrganization(true);
+
+      try {
+        const result = await organizationActions.createOrg({
+          name: orgName,
+          slug: normalizedSlug,
+          description: optionalSettingsField(options.getOrgDescription()),
+          website: optionalSettingsField(options.getOrgWebsite()),
+          email: optionalSettingsField(options.getOrgEmail()),
+        } satisfies CreateOrgInput);
+
+        options.setOrgName('');
+        options.setOrgSlug('');
+        options.setOrgDescription('');
+        options.setOrgWebsite('');
+        options.setOrgEmail('');
+        options.setOrgSlugTouched(false);
+        await options.loadSettings({
+          notice: `Organization created successfully. Slug: ${result.slug}.`,
+          mfaSetupState: options.getMfaSetupState(),
+        });
+      } catch (caughtError: unknown) {
+        await options.loadSettings({
+          error: options.toErrorMessage(caughtError, 'Failed to create organization.'),
+          mfaSetupState: options.getMfaSetupState(),
+        });
+      } finally {
+        options.setCreatingOrganization(false);
+      }
+    },
+
+    async acceptInvitation(invitationId: string): Promise<void> {
+      try {
+        const result: AcceptInvitationResult =
+          await organizationActions.acceptInvitation(invitationId);
+        await options.loadSettings({
+          notice: `Invitation accepted. You are now ${result.role || 'a member'} in ${
+            result.org?.name || result.org?.slug || 'the organization'
+          }.`,
+          mfaSetupState: options.getMfaSetupState(),
+        });
+      } catch (caughtError: unknown) {
+        await options.loadSettings({
+          error: options.toErrorMessage(
+            caughtError,
+            'Failed to accept invitation.'
+          ),
+          mfaSetupState: options.getMfaSetupState(),
+        });
+      }
+    },
+
+    async declineInvitation(invitationId: string): Promise<void> {
+      try {
+        await organizationActions.declineInvitation(invitationId);
+        await options.loadSettings({
+          notice: 'Invitation declined.',
+          mfaSetupState: options.getMfaSetupState(),
+        });
+      } catch (caughtError: unknown) {
+        await options.loadSettings({
+          error: options.toErrorMessage(
+            caughtError,
+            'Failed to decline invitation.'
+          ),
+          mfaSetupState: options.getMfaSetupState(),
+        });
+      }
+    },
   };
+}
+
+export function optionalSettingsField(value: string): string | null {
+  const trimmed = String(value ?? '').trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+export function normalizeSettingsOrgSlug(value: string): string {
+  return String(value ?? '')
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9-\s]/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+/, '')
+    .slice(0, 64);
 }

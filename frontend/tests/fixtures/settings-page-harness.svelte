@@ -13,7 +13,10 @@
     createSettingsPageController,
     DEFAULT_TOKEN_SCOPES,
     loadSettingsPageState,
+    normalizeSettingsOrgSlug,
     type SettingsPageLoaders,
+    type SettingsPageOrganizationActions,
+    type SettingsPageProfileActions,
     type SettingsPageTokenActions,
   } from '../../src/pages/settings-page';
 
@@ -36,6 +39,9 @@
   export let authToken: string | null = 'test-token';
   export let loaders: SettingsPageLoaders;
   export let tokenActions: SettingsPageTokenActions;
+  export let profileActions: SettingsPageProfileActions | undefined = undefined;
+  export let organizationActions: SettingsPageOrganizationActions | undefined =
+    undefined;
 
   let loading = true;
   let notice: string | null = null;
@@ -58,6 +64,14 @@
   let tokenExpiryDays = '';
   let selectedScopes = new Set<string>(DEFAULT_TOKEN_SCOPES);
   let creatingToken = false;
+  let profileSubmitting = false;
+  let orgName = '';
+  let orgSlug = '';
+  let orgDescription = '';
+  let orgWebsite = '';
+  let orgEmail = '';
+  let orgSlugTouched = false;
+  let creatingOrganization = false;
 
   async function loadSettings(
     options: {
@@ -119,6 +133,13 @@
       loadSettings,
       toErrorMessage,
       getMfaSetupState: () => mfaSetupState,
+      getDisplayName: () => displayName,
+      getAvatarUrl: () => avatarUrl,
+      getWebsite: () => website,
+      getBio: () => bio,
+      setProfileSubmitting: (value) => {
+        profileSubmitting = value;
+      },
       getTokenName: () => tokenName,
       setTokenName: (value) => {
         tokenName = value;
@@ -134,7 +155,36 @@
       setCreatingToken: (value) => {
         creatingToken = value;
       },
+      getOrgName: () => orgName,
+      setOrgName: (value) => {
+        orgName = value;
+      },
+      getOrgSlug: () => orgSlug,
+      setOrgSlug: (value) => {
+        orgSlug = value;
+      },
+      getOrgDescription: () => orgDescription,
+      setOrgDescription: (value) => {
+        orgDescription = value;
+      },
+      getOrgWebsite: () => orgWebsite,
+      setOrgWebsite: (value) => {
+        orgWebsite = value;
+      },
+      getOrgEmail: () => orgEmail,
+      setOrgEmail: (value) => {
+        orgEmail = value;
+      },
+      getOrgSlugTouched: () => orgSlugTouched,
+      setOrgSlugTouched: (value) => {
+        orgSlugTouched = value;
+      },
+      setCreatingOrganization: (value) => {
+        creatingOrganization = value;
+      },
       tokenActions,
+      profileActions,
+      organizationActions,
     });
   }
 
@@ -155,6 +205,72 @@
   {namespaceTransferTargets.length} {organizationsError} {namespaceClaims.length}
   {namespaceClaimsError} {invitations.length} {invitationsError}
 </div>
+
+<form id="profile-form" on:submit={(event) => buildController().submitProfile(event)}>
+  <input id="settings-display-name" bind:value={displayName} />
+  <input id="settings-avatar-url" bind:value={avatarUrl} />
+  <input id="settings-website" bind:value={website} />
+  <textarea id="settings-bio" bind:value={bio}></textarea>
+  <button type="submit" disabled={profileSubmitting}>
+    {profileSubmitting ? 'Saving…' : 'Save profile'}
+  </button>
+</form>
+
+<section>
+  {#if invitations.length === 0}
+    <div>No pending invitations</div>
+  {:else}
+    {#each invitations as invitation}
+      <div data-test={`invitation-${invitation.id || 'unknown'}`}>
+        <span>{invitation.org?.name || invitation.org?.slug || 'Organization'}</span>
+        {#if invitation.actionable !== false && invitation.id}
+          <button
+            type="button"
+            on:click={() => buildController().acceptInvitation(invitation.id || '')}
+          >
+            Accept
+          </button>
+          <button
+            type="button"
+            on:click={() => buildController().declineInvitation(invitation.id || '')}
+          >
+            Decline
+          </button>
+        {/if}
+      </div>
+    {/each}
+  {/if}
+</section>
+
+<form
+  id="org-create-form"
+  on:submit={(event) => buildController().createOrganization(event)}
+>
+  <input
+    id="org-name"
+    value={orgName}
+    on:input={(event) =>
+      buildController().handleOrgNameInput(
+        (event.currentTarget as HTMLInputElement).value
+      )}
+  />
+  <input
+    id="org-slug"
+    value={orgSlug}
+    on:input={(event) =>
+      buildController().handleOrgSlugInput(
+        (event.currentTarget as HTMLInputElement).value
+      )}
+  />
+  <textarea id="org-description" bind:value={orgDescription}></textarea>
+  <input id="org-website" bind:value={orgWebsite} />
+  <input id="org-email" bind:value={orgEmail} />
+  <button type="submit" disabled={creatingOrganization}>
+    {creatingOrganization ? 'Creating…' : 'Create organization'}
+  </button>
+</form>
+
+<div data-test="org-slug-preview">{normalizeSettingsOrgSlug(orgSlug)}</div>
 
 <SettingsTokenSection
   {createdToken}
