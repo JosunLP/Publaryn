@@ -1,6 +1,7 @@
 /// <reference path="./bun-test.d.ts" />
 
 import { afterEach, describe, expect, mock, test } from 'bun:test';
+import { fileURLToPath } from 'node:url';
 
 import { changeValue, renderSvelte, submitForm } from './svelte-dom';
 
@@ -56,7 +57,7 @@ const sessionModuleUrl = new URL('../src/lib/session.ts', import.meta.url).href;
 const authModuleUrl = new URL('../src/api/auth.ts', import.meta.url).href;
 const authApi = (await import(authModuleUrl)) as typeof import('../src/api/auth');
 const LoginPagePath =
-  '/home/runner/work/Publaryn/Publaryn/frontend/src/routes/login/+page.svelte';
+  fileURLToPath(new URL('../src/routes/login/+page.svelte', import.meta.url));
 
 let currentScenario: Scenario | null = null;
 let storedAuthToken: string | null = null;

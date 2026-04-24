@@ -1,6 +1,7 @@
 /// <reference path="./bun-test.d.ts" />
 
 import { describe, expect, test } from 'bun:test';
+import { fileURLToPath } from 'node:url';
 
 import { changeValue, click, renderSvelte, submitForm } from './svelte-dom';
 
@@ -8,7 +9,7 @@ type SettingsMfaActions =
   import('../src/pages/settings-mfa').SettingsMfaActions;
 
 const HarnessPath =
-  '/home/runner/work/Publaryn/Publaryn/frontend/tests/fixtures/settings-mfa-harness.svelte';
+  fileURLToPath(new URL('./fixtures/settings-mfa-harness.svelte', import.meta.url));
 
 describe('settings MFA section', () => {
   test('runs the MFA setup flow and switches to the enabled state after verification', async () => {

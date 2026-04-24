@@ -1,6 +1,7 @@
 /// <reference path="./bun-test.d.ts" />
 
 import { afterEach, describe, expect, mock, test } from 'bun:test';
+import { fileURLToPath } from 'node:url';
 
 import {
   changeValue,
@@ -21,7 +22,7 @@ import type { MyInvitation, OrganizationMembership } from '../src/api/orgs';
 import type { TokenRecord } from '../src/api/tokens';
 
 const HarnessPath =
-  '/home/runner/work/Publaryn/Publaryn/frontend/tests/fixtures/settings-page-harness.svelte';
+  fileURLToPath(new URL('./fixtures/settings-page-harness.svelte', import.meta.url));
 
 const gotoCalls: Array<{ href: string; replaceState?: boolean }> = [];
 
