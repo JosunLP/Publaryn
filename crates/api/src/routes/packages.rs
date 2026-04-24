@@ -103,7 +103,7 @@ pub fn router() -> Router<AppState> {
         .route("/v1/packages/{ecosystem}/{name}/tags", get(list_tags))
         .route(
             "/v1/packages/{ecosystem}/{name}/tags/{tag}",
-            put(upsert_tag),
+            put(upsert_tag).delete(delete_tag),
         )
 }
 
@@ -1788,6 +1788,36 @@ async fn upsert_tag(
         "message": "Tag updated",
         "tag": tag,
         "version": body.version,
+    })))
+}
+
+async fn delete_tag(
+    State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
+    Path((ecosystem_str, name, tag)): Path<(String, String, String)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    ensure_scope(&identity, SCOPE_PACKAGES_WRITE)?;
+
+    let eco = parse_ecosystem(&ecosystem_str)?;
+    let normalized = normalize_package_name(&name, &eco);
+    let pkg_id =
+        ensure_package_publish_access(&state.db, eco.as_str(), &normalized, identity.user_id)
+            .await?;
+
+    let delete_result = sqlx::query("DELETE FROM channel_refs WHERE package_id = $1 AND name = $2")
+        .bind(pkg_id)
+        .bind(&tag)
+        .execute(&state.db)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    if delete_result.rows_affected() == 0 {
+        return Err(ApiError(Error::NotFound(format!("Tag '{tag}' not found"))));
+    }
+
+    Ok(Json(serde_json::json!({
+        "message": "Tag deleted",
+        "tag": tag,
     })))
 }
 

@@ -3,7 +3,13 @@
 import { afterEach, describe, expect, mock, test } from 'bun:test';
 import { writable } from 'svelte/store';
 
-import { changeValue, renderSvelte, setChecked } from './svelte-dom';
+import {
+  changeValue,
+  click,
+  renderSvelte,
+  setChecked,
+  submitForm,
+} from './svelte-dom';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -26,9 +32,12 @@ interface Scenario {
   requests: string[];
   gotoCalls: string[];
   packageDetail: JsonRecord;
+  releases: JsonRecord[];
   findings: JsonRecord[];
   organizations: JsonRecord[];
   teams: JsonRecord[];
+  tags: Record<string, { version: string }>;
+  tagMutations: string[];
 }
 
 const ECOSYSTEM = 'npm';
@@ -256,6 +265,72 @@ describe('package detail security access route', () => {
       unmount();
     }
   });
+
+  test('manages package tags from the package sidebar', async () => {
+    currentScenario = createScenario({
+      packageDetail: {
+        can_manage_releases: true,
+      },
+      releases: [
+        {
+          version: '1.2.3',
+          status: 'published',
+        },
+        {
+          version: '1.3.0',
+          status: 'published',
+        },
+      ],
+      tags: {
+        latest: { version: '1.2.3' },
+      },
+    });
+
+    let confirmCalls = 0;
+    const originalConfirm = window.confirm;
+    window.confirm = (() => {
+      confirmCalls += 1;
+      return true;
+    }) as typeof window.confirm;
+
+    const { target, unmount } = await renderSvelte(PackagePage.default);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Create or retarget a tag');
+        expect(target.textContent).toContain('latest');
+        expect(target.textContent).toContain('1.2.3');
+      });
+
+      changeValue(queryRequiredInput(target, '#package-tag-name'), 'beta');
+      changeValue(queryRequiredSelect(target, '#package-tag-version'), '1.3.0');
+      submitForm(queryRequiredForm(target, '#package-tag-form'));
+
+      await waitFor(() => {
+        expect(target.textContent).toContain('Tag updated');
+        expect(target.textContent).toContain('beta');
+        expect(target.textContent).toContain('1.3.0');
+      });
+
+      click(queryRequiredButton(target, '[data-tag-delete="latest"]'));
+
+      await waitFor(() => {
+        expect(target.textContent).toContain('Tag deleted');
+        const tagsSection = querySectionByHeading(target, 'Tags');
+        expect(tagsSection.textContent).not.toContain('latest');
+        expect(tagsSection.textContent).toContain('beta');
+      });
+
+      expect(confirmCalls).toBe(1);
+      expect(currentScenario?.tagMutations).toEqual([
+        `PUT /v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/tags/beta`,
+        `DELETE /v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/tags/latest`,
+      ]);
+    } finally {
+      window.confirm = originalConfirm;
+      unmount();
+    }
+  });
 });
 
 async function handleApiRequest(
@@ -280,11 +355,38 @@ async function handleApiRequest(
       page: undefined,
       per_page: 20,
     });
-    return apiResponse({ releases: [] });
+    return apiResponse({ releases: currentScenario.releases });
   }
 
   if (method === 'GET' && path === `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/tags`) {
-    return apiResponse({ tags: {} });
+    return apiResponse({ tags: currentScenario.tags });
+  }
+
+  if (method === 'PUT' && path.startsWith(`/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/tags/`)) {
+    const tag = decodeURIComponent(path.split('/').at(-1) || '');
+    const version = String(options?.body?.version || '').trim();
+    if (!tag || !version) {
+      throw new Error(`Invalid tag mutation body for ${path}.`);
+    }
+
+    currentScenario.tagMutations.push(`${method} ${path}`);
+    currentScenario.tags[tag] = { version };
+    return apiResponse({ message: 'Tag updated', tag, version });
+  }
+
+  if (
+    method === 'DELETE' &&
+    path.startsWith(`/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/tags/`)
+  ) {
+    const tag = decodeURIComponent(path.split('/').at(-1) || '');
+    currentScenario.tagMutations.push(`${method} ${path}`);
+
+    if (!(tag in currentScenario.tags)) {
+      throw new Error(`Missing tag ${tag}.`);
+    }
+
+    delete currentScenario.tags[tag];
+    return apiResponse({ message: 'Tag deleted', tag });
   }
 
   if (
@@ -317,7 +419,7 @@ function apiResponse(data: JsonRecord): { data: JsonRecord; requestId: null } {
   };
 }
 
-function createScenario(): Scenario {
+function createScenario(overrides: Partial<Scenario> = {}): Scenario {
   return {
     requests: [],
     gotoCalls: [],
@@ -356,8 +458,11 @@ function createScenario(): Scenario {
           granted_at: '2026-04-12T00:00:00Z',
         },
       ],
+      ...(overrides.packageDetail || {}),
     },
-    findings: [
+    releases: overrides.releases || [],
+    findings:
+      overrides.findings || [
       {
         id: 'finding-1',
         kind: 'vulnerability',
@@ -408,7 +513,8 @@ function createScenario(): Scenario {
         artifact_filename: 'demo-widget-1.2.1.tgz',
       },
     ],
-    organizations: [
+    organizations:
+      overrides.organizations || [
       {
         id: 'org-1',
         slug: ORG_SLUG,
@@ -416,7 +522,8 @@ function createScenario(): Scenario {
         role: 'admin',
       },
     ],
-    teams: [
+    teams:
+      overrides.teams || [
       {
         id: 'team-security',
         slug: 'security-team',
@@ -425,6 +532,8 @@ function createScenario(): Scenario {
         created_at: '2026-04-01T00:00:00Z',
       },
     ],
+    tags: overrides.tags || {},
+    tagMutations: [],
   };
 }
 
@@ -478,6 +587,22 @@ function queryRequiredSelect(target: HTMLElement, selector: string): HTMLSelectE
   const element = target.querySelector(selector);
   if (!(element instanceof HTMLSelectElement)) {
     throw new Error(`Missing select for selector ${selector}.`);
+  }
+  return element;
+}
+
+function queryRequiredButton(target: ParentNode, selector: string): HTMLButtonElement {
+  const element = target.querySelector(selector);
+  if (!(element instanceof HTMLButtonElement)) {
+    throw new Error(`Missing button for selector ${selector}.`);
+  }
+  return element;
+}
+
+function queryRequiredForm(target: ParentNode, selector: string): HTMLFormElement {
+  const element = target.querySelector(selector);
+  if (!(element instanceof HTMLFormElement)) {
+    throw new Error(`Missing form for selector ${selector}.`);
   }
   return element;
 }

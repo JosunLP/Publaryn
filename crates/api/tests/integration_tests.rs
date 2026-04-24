@@ -1973,6 +1973,72 @@ async fn deprecate_release_for_package(
     (status, body)
 }
 
+/// List package channel tags and return the response.
+async fn list_package_tags(
+    app: &axum::Router,
+    jwt: Option<&str>,
+    ecosystem: &str,
+    name: &str,
+) -> (StatusCode, Value) {
+    let mut request = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/v1/packages/{ecosystem}/{name}/tags"));
+
+    if let Some(jwt) = jwt {
+        request = request.header(header::AUTHORIZATION, format!("Bearer {jwt}"));
+    }
+
+    let req = request.body(Body::empty()).unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// Upsert a package channel tag and return the response.
+async fn upsert_package_tag(
+    app: &axum::Router,
+    jwt: &str,
+    ecosystem: &str,
+    name: &str,
+    tag: &str,
+    version: &str,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::PUT)
+        .uri(format!("/v1/packages/{ecosystem}/{name}/tags/{tag}"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::from(json!({ "version": version }).to_string()))
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// Delete a package channel tag and return the response.
+async fn delete_package_tag(
+    app: &axum::Router,
+    jwt: &str,
+    ecosystem: &str,
+    name: &str,
+    tag: &str,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::DELETE)
+        .uri(format!("/v1/packages/{ecosystem}/{name}/tags/{tag}"))
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
 /// Get a native npm packument and return the response.
 async fn get_npm_packument(
     app: &axum::Router,
@@ -20170,6 +20236,132 @@ async fn test_org_audit_includes_release_lifecycle_events_for_org_owned_packages
     assert!(publish_export_lines[1].contains(org_id));
     assert!(publish_export_body.contains("acme-lifecycle-widget"));
     assert!(!publish_export_body.contains("personal-lifecycle-widget"));
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_package_tag_lifecycle_supports_create_update_and_delete(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let owner_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, _) = create_repository_with_options(
+        &app,
+        &owner_jwt,
+        "Personal Pkgs",
+        "personal-pkgs",
+        None,
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_package_with_options(
+        &app,
+        &owner_jwt,
+        "npm",
+        "taggable-widget",
+        "personal-pkgs",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) =
+        create_release_for_package(&app, &owner_jwt, "npm", "taggable-widget", "1.0.0").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) =
+        create_release_for_package(&app, &owner_jwt, "npm", "taggable-widget", "1.1.0").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, initial_tags) = list_package_tags(&app, None, "npm", "taggable-widget").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected list response: {initial_tags}"
+    );
+    assert_eq!(initial_tags["tags"], json!({}));
+
+    let (status, create_body) = upsert_package_tag(
+        &app,
+        &owner_jwt,
+        "npm",
+        "taggable-widget",
+        "latest",
+        "1.0.0",
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected create tag response: {create_body}"
+    );
+    assert_eq!(create_body["message"], "Tag updated");
+    assert_eq!(create_body["tag"], "latest");
+    assert_eq!(create_body["version"], "1.0.0");
+
+    let (status, created_tags) = list_package_tags(&app, None, "npm", "taggable-widget").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected list response: {created_tags}"
+    );
+    assert_eq!(created_tags["tags"]["latest"]["version"], "1.0.0");
+    assert!(created_tags["tags"]["latest"]["updated_at"].is_string());
+
+    let (status, update_body) = upsert_package_tag(
+        &app,
+        &owner_jwt,
+        "npm",
+        "taggable-widget",
+        "latest",
+        "1.1.0",
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected update tag response: {update_body}"
+    );
+    assert_eq!(update_body["version"], "1.1.0");
+
+    let (status, updated_tags) = list_package_tags(&app, None, "npm", "taggable-widget").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected list response: {updated_tags}"
+    );
+    assert_eq!(updated_tags["tags"]["latest"]["version"], "1.1.0");
+
+    let (status, delete_body) =
+        delete_package_tag(&app, &owner_jwt, "npm", "taggable-widget", "latest").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected delete tag response: {delete_body}"
+    );
+    assert_eq!(delete_body["message"], "Tag deleted");
+    assert_eq!(delete_body["tag"], "latest");
+
+    let (status, final_tags) = list_package_tags(&app, None, "npm", "taggable-widget").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected list response: {final_tags}"
+    );
+    assert_eq!(final_tags["tags"], json!({}));
+
+    let (status, missing_delete_body) =
+        delete_package_tag(&app, &owner_jwt, "npm", "taggable-widget", "latest").await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "unexpected delete missing tag response: {missing_delete_body}"
+    );
+    assert!(missing_delete_body["error"]
+        .as_str()
+        .expect("missing tag error should be returned")
+        .contains("Tag 'latest' not found"));
 }
 
 #[sqlx::test(migrations = "../../migrations")]
