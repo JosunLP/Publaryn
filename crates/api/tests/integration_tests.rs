@@ -19934,22 +19934,6 @@ async fn test_release_lifecycle_audit_sets_target_org_id_for_org_owned_packages(
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    let (status, _) = deprecate_release_for_package(
-        &app,
-        &owner_jwt,
-        "npm",
-        "acme-lifecycle-widget",
-        "1.0.0",
-        Some("prefer 2.0.0"),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-
-    let (status, _) =
-        undeprecate_release_for_package(&app, &owner_jwt, "npm", "acme-lifecycle-widget", "1.0.0")
-            .await;
-    assert_eq!(status, StatusCode::OK);
-
     let (status, unyank_body) =
         unyank_release_for_package(&app, &owner_jwt, "npm", "acme-release-widget", "1.0.0").await;
     assert_eq!(status, StatusCode::OK, "unyank body: {unyank_body}");
@@ -20260,6 +20244,29 @@ async fn test_org_audit_includes_release_lifecycle_events_for_org_owned_packages
     .await;
     assert_eq!(status, StatusCode::OK);
 
+    promote_release_to_published(&pool, "npm", "personal-lifecycle-widget", "1.0.0").await;
+
+    let (status, _) = deprecate_release_for_package(
+        &app,
+        &owner_jwt,
+        "npm",
+        "personal-lifecycle-widget",
+        "1.0.0",
+        Some("personal migration"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, _) = undeprecate_release_for_package(
+        &app,
+        &owner_jwt,
+        "npm",
+        "personal-lifecycle-widget",
+        "1.0.0",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
     let (status, publish_audit_body) = list_org_audit(
         &app,
         &owner_jwt,
@@ -20293,30 +20300,30 @@ async fn test_org_audit_includes_release_lifecycle_events_for_org_owned_packages
     assert_eq!(yank_logs[0]["target_org_id"].as_str(), Some(org_id));
     assert_eq!(yank_logs[0]["metadata"]["reason"], "supply chain issue");
 
-    let undeprecate_target_org_id: Option<uuid::Uuid> = sqlx::query_scalar(
-        "SELECT target_org_id FROM audit_logs \
-         WHERE action = 'release_undeprecate'::audit_action \
-           AND metadata->>'name' = 'acme-lifecycle-widget' \
-           AND metadata->>'version' = '1.0.0'",
+    let (status, undeprecate_audit_body) = list_org_audit(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        Some("action=release_undeprecate&per_page=20"),
     )
-    .fetch_one(&pool)
-    .await
-    .expect("release undeprecate audit row should exist");
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let undeprecate_logs = undeprecate_audit_body["logs"]
+        .as_array()
+        .expect("undeprecate audit logs response should be an array");
     assert_eq!(
-        undeprecate_target_org_id.map(|id| id.to_string()),
-        Some(org_id.to_owned())
+        undeprecate_logs.len(),
+        1,
+        "response: {undeprecate_audit_body}"
     );
-
-    let undeprecate_restored_status: String = sqlx::query_scalar(
-        "SELECT metadata->>'restored_status' FROM audit_logs \
-         WHERE action = 'release_undeprecate'::audit_action \
-           AND metadata->>'name' = 'acme-lifecycle-widget' \
-           AND metadata->>'version' = '1.0.0'",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("release undeprecate audit metadata should be queryable");
-    assert_eq!(undeprecate_restored_status, "yanked");
+    assert_eq!(undeprecate_logs[0]["action"], "release_undeprecate");
+    assert_eq!(undeprecate_logs[0]["target_org_id"].as_str(), Some(org_id));
+    assert_eq!(
+        undeprecate_logs[0]["metadata"]["name"],
+        "acme-lifecycle-widget"
+    );
+    assert_eq!(undeprecate_logs[0]["metadata"]["version"], "1.0.0");
+    assert_eq!(undeprecate_logs[0]["metadata"]["restored_status"], "yanked");
 
     let publish_export_resp = export_org_audit_csv(
         &app,
@@ -20337,6 +20344,28 @@ async fn test_org_audit_includes_release_lifecycle_events_for_org_owned_packages
     assert!(publish_export_lines[1].contains(org_id));
     assert!(publish_export_body.contains("acme-lifecycle-widget"));
     assert!(!publish_export_body.contains("personal-lifecycle-widget"));
+
+    let undeprecate_export_resp = export_org_audit_csv(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        Some("action=release_undeprecate"),
+    )
+    .await;
+    assert_eq!(undeprecate_export_resp.status(), StatusCode::OK);
+    let undeprecate_export_body = body_text(undeprecate_export_resp).await;
+    let undeprecate_export_lines = undeprecate_export_body.lines().collect::<Vec<_>>();
+    assert_eq!(
+        undeprecate_export_lines.len(),
+        2,
+        "unexpected CSV export body: {undeprecate_export_body}"
+    );
+    assert!(undeprecate_export_lines[1].contains(",release_undeprecate,"));
+    assert!(undeprecate_export_lines[1].contains(org_id));
+    assert!(undeprecate_export_body.contains("acme-lifecycle-widget"));
+    assert!(undeprecate_export_body.contains("restored_status"));
+    assert!(undeprecate_export_body.contains("yanked"));
+    assert!(!undeprecate_export_body.contains("personal-lifecycle-widget"));
 }
 
 #[sqlx::test(migrations = "../../migrations")]
