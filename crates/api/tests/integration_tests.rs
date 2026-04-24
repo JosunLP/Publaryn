@@ -14965,6 +14965,304 @@ async fn test_cargo_owner_endpoints_list_org_admins_and_acknowledge_mutations(po
 }
 
 #[sqlx::test(migrations = "../../migrations")]
+async fn test_cargo_owner_endpoints_list_user_owner_and_acknowledge_personal_mutations(
+    pool: PgPool,
+) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, repository_body) = create_repository(
+        &app,
+        &alice_jwt,
+        "Alice Cargo Packages",
+        "alice-cargo-packages",
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "cargo",
+        "personal_widget",
+        "alice-cargo-packages",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let (status, token_body) = create_personal_access_token(
+        &app,
+        &alice_jwt,
+        "cargo-personal-owners",
+        &["packages:write"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
+    let cargo_token = token_body["token"]
+        .as_str()
+        .expect("cargo token should be returned")
+        .to_owned();
+
+    let (status, owners_body) =
+        list_cargo_crate_owners(&app, &cargo_token, "personal_widget").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected cargo owners response: {owners_body}"
+    );
+    let owner_logins = owners_body["users"]
+        .as_array()
+        .expect("cargo owners response should include a users array")
+        .iter()
+        .filter_map(|entry| entry["login"].as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(owner_logins, vec!["alice"]);
+
+    let (status, add_owners_body) =
+        add_cargo_crate_owners(&app, &cargo_token, "personal_widget", &["bob"]).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected cargo add owners response: {add_owners_body}"
+    );
+    assert_eq!(add_owners_body["ok"], true);
+    assert!(add_owners_body["msg"]
+        .as_str()
+        .expect("cargo add owners response should include a message")
+        .contains("Requested users: [\"bob\"]"));
+
+    let (status, remove_owners_body) =
+        remove_cargo_crate_owners(&app, &cargo_token, "personal_widget", &["alice"]).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected cargo remove owners response: {remove_owners_body}"
+    );
+    assert_eq!(remove_owners_body["ok"], true);
+    assert!(remove_owners_body["msg"]
+        .as_str()
+        .expect("cargo remove owners response should include a message")
+        .contains("Requested removal: [\"alice\"]"));
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_cargo_owner_endpoints_allow_org_admin_and_team_admin_writers(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    register_user(&app, "carol", "carol@test.dev", "super_secret_pw!").await;
+    register_user(&app, "dave", "dave@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+    let carol_jwt = login_user(&app, "carol", "super_secret_pw!").await;
+    let dave_jwt = login_user(&app, "dave", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &alice_jwt, "Acme Cargo", "acme-cargo").await;
+    assert_eq!(status, StatusCode::CREATED, "{org_body}");
+    let org_id = org_body["id"]
+        .as_str()
+        .expect("organization id should be returned")
+        .to_owned();
+
+    for username in ["bob", "carol", "dave"] {
+        let role = if username == "bob" { "admin" } else { "viewer" };
+        let (status, add_member_body) =
+            add_org_member(&app, &alice_jwt, "acme-cargo", username, role).await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected member add response for {username}: {add_member_body}"
+        );
+    }
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Acme Cargo Packages",
+        "acme-cargo-packages",
+        Some(&org_id),
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "cargo",
+        "delegated_owner_widget",
+        "acme-cargo-packages",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "acme-cargo",
+        "Cargo Package Admins",
+        "cargo-package-admins",
+        Some("Can manage Cargo owner compatibility requests via package grants."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "acme-cargo",
+        "Cargo Repository Admins",
+        "cargo-repository-admins",
+        Some("Can manage Cargo owner compatibility requests via repository grants."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = add_team_member_to_team(
+        &app,
+        &alice_jwt,
+        "acme-cargo",
+        "cargo-package-admins",
+        "carol",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = add_team_member_to_team(
+        &app,
+        &alice_jwt,
+        "acme-cargo",
+        "cargo-repository-admins",
+        "dave",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, grant_body) = grant_team_package_access(
+        &app,
+        &alice_jwt,
+        "acme-cargo",
+        "cargo-package-admins",
+        "cargo",
+        "delegated_owner_widget",
+        &["admin"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team package access response: {grant_body}"
+    );
+
+    let (status, grant_body) = grant_team_repository_access(
+        &app,
+        &alice_jwt,
+        "acme-cargo",
+        "cargo-repository-admins",
+        "acme-cargo-packages",
+        &["admin"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team repository access response: {grant_body}"
+    );
+
+    let mut writer_tokens = Vec::new();
+    for (jwt, label) in [
+        (&bob_jwt, "cargo-org-admin-owners"),
+        (&carol_jwt, "cargo-team-package-admin-owners"),
+        (&dave_jwt, "cargo-team-repository-admin-owners"),
+    ] {
+        let (status, token_body) =
+            create_personal_access_token(&app, jwt, label, &["packages:write"]).await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected token response for {label}: {token_body}"
+        );
+        writer_tokens.push(
+            token_body["token"]
+                .as_str()
+                .expect("cargo token should be returned")
+                .to_owned(),
+        );
+    }
+
+    let (status, owners_body) =
+        list_cargo_crate_owners(&app, &writer_tokens[0], "delegated_owner_widget").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected cargo owners response: {owners_body}"
+    );
+    let owner_logins = owners_body["users"]
+        .as_array()
+        .expect("cargo owners response should include a users array")
+        .iter()
+        .filter_map(|entry| entry["login"].as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(owner_logins, vec!["alice", "bob"]);
+
+    for (token, label, requested_add, requested_remove) in [
+        (&writer_tokens[0], "org admin", "carol", "alice"),
+        (&writer_tokens[1], "team package admin", "dave", "bob"),
+        (&writer_tokens[2], "team repository admin", "erin", "carol"),
+    ] {
+        let (status, add_owners_body) =
+            add_cargo_crate_owners(&app, token, "delegated_owner_widget", &[requested_add]).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "unexpected cargo add owners response for {label}: {add_owners_body}"
+        );
+        assert_eq!(add_owners_body["ok"], true);
+        assert!(add_owners_body["msg"]
+            .as_str()
+            .expect("cargo add owners response should include a message")
+            .contains(&format!("Requested users: [\"{requested_add}\"]")));
+
+        let (status, remove_owners_body) =
+            remove_cargo_crate_owners(&app, token, "delegated_owner_widget", &[requested_remove])
+                .await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "unexpected cargo remove owners response for {label}: {remove_owners_body}"
+        );
+        assert_eq!(remove_owners_body["ok"], true);
+        assert!(remove_owners_body["msg"]
+            .as_str()
+            .expect("cargo remove owners response should include a message")
+            .contains(&format!("Requested removal: [\"{requested_remove}\"]")));
+    }
+}
+
+#[sqlx::test(migrations = "../../migrations")]
 async fn test_cargo_yank_and_unyank_negative_auth_scope_and_ownership_paths(pool: PgPool) {
     let app = app(pool);
     register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
