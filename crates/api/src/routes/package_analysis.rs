@@ -18,6 +18,8 @@ use crate::{
     storage::ArtifactStore,
 };
 
+// Cap archive probing to 64 MiB so bundle-style analysis remains responsive and
+// avoids fully scanning very large release artifacts on detail page requests.
 const MAX_ARCHIVE_ANALYSIS_BYTES: i64 = 64 * 1024 * 1024;
 const NPM_INSTALL_LIFECYCLE_SCRIPTS: &[&str] = &[
     "preinstall",
