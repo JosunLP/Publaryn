@@ -104,6 +104,38 @@ describe('org governance controller harness', () => {
     }
   });
 
+  test('blocks blank organization names before submitting the profile mutation', async () => {
+    const scenario = createScenario();
+    const { target, unmount, flush } = await renderSvelte(HarnessPath, {
+      loadState: createLoadState(scenario),
+      mutations: createMutations({
+        async updateOrg(_slug, updates) {
+          scenario.updateOrgCalls.push(updates);
+          return scenario.org;
+        },
+      }),
+    });
+
+    try {
+      await waitFor(() => {
+        flush();
+        expect(queryRequiredInput(target, '#org-profile-name').value).toBe('Source Org');
+      });
+
+      changeValue(queryRequiredInput(target, '#org-profile-name'), '   ');
+      submitForm(queryRequiredForm(target, '#org-profile-form'));
+
+      await waitFor(() => {
+        flush();
+        expect(target.textContent).toContain('Organization name is required.');
+      });
+
+      expect(scenario.updateOrgCalls).toEqual([]);
+    } finally {
+      unmount();
+    }
+  });
+
   test('sends invitations, resets the form, and reloads invitation state', async () => {
     const scenario = createScenario();
     const { target, unmount, flush } = await renderSvelte(HarnessPath, {

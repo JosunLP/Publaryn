@@ -540,6 +540,36 @@ describe('route-level multi-page org dataset coverage', () => {
     }
   });
 
+  test('org workspace blocks blank organization names client-side and keeps the slug guidance visible', async () => {
+    const scenario = createFetchScenario();
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(queryRequiredInput(target, '#org-profile-name').value).toBe(
+          'Source Org'
+        );
+        expect(target.textContent).toContain(
+          'Organization slugs are part of workspace URLs'
+        );
+        expect(target.textContent).toContain('stay immutable after');
+      });
+
+      const nameInput = queryRequiredInput(target, '#org-profile-name');
+      const profileForm = queryRequiredForm(nameInput.closest('form'));
+      changeValue(nameInput, '   ');
+      submitForm(profileForm);
+
+      await waitFor(() => {
+        expect(target.textContent).toContain('Organization name is required.');
+      });
+
+      expect(scenario.orgUpdateCalls).toEqual([]);
+    } finally {
+      unmount();
+    }
+  });
+
   test('org workspace surfaces redirect notices from focused team actions', async () => {
     const scenario = createFetchScenario();
     currentScenario = scenario;

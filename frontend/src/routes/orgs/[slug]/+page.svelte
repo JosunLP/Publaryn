@@ -1542,6 +1542,10 @@
                 value={org.slug || slug}
                 disabled
               />
+              <p class="settings-copy">
+                Organization slugs are part of workspace URLs and stay immutable after
+                creation.
+              </p>
             </div>
           </div>
           <div class="form-group">

@@ -68,10 +68,17 @@ export function createOrgGovernanceController(options: OrgGovernanceControllerOp
     async submitProfile(event: SubmitEvent): Promise<void> {
       event.preventDefault();
       const formData = new FormData(event.currentTarget as HTMLFormElement);
+      const name = normalizeRequiredFormText(formData.get('name'));
+
+      if (!name) {
+        options.clearFlash();
+        options.setError('Organization name is required.');
+        return;
+      }
 
       try {
         await mutations.updateOrg(options.getOrgSlug(), {
-          name: normalizeRequiredFormText(formData.get('name')),
+          name,
           description: normalizeOptionalFormText(formData.get('description')),
           website: normalizeOptionalFormText(formData.get('website')),
           email: normalizeOptionalFormText(formData.get('email')),
