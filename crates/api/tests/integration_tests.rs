@@ -1691,7 +1691,7 @@ async fn search_cargo_crates(
         url::form_urlencoded::byte_serialize(query.as_bytes()).collect::<String>()
     ));
     let req = if let Some(token) = auth_token {
-        req.header(header::AUTHORIZATION, token)
+        req.header(header::AUTHORIZATION, format!("Bearer {token}"))
     } else {
         req
     };
@@ -11528,9 +11528,6 @@ async fn test_cargo_search_respects_authenticated_visibility_and_mixed_repositor
     let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
     let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
     let carol_jwt = login_user(&app, "carol", "super_secret_pw!").await;
-    let bob_auth = format!("Bearer {bob_jwt}");
-    let carol_auth = format!("Bearer {carol_jwt}");
-
     let (status, org_body) =
         create_org(&app, &alice_jwt, "Acme Cargo Search", "acme-cargo-search").await;
     assert_eq!(status, StatusCode::CREATED);
@@ -11739,7 +11736,7 @@ async fn test_cargo_search_respects_authenticated_visibility_and_mixed_repositor
         );
 
         let (cargo_member_status, cargo_member_body) =
-            search_cargo_crates(&app, Some(bob_auth.as_str()), search_token, 10).await;
+            search_cargo_crates(&app, Some(&bob_jwt), search_token, 10).await;
         assert_eq!(
             cargo_member_status,
             StatusCode::OK,
@@ -11755,7 +11752,7 @@ async fn test_cargo_search_respects_authenticated_visibility_and_mixed_repositor
         );
 
         let (cargo_outsider_status, cargo_outsider_body) =
-            search_cargo_crates(&app, Some(carol_auth.as_str()), search_token, 10).await;
+            search_cargo_crates(&app, Some(&carol_jwt), search_token, 10).await;
         assert_eq!(
             cargo_outsider_status,
             StatusCode::OK,
@@ -11832,7 +11829,7 @@ async fn test_cargo_search_respects_authenticated_visibility_and_mixed_repositor
         "Cargo search did not converge to expected visibility results.\nmanagement member={latest_management_member}\nmanagement anonymous={latest_management_anonymous}\nmanagement outsider={latest_management_outsider}\ncargo member={latest_cargo_member}\ncargo anonymous={latest_cargo_anonymous}\ncargo outsider={latest_cargo_outsider}"
     );
 
-    let (status, body) = search_cargo_crates(&app, Some(bob_auth.as_str()), search_token, 2).await;
+    let (status, body) = search_cargo_crates(&app, Some(&bob_jwt), search_token, 2).await;
     assert_eq!(
         status,
         StatusCode::OK,
@@ -12245,9 +12242,6 @@ async fn test_cargo_search_surfaces_private_crates_visible_through_team_grants(p
     let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
     let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
     let carol_jwt = login_user(&app, "carol", "super_secret_pw!").await;
-    let bob_auth = format!("Bearer {bob_jwt}");
-    let carol_auth = format!("Bearer {carol_jwt}");
-
     let (status, org_body) = create_org(
         &app,
         &alice_jwt,
@@ -12527,7 +12521,7 @@ async fn test_cargo_search_surfaces_private_crates_visible_through_team_grants(p
         );
 
         let (cargo_bob_status, cargo_bob_body) =
-            search_cargo_crates(&app, Some(bob_auth.as_str()), search_token, 10).await;
+            search_cargo_crates(&app, Some(&bob_jwt), search_token, 10).await;
         assert_eq!(
             cargo_bob_status,
             StatusCode::OK,
@@ -12535,7 +12529,7 @@ async fn test_cargo_search_surfaces_private_crates_visible_through_team_grants(p
         );
 
         let (cargo_carol_status, cargo_carol_body) =
-            search_cargo_crates(&app, Some(carol_auth.as_str()), search_token, 10).await;
+            search_cargo_crates(&app, Some(&carol_jwt), search_token, 10).await;
         assert_eq!(
             cargo_carol_status,
             StatusCode::OK,
