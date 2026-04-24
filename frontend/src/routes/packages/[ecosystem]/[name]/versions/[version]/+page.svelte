@@ -231,7 +231,7 @@
     notice = null;
 
     try {
-      const result = await undeprecateRelease(eecosystem(), ename(), eversion());
+      const result = await undeprecateRelease(ecosystem, name, version);
       await loadVersionPage();
       notice = result.message || 'Release undeprecated successfully.';
     } catch (caughtError: unknown) {
