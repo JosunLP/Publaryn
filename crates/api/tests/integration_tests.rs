@@ -202,6 +202,57 @@ async fn publish_cargo_crate(
     (status, body)
 }
 
+fn cargo_sparse_index_path(crate_name: &str) -> String {
+    let normalized = crate_name.to_ascii_lowercase().replace('-', "_");
+    match normalized.len() {
+        1 => format!("/cargo/index/1/{normalized}"),
+        2 => format!("/cargo/index/2/{normalized}"),
+        3 => format!("/cargo/index/3/{}/{normalized}", &normalized[..1]),
+        _ => format!(
+            "/cargo/index/{}/{}/{normalized}",
+            &normalized[..2],
+            &normalized[2..4]
+        ),
+    }
+}
+
+async fn get_cargo_sparse_index(
+    app: &axum::Router,
+    auth: Option<&str>,
+    crate_name: &str,
+) -> axum::response::Response {
+    let mut req = Request::builder()
+        .method(Method::GET)
+        .uri(cargo_sparse_index_path(crate_name));
+    if let Some(token) = auth {
+        req = req.header(header::AUTHORIZATION, token);
+    }
+    app.clone()
+        .oneshot(req.body(Body::empty()).unwrap())
+        .await
+        .unwrap()
+}
+
+async fn download_cargo_crate(
+    app: &axum::Router,
+    auth: Option<&str>,
+    crate_name: &str,
+    version: &str,
+) -> axum::response::Response {
+    let mut req = Request::builder().method(Method::GET).uri(format!(
+        "/cargo/api/v1/crates/{}/{}/download",
+        enc_path_segment(crate_name),
+        enc_path_segment(version)
+    ));
+    if let Some(token) = auth {
+        req = req.header(header::AUTHORIZATION, token);
+    }
+    app.clone()
+        .oneshot(req.body(Body::empty()).unwrap())
+        .await
+        .unwrap()
+}
+
 /// Yank a Cargo crate version through the native adapter.
 async fn yank_cargo_crate_version(
     app: &axum::Router,
@@ -13590,6 +13641,291 @@ async fn test_cargo_private_sparse_index_and_download_allow_delegated_team_acces
         body_bytes(carol_download_resp).await,
         b"private-cargo-crate"
     );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_cargo_sparse_index_and_download_follow_internal_org_and_mixed_visibility_rules(
+    pool: PgPool,
+) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    register_user(&app, "carol", "carol@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+    let carol_jwt = login_user(&app, "carol", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(
+        &app,
+        &alice_jwt,
+        "Acme Cargo Visibility",
+        "acme-cargo-visibility",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id = org_body["id"]
+        .as_str()
+        .expect("organization id should be returned");
+
+    let (status, _) =
+        add_org_member(&app, &alice_jwt, "acme-cargo-visibility", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, token_body) = create_personal_access_token(
+        &app,
+        &alice_jwt,
+        "cargo-visibility-matrix",
+        &["packages:write"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
+    let cargo_token = token_body["token"]
+        .as_str()
+        .expect("cargo token should be returned")
+        .to_owned();
+
+    struct VisibilityCase<'a> {
+        repository_name: &'a str,
+        repository_slug: &'a str,
+        repository_kind: &'a str,
+        repository_visibility: &'a str,
+        package_name: &'a str,
+        package_visibility: &'a str,
+        crate_bytes: &'a [u8],
+        anonymous_can_read: bool,
+        outsider_can_read: bool,
+    }
+
+    let cases = [
+        VisibilityCase {
+            repository_name: "Cargo Internal Org Packages",
+            repository_slug: "cargo-internal-org-packages",
+            repository_kind: "private",
+            repository_visibility: "internal_org",
+            package_name: "secret_internal_org_widget",
+            package_visibility: "internal_org",
+            crate_bytes: b"cargo-internal-org-widget",
+            anonymous_can_read: false,
+            outsider_can_read: false,
+        },
+        VisibilityCase {
+            repository_name: "Cargo Public Repository",
+            repository_slug: "cargo-public-packages",
+            repository_kind: "public",
+            repository_visibility: "public",
+            package_name: "secret_private_public_widget",
+            package_visibility: "private",
+            crate_bytes: b"cargo-private-package-public-repo",
+            anonymous_can_read: false,
+            outsider_can_read: false,
+        },
+        VisibilityCase {
+            repository_name: "Cargo Internal Private Packages",
+            repository_slug: "cargo-internal-private-packages",
+            repository_kind: "private",
+            repository_visibility: "internal_org",
+            package_name: "secret_private_internal_widget",
+            package_visibility: "private",
+            crate_bytes: b"cargo-private-package-internal-repo",
+            anonymous_can_read: false,
+            outsider_can_read: false,
+        },
+    ];
+
+    for case in cases {
+        let (status, repository_body) = create_repository_with_options(
+            &app,
+            &alice_jwt,
+            case.repository_name,
+            case.repository_slug,
+            Some(org_id),
+            Some(case.repository_kind),
+            Some(case.repository_visibility),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected repository response for {}: {repository_body}",
+            case.package_name
+        );
+
+        let (status, package_body) = create_package_with_options(
+            &app,
+            &alice_jwt,
+            "cargo",
+            case.package_name,
+            case.repository_slug,
+            Some(case.package_visibility),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected package response for {}: {package_body}",
+            case.package_name
+        );
+
+        let payload = build_cargo_publish_payload(
+            json!({
+                "name": case.package_name,
+                "vers": "0.1.0",
+                "deps": [],
+                "features": {},
+                "authors": ["Alice <alice@test.dev>"],
+                "description": format!("Cargo visibility matrix coverage for {}", case.package_name),
+                "license": "MIT"
+            }),
+            case.crate_bytes,
+        );
+
+        let (status, publish_body) = publish_cargo_crate(&app, &cargo_token, payload).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "unexpected cargo publish response for {}: {publish_body}",
+            case.package_name
+        );
+
+        let anonymous_index_resp = get_cargo_sparse_index(&app, None, case.package_name).await;
+        if case.anonymous_can_read {
+            assert_eq!(
+                anonymous_index_resp.status(),
+                StatusCode::OK,
+                "anonymous sparse index response should be readable for {}",
+                case.package_name
+            );
+            let anonymous_index_body = body_text(anonymous_index_resp).await;
+            let anonymous_index_entry: Value = serde_json::from_str(
+                anonymous_index_body
+                    .lines()
+                    .next()
+                    .expect("sparse index entry should exist"),
+            )
+            .expect("sparse index entry should be valid JSON");
+            assert_eq!(anonymous_index_entry["name"], case.package_name);
+        } else {
+            assert_eq!(
+                anonymous_index_resp.status(),
+                StatusCode::NOT_FOUND,
+                "anonymous sparse index response should be hidden for {}",
+                case.package_name
+            );
+        }
+
+        let member_index_resp =
+            get_cargo_sparse_index(&app, Some(&bob_jwt), case.package_name).await;
+        assert_eq!(
+            member_index_resp.status(),
+            StatusCode::OK,
+            "organization member should read sparse index for {}",
+            case.package_name
+        );
+        assert_eq!(
+            member_index_resp
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("text/plain")
+        );
+        let member_index_body = body_text(member_index_resp).await;
+        let member_index_entry: Value = serde_json::from_str(
+            member_index_body
+                .lines()
+                .next()
+                .expect("sparse index entry should exist"),
+        )
+        .expect("sparse index entry should be valid JSON");
+        assert_eq!(member_index_entry["name"], case.package_name);
+        assert_eq!(member_index_entry["vers"], "0.1.0");
+
+        let outsider_index_resp =
+            get_cargo_sparse_index(&app, Some(&carol_jwt), case.package_name).await;
+        if case.outsider_can_read {
+            assert_eq!(
+                outsider_index_resp.status(),
+                StatusCode::OK,
+                "non-member sparse index response should be readable for {}",
+                case.package_name
+            );
+        } else {
+            assert_eq!(
+                outsider_index_resp.status(),
+                StatusCode::NOT_FOUND,
+                "non-member sparse index response should be hidden for {}",
+                case.package_name
+            );
+        }
+
+        let anonymous_download_resp =
+            download_cargo_crate(&app, None, case.package_name, "0.1.0").await;
+        if case.anonymous_can_read {
+            assert_eq!(
+                anonymous_download_resp.status(),
+                StatusCode::OK,
+                "anonymous download response should be readable for {}",
+                case.package_name
+            );
+            assert_eq!(body_bytes(anonymous_download_resp).await, case.crate_bytes);
+        } else {
+            assert_eq!(
+                anonymous_download_resp.status(),
+                StatusCode::NOT_FOUND,
+                "anonymous download response should be hidden for {}",
+                case.package_name
+            );
+            let anonymous_download_body = body_json(anonymous_download_resp).await;
+            assert_eq!(
+                cargo_error_detail(&anonymous_download_body),
+                "Crate not found"
+            );
+        }
+
+        let member_download_resp =
+            download_cargo_crate(&app, Some(&bob_jwt), case.package_name, "0.1.0").await;
+        assert_eq!(
+            member_download_resp.status(),
+            StatusCode::OK,
+            "organization member should download crate bytes for {}",
+            case.package_name
+        );
+        assert_eq!(
+            member_download_resp
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("application/gzip")
+        );
+        assert_eq!(body_bytes(member_download_resp).await, case.crate_bytes);
+
+        let outsider_download_resp =
+            download_cargo_crate(&app, Some(&carol_jwt), case.package_name, "0.1.0").await;
+        if case.outsider_can_read {
+            assert_eq!(
+                outsider_download_resp.status(),
+                StatusCode::OK,
+                "non-member download response should be readable for {}",
+                case.package_name
+            );
+            assert_eq!(body_bytes(outsider_download_resp).await, case.crate_bytes);
+        } else {
+            assert_eq!(
+                outsider_download_resp.status(),
+                StatusCode::NOT_FOUND,
+                "non-member download response should be hidden for {}",
+                case.package_name
+            );
+            let outsider_download_body = body_json(outsider_download_resp).await;
+            assert_eq!(
+                cargo_error_detail(&outsider_download_body),
+                "Crate not found"
+            );
+        }
+    }
 }
 
 #[sqlx::test(migrations = "../../migrations")]
