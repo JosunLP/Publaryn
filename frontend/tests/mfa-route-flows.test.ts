@@ -4,13 +4,13 @@ import { afterEach, describe, expect, mock, test } from 'bun:test';
 
 import { changeValue, renderSvelte, submitForm } from './svelte-dom';
 
-interface JsonRecord {
+interface ApiRequestBody {
   [key: string]: unknown;
 }
 
 interface ApiRequestOptions {
   query?: Record<string, unknown>;
-  body?: JsonRecord;
+  body?: ApiRequestBody;
 }
 
 interface AuthApiScenario {

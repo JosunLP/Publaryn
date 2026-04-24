@@ -9,11 +9,10 @@
 
   export let user: UserProfile;
   export let actions: SettingsMfaActions;
-  export let initialMfaSetupState: MfaSetupState | null = null;
+  export let mfaSetupState: MfaSetupState | null = null;
 
   let notice: string | null = null;
   let error: string | null = null;
-  let mfaSetupState = initialMfaSetupState;
   let mfaDisableCode = '';
   let disablingMfa = false;
   let startingMfaSetup = false;
