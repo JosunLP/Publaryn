@@ -11,6 +11,7 @@ const ORG_AUDIT_ACTION_LABELS: Record<string, string> = {
   release_yank: 'Release yanked',
   release_unyank: 'Release restored',
   release_deprecate: 'Release deprecated',
+  release_undeprecate: 'Release undeprecated',
   trusted_publisher_create: 'Trusted publisher added',
   trusted_publisher_delete: 'Trusted publisher removed',
   security_finding_resolve: 'Security finding resolved',
@@ -108,7 +109,8 @@ export function formatAuditSummary(log: OrgAuditLog): string | null {
     case 'release_publish':
     case 'release_yank':
     case 'release_unyank':
-    case 'release_deprecate': {
+    case 'release_deprecate':
+    case 'release_undeprecate': {
       const packageName =
         stringField(metadata.package_name) ||
         stringField(metadata.name) ||
@@ -131,6 +133,8 @@ export function formatAuditSummary(log: OrgAuditLog): string | null {
           return note
             ? `Deprecated release ${releaseLabel} (${note}).`
             : `Deprecated release ${releaseLabel}.`;
+        case 'release_undeprecate':
+          return `Removed deprecation from release ${releaseLabel}.`;
         default:
           return null;
       }

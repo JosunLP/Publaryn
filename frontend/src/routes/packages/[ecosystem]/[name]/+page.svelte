@@ -31,6 +31,7 @@
     publishRelease,
     severityLevel,
     transferPackageOwnership,
+    undeprecateRelease,
     unyankRelease,
     upsertTag as upsertPackageTag,
     updatePackage,
@@ -744,6 +745,26 @@
     }
   }
 
+  async function handleReleaseListUndeprecate(release: Release): Promise<void> {
+    activeReleaseActionVersion = release.version;
+    releaseActionError = null;
+    releaseActionNotice = null;
+
+    try {
+      const result = await undeprecateRelease(ecosystem, name, release.version);
+      await loadPackagePage();
+      releaseActionNotice =
+        result.message || `Removed deprecation from ${release.version}.`;
+    } catch (caughtError: unknown) {
+      releaseActionError = toErrorMessage(
+        caughtError,
+        'Failed to remove release deprecation.'
+      );
+    } finally {
+      activeReleaseActionVersion = null;
+    }
+  }
+
   async function handleReplacePackageTeamAccess(
     event: SubmitEvent
   ): Promise<void> {
@@ -1394,7 +1415,7 @@
                 <div class="release-row__meta">
                   {formatDate(release.published_at || release.created_at)}
                 </div>
-                {#if pkg.can_manage_releases && (releaseActions.canUploadArtifact || releaseActions.canYank || releaseActions.canRestore || releaseActions.canDeprecate)}
+                {#if pkg.can_manage_releases && (releaseActions.canUploadArtifact || releaseActions.canYank || releaseActions.canRestore || releaseActions.canDeprecate || releaseActions.canUndeprecate)}
                   <div class="release-row__actions">
                     {#if releaseActions.canUploadArtifact}
                       <a
@@ -1441,6 +1462,20 @@
                         {activeReleaseActionVersion === release.version
                           ? 'Working…'
                           : 'Deprecate'}
+                      </button>
+                    {/if}
+                    {#if releaseActions.canUndeprecate}
+                      <button
+                        type="button"
+                        class="btn btn-secondary btn-sm"
+                        data-release-undeprecate={release.version}
+                        disabled={activeReleaseActionVersion ===
+                          release.version}
+                        on:click={() => handleReleaseListUndeprecate(release)}
+                      >
+                        {activeReleaseActionVersion === release.version
+                          ? 'Working…'
+                          : 'Remove deprecation'}
                       </button>
                     {/if}
                     {#if release.status?.toLowerCase() === 'quarantine'}

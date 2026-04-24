@@ -194,6 +194,7 @@ describe('org audit query helpers', () => {
       'release_yank',
       'release_unyank',
       'release_deprecate',
+      'release_undeprecate',
     ] as const) {
       const path = buildOrgAuditPath(
         'acme-corp',

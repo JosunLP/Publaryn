@@ -586,6 +586,18 @@ export async function deprecateRelease(
   return data;
 }
 
+export async function undeprecateRelease(
+  ecosystem: string,
+  name: string,
+  version: string
+): Promise<ReleaseMutationResult> {
+  const { data } = await api.put<ReleaseMutationResult>(
+    `/v1/packages/${enc(ecosystem)}/${enc(name)}/releases/${enc(version)}/undeprecate`
+  );
+
+  return data;
+}
+
 export async function listTags(
   ecosystem: string,
   name: string

@@ -38,6 +38,7 @@ interface Scenario {
   teams: JsonRecord[];
   tags: Record<string, { version: string }>;
   tagMutations: string[];
+  releaseMutations: string[];
 }
 
 const ECOSYSTEM = 'npm';
@@ -331,6 +332,46 @@ describe('package detail security access route', () => {
       unmount();
     }
   });
+
+  test('removes deprecation from a release in the versions tab', async () => {
+    currentScenario = createScenario({
+      packageDetail: {
+        can_manage_releases: true,
+      },
+      releases: [
+        {
+          version: '1.2.3',
+          status: 'deprecated',
+          is_deprecated: true,
+          is_yanked: false,
+          deprecation_message: 'Use 2.0.0 instead',
+        },
+      ],
+    });
+    setPageHref(`https://example.test/packages/${ECOSYSTEM}/${PACKAGE_NAME}?tab=versions`);
+
+    const { target, unmount } = await renderSvelte(PackagePage.default);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Remove deprecation');
+        expect(target.textContent).toContain('deprecated');
+      });
+
+      click(queryRequiredButton(target, '[data-release-undeprecate="1.2.3"]'));
+
+      await waitFor(() => {
+        expect(target.textContent).toContain('Release undeprecated');
+        expect(target.textContent).not.toContain('Remove deprecation');
+      });
+
+      expect(currentScenario?.releaseMutations).toEqual([
+        `PUT /v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/releases/1.2.3/undeprecate`,
+      ]);
+    } finally {
+      unmount();
+    }
+  });
 });
 
 async function handleApiRequest(
@@ -360,6 +401,28 @@ async function handleApiRequest(
 
   if (method === 'GET' && path === `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/tags`) {
     return apiResponse({ tags: currentScenario.tags });
+  }
+
+  if (
+    method === 'PUT' &&
+    path.startsWith(
+      `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/releases/`
+    ) &&
+    path.endsWith('/undeprecate')
+  ) {
+    const version = decodeURIComponent(path.split('/').at(-2) || '');
+    currentScenario.releaseMutations.push(`${method} ${path}`);
+    currentScenario.releases = currentScenario.releases.map((release) =>
+      release.version === version
+        ? {
+            ...release,
+            status: 'published',
+            is_deprecated: false,
+            deprecation_message: null,
+          }
+        : release
+    );
+    return apiResponse({ message: 'Release undeprecated', version, status: 'published' });
   }
 
   if (method === 'PUT' && path.startsWith(`/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/tags/`)) {
@@ -534,6 +597,7 @@ function createScenario(overrides: Partial<Scenario> = {}): Scenario {
     ],
     tags: overrides.tags || {},
     tagMutations: [],
+    releaseMutations: [],
   };
 }
 
