@@ -1679,6 +1679,29 @@ async fn search_npm_packages(
     (status, body)
 }
 
+/// Search Cargo crates through the native adapter and return the response.
+async fn search_cargo_crates(
+    app: &axum::Router,
+    auth_token: Option<&str>,
+    query: &str,
+    per_page: u32,
+) -> (StatusCode, Value) {
+    let req = Request::builder().method(Method::GET).uri(format!(
+        "/cargo/api/v1/crates?q={query}&per_page={per_page}"
+    ));
+    let req = if let Some(token) = auth_token {
+        req.header(header::AUTHORIZATION, token)
+    } else {
+        req
+    };
+    let req = req.body(Body::empty()).unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
 fn is_search_backend_available() -> bool {
     let search_url = std::env::var("SEARCH__URL")
         .ok()
@@ -11487,6 +11510,350 @@ async fn test_npm_search_respects_authenticated_visibility_and_filtered_offsets(
 }
 
 #[sqlx::test(migrations = "../../migrations")]
+async fn test_cargo_search_respects_authenticated_visibility_and_mixed_repository_combinations(
+    pool: PgPool,
+) {
+    if !is_search_backend_available() {
+        eprintln!(
+            "Skipping Cargo search visibility verification because the search backend is unavailable."
+        );
+        return;
+    }
+
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    register_user(&app, "carol", "carol@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+    let carol_jwt = login_user(&app, "carol", "super_secret_pw!").await;
+    let bob_auth = format!("Bearer {bob_jwt}");
+    let carol_auth = format!("Bearer {carol_jwt}");
+
+    let (status, org_body) =
+        create_org(&app, &alice_jwt, "Acme Cargo Search", "acme-cargo-search").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id = org_body["id"].as_str().expect("org id");
+
+    let (status, _) = add_org_member(&app, &alice_jwt, "acme-cargo-search", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    for (name, slug, kind, visibility) in [
+        (
+            "Cargo Public Search",
+            "cargo-public-search",
+            "public",
+            "public",
+        ),
+        (
+            "Cargo Internal Search",
+            "cargo-internal-search",
+            "private",
+            "internal_org",
+        ),
+        (
+            "Cargo Private Search",
+            "cargo-private-search",
+            "private",
+            "private",
+        ),
+    ] {
+        let (status, body) = create_repository_with_options(
+            &app,
+            &alice_jwt,
+            name,
+            slug,
+            Some(org_id),
+            Some(kind),
+            Some(visibility),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected repository response: {body}"
+        );
+    }
+
+    let (status, token_body) =
+        create_personal_access_token(&app, &alice_jwt, "cargo-search", &["packages:write"]).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
+    let cargo_token = token_body["token"]
+        .as_str()
+        .expect("cargo token should be returned")
+        .to_owned();
+
+    let search_token = "cargosearchvisalpha";
+    for (name, repository_slug, visibility, descriptor) in [
+        (
+            "cargo-public-search-widget",
+            "cargo-public-search",
+            Some("public"),
+            "public",
+        ),
+        (
+            "cargo-private-public-search-widget",
+            "cargo-public-search",
+            Some("private"),
+            "private in public repository",
+        ),
+        (
+            "cargo-internal-search-widget",
+            "cargo-internal-search",
+            Some("internal_org"),
+            "internal_org",
+        ),
+        (
+            "cargo-private-internal-search-widget",
+            "cargo-internal-search",
+            Some("private"),
+            "private in internal repository",
+        ),
+        (
+            "cargo-private-repository-search-widget",
+            "cargo-private-search",
+            Some("private"),
+            "private in private repository",
+        ),
+        (
+            "cargo-unlisted-search-widget",
+            "cargo-public-search",
+            Some("unlisted"),
+            "unlisted",
+        ),
+        (
+            "cargo-quarantined-search-widget",
+            "cargo-public-search",
+            Some("quarantined"),
+            "quarantined",
+        ),
+    ] {
+        let (status, body) = create_package_with_options(
+            &app,
+            &alice_jwt,
+            "cargo",
+            name,
+            repository_slug,
+            visibility,
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected package response: {body}"
+        );
+
+        let crate_bytes = format!("{name}-crate");
+        let payload = build_cargo_publish_payload(
+            json!({
+                "name": name,
+                "vers": "0.1.0",
+                "deps": [],
+                "features": {},
+                "authors": ["Alice <alice@test.dev>"],
+                "description": format!("{search_token} cargo visibility {descriptor}"),
+                "license": "MIT"
+            }),
+            crate_bytes.as_bytes(),
+        );
+
+        let (status, publish_body) = publish_cargo_crate(&app, &cargo_token, payload).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "unexpected cargo publish response: {publish_body}"
+        );
+    }
+
+    let expected_member_names = std::collections::BTreeSet::from([
+        "cargo-public-search-widget".to_owned(),
+        "cargo-private-public-search-widget".to_owned(),
+        "cargo-internal-search-widget".to_owned(),
+        "cargo-private-internal-search-widget".to_owned(),
+        "cargo-private-repository-search-widget".to_owned(),
+    ]);
+    let expected_anonymous_names =
+        std::collections::BTreeSet::from(["cargo-public-search-widget".to_owned()]);
+
+    let mut latest_management_member = Value::Null;
+    let mut latest_management_anonymous = Value::Null;
+    let mut latest_management_outsider = Value::Null;
+    let mut latest_cargo_member = Value::Null;
+    let mut latest_cargo_anonymous = Value::Null;
+    let mut latest_cargo_outsider = Value::Null;
+    let mut found = false;
+
+    for _ in 0..30 {
+        let (management_member_status, management_member_body) = search_packages_with_options(
+            &app,
+            Some(&bob_jwt),
+            search_token,
+            SearchPackagesRequestOptions {
+                ecosystem: Some("cargo"),
+                ..SearchPackagesRequestOptions::default()
+            },
+        )
+        .await;
+        assert_eq!(
+            management_member_status,
+            StatusCode::OK,
+            "unexpected member management search response: {management_member_body}"
+        );
+
+        let (management_anonymous_status, management_anonymous_body) =
+            search_packages_with_options(
+                &app,
+                None,
+                search_token,
+                SearchPackagesRequestOptions {
+                    ecosystem: Some("cargo"),
+                    ..SearchPackagesRequestOptions::default()
+                },
+            )
+            .await;
+        assert_eq!(
+            management_anonymous_status,
+            StatusCode::OK,
+            "unexpected anonymous management search response: {management_anonymous_body}"
+        );
+
+        let (management_outsider_status, management_outsider_body) = search_packages_with_options(
+            &app,
+            Some(&carol_jwt),
+            search_token,
+            SearchPackagesRequestOptions {
+                ecosystem: Some("cargo"),
+                ..SearchPackagesRequestOptions::default()
+            },
+        )
+        .await;
+        assert_eq!(
+            management_outsider_status,
+            StatusCode::OK,
+            "unexpected outsider management search response: {management_outsider_body}"
+        );
+
+        let (cargo_member_status, cargo_member_body) =
+            search_cargo_crates(&app, Some(bob_auth.as_str()), search_token, 10).await;
+        assert_eq!(
+            cargo_member_status,
+            StatusCode::OK,
+            "unexpected member cargo search response: {cargo_member_body}"
+        );
+
+        let (cargo_anonymous_status, cargo_anonymous_body) =
+            search_cargo_crates(&app, None, search_token, 10).await;
+        assert_eq!(
+            cargo_anonymous_status,
+            StatusCode::OK,
+            "unexpected anonymous cargo search response: {cargo_anonymous_body}"
+        );
+
+        let (cargo_outsider_status, cargo_outsider_body) =
+            search_cargo_crates(&app, Some(carol_auth.as_str()), search_token, 10).await;
+        assert_eq!(
+            cargo_outsider_status,
+            StatusCode::OK,
+            "unexpected outsider cargo search response: {cargo_outsider_body}"
+        );
+
+        let management_member_names = management_member_body["packages"]
+            .as_array()
+            .expect("member management packages should be an array")
+            .iter()
+            .filter_map(|item| item["name"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+        let management_anonymous_names = management_anonymous_body["packages"]
+            .as_array()
+            .expect("anonymous management packages should be an array")
+            .iter()
+            .filter_map(|item| item["name"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+        let management_outsider_names = management_outsider_body["packages"]
+            .as_array()
+            .expect("outsider management packages should be an array")
+            .iter()
+            .filter_map(|item| item["name"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+
+        let cargo_member_names = cargo_member_body["crates"]
+            .as_array()
+            .expect("member cargo crates should be an array")
+            .iter()
+            .filter_map(|item| item["name"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+        let cargo_anonymous_names = cargo_anonymous_body["crates"]
+            .as_array()
+            .expect("anonymous cargo crates should be an array")
+            .iter()
+            .filter_map(|item| item["name"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+        let cargo_outsider_names = cargo_outsider_body["crates"]
+            .as_array()
+            .expect("outsider cargo crates should be an array")
+            .iter()
+            .filter_map(|item| item["name"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+
+        latest_management_member = management_member_body;
+        latest_management_anonymous = management_anonymous_body;
+        latest_management_outsider = management_outsider_body;
+        latest_cargo_member = cargo_member_body;
+        latest_cargo_anonymous = cargo_anonymous_body;
+        latest_cargo_outsider = cargo_outsider_body;
+
+        if management_member_names == expected_member_names
+            && management_anonymous_names == expected_anonymous_names
+            && management_outsider_names == expected_anonymous_names
+            && cargo_member_names == expected_member_names
+            && cargo_anonymous_names == expected_anonymous_names
+            && cargo_outsider_names == expected_anonymous_names
+            && latest_management_member["total"] == 5
+            && latest_management_anonymous["total"] == 1
+            && latest_management_outsider["total"] == 1
+            && latest_cargo_member["meta"]["total"] == 5
+            && latest_cargo_anonymous["meta"]["total"] == 1
+            && latest_cargo_outsider["meta"]["total"] == 1
+        {
+            found = true;
+            break;
+        }
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    assert!(
+        found,
+        "Cargo search did not converge to expected visibility results.\nmanagement member={latest_management_member}\nmanagement anonymous={latest_management_anonymous}\nmanagement outsider={latest_management_outsider}\ncargo member={latest_cargo_member}\ncargo anonymous={latest_cargo_anonymous}\ncargo outsider={latest_cargo_outsider}"
+    );
+
+    let (status, body) = search_cargo_crates(&app, Some(bob_auth.as_str()), search_token, 2).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected paged Cargo search response: {body}"
+    );
+    assert_eq!(body["meta"]["total"], 5);
+    assert_eq!(
+        body["crates"]
+            .as_array()
+            .expect("paged cargo crates should be an array")
+            .len(),
+        2
+    );
+    for item in body["crates"]
+        .as_array()
+        .expect("paged cargo crates should be an array")
+    {
+        assert_eq!(item["max_version"], "0.1.0");
+    }
+}
+
+#[sqlx::test(migrations = "../../migrations")]
 async fn test_search_surfaces_include_private_packages_visible_through_team_grants(pool: PgPool) {
     if !is_search_backend_available() {
         eprintln!(
@@ -11840,6 +12207,416 @@ async fn test_search_surfaces_include_private_packages_visible_through_team_gran
     assert!(
         found,
         "delegated search visibility did not converge.\nmanagement bob: {latest_management_bob}\nmanagement carol: {latest_management_carol}\nmanagement anonymous: {latest_management_anonymous}\nnpm bob: {latest_npm_bob}\nnpm carol: {latest_npm_carol}\nnpm anonymous: {latest_npm_anonymous}"
+    );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_cargo_search_surfaces_private_crates_visible_through_team_grants(pool: PgPool) {
+    if !is_search_backend_available() {
+        eprintln!(
+            "Skipping delegated Cargo search visibility verification because the search backend is unavailable."
+        );
+        return;
+    }
+
+    let app = app(pool);
+    register_user(
+        &app,
+        "alice",
+        "alice-delegated-cargo-search@test.dev",
+        "super_secret_pw!",
+    )
+    .await;
+    register_user(
+        &app,
+        "bob",
+        "bob-delegated-cargo-search@test.dev",
+        "super_secret_pw!",
+    )
+    .await;
+    register_user(
+        &app,
+        "carol",
+        "carol-delegated-cargo-search@test.dev",
+        "super_secret_pw!",
+    )
+    .await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+    let carol_jwt = login_user(&app, "carol", "super_secret_pw!").await;
+    let bob_auth = format!("Bearer {bob_jwt}");
+    let carol_auth = format!("Bearer {carol_jwt}");
+
+    let (status, org_body) = create_org(
+        &app,
+        &alice_jwt,
+        "Delegated Cargo Search Org",
+        "delegated-cargo-search-org",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id = org_body["id"].as_str().expect("org id should be present");
+
+    let (status, _) = add_org_member(
+        &app,
+        &alice_jwt,
+        "delegated-cargo-search-org",
+        "bob",
+        "viewer",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = add_org_member(
+        &app,
+        &alice_jwt,
+        "delegated-cargo-search-org",
+        "carol",
+        "viewer",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    for (name, slug, visibility) in [
+        (
+            "Delegated Cargo Public",
+            "delegated-cargo-public-search",
+            "public",
+        ),
+        (
+            "Delegated Cargo Package Private",
+            "delegated-cargo-package-private",
+            "private",
+        ),
+        (
+            "Delegated Cargo Repository Private",
+            "delegated-cargo-repository-private",
+            "private",
+        ),
+    ] {
+        let (status, body) = create_repository_with_options(
+            &app,
+            &alice_jwt,
+            name,
+            slug,
+            Some(org_id),
+            Some("public"),
+            Some(visibility),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected repository response: {body}"
+        );
+    }
+
+    let (status, token_body) = create_personal_access_token(
+        &app,
+        &alice_jwt,
+        "delegated-cargo-search",
+        &["packages:write"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
+    let cargo_token = token_body["token"]
+        .as_str()
+        .expect("cargo token should be returned")
+        .to_owned();
+
+    let search_token = "delegatedcargosearchomega";
+    for (name, repository_slug, visibility, descriptor) in [
+        (
+            "delegated-cargo-public-search-widget",
+            "delegated-cargo-public-search",
+            Some("public"),
+            "public",
+        ),
+        (
+            "delegated-cargo-package-search-widget",
+            "delegated-cargo-package-private",
+            Some("private"),
+            "package-granted",
+        ),
+        (
+            "delegated-cargo-repository-search-widget",
+            "delegated-cargo-repository-private",
+            Some("private"),
+            "repository-granted",
+        ),
+    ] {
+        let (status, body) = create_package_with_options(
+            &app,
+            &alice_jwt,
+            "cargo",
+            name,
+            repository_slug,
+            visibility,
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected package response: {body}"
+        );
+
+        let crate_bytes = format!("{name}-crate");
+        let payload = build_cargo_publish_payload(
+            json!({
+                "name": name,
+                "vers": "0.1.0",
+                "deps": [],
+                "features": {},
+                "authors": ["Alice <alice@test.dev>"],
+                "description": format!("{search_token} {descriptor}"),
+                "license": "MIT"
+            }),
+            crate_bytes.as_bytes(),
+        );
+
+        let (status, publish_body) = publish_cargo_crate(&app, &cargo_token, payload).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "unexpected cargo publish response: {publish_body}"
+        );
+    }
+
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "delegated-cargo-search-org",
+        "Cargo Package Readers",
+        "cargo-package-readers",
+        Some("Can search private crates granted directly."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "delegated-cargo-search-org",
+        "Cargo Repository Readers",
+        "cargo-repository-readers",
+        Some("Can search private crates granted via repository access."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = add_team_member_to_team(
+        &app,
+        &alice_jwt,
+        "delegated-cargo-search-org",
+        "cargo-package-readers",
+        "bob",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = add_team_member_to_team(
+        &app,
+        &alice_jwt,
+        "delegated-cargo-search-org",
+        "cargo-repository-readers",
+        "carol",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, grant_body) = grant_team_package_access(
+        &app,
+        &alice_jwt,
+        "delegated-cargo-search-org",
+        "cargo-package-readers",
+        "cargo",
+        "delegated-cargo-package-search-widget",
+        &["read_private"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team package access response: {grant_body}"
+    );
+
+    let (status, grant_body) = grant_team_repository_access(
+        &app,
+        &alice_jwt,
+        "delegated-cargo-search-org",
+        "cargo-repository-readers",
+        "delegated-cargo-repository-private",
+        &["read_private"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team repository access response: {grant_body}"
+    );
+
+    let expected_anonymous_names =
+        std::collections::BTreeSet::from(["delegated-cargo-public-search-widget".to_owned()]);
+    let expected_bob_names = std::collections::BTreeSet::from([
+        "delegated-cargo-public-search-widget".to_owned(),
+        "delegated-cargo-package-search-widget".to_owned(),
+    ]);
+    let expected_carol_names = std::collections::BTreeSet::from([
+        "delegated-cargo-public-search-widget".to_owned(),
+        "delegated-cargo-repository-search-widget".to_owned(),
+    ]);
+
+    let mut latest_management_bob = Value::Null;
+    let mut latest_management_carol = Value::Null;
+    let mut latest_management_anonymous = Value::Null;
+    let mut latest_cargo_bob = Value::Null;
+    let mut latest_cargo_carol = Value::Null;
+    let mut latest_cargo_anonymous = Value::Null;
+    let mut found = false;
+
+    for _ in 0..30 {
+        let (management_bob_status, management_bob_body) = search_packages_with_options(
+            &app,
+            Some(&bob_jwt),
+            search_token,
+            SearchPackagesRequestOptions {
+                ecosystem: Some("cargo"),
+                ..SearchPackagesRequestOptions::default()
+            },
+        )
+        .await;
+        assert_eq!(
+            management_bob_status,
+            StatusCode::OK,
+            "unexpected bob management search response: {management_bob_body}"
+        );
+
+        let (management_carol_status, management_carol_body) = search_packages_with_options(
+            &app,
+            Some(&carol_jwt),
+            search_token,
+            SearchPackagesRequestOptions {
+                ecosystem: Some("cargo"),
+                ..SearchPackagesRequestOptions::default()
+            },
+        )
+        .await;
+        assert_eq!(
+            management_carol_status,
+            StatusCode::OK,
+            "unexpected carol management search response: {management_carol_body}"
+        );
+
+        let (management_anonymous_status, management_anonymous_body) =
+            search_packages_with_options(
+                &app,
+                None,
+                search_token,
+                SearchPackagesRequestOptions {
+                    ecosystem: Some("cargo"),
+                    ..SearchPackagesRequestOptions::default()
+                },
+            )
+            .await;
+        assert_eq!(
+            management_anonymous_status,
+            StatusCode::OK,
+            "unexpected anonymous management search response: {management_anonymous_body}"
+        );
+
+        let (cargo_bob_status, cargo_bob_body) =
+            search_cargo_crates(&app, Some(bob_auth.as_str()), search_token, 10).await;
+        assert_eq!(
+            cargo_bob_status,
+            StatusCode::OK,
+            "unexpected bob cargo search response: {cargo_bob_body}"
+        );
+
+        let (cargo_carol_status, cargo_carol_body) =
+            search_cargo_crates(&app, Some(carol_auth.as_str()), search_token, 10).await;
+        assert_eq!(
+            cargo_carol_status,
+            StatusCode::OK,
+            "unexpected carol cargo search response: {cargo_carol_body}"
+        );
+
+        let (cargo_anonymous_status, cargo_anonymous_body) =
+            search_cargo_crates(&app, None, search_token, 10).await;
+        assert_eq!(
+            cargo_anonymous_status,
+            StatusCode::OK,
+            "unexpected anonymous cargo search response: {cargo_anonymous_body}"
+        );
+
+        let management_bob_names = management_bob_body["packages"]
+            .as_array()
+            .expect("bob management packages should be an array")
+            .iter()
+            .filter_map(|item| item["name"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+        let management_carol_names = management_carol_body["packages"]
+            .as_array()
+            .expect("carol management packages should be an array")
+            .iter()
+            .filter_map(|item| item["name"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+        let management_anonymous_names = management_anonymous_body["packages"]
+            .as_array()
+            .expect("anonymous management packages should be an array")
+            .iter()
+            .filter_map(|item| item["name"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+
+        let cargo_bob_names = cargo_bob_body["crates"]
+            .as_array()
+            .expect("bob cargo crates should be an array")
+            .iter()
+            .filter_map(|item| item["name"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+        let cargo_carol_names = cargo_carol_body["crates"]
+            .as_array()
+            .expect("carol cargo crates should be an array")
+            .iter()
+            .filter_map(|item| item["name"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+        let cargo_anonymous_names = cargo_anonymous_body["crates"]
+            .as_array()
+            .expect("anonymous cargo crates should be an array")
+            .iter()
+            .filter_map(|item| item["name"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+
+        latest_management_bob = management_bob_body;
+        latest_management_carol = management_carol_body;
+        latest_management_anonymous = management_anonymous_body;
+        latest_cargo_bob = cargo_bob_body;
+        latest_cargo_carol = cargo_carol_body;
+        latest_cargo_anonymous = cargo_anonymous_body;
+
+        if management_bob_names == expected_bob_names
+            && management_carol_names == expected_carol_names
+            && management_anonymous_names == expected_anonymous_names
+            && cargo_bob_names == expected_bob_names
+            && cargo_carol_names == expected_carol_names
+            && cargo_anonymous_names == expected_anonymous_names
+            && latest_management_bob["total"] == 2
+            && latest_management_carol["total"] == 2
+            && latest_management_anonymous["total"] == 1
+            && latest_cargo_bob["meta"]["total"] == 2
+            && latest_cargo_carol["meta"]["total"] == 2
+            && latest_cargo_anonymous["meta"]["total"] == 1
+        {
+            found = true;
+            break;
+        }
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    assert!(
+        found,
+        "Delegated Cargo search did not converge.\nmanagement bob={latest_management_bob}\nmanagement carol={latest_management_carol}\nmanagement anonymous={latest_management_anonymous}\ncargo bob={latest_cargo_bob}\ncargo carol={latest_cargo_carol}\ncargo anonymous={latest_cargo_anonymous}"
     );
 }
 
