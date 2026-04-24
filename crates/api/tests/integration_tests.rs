@@ -13368,6 +13368,231 @@ async fn test_cargo_private_sparse_index_and_download_require_authentication(poo
 }
 
 #[sqlx::test(migrations = "../../migrations")]
+async fn test_cargo_private_sparse_index_and_download_allow_delegated_team_access(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    register_user(&app, "carol", "carol@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+    let carol_jwt = login_user(&app, "carol", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &alice_jwt, "Acme Cargo", "acme-cargo").await;
+    assert_eq!(status, StatusCode::CREATED, "{org_body}");
+    let org_id = org_body["id"]
+        .as_str()
+        .expect("organization id should be returned");
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Acme Private Cargo Packages",
+        "acme-private-cargo-packages",
+        Some(org_id),
+        Some("private"),
+        Some("private"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "cargo",
+        "secret_widget",
+        "acme-private-cargo-packages",
+        Some("private"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let (status, _) = add_org_member(&app, &alice_jwt, "acme-cargo", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = add_org_member(&app, &alice_jwt, "acme-cargo", "carol", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "acme-cargo",
+        "Crate Security",
+        "crate-security",
+        Some("Reads specific private cargo crates through package delegation."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "acme-cargo",
+        "Registry Publishers",
+        "registry-publishers",
+        Some("Reads private cargo crates through repository delegation."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) =
+        add_team_member_to_team(&app, &alice_jwt, "acme-cargo", "crate-security", "bob").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = add_team_member_to_team(
+        &app,
+        &alice_jwt,
+        "acme-cargo",
+        "registry-publishers",
+        "carol",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, grant_body) = grant_team_package_access(
+        &app,
+        &alice_jwt,
+        "acme-cargo",
+        "crate-security",
+        "cargo",
+        "secret_widget",
+        &["security_review"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team package access response: {grant_body}"
+    );
+
+    let (status, grant_body) = grant_team_repository_access(
+        &app,
+        &alice_jwt,
+        "acme-cargo",
+        "registry-publishers",
+        "acme-private-cargo-packages",
+        &["publish"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team repository access response: {grant_body}"
+    );
+
+    let (status, token_body) =
+        create_personal_access_token(&app, &alice_jwt, "cargo-private", &["packages:write"]).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
+    let cargo_token = token_body["token"]
+        .as_str()
+        .expect("cargo token should be returned")
+        .to_owned();
+
+    let payload = build_cargo_publish_payload(
+        json!({
+            "name": "secret_widget",
+            "vers": "0.1.0",
+            "deps": [],
+            "features": {},
+            "authors": ["Alice <alice@test.dev>"],
+            "description": "Private Cargo delegated-read coverage",
+            "license": "MIT"
+        }),
+        b"private-cargo-crate",
+    );
+
+    let (status, publish_body) = publish_cargo_crate(&app, &cargo_token, payload).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected cargo publish response: {publish_body}"
+    );
+
+    let anonymous_index_req = Request::builder()
+        .method(Method::GET)
+        .uri("/cargo/index/se/cr/secret_widget")
+        .body(Body::empty())
+        .unwrap();
+    let anonymous_index_resp = app.clone().oneshot(anonymous_index_req).await.unwrap();
+    assert_eq!(anonymous_index_resp.status(), StatusCode::NOT_FOUND);
+
+    let bob_index_req = Request::builder()
+        .method(Method::GET)
+        .uri("/cargo/index/se/cr/secret_widget")
+        .header(header::AUTHORIZATION, bob_jwt.as_str())
+        .body(Body::empty())
+        .unwrap();
+    let bob_index_resp = app.clone().oneshot(bob_index_req).await.unwrap();
+    assert_eq!(bob_index_resp.status(), StatusCode::OK);
+    let bob_index_body = body_text(bob_index_resp).await;
+    let bob_index_entry: Value = serde_json::from_str(
+        bob_index_body
+            .lines()
+            .next()
+            .expect("package-delegated sparse index entry should exist"),
+    )
+    .expect("package-delegated sparse index entry should be valid JSON");
+    assert_eq!(bob_index_entry["vers"], "0.1.0");
+
+    let carol_index_req = Request::builder()
+        .method(Method::GET)
+        .uri("/cargo/index/se/cr/secret_widget")
+        .header(header::AUTHORIZATION, carol_jwt.as_str())
+        .body(Body::empty())
+        .unwrap();
+    let carol_index_resp = app.clone().oneshot(carol_index_req).await.unwrap();
+    assert_eq!(carol_index_resp.status(), StatusCode::OK);
+    let carol_index_body = body_text(carol_index_resp).await;
+    let carol_index_entry: Value = serde_json::from_str(
+        carol_index_body
+            .lines()
+            .next()
+            .expect("repository-delegated sparse index entry should exist"),
+    )
+    .expect("repository-delegated sparse index entry should be valid JSON");
+    assert_eq!(carol_index_entry["vers"], "0.1.0");
+
+    let anonymous_download_req = Request::builder()
+        .method(Method::GET)
+        .uri("/cargo/api/v1/crates/secret_widget/0.1.0/download")
+        .body(Body::empty())
+        .unwrap();
+    let anonymous_download_resp = app.clone().oneshot(anonymous_download_req).await.unwrap();
+    assert_eq!(anonymous_download_resp.status(), StatusCode::NOT_FOUND);
+
+    let bob_download_req = Request::builder()
+        .method(Method::GET)
+        .uri("/cargo/api/v1/crates/secret_widget/0.1.0/download")
+        .header(header::AUTHORIZATION, bob_jwt.as_str())
+        .body(Body::empty())
+        .unwrap();
+    let bob_download_resp = app.clone().oneshot(bob_download_req).await.unwrap();
+    assert_eq!(bob_download_resp.status(), StatusCode::OK);
+    assert_eq!(body_bytes(bob_download_resp).await, b"private-cargo-crate");
+
+    let carol_download_req = Request::builder()
+        .method(Method::GET)
+        .uri("/cargo/api/v1/crates/secret_widget/0.1.0/download")
+        .header(header::AUTHORIZATION, carol_jwt.as_str())
+        .body(Body::empty())
+        .unwrap();
+    let carol_download_resp = app.clone().oneshot(carol_download_req).await.unwrap();
+    assert_eq!(carol_download_resp.status(), StatusCode::OK);
+    assert_eq!(
+        body_bytes(carol_download_resp).await,
+        b"private-cargo-crate"
+    );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
 async fn test_cargo_yank_and_unyank_update_sparse_index_and_audit_log(pool: PgPool) {
     let app = app(pool.clone());
     register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
