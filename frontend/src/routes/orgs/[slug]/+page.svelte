@@ -4,10 +4,6 @@
 
   import { ApiError, getAuthToken } from '../../../api/client';
   import {
-    createNamespaceClaim,
-  } from '../../../api/namespaces';
-  import {
-    createTeam,
     exportOrgAuditLogsCsv,
     exportOrgSecurityFindingsCsv,
     getOrgWorkspaceBootstrap,
@@ -16,15 +12,7 @@
     listOrgSecurityFindings,
     searchOrgMembers,
   } from '../../../api/orgs';
-  import {
-    createPackage,
-    listSecurityFindings,
-    updateSecurityFinding,
-  } from '../../../api/packages';
-  import {
-    createRepository,
-    updateRepository,
-  } from '../../../api/repositories';
+  import { listSecurityFindings, updateSecurityFinding } from '../../../api/packages';
   import OrgAuditFilterControls from '../../../lib/components/OrgAuditFilterControls.svelte';
   import OrgSecurityFilterControls from '../../../lib/components/OrgSecurityFilterControls.svelte';
   import OrgSecurityFindingTriageControls from '../../../lib/components/OrgSecurityFindingTriageControls.svelte';
@@ -92,6 +80,9 @@
     resolveAuditFilterSubmission,
     resolveSecurityFilterSubmission,
   } from '../../../pages/org-workspace-actions';
+  import {
+    createOrgNonDestructiveActionsController,
+  } from '../../../pages/org-non-destructive-actions';
   import {
     createOrgDestructiveActionsController,
   } from '../../../pages/org-destructive-actions';
@@ -1086,24 +1077,7 @@
   }
 
   async function handleCreateTeam(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
-    const formData = new FormData(event.currentTarget as HTMLFormElement);
-
-    try {
-      await createTeam(slug, {
-        name: formData.get('name')?.toString().trim() || '',
-        slug: formData.get('team_slug')?.toString().trim() || '',
-        description:
-          normalizeFormOptionalText(formData.get('description')) || undefined,
-      });
-
-      (event.currentTarget as HTMLFormElement).reset();
-      await loadOrganizationPage({ notice: 'Team created successfully.' });
-    } catch (caughtError: unknown) {
-      await loadOrganizationPage({
-        error: toErrorMessage(caughtError, 'Failed to create team.'),
-      });
-    }
+    await orgNonDestructiveActions.submitTeamCreate(event);
   }
 
   function openTeamDeleteConfirmation(teamSlug: string): void {
@@ -1122,39 +1096,7 @@
   }
 
   async function handleCreateNamespace(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
-
-    if (!org?.id?.trim()) {
-      await loadOrganizationPage({
-        error:
-          'Failed to create the namespace claim because the organization id is unavailable.',
-      });
-      return;
-    }
-
-    const formData = new FormData(event.currentTarget as HTMLFormElement);
-    const ecosystem =
-      formData.get('ecosystem')?.toString().trim().toLowerCase() || '';
-    const namespace = formData.get('namespace')?.toString().trim() || '';
-
-    if (!ecosystem || !namespace) {
-      await loadOrganizationPage({
-        error: 'Select an ecosystem and namespace first.',
-      });
-      return;
-    }
-
-    try {
-      await createNamespaceClaim({ ecosystem, namespace, ownerOrgId: org.id });
-      (event.currentTarget as HTMLFormElement).reset();
-      await loadOrganizationPage({
-        notice: `Created the ${ecosystemLabel(ecosystem)} namespace claim ${namespace}.`,
-      });
-    } catch (caughtError: unknown) {
-      await loadOrganizationPage({
-        error: toErrorMessage(caughtError, 'Failed to create namespace claim.'),
-      });
-    }
+    await orgNonDestructiveActions.submitNamespaceCreate(event);
   }
 
   function openNamespaceDeleteConfirmation(claimId: string): void {
@@ -1186,117 +1128,18 @@
   }
 
   async function handleCreateRepository(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
-
-    if (!org?.id?.trim()) {
-      await loadOrganizationPage({
-        error:
-          'Failed to create the repository because the organization id is unavailable.',
-      });
-      return;
-    }
-
-    const formData = new FormData(event.currentTarget as HTMLFormElement);
-
-    try {
-      await createRepository({
-        name: formData.get('name')?.toString().trim() || '',
-        slug: formData.get('slug')?.toString().trim() || '',
-        kind: formData.get('kind')?.toString().trim() || 'public',
-        visibility: formData.get('visibility')?.toString().trim() || 'public',
-        description: normalizeFormOptionalText(formData.get('description')),
-        ownerOrgId: org.id,
-      });
-
-      (event.currentTarget as HTMLFormElement).reset();
-      await loadOrganizationPage({
-        notice: 'Repository created successfully.',
-      });
-    } catch (caughtError: unknown) {
-      await loadOrganizationPage({
-        error: toErrorMessage(caughtError, 'Failed to create repository.'),
-      });
-    }
+    await orgNonDestructiveActions.submitRepositoryCreate(event);
   }
 
   async function handleCreatePackage(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
-
-    if (!selectedPackageCreationRepository) {
-      notice = null;
-      error =
-        creatableRepositories.length === 0
-          ? 'Create an eligible repository before creating a package.'
-          : 'Select a repository for the new package.';
-      return;
-    }
-
-    const packageName = newPackageName.trim();
-    if (!packageName) {
-      notice = null;
-      error = 'Enter a package name.';
-      return;
-    }
-
-    const ecosystem = newPackageEcosystem.trim().toLowerCase();
-    const repositorySlug = selectedPackageCreationRepository.slug;
-    const repositoryName =
-      selectedPackageCreationRepository.name ||
-      selectedPackageCreationRepository.slug;
-
-    creatingPackage = true;
-    notice = null;
-    error = null;
-
-    try {
-      const result = await createPackage({
-        ecosystem,
-        name: packageName,
-        repositorySlug,
-        visibility: newPackageVisibility || undefined,
-        displayName: newPackageDisplayName,
-        description: newPackageDescription,
-      });
-
-      newPackageEcosystem = DEFAULT_PACKAGE_ECOSYSTEM;
-      newPackageName = '';
-      newPackageVisibility = '';
-      newPackageDisplayName = '';
-      newPackageDescription = '';
-
-      await loadOrganizationPage({
-        notice: `Created ${ecosystemLabel(result.ecosystem || ecosystem)} package ${result.name || packageName} in ${repositoryName}.`,
-      });
-    } catch (caughtError: unknown) {
-      await loadOrganizationPage({
-        error: toErrorMessage(caughtError, 'Failed to create package.'),
-      });
-    } finally {
-      creatingPackage = false;
-    }
+    await orgNonDestructiveActions.submitPackageCreate(event);
   }
 
   async function handleUpdateRepository(
     event: SubmitEvent,
     repositorySlug: string
   ): Promise<void> {
-    event.preventDefault();
-    const formData = new FormData(event.currentTarget as HTMLFormElement);
-
-    try {
-      await updateRepository(repositorySlug, {
-        description: formData.get('description')?.toString().trim() || '',
-        visibility: formData.get('visibility')?.toString().trim() || 'public',
-      });
-
-      await loadOrganizationPage({
-        notice: `Updated repository ${repositorySlug}.`,
-      });
-    } catch (caughtError: unknown) {
-      await loadOrganizationPage({
-        error: toErrorMessage(caughtError, 'Failed to update repository.'),
-      });
-    }
+    await orgNonDestructiveActions.submitRepositoryUpdate(event, repositorySlug);
   }
 
   async function handleRepositoryTransfer(event: SubmitEvent): Promise<void> {
@@ -1348,17 +1191,6 @@
       typeof entry.repository_slug === 'string' &&
       entry.repository_slug.trim().length > 0
     );
-  }
-
-  function normalizeFormOptionalText(
-    value: FormDataEntryValue | null | undefined
-  ): string | null {
-    if (typeof value !== 'string') {
-      return null;
-    }
-
-    const trimmed = value.trim();
-    return trimmed.length > 0 ? trimmed : null;
   }
 
   function toErrorMessage(caughtError: unknown, fallback: string): string {
@@ -1417,6 +1249,36 @@
     },
     setRemovingMemberUsername: (value) => {
       removingMemberUsername = value;
+    },
+  });
+
+  const orgNonDestructiveActions = createOrgNonDestructiveActionsController({
+    getOrgSlug: () => slug,
+    getOrgId: () => org?.id?.trim() || null,
+    reload: loadOrganizationPage,
+    toErrorMessage,
+    ecosystemLabel,
+    clearFlash: () => {
+      notice = null;
+      error = null;
+    },
+    setError: (value) => {
+      error = value;
+    },
+    setCreatingPackage: (value) => {
+      creatingPackage = value;
+    },
+    getCreatableRepositoriesCount: () => creatableRepositories.length,
+    resolvePackageCreationRepository: (repositorySlug) =>
+      creatableRepositories.find(
+        (repository) => repository.slug === repositorySlug
+      ) || null,
+    resetPackageDraft: () => {
+      newPackageEcosystem = DEFAULT_PACKAGE_ECOSYSTEM;
+      newPackageName = '';
+      newPackageVisibility = '';
+      newPackageDisplayName = '';
+      newPackageDescription = '';
     },
   });
 
