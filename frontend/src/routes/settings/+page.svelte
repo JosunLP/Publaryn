@@ -4,11 +4,8 @@
 
   import type { MfaSetupState, UserProfile } from '../../api/auth';
   import {
-    disableMfa,
     getCurrentUser,
-    setupMfa,
     updateCurrentUser,
-    verifyMfaSetup,
   } from '../../api/auth';
   import { getAuthToken } from '../../api/client';
   import type {
@@ -41,6 +38,8 @@
   } from '../../pages/personal-namespaces';
   import type { TokenRecord } from '../../api/tokens';
   import { createToken, listTokens, revokeToken } from '../../api/tokens';
+  import SettingsMfaSection from '../../lib/components/SettingsMfaSection.svelte';
+  import { createSettingsMfaController } from '../../pages/settings-mfa';
   import { copyToClipboard, formatDate } from '../../utils/format';
   import { ecosystemLabel } from '../../utils/ecosystem';
 
@@ -359,72 +358,39 @@
     }
   }
 
-  async function handleStartMfaSetup(): Promise<void> {
-    startingMfaSetup = true;
+  const mfaController = createSettingsMfaController({
+    loadSettings,
+    toErrorMessage,
+    getMfaSetupState: () => mfaSetupState,
+    getMfaVerifyCode: () => mfaVerifyCode,
+    setMfaVerifyCode: (value) => {
+      mfaVerifyCode = value;
+    },
+    getMfaDisableCode: () => mfaDisableCode,
+    setMfaDisableCode: (value) => {
+      mfaDisableCode = value;
+    },
+    setStartingMfaSetup: (value) => {
+      startingMfaSetup = value;
+    },
+    setVerifyingMfa: (value) => {
+      verifyingMfa = value;
+    },
+    setDisablingMfa: (value) => {
+      disablingMfa = value;
+    },
+  });
 
-    try {
-      const setup = await setupMfa();
-      await loadSettings({
-        notice: 'MFA setup initialized. Verify one code to enable it.',
-        mfaSetupState: setup,
-      });
-    } catch (caughtError: unknown) {
-      await loadSettings({
-        error: toErrorMessage(caughtError, 'Failed to initialize MFA setup.'),
-      });
-    } finally {
-      startingMfaSetup = false;
-    }
+  async function handleStartMfaSetup(): Promise<void> {
+    await mfaController.startSetup();
   }
 
   async function handleVerifyMfa(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
-
-    if (!mfaVerifyCode.trim()) {
-      await loadSettings({
-        error: 'A verification code is required.',
-        mfaSetupState,
-      });
-      return;
-    }
-
-    verifyingMfa = true;
-
-    try {
-      await verifyMfaSetup(mfaVerifyCode.trim());
-      mfaVerifyCode = '';
-      await loadSettings({ notice: 'MFA enabled successfully.' });
-    } catch (caughtError: unknown) {
-      await loadSettings({
-        error: toErrorMessage(caughtError, 'Failed to verify MFA setup.'),
-        mfaSetupState,
-      });
-    } finally {
-      verifyingMfa = false;
-    }
+    await mfaController.verify(event);
   }
 
   async function handleDisableMfa(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
-
-    if (!mfaDisableCode.trim()) {
-      await loadSettings({ error: 'A code is required to disable MFA.' });
-      return;
-    }
-
-    disablingMfa = true;
-
-    try {
-      await disableMfa(mfaDisableCode.trim());
-      mfaDisableCode = '';
-      await loadSettings({ notice: 'MFA disabled.' });
-    } catch (caughtError: unknown) {
-      await loadSettings({
-        error: toErrorMessage(caughtError, 'Failed to disable MFA.'),
-      });
-    } finally {
-      disablingMfa = false;
-    }
+    await mfaController.disable(event);
   }
 
   function normalizeOrgSlug(value: string): string {
@@ -635,114 +601,18 @@
         </form>
       </section>
 
-      <section class="card settings-section">
-        <h2>Multi-factor authentication</h2>
-        <p class="text-muted settings-copy">
-          Status: <strong>{user.mfa_enabled ? 'Enabled' : 'Disabled'}</strong>
-        </p>
-
-        {#if user.mfa_enabled}
-          <form id="mfa-disable-form" on:submit={handleDisableMfa}>
-            <div class="form-group">
-              <label for="mfa-disable-code"
-                >Authenticator or recovery code</label
-              >
-              <input
-                id="mfa-disable-code"
-                bind:value={mfaDisableCode}
-                class="form-input"
-                placeholder="123456 or xxxx-yyyy"
-                required
-              />
-            </div>
-            <button
-              type="submit"
-              class="btn btn-danger"
-              disabled={disablingMfa}
-            >
-              {disablingMfa ? 'Disabling…' : 'Disable MFA'}
-            </button>
-          </form>
-        {:else}
-          <button
-            id="mfa-setup-btn"
-            class="btn btn-primary"
-            type="button"
-            on:click={handleStartMfaSetup}
-            disabled={startingMfaSetup}
-          >
-            {startingMfaSetup ? 'Preparing…' : 'Start MFA setup'}
-          </button>
-          <p class="text-muted mt-4">
-            Use an authenticator app like 1Password, Bitwarden, Authy, or Google
-            Authenticator.
-          </p>
-        {/if}
-
-        {#if mfaSetupState}
-          <div class="settings-subsection">
-            <h3>Step 1: Add the secret to your authenticator app</h3>
-            <div class="code-block">
-              <button
-                class="copy-btn"
-                type="button"
-                on:click={() => copyToClipboard(mfaSetupState?.secret || '')}
-                >Copy</button
-              ><code>{mfaSetupState.secret}</code>
-            </div>
-            <div class="mt-4">
-              <div class="text-muted" style="display:block; margin-bottom:6px;">
-                Provisioning URI
-              </div>
-              <div class="code-block">
-                <button
-                  class="copy-btn"
-                  type="button"
-                  on:click={() =>
-                    copyToClipboard(mfaSetupState?.provisioning_uri || '')}
-                  >Copy</button
-                ><code>{mfaSetupState.provisioning_uri}</code>
-              </div>
-            </div>
-            <div class="mt-4">
-              <div class="text-muted" style="display:block; margin-bottom:6px;">
-                Recovery codes (store these somewhere safe)
-              </div>
-              <div class="code-block">
-                <button
-                  class="copy-btn"
-                  type="button"
-                  on:click={() =>
-                    copyToClipboard(
-                      mfaSetupState?.recovery_codes.join('\n') || ''
-                    )}>Copy</button
-                ><code>{mfaSetupState.recovery_codes.join('\n')}</code>
-              </div>
-            </div>
-            <form id="mfa-verify-form" class="mt-4" on:submit={handleVerifyMfa}>
-              <div class="form-group">
-                <label for="mfa-verify-code"
-                  >Step 2: Enter a code from your authenticator app</label
-                >
-                <input
-                  id="mfa-verify-code"
-                  bind:value={mfaVerifyCode}
-                  class="form-input"
-                  placeholder="123456"
-                  required
-                />
-              </div>
-              <button
-                type="submit"
-                class="btn btn-primary"
-                disabled={verifyingMfa}
-              >
-                {verifyingMfa ? 'Enabling…' : 'Enable MFA'}
-              </button>
-            </form>
-          </div>
-        {/if}
-      </section>
+      <SettingsMfaSection
+        {user}
+        {mfaSetupState}
+        bind:mfaDisableCode
+        {disablingMfa}
+        {startingMfaSetup}
+        bind:mfaVerifyCode
+        {verifyingMfa}
+        {handleStartMfaSetup}
+        {handleVerifyMfa}
+        {handleDisableMfa}
+      />
     </div>
 
     <div class="settings-grid mt-6">
