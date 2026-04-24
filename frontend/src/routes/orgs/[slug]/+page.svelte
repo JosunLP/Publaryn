@@ -4,38 +4,12 @@
 
   import { ApiError, getAuthToken } from '../../../api/client';
   import {
-    createNamespaceClaim,
-    deleteNamespaceClaim,
-    transferNamespaceClaim,
-  } from '../../../api/namespaces';
-  import {
-    addMember,
-    createTeam,
-    deleteTeam,
-    exportOrgAuditLogsCsv,
-    exportOrgSecurityFindingsCsv,
     getOrgWorkspaceBootstrap,
     listMyOrganizations,
     listOrgAuditLogs,
     listOrgSecurityFindings,
-    removeMember,
-    revokeInvitation,
     searchOrgMembers,
-    sendInvitation,
-    transferOwnership,
-    updateOrg,
   } from '../../../api/orgs';
-  import {
-    createPackage,
-    listSecurityFindings,
-    transferPackageOwnership,
-    updateSecurityFinding,
-  } from '../../../api/packages';
-  import {
-    createRepository,
-    transferRepositoryOwnership,
-    updateRepository,
-  } from '../../../api/repositories';
   import OrgAuditFilterControls from '../../../lib/components/OrgAuditFilterControls.svelte';
   import OrgSecurityFilterControls from '../../../lib/components/OrgSecurityFilterControls.svelte';
   import OrgSecurityFindingTriageControls from '../../../lib/components/OrgSecurityFindingTriageControls.svelte';
@@ -56,8 +30,6 @@
   } from '../../../pages/org-audit-format';
   import {
     ORG_AUDIT_ACTION_VALUES,
-    buildOrgAuditExportFilename,
-    buildOrgAuditPath,
     formatAuditActorQueryLabel,
     getAuditViewFromQuery,
     normalizeAuditAction,
@@ -76,15 +48,9 @@
     resolveOrgMemberPickerInput,
   } from '../../../pages/org-member-picker';
   import {
-    buildOrgSecurityExportFilename,
-    buildOrgSecurityPath,
     getOrgSecurityViewFromQuery,
   } from '../../../pages/org-security-query';
-  import {
-    buildOrgSecurityPackageKey,
-    mergeUpdatedOrgSecurityFinding,
-    sortOrgSecurityFindings,
-  } from '../../../pages/org-security-triage';
+  import { buildOrgSecurityPackageKey } from '../../../pages/org-security-triage';
   import {
     canManageOrgInvitations,
     canManageOrgMembers,
@@ -96,14 +62,15 @@
     canViewOrgAuditWorkspace,
     canViewOrgPeopleWorkspace,
   } from '../../../pages/org-workspace-access';
+  import { renderPackageSelectionValue } from '../../../pages/org-workspace-actions';
+  import { createOrgObservabilityController } from '../../../pages/org-observability';
   import {
-    buildAuditExportQuery,
-    buildSecurityExportQuery,
-    decodePackageSelection,
-    renderPackageSelectionValue,
-    resolveAuditFilterSubmission,
-    resolveSecurityFilterSubmission,
-  } from '../../../pages/org-workspace-actions';
+    createOrgNonDestructiveActionsController,
+  } from '../../../pages/org-non-destructive-actions';
+  import {
+    createOrgDestructiveActionsController,
+  } from '../../../pages/org-destructive-actions';
+  import { createOrgGovernanceController } from '../../../pages/org-governance';
   import {
     buildPackageDetailsPath,
     buildPackageSecurityFindingPath,
@@ -114,7 +81,6 @@
     sortNamespaceClaims,
   } from '../../../pages/personal-namespaces';
   import {
-    TEAM_DELETE_CONFIRMATION_MESSAGE,
     TEAM_NAMESPACE_PERMISSION_OPTIONS,
     TEAM_PERMISSION_OPTIONS,
     buildEligibleTeamMemberOptions,
@@ -155,8 +121,6 @@
   } from '../../../utils/security';
 
   type NamespaceClaim = import('../../../api/namespaces').NamespaceClaim;
-  type NamespaceTransferOwnershipResult =
-    import('../../../api/namespaces').NamespaceTransferOwnershipResult;
   type OrgAuditListResponse = import('../../../api/orgs').OrgAuditListResponse;
   type OrgAuditLog = import('../../../api/orgs').OrgAuditLog;
   type OrgInvitation = import('../../../api/orgs').OrgInvitation;
@@ -175,8 +139,6 @@
   type OrganizationMembership =
     import('../../../api/orgs').OrganizationMembership;
   type Team = import('../../../api/orgs').Team;
-  type TransferOwnershipResult =
-    import('../../../api/orgs').TransferOwnershipResult;
   type SecurityFinding = import('../../../api/packages').SecurityFinding;
   type RepositoryPackageSummary =
     import('../../../api/repositories').RepositoryPackageSummary;
@@ -196,20 +158,6 @@
   const ORG_AUDIT_PAGE_SIZE = 20;
   const DEFAULT_NAMESPACE_ECOSYSTEM = 'npm';
   const DEFAULT_PACKAGE_ECOSYSTEM = 'npm';
-  const OWNERSHIP_TRANSFER_CONFIRMATION_MESSAGE =
-    'Please confirm the ownership transfer.';
-  const REPOSITORY_TRANSFER_CONFIRMATION_MESSAGE =
-    'Please confirm the repository transfer.';
-  const NAMESPACE_TRANSFER_CONFIRMATION_MESSAGE =
-    'Please confirm the namespace transfer.';
-  const PACKAGE_TRANSFER_CONFIRMATION_MESSAGE =
-    'Please confirm the package transfer.';
-  const INVITATION_REVOKE_CONFIRMATION_MESSAGE =
-    'Please confirm that you want to revoke this invitation immediately.';
-  const MEMBER_REMOVE_CONFIRMATION_MESSAGE =
-    'Please confirm that you want to remove this member from the organization.';
-  const NAMESPACE_DELETE_CONFIRMATION_MESSAGE =
-    'Please confirm that you understand deleting this namespace claim is immediate and cannot be undone.';
   const REVIEW_TEAM_FALLBACK_LABEL = 'Team (no name)';
   const SECURITY_FINDING_NOTE_PLACEHOLDER =
     'Optional note (recorded in audit log)';
@@ -823,389 +771,93 @@
   }
 
   async function handleAuditFilterSubmit(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
-    const resolution = resolveAuditFilterSubmission(
-      new FormData(event.currentTarget as HTMLFormElement),
-      auditActorOptions
-    );
-
-    if (!resolution.ok) {
-      await loadOrganizationPage({
-        error: resolution.error,
-      });
-      return;
-    }
-
-    await goto(
-      buildOrgAuditPath(slug, resolution.value, $page.url.searchParams)
-    );
+    await orgObservability.submitAuditFilter(event);
   }
 
   async function goToAuditPage(nextPage: number): Promise<void> {
-    await goto(
-      buildOrgAuditPath(
-        slug,
-        {
-          action: auditView.action,
-          actorUserId: auditView.actorUserId,
-          actorUsername: auditView.actorUsername,
-          occurredFrom: auditView.occurredFrom,
-          occurredUntil: auditView.occurredUntil,
-          page: nextPage,
-        },
-        $page.url.searchParams
-      )
-    );
+    await orgObservability.goToAuditPage(nextPage);
   }
 
   async function clearAuditActionFilter(): Promise<void> {
-    await goto(
-      buildOrgAuditPath(
-        slug,
-        {
-          action: '',
-          actorUserId: auditView.actorUserId,
-          actorUsername: auditView.actorUsername,
-          occurredFrom: auditView.occurredFrom,
-          occurredUntil: auditView.occurredUntil,
-          page: 1,
-        },
-        $page.url.searchParams
-      )
-    );
+    await orgObservability.clearAuditActionFilter();
   }
 
   async function clearAuditActorFilter(): Promise<void> {
-    await goto(
-      buildOrgAuditPath(
-        slug,
-        {
-          action: auditView.action,
-          actorUserId: '',
-          actorUsername: '',
-          occurredFrom: auditView.occurredFrom,
-          occurredUntil: auditView.occurredUntil,
-          page: 1,
-        },
-        $page.url.searchParams
-      )
-    );
+    await orgObservability.clearAuditActorFilter();
   }
 
   async function clearAuditDateFilter(): Promise<void> {
-    await goto(
-      buildOrgAuditPath(
-        slug,
-        {
-          action: auditView.action,
-          actorUserId: auditView.actorUserId,
-          actorUsername: auditView.actorUsername,
-          occurredFrom: '',
-          occurredUntil: '',
-          page: 1,
-        },
-        $page.url.searchParams
-      )
-    );
+    await orgObservability.clearAuditDateFilter();
   }
 
   async function focusAuditActor(
     actorUserId: string,
     actorUsername: string
   ): Promise<void> {
-    if (!actorUserId) {
-      return;
-    }
-
-    await goto(
-      buildOrgAuditPath(
-        slug,
-        {
-          action: auditView.action,
-          actorUserId,
-          actorUsername,
-          occurredFrom: auditView.occurredFrom,
-          occurredUntil: auditView.occurredUntil,
-          page: 1,
-        },
-        $page.url.searchParams
-      )
-    );
+    await orgObservability.focusAuditActor(actorUserId, actorUsername);
   }
 
   async function handleExportAudit(): Promise<void> {
-    exportingAudit = true;
-
-    try {
-      const csv = await exportOrgAuditLogsCsv(
-        slug,
-        buildAuditExportQuery(auditView)
-      );
-
-      downloadTextFile(
-        buildOrgAuditExportFilename(
-          slug,
-          {
-            action: auditView.action,
-            actorUsername: auditView.actorUsername,
-            occurredFrom: auditView.occurredFrom,
-            occurredUntil: auditView.occurredUntil,
-          },
-          new Date()
-        ),
-        csv,
-        'text/csv;charset=utf-8'
-      );
-    } catch (caughtError: unknown) {
-      await loadOrganizationPage({
-        error: toErrorMessage(caughtError, 'Failed to export activity log.'),
-      });
-    } finally {
-      exportingAudit = false;
-    }
+    await orgObservability.exportAudit();
   }
 
   async function handleSecurityFilterSubmit(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
-    const nextView = resolveSecurityFilterSubmission(
-      new FormData(event.currentTarget as HTMLFormElement)
-    );
-
-    await goto(buildOrgSecurityPath(slug, nextView, $page.url.searchParams));
+    await orgObservability.submitSecurityFilter(event);
   }
 
   async function clearSecuritySeverityFilter(): Promise<void> {
-    await goto(
-      buildOrgSecurityPath(
-        slug,
-        {
-          severities: [],
-          ecosystem: securityView.ecosystem,
-          packageQuery: securityView.packageQuery,
-        },
-        $page.url.searchParams
-      )
-    );
+    await orgObservability.clearSecuritySeverityFilter();
   }
 
   async function clearSecurityEcosystemFilter(): Promise<void> {
-    await goto(
-      buildOrgSecurityPath(
-        slug,
-        {
-          severities: securityView.severities,
-          ecosystem: '',
-          packageQuery: securityView.packageQuery,
-        },
-        $page.url.searchParams
-      )
-    );
+    await orgObservability.clearSecurityEcosystemFilter();
   }
 
   async function clearSecurityPackageFilter(): Promise<void> {
-    await goto(
-      buildOrgSecurityPath(
-        slug,
-        {
-          severities: securityView.severities,
-          ecosystem: securityView.ecosystem,
-          packageQuery: '',
-        },
-        $page.url.searchParams
-      )
-    );
+    await orgObservability.clearSecurityPackageFilter();
   }
 
   async function handleExportSecurity(): Promise<void> {
-    exportingSecurity = true;
-
-    try {
-      const csv = await exportOrgSecurityFindingsCsv(
-        slug,
-        buildSecurityExportQuery(securityView)
-      );
-
-      downloadTextFile(
-        buildOrgSecurityExportFilename(
-          slug,
-          {
-            severities: securityView.severities,
-            ecosystem: securityView.ecosystem,
-            packageQuery: securityView.packageQuery,
-          },
-          new Date()
-        ),
-        csv,
-        'text/csv;charset=utf-8'
-      );
-    } catch (caughtError: unknown) {
-      await loadOrganizationPage({
-        error: toErrorMessage(
-          caughtError,
-          'Failed to export security findings.'
-        ),
-      });
-    } finally {
-      exportingSecurity = false;
-    }
+    await orgObservability.exportSecurity();
   }
 
   async function handleProfileUpdate(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
-    if (!org) {
-      return;
-    }
-
-    const formData = new FormData(event.currentTarget as HTMLFormElement);
-
-    try {
-      await updateOrg(slug, {
-        description: normalizeFormOptionalText(formData.get('description')),
-        website: normalizeFormOptionalText(formData.get('website')),
-        email: normalizeFormOptionalText(formData.get('email')),
-        mfaRequired: formData.has('mfa_required'),
-        memberDirectoryIsPrivate: formData.has('member_directory_is_private'),
-      });
-      await loadOrganizationPage({ notice: 'Organization profile updated.' });
-    } catch (caughtError: unknown) {
-      await loadOrganizationPage({
-        error: toErrorMessage(
-          caughtError,
-          'Failed to update organization profile.'
-        ),
-      });
-    }
+    await orgGovernance.submitProfile(event);
   }
 
   async function handleInviteMember(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
-    const formData = new FormData(event.currentTarget as HTMLFormElement);
-
-    try {
-      await sendInvitation(slug, {
-        usernameOrEmail:
-          formData.get('username_or_email')?.toString().trim() || '',
-        role: formData.get('role')?.toString() || 'viewer',
-        expiresInDays:
-          Number(formData.get('expires_in_days')?.toString() || '7') || 7,
-      });
-
-      (event.currentTarget as HTMLFormElement).reset();
-      await loadOrganizationPage({ notice: 'Invitation sent successfully.' });
-    } catch (caughtError: unknown) {
-      await loadOrganizationPage({
-        error: toErrorMessage(caughtError, 'Failed to send invitation.'),
-      });
-    }
+    await orgGovernance.submitInvitation(event);
   }
 
   async function handleAddMember(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
-    const formData = new FormData(event.currentTarget as HTMLFormElement);
-
-    try {
-      await addMember(slug, {
-        username: formData.get('username')?.toString().trim() || '',
-        role: formData.get('role')?.toString() || 'viewer',
-      });
-
-      (event.currentTarget as HTMLFormElement).reset();
-      await loadOrganizationPage({ notice: 'Member added successfully.' });
-    } catch (caughtError: unknown) {
-      await loadOrganizationPage({
-        error: toErrorMessage(caughtError, 'Failed to add member.'),
-      });
-    }
+    await orgGovernance.submitMember(event);
   }
 
   async function handleTransferOwnership(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
-    const formData = new FormData(event.currentTarget as HTMLFormElement);
-    const username = resolveOrgMemberPickerInput(
-      formData.get('username')?.toString() || '',
-      ownershipMemberOptions
-    );
-
-    if (!ownershipTransferConfirmed) {
-      notice = null;
-      error = OWNERSHIP_TRANSFER_CONFIRMATION_MESSAGE;
-      return;
-    }
-
-    transferringOwnership = true;
-    notice = null;
-    error = null;
-
-    try {
-      const result: TransferOwnershipResult = await transferOwnership(slug, {
-        username,
-      });
-
-      await loadOrganizationPage({
-        notice: `Ownership transferred to @${result.new_owner?.username || 'the selected user'}.`,
-      });
-    } catch (caughtError: unknown) {
-      error = toErrorMessage(
-        caughtError,
-        'Failed to transfer organization ownership.'
-      );
-      transferringOwnership = false;
-    }
+    await orgGovernance.submitOwnershipTransfer(event);
   }
 
   function openOwnershipTransferConfirmation(): void {
-    ownershipTransferConfirmationOpen = true;
-    ownershipTransferConfirmed = false;
-    transferringOwnership = false;
-    notice = null;
-    error = null;
+    orgGovernance.openOwnershipTransferConfirmation();
   }
 
   function cancelOwnershipTransferConfirmation(): void {
-    ownershipTransferConfirmationOpen = false;
-    ownershipTransferConfirmed = false;
-    transferringOwnership = false;
-    error = null;
+    orgGovernance.cancelOwnershipTransferConfirmation();
   }
 
   function openInvitationRevokeConfirmation(invitationId: string): void {
-    invitationRevokeTargetId = invitationId;
-    invitationRevokeConfirmed = false;
-    revokingInvitationId = null;
-    notice = null;
-    error = null;
+    orgGovernance.openInvitationRevokeConfirmation(invitationId);
   }
 
   function cancelInvitationRevokeConfirmation(): void {
-    invitationRevokeTargetId = null;
-    invitationRevokeConfirmed = false;
-    revokingInvitationId = null;
-    error = null;
+    orgGovernance.cancelInvitationRevokeConfirmation();
   }
 
   async function handleRevokeInvitation(
     event: SubmitEvent,
     invitationId: string
   ): Promise<void> {
-    event.preventDefault();
-
-    if (!invitationRevokeConfirmed) {
-      notice = null;
-      error = INVITATION_REVOKE_CONFIRMATION_MESSAGE;
-      return;
-    }
-
-    revokingInvitationId = invitationId;
-    notice = null;
-    error = null;
-
-    try {
-      await revokeInvitation(slug, invitationId);
-      await loadOrganizationPage({ notice: 'Invitation revoked.' });
-    } catch (caughtError: unknown) {
-      error = toErrorMessage(caughtError, 'Failed to revoke invitation.');
-      revokingInvitationId = null;
-    }
+    await orgGovernance.submitInvitationRevoke(event, invitationId);
   }
 
   async function handleUpdateMemberRole(
@@ -1213,181 +865,53 @@
     username: string,
     currentRole: string
   ): Promise<void> {
-    event.preventDefault();
-    const formData = new FormData(event.currentTarget as HTMLFormElement);
-    const role = formData.get('role')?.toString().trim() || 'viewer';
-
-    if (role === currentRole) {
-      await loadOrganizationPage({
-        notice: `@${username} already has the ${formatRole(role)} role.`,
-      });
-      return;
-    }
-
-    try {
-      await addMember(slug, { username, role });
-      await loadOrganizationPage({
-        notice: `Updated @${username} to ${formatRole(role)}.`,
-      });
-    } catch (caughtError: unknown) {
-      await loadOrganizationPage({
-        error: toErrorMessage(caughtError, 'Failed to update member role.'),
-      });
-    }
+    await orgGovernance.updateMemberRole(event, username, currentRole);
   }
 
   function openMemberRemoveConfirmation(username: string): void {
-    memberRemoveTargetUsername = username;
-    memberRemoveConfirmed = false;
-    removingMemberUsername = null;
-    notice = null;
-    error = null;
+    orgGovernance.openMemberRemoveConfirmation(username);
   }
 
   function cancelMemberRemoveConfirmation(): void {
-    memberRemoveTargetUsername = null;
-    memberRemoveConfirmed = false;
-    removingMemberUsername = null;
-    error = null;
+    orgGovernance.cancelMemberRemoveConfirmation();
   }
 
   async function handleRemoveMember(
     event: SubmitEvent,
     username: string
   ): Promise<void> {
-    event.preventDefault();
-
-    if (!memberRemoveConfirmed) {
-      notice = null;
-      error = MEMBER_REMOVE_CONFIRMATION_MESSAGE;
-      return;
-    }
-
-    removingMemberUsername = username;
-    notice = null;
-    error = null;
-
-    try {
-      await removeMember(slug, username);
-      await loadOrganizationPage({
-        notice: `Removed @${username} from the organization.`,
-      });
-    } catch (caughtError: unknown) {
-      error = toErrorMessage(caughtError, 'Failed to remove member.');
-      removingMemberUsername = null;
-    }
+    await orgGovernance.submitMemberRemoval(event, username);
   }
 
   async function handleCreateTeam(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
-    const formData = new FormData(event.currentTarget as HTMLFormElement);
-
-    try {
-      await createTeam(slug, {
-        name: formData.get('name')?.toString().trim() || '',
-        slug: formData.get('team_slug')?.toString().trim() || '',
-        description:
-          normalizeFormOptionalText(formData.get('description')) || undefined,
-      });
-
-      (event.currentTarget as HTMLFormElement).reset();
-      await loadOrganizationPage({ notice: 'Team created successfully.' });
-    } catch (caughtError: unknown) {
-      await loadOrganizationPage({
-        error: toErrorMessage(caughtError, 'Failed to create team.'),
-      });
-    }
+    await orgNonDestructiveActions.submitTeamCreate(event);
   }
 
   function openTeamDeleteConfirmation(teamSlug: string): void {
-    teamDeleteTargetSlug = teamSlug;
-    teamDeleteConfirmed = false;
-    deletingTeamSlug = null;
-    notice = null;
-    error = null;
+    orgDestructiveActions.openTeamDeleteConfirmation(teamSlug);
   }
 
   function cancelTeamDeleteConfirmation(): void {
-    teamDeleteTargetSlug = null;
-    teamDeleteConfirmed = false;
-    deletingTeamSlug = null;
-    error = null;
+    orgDestructiveActions.cancelTeamDeleteConfirmation();
   }
 
   async function handleDeleteTeam(
     event: SubmitEvent,
     teamSlug: string
   ): Promise<void> {
-    event.preventDefault();
-
-    if (!teamDeleteConfirmed) {
-      notice = null;
-      error = TEAM_DELETE_CONFIRMATION_MESSAGE;
-      return;
-    }
-
-    deletingTeamSlug = teamSlug;
-    notice = null;
-    error = null;
-
-    try {
-      await deleteTeam(slug, teamSlug);
-      await loadOrganizationPage({ notice: `Deleted team ${teamSlug}.` });
-    } catch (caughtError: unknown) {
-      error = toErrorMessage(caughtError, 'Failed to delete team.');
-      deletingTeamSlug = null;
-    }
+    await orgDestructiveActions.submitTeamDelete(event, teamSlug);
   }
 
   async function handleCreateNamespace(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
-
-    if (!org?.id?.trim()) {
-      await loadOrganizationPage({
-        error:
-          'Failed to create the namespace claim because the organization id is unavailable.',
-      });
-      return;
-    }
-
-    const formData = new FormData(event.currentTarget as HTMLFormElement);
-    const ecosystem =
-      formData.get('ecosystem')?.toString().trim().toLowerCase() || '';
-    const namespace = formData.get('namespace')?.toString().trim() || '';
-
-    if (!ecosystem || !namespace) {
-      await loadOrganizationPage({
-        error: 'Select an ecosystem and namespace first.',
-      });
-      return;
-    }
-
-    try {
-      await createNamespaceClaim({ ecosystem, namespace, ownerOrgId: org.id });
-      (event.currentTarget as HTMLFormElement).reset();
-      await loadOrganizationPage({
-        notice: `Created the ${ecosystemLabel(ecosystem)} namespace claim ${namespace}.`,
-      });
-    } catch (caughtError: unknown) {
-      await loadOrganizationPage({
-        error: toErrorMessage(caughtError, 'Failed to create namespace claim.'),
-      });
-    }
+    await orgNonDestructiveActions.submitNamespaceCreate(event);
   }
 
   function openNamespaceDeleteConfirmation(claimId: string): void {
-    namespaceDeleteTargetId = claimId;
-    namespaceDeleteConfirmed = false;
-    deletingNamespaceClaimId = null;
-    notice = null;
-    error = null;
+    orgDestructiveActions.openNamespaceDeleteConfirmation(claimId);
   }
 
   function cancelNamespaceDeleteConfirmation(): void {
-    namespaceDeleteTargetId = null;
-    namespaceDeleteConfirmed = false;
-    deletingNamespaceClaimId = null;
-    error = null;
+    orgDestructiveActions.cancelNamespaceDeleteConfirmation();
   }
 
   async function handleDeleteNamespace(
@@ -1395,343 +919,58 @@
     claimId: string | null | undefined,
     namespace: string
   ): Promise<void> {
-    event.preventDefault();
-
-    if (!claimId) {
-      await loadOrganizationPage({
-        error:
-          'Failed to delete namespace claim because the claim id is unavailable.',
-      });
-      return;
-    }
-
-    if (!namespaceDeleteConfirmed) {
-      notice = null;
-      error = NAMESPACE_DELETE_CONFIRMATION_MESSAGE;
-      return;
-    }
-
-    deletingNamespaceClaimId = claimId;
-    notice = null;
-    error = null;
-
-    try {
-      await deleteNamespaceClaim(claimId);
-      await loadOrganizationPage({
-        notice: `Deleted namespace claim ${namespace}.`,
-      });
-    } catch (caughtError: unknown) {
-      error = toErrorMessage(caughtError, 'Failed to delete namespace claim.');
-      deletingNamespaceClaimId = null;
-    }
+    await orgDestructiveActions.submitNamespaceDelete(event, claimId, namespace);
   }
 
   async function handleNamespaceTransfer(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
-    const formData = new FormData(event.currentTarget as HTMLFormElement);
-    const claimId = formData.get('claim_id')?.toString().trim() || '';
-    const targetOrgSlug =
-      formData.get('target_org_slug')?.toString().trim() || '';
-
-    if (!claimId) {
-      notice = null;
-      error = 'Select a namespace claim to transfer.';
-      return;
-    }
-
-    if (!targetOrgSlug) {
-      notice = null;
-      error = 'Select a target organization.';
-      return;
-    }
-
-    if (!namespaceTransferConfirmed) {
-      notice = null;
-      error = NAMESPACE_TRANSFER_CONFIRMATION_MESSAGE;
-      return;
-    }
-
-    transferringNamespaceOwnership = true;
-    notice = null;
-    error = null;
-
-    try {
-      const result: NamespaceTransferOwnershipResult =
-        await transferNamespaceClaim(claimId, {
-          targetOrgSlug,
-        });
-      const namespace =
-        result.namespace_claim?.namespace ||
-        namespaceClaims.find((claim) => claim.id === claimId)?.namespace ||
-        'namespace claim';
-      await loadOrganizationPage({
-        notice: `Transferred ${namespace} to ${result.owner?.name || result.owner?.slug || targetOrgSlug}.`,
-      });
-    } catch (caughtError: unknown) {
-      error = toErrorMessage(
-        caughtError,
-        'Failed to transfer namespace claim ownership.'
-      );
-      transferringNamespaceOwnership = false;
-    }
+    await orgDestructiveActions.submitNamespaceTransfer(event);
   }
 
   function openNamespaceTransferConfirmation(): void {
-    namespaceTransferConfirmationOpen = true;
-    namespaceTransferConfirmed = false;
-    transferringNamespaceOwnership = false;
-    notice = null;
-    error = null;
+    orgDestructiveActions.openNamespaceTransferConfirmation();
   }
 
   function cancelNamespaceTransferConfirmation(): void {
-    namespaceTransferConfirmationOpen = false;
-    namespaceTransferConfirmed = false;
-    transferringNamespaceOwnership = false;
-    error = null;
+    orgDestructiveActions.cancelNamespaceTransferConfirmation();
   }
 
   async function handleCreateRepository(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
-
-    if (!org?.id?.trim()) {
-      await loadOrganizationPage({
-        error:
-          'Failed to create the repository because the organization id is unavailable.',
-      });
-      return;
-    }
-
-    const formData = new FormData(event.currentTarget as HTMLFormElement);
-
-    try {
-      await createRepository({
-        name: formData.get('name')?.toString().trim() || '',
-        slug: formData.get('slug')?.toString().trim() || '',
-        kind: formData.get('kind')?.toString().trim() || 'public',
-        visibility: formData.get('visibility')?.toString().trim() || 'public',
-        description: normalizeFormOptionalText(formData.get('description')),
-        ownerOrgId: org.id,
-      });
-
-      (event.currentTarget as HTMLFormElement).reset();
-      await loadOrganizationPage({
-        notice: 'Repository created successfully.',
-      });
-    } catch (caughtError: unknown) {
-      await loadOrganizationPage({
-        error: toErrorMessage(caughtError, 'Failed to create repository.'),
-      });
-    }
+    await orgNonDestructiveActions.submitRepositoryCreate(event);
   }
 
   async function handleCreatePackage(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
-
-    if (!selectedPackageCreationRepository) {
-      notice = null;
-      error =
-        creatableRepositories.length === 0
-          ? 'Create an eligible repository before creating a package.'
-          : 'Select a repository for the new package.';
-      return;
-    }
-
-    const packageName = newPackageName.trim();
-    if (!packageName) {
-      notice = null;
-      error = 'Enter a package name.';
-      return;
-    }
-
-    const ecosystem = newPackageEcosystem.trim().toLowerCase();
-    const repositorySlug = selectedPackageCreationRepository.slug;
-    const repositoryName =
-      selectedPackageCreationRepository.name ||
-      selectedPackageCreationRepository.slug;
-
-    creatingPackage = true;
-    notice = null;
-    error = null;
-
-    try {
-      const result = await createPackage({
-        ecosystem,
-        name: packageName,
-        repositorySlug,
-        visibility: newPackageVisibility || undefined,
-        displayName: newPackageDisplayName,
-        description: newPackageDescription,
-      });
-
-      newPackageEcosystem = DEFAULT_PACKAGE_ECOSYSTEM;
-      newPackageName = '';
-      newPackageVisibility = '';
-      newPackageDisplayName = '';
-      newPackageDescription = '';
-
-      await loadOrganizationPage({
-        notice: `Created ${ecosystemLabel(result.ecosystem || ecosystem)} package ${result.name || packageName} in ${repositoryName}.`,
-      });
-    } catch (caughtError: unknown) {
-      await loadOrganizationPage({
-        error: toErrorMessage(caughtError, 'Failed to create package.'),
-      });
-    } finally {
-      creatingPackage = false;
-    }
+    await orgNonDestructiveActions.submitPackageCreate(event);
   }
 
   async function handleUpdateRepository(
     event: SubmitEvent,
     repositorySlug: string
   ): Promise<void> {
-    event.preventDefault();
-    const formData = new FormData(event.currentTarget as HTMLFormElement);
-
-    try {
-      await updateRepository(repositorySlug, {
-        description: formData.get('description')?.toString().trim() || '',
-        visibility: formData.get('visibility')?.toString().trim() || 'public',
-      });
-
-      await loadOrganizationPage({
-        notice: `Updated repository ${repositorySlug}.`,
-      });
-    } catch (caughtError: unknown) {
-      await loadOrganizationPage({
-        error: toErrorMessage(caughtError, 'Failed to update repository.'),
-      });
-    }
+    await orgNonDestructiveActions.submitRepositoryUpdate(event, repositorySlug);
   }
 
   async function handleRepositoryTransfer(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
-    const formData = new FormData(event.currentTarget as HTMLFormElement);
-    const repositorySlug =
-      formData.get('repository_slug')?.toString().trim() || '';
-    const targetOrgSlug =
-      formData.get('target_org_slug')?.toString().trim() || '';
-
-    if (!repositorySlug) {
-      notice = null;
-      error = 'Select a repository to transfer.';
-      return;
-    }
-
-    if (!targetOrgSlug) {
-      notice = null;
-      error = 'Select a target organization.';
-      return;
-    }
-
-    if (!repositoryTransferConfirmed) {
-      notice = null;
-      error = REPOSITORY_TRANSFER_CONFIRMATION_MESSAGE;
-      return;
-    }
-
-    transferringRepositoryOwnership = true;
-    notice = null;
-    error = null;
-
-    try {
-      const result = await transferRepositoryOwnership(repositorySlug, {
-        targetOrgSlug,
-      });
-
-      await loadOrganizationPage({
-        notice: `Transferred ${result.repository?.name || result.repository?.slug || repositorySlug} to ${result.owner?.name || result.owner?.slug || targetOrgSlug}.`,
-      });
-    } catch (caughtError: unknown) {
-      error = toErrorMessage(
-        caughtError,
-        'Failed to transfer repository ownership.'
-      );
-      transferringRepositoryOwnership = false;
-    }
+    await orgDestructiveActions.submitRepositoryTransfer(event);
   }
 
   function openRepositoryTransferConfirmation(): void {
-    repositoryTransferConfirmationOpen = true;
-    repositoryTransferConfirmed = false;
-    transferringRepositoryOwnership = false;
-    notice = null;
-    error = null;
+    orgDestructiveActions.openRepositoryTransferConfirmation();
   }
 
   function cancelRepositoryTransferConfirmation(): void {
-    repositoryTransferConfirmationOpen = false;
-    repositoryTransferConfirmed = false;
-    transferringRepositoryOwnership = false;
-    error = null;
+    orgDestructiveActions.cancelRepositoryTransferConfirmation();
   }
 
   async function handlePackageTransfer(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
-    const formData = new FormData(event.currentTarget as HTMLFormElement);
-    const packageTarget = decodePackageSelection(
-      formData.get('package_key')?.toString().trim() || ''
-    );
-    const targetOrgSlug =
-      formData.get('target_org_slug')?.toString().trim() || '';
-
-    if (!packageTarget) {
-      notice = null;
-      error = 'Select a package to transfer.';
-      return;
-    }
-
-    if (!targetOrgSlug) {
-      notice = null;
-      error = 'Select a target organization.';
-      return;
-    }
-
-    if (!packageTransferConfirmed) {
-      notice = null;
-      error = PACKAGE_TRANSFER_CONFIRMATION_MESSAGE;
-      return;
-    }
-
-    transferringPackageOwnershipFlow = true;
-    notice = null;
-    error = null;
-
-    try {
-      const result = await transferPackageOwnership(
-        packageTarget.ecosystem,
-        packageTarget.name,
-        {
-          targetOrgSlug,
-        }
-      );
-
-      await loadOrganizationPage({
-        notice: `Transferred ${packageTarget.name} to ${result.owner?.name || result.owner?.slug || targetOrgSlug}.`,
-      });
-    } catch (caughtError: unknown) {
-      error = toErrorMessage(
-        caughtError,
-        'Failed to transfer package ownership.'
-      );
-      transferringPackageOwnershipFlow = false;
-    }
+    await orgDestructiveActions.submitPackageTransfer(event);
   }
 
   function openPackageTransferConfirmation(): void {
-    packageTransferConfirmationOpen = true;
-    packageTransferConfirmed = false;
-    transferringPackageOwnershipFlow = false;
-    notice = null;
-    error = null;
+    orgDestructiveActions.openPackageTransferConfirmation();
   }
 
   function cancelPackageTransferConfirmation(): void {
-    packageTransferConfirmationOpen = false;
-    packageTransferConfirmed = false;
-    transferringPackageOwnershipFlow = false;
-    error = null;
+    orgDestructiveActions.cancelPackageTransferConfirmation();
   }
 
   function getEligibleTeamMemberOptions(
@@ -1761,17 +1000,6 @@
     );
   }
 
-  function normalizeFormOptionalText(
-    value: FormDataEntryValue | null | undefined
-  ): string | null {
-    if (typeof value !== 'string') {
-      return null;
-    }
-
-    const trimmed = value.trim();
-    return trimmed.length > 0 ? trimmed : null;
-  }
-
   function toErrorMessage(caughtError: unknown, fallback: string): string {
     return caughtError instanceof Error && caughtError.message
       ? caughtError.message
@@ -1783,6 +1011,168 @@
     reload: loadOrganizationPage,
     resolveEligibleTeamMemberOptions: getEligibleTeamMemberOptions,
     toErrorMessage,
+  });
+
+  const orgGovernance = createOrgGovernanceController({
+    getOrgSlug: () => slug,
+    reload: loadOrganizationPage,
+    toErrorMessage,
+    formatRole,
+    resolveOwnerUsername: (value) =>
+      resolveOrgMemberPickerInput(value, ownershipMemberOptions),
+    clearFlash: () => {
+      notice = null;
+      error = null;
+    },
+    setError: (value) => {
+      error = value;
+    },
+    setOwnershipTransferConfirmationOpen: (value) => {
+      ownershipTransferConfirmationOpen = value;
+    },
+    getOwnershipTransferConfirmed: () => ownershipTransferConfirmed,
+    setOwnershipTransferConfirmed: (value) => {
+      ownershipTransferConfirmed = value;
+    },
+    setTransferringOwnership: (value) => {
+      transferringOwnership = value;
+    },
+    setInvitationRevokeTargetId: (value) => {
+      invitationRevokeTargetId = value;
+    },
+    getInvitationRevokeConfirmed: () => invitationRevokeConfirmed,
+    setInvitationRevokeConfirmed: (value) => {
+      invitationRevokeConfirmed = value;
+    },
+    setRevokingInvitationId: (value) => {
+      revokingInvitationId = value;
+    },
+    setMemberRemoveTargetUsername: (value) => {
+      memberRemoveTargetUsername = value;
+    },
+    getMemberRemoveConfirmed: () => memberRemoveConfirmed,
+    setMemberRemoveConfirmed: (value) => {
+      memberRemoveConfirmed = value;
+    },
+    setRemovingMemberUsername: (value) => {
+      removingMemberUsername = value;
+    },
+  });
+
+  const orgNonDestructiveActions = createOrgNonDestructiveActionsController({
+    getOrgSlug: () => slug,
+    getOrgId: () => org?.id?.trim() || null,
+    reload: loadOrganizationPage,
+    toErrorMessage,
+    ecosystemLabel,
+    clearFlash: () => {
+      notice = null;
+      error = null;
+    },
+    setError: (value) => {
+      error = value;
+    },
+    setCreatingPackage: (value) => {
+      creatingPackage = value;
+    },
+    getCreatableRepositoriesCount: () => creatableRepositories.length,
+    resolvePackageCreationRepository: (repositorySlug) =>
+      creatableRepositories.find(
+        (repository) => repository.slug === repositorySlug
+      ) || null,
+    resetPackageDraft: () => {
+      newPackageEcosystem = DEFAULT_PACKAGE_ECOSYSTEM;
+      newPackageName = '';
+      newPackageVisibility = '';
+      newPackageDisplayName = '';
+      newPackageDescription = '';
+    },
+  });
+
+  const orgDestructiveActions = createOrgDestructiveActionsController({
+    getOrgSlug: () => slug,
+    reload: loadOrganizationPage,
+    toErrorMessage,
+    clearFlash: () => {
+      notice = null;
+      error = null;
+    },
+    setError: (value) => {
+      error = value;
+    },
+    setTeamDeleteTargetSlug: (value) => {
+      teamDeleteTargetSlug = value;
+    },
+    getTeamDeleteConfirmed: () => teamDeleteConfirmed,
+    setTeamDeleteConfirmed: (value) => {
+      teamDeleteConfirmed = value;
+    },
+    setDeletingTeamSlug: (value) => {
+      deletingTeamSlug = value;
+    },
+    setNamespaceDeleteTargetId: (value) => {
+      namespaceDeleteTargetId = value;
+    },
+    getNamespaceDeleteConfirmed: () => namespaceDeleteConfirmed,
+    setNamespaceDeleteConfirmed: (value) => {
+      namespaceDeleteConfirmed = value;
+    },
+    setDeletingNamespaceClaimId: (value) => {
+      deletingNamespaceClaimId = value;
+    },
+    setNamespaceTransferConfirmationOpen: (value) => {
+      namespaceTransferConfirmationOpen = value;
+    },
+    getNamespaceTransferConfirmed: () => namespaceTransferConfirmed,
+    setNamespaceTransferConfirmed: (value) => {
+      namespaceTransferConfirmed = value;
+    },
+    setTransferringNamespaceOwnership: (value) => {
+      transferringNamespaceOwnership = value;
+    },
+    resolveNamespaceLabel: (claimId) =>
+      namespaceClaims.find((claim) => claim.id === claimId)?.namespace || null,
+    setRepositoryTransferConfirmationOpen: (value) => {
+      repositoryTransferConfirmationOpen = value;
+    },
+    getRepositoryTransferConfirmed: () => repositoryTransferConfirmed,
+    setRepositoryTransferConfirmed: (value) => {
+      repositoryTransferConfirmed = value;
+    },
+    setTransferringRepositoryOwnership: (value) => {
+      transferringRepositoryOwnership = value;
+    },
+    setPackageTransferConfirmationOpen: (value) => {
+      packageTransferConfirmationOpen = value;
+    },
+    getPackageTransferConfirmed: () => packageTransferConfirmed,
+    setPackageTransferConfirmed: (value) => {
+      packageTransferConfirmed = value;
+    },
+    setTransferringPackageOwnershipFlow: (value) => {
+      transferringPackageOwnershipFlow = value;
+    },
+  });
+
+  const orgObservability = createOrgObservabilityController({
+    getOrgSlug: () => slug,
+    getCurrentSearchParams: () => $page.url.searchParams,
+    goto,
+    reload: loadOrganizationPage,
+    toErrorMessage,
+    downloadTextFile,
+    getAuditActorOptions: () => auditActorOptions,
+    getAuditView: () => auditView,
+    getSecurityView: () => securityView,
+    setExportingAudit: (value) => {
+      exportingAudit = value;
+    },
+    setExportingSecurity: (value) => {
+      exportingSecurity = value;
+    },
+    getSecurityFindingState: getOrgSecurityFindingState,
+    updateSecurityFindingState: updateOrgSecurityFindingState,
+    reloadSecurityOverview,
   });
 
   function formatRole(role: string): string {
@@ -1915,127 +1305,17 @@
   async function handleToggleOrgSecurityFindings(
     securityPackage: OrgSecurityPackageSummary
   ): Promise<void> {
-    const packageKey = getSecurityPackageKey(securityPackage);
-    const currentState = getOrgSecurityFindingState(securityPackage);
-
-    if (currentState.expanded) {
-      updateOrgSecurityFindingState(packageKey, { expanded: false });
-      return;
-    }
-
-    updateOrgSecurityFindingState(packageKey, {
-      expanded: true,
-      loading: true,
-      load_error: null,
-      error: null,
-      notice: null,
-    });
-
-    if (!securityPackage.ecosystem || !securityPackage.name) {
-      updateOrgSecurityFindingState(packageKey, {
-        loading: false,
-        load_error:
-          'Failed to load findings because the package identity is unavailable.',
-      });
-      return;
-    }
-
-    try {
-      const findings = await listSecurityFindings(
-        securityPackage.ecosystem,
-        securityPackage.name,
-        {
-          includeResolved: true,
-        }
-      );
-      updateOrgSecurityFindingState(packageKey, {
-        findings: sortOrgSecurityFindings(findings),
-        loading: false,
-        load_error: null,
-      });
-    } catch (caughtError: unknown) {
-      updateOrgSecurityFindingState(packageKey, {
-        findings: [],
-        loading: false,
-        load_error: toErrorMessage(
-          caughtError,
-          'Failed to load package findings.'
-        ),
-      });
-    }
+    await orgObservability.toggleSecurityFindings(securityPackage);
   }
 
   async function handleToggleOrgFindingResolution(
     securityPackage: OrgSecurityPackageSummary,
     finding: SecurityFinding
   ): Promise<void> {
-    const packageKey = getSecurityPackageKey(securityPackage);
-    const currentState = getOrgSecurityFindingState(securityPackage);
-    if (currentState.updatingFindingId) {
-      return;
-    }
-    if (!securityPackage.ecosystem || !securityPackage.name) {
-      updateOrgSecurityFindingState(packageKey, {
-        error:
-          'Failed to update the security finding because the package identity is unavailable.',
-      });
-      return;
-    }
-
-    const targetIsResolved = !finding.is_resolved;
-    const rawNote = currentState.findingNotes[finding.id] ?? '';
-    const trimmedNote = rawNote.trim();
-    if (trimmedNote.length > 2000) {
-      updateOrgSecurityFindingState(packageKey, {
-        error: 'Security finding note must be 2000 characters or fewer.',
-      });
-      return;
-    }
-
-    updateOrgSecurityFindingState(packageKey, {
-      updatingFindingId: finding.id,
-      error: null,
-      notice: null,
-    });
-
-    try {
-      const updated = await updateSecurityFinding(
-        securityPackage.ecosystem,
-        securityPackage.name,
-        finding.id,
-        {
-          isResolved: targetIsResolved,
-          note: trimmedNote.length > 0 ? trimmedNote : undefined,
-        }
-      );
-      const latestState = getOrgSecurityFindingState(securityPackage);
-      updateOrgSecurityFindingState(packageKey, {
-        findings: mergeUpdatedOrgSecurityFinding(
-          latestState.findings,
-          updated,
-          {
-            includeResolved: true,
-          }
-        ),
-        updatingFindingId: null,
-        notice: targetIsResolved
-          ? 'Finding marked as resolved.'
-          : 'Finding reopened.',
-        findingNotes: {
-          ...latestState.findingNotes,
-          [finding.id]: '',
-        },
-      });
-      await reloadSecurityOverview();
-    } catch (caughtError: unknown) {
-      updateOrgSecurityFindingState(packageKey, {
-        updatingFindingId: null,
-        error:
-          caughtError instanceof ApiError
-            ? caughtError.message
-            : 'Failed to update the security finding.',
-      });
-    }
+    await orgObservability.toggleSecurityFindingResolution(
+      securityPackage,
+      finding
+    );
   }
 </script>
 
