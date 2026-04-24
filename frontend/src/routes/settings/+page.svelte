@@ -37,9 +37,14 @@
     sortNamespaceClaims,
   } from '../../pages/personal-namespaces';
   import type { TokenRecord } from '../../api/tokens';
-  import { createToken, listTokens, revokeToken } from '../../api/tokens';
+  import SettingsTokenSection from '../../lib/components/SettingsTokenSection.svelte';
   import SettingsMfaSection from '../../lib/components/SettingsMfaSection.svelte';
   import { createSettingsMfaController } from '../../pages/settings-mfa';
+  import {
+    createSettingsPageController,
+    DEFAULT_TOKEN_SCOPES,
+    loadSettingsPageState,
+  } from '../../pages/settings-page';
   import { copyToClipboard, formatDate } from '../../utils/format';
   import { ecosystemLabel } from '../../utils/ecosystem';
 
@@ -83,7 +88,7 @@
 
   let tokenName = '';
   let tokenExpiryDays = '';
-  let selectedScopes = new Set<string>(['tokens:read', 'tokens:write']);
+  let selectedScopes = new Set<string>(DEFAULT_TOKEN_SCOPES);
   let creatingToken = false;
 
   let mfaDisableCode = '';
@@ -101,12 +106,7 @@
   let creatingOrganization = false;
 
   onMount(async () => {
-    if (!getAuthToken()) {
-      await goto('/login', { replaceState: true });
-      return;
-    }
-
-    await loadSettings();
+    await settingsPageController.initialize();
   });
 
   async function loadSettings(
@@ -124,66 +124,23 @@
     mfaSetupState = options.mfaSetupState ?? null;
 
     try {
-      const loadedUser = await getCurrentUser();
-      const currentUserId =
-        typeof loadedUser.id === 'string' && loadedUser.id.trim()
-          ? loadedUser.id
-          : '';
-      const [tokenData, organizationData, invitationData, namespaceData] =
-        await Promise.all([
-          listTokens(),
-          listMyOrganizations().catch(
-            (caughtError: unknown): OrganizationListResponse => ({
-              organizations: [],
-              load_error: toErrorMessage(
-                caughtError,
-                'Failed to load organizations.'
-              ),
-            })
-          ),
-          listMyInvitations().catch(
-            (caughtError: unknown): MyInvitationListResponse => ({
-              invitations: [],
-              load_error: toErrorMessage(
-                caughtError,
-                'Failed to load invitations.'
-              ),
-            })
-          ),
-          currentUserId
-            ? listUserNamespaces(currentUserId).catch(
-                (caughtError: unknown): NamespaceListResponse => ({
-                  namespaces: [],
-                  load_error: toErrorMessage(
-                    caughtError,
-                    'Failed to load namespace claims.'
-                  ),
-                })
-              )
-            : Promise.resolve<NamespaceListResponse>({
-                namespaces: [],
-                load_error:
-                  'Failed to load namespace claims because the user id is unavailable.',
-              }),
-        ]);
+      const loadedState = await loadSettingsPageState({
+        toErrorMessage,
+      });
 
-      user = loadedUser;
-      tokens = tokenData.tokens || [];
-      organizations = organizationData.organizations || [];
-      namespaceTransferTargets = selectNamespaceTransferTargets(
-        organizations,
-        undefined
-      );
-      organizationsError = organizationData.load_error || null;
-      namespaceClaims = namespaceData.namespaces || [];
-      namespaceClaimsError = namespaceData.load_error || null;
-      invitations = invitationData.invitations || [];
-      invitationsError = invitationData.load_error || null;
-
-      displayName = loadedUser.display_name || '';
-      avatarUrl = loadedUser.avatar_url || '';
-      website = loadedUser.website || '';
-      bio = loadedUser.bio || '';
+      user = loadedState.user;
+      tokens = loadedState.tokens;
+      organizations = loadedState.organizations;
+      namespaceTransferTargets = loadedState.namespaceTransferTargets;
+      organizationsError = loadedState.organizationsError;
+      namespaceClaims = loadedState.namespaceClaims;
+      namespaceClaimsError = loadedState.namespaceClaimsError;
+      invitations = loadedState.invitations;
+      invitationsError = loadedState.invitationsError;
+      displayName = loadedState.displayName;
+      avatarUrl = loadedState.avatarUrl;
+      website = loadedState.website;
+      bio = loadedState.bio;
     } catch (caughtError: unknown) {
       error = toErrorMessage(caughtError, 'Failed to load settings.');
     } finally {
@@ -226,53 +183,35 @@
     selectedScopes = new Set(selectedScopes);
   }
 
+  const settingsPageController = createSettingsPageController({
+    getAuthToken,
+    gotoLogin: () => goto('/login', { replaceState: true }),
+    loadSettings,
+    toErrorMessage,
+    getMfaSetupState: () => mfaSetupState,
+    getTokenName: () => tokenName,
+    setTokenName: (value) => {
+      tokenName = value;
+    },
+    getTokenExpiryDays: () => tokenExpiryDays,
+    setTokenExpiryDays: (value) => {
+      tokenExpiryDays = value;
+    },
+    getSelectedScopes: () => selectedScopes,
+    setSelectedScopes: (value) => {
+      selectedScopes = value;
+    },
+    setCreatingToken: (value) => {
+      creatingToken = value;
+    },
+  });
+
   async function handleTokenSubmit(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
-
-    if (!tokenName.trim()) {
-      await loadSettings({ error: 'Token name is required.', mfaSetupState });
-      return;
-    }
-
-    creatingToken = true;
-
-    try {
-      const result = await createToken({
-        name: tokenName.trim(),
-        scopes: [...selectedScopes],
-        expires_in_days: tokenExpiryDays.trim()
-          ? Number(tokenExpiryDays.trim())
-          : null,
-      });
-
-      tokenName = '';
-      tokenExpiryDays = '';
-      selectedScopes = new Set(['tokens:read', 'tokens:write']);
-      await loadSettings({
-        notice: 'Token created successfully.',
-        createdToken: result.token,
-        mfaSetupState,
-      });
-    } catch (caughtError: unknown) {
-      await loadSettings({
-        error: toErrorMessage(caughtError, 'Failed to create token.'),
-        mfaSetupState,
-      });
-    } finally {
-      creatingToken = false;
-    }
+    await settingsPageController.submitToken(event);
   }
 
   async function handleRevokeToken(tokenId: string): Promise<void> {
-    try {
-      await revokeToken(tokenId);
-      await loadSettings({ notice: 'Token revoked.', mfaSetupState });
-    } catch (caughtError: unknown) {
-      await loadSettings({
-        error: toErrorMessage(caughtError, 'Failed to revoke token.'),
-        mfaSetupState,
-      });
-    }
+    await settingsPageController.revokeToken(tokenId);
   }
 
   async function handleDeleteNamespaceClaim(
@@ -964,132 +903,17 @@
       </section>
     </div>
 
-    <section class="card settings-section mt-6">
-      <div class="settings-token-header">
-        <div>
-          <h2>API tokens</h2>
-          <p class="text-muted settings-copy">
-            Create personal automation tokens and revoke old ones.
-          </p>
-        </div>
-      </div>
-
-      {#if createdToken}
-        <div class="alert alert-success">
-          <div style="margin-bottom:8px;">
-            <strong>New token created.</strong> Copy it now — it will not be shown
-            again.
-          </div>
-          <div class="code-block">
-            <button
-              class="copy-btn"
-              type="button"
-              on:click={() => copyToClipboard(createdToken || '')}>Copy</button
-            ><code>{createdToken}</code>
-          </div>
-        </div>
-      {/if}
-
-      <form
-        id="token-form"
-        class="settings-subsection"
-        on:submit={handleTokenSubmit}
-      >
-        <div class="form-group">
-          <label for="token-name">Token name</label>
-          <input
-            id="token-name"
-            bind:value={tokenName}
-            class="form-input"
-            placeholder="CI / local development / deploy"
-            required
-          />
-        </div>
-        <div class="form-group">
-          <label for="token-expiry">Expires in days (optional)</label>
-          <input
-            id="token-expiry"
-            bind:value={tokenExpiryDays}
-            type="number"
-            min="1"
-            class="form-input"
-            placeholder="30"
-          />
-        </div>
-        <div class="form-group">
-          <div class="text-sm font-medium">Scopes</div>
-          <div class="settings-scope-grid">
-            {#each TOKEN_SCOPE_OPTIONS as scope}
-              <label class="settings-checkbox">
-                <input
-                  type="checkbox"
-                  checked={selectedScopes.has(scope)}
-                  on:change={(event) =>
-                    handleScopeToggle(
-                      scope,
-                      (event.currentTarget as HTMLInputElement).checked
-                    )}
-                />
-                <span>{scope}</span>
-              </label>
-            {/each}
-          </div>
-        </div>
-        <button type="submit" class="btn btn-primary" disabled={creatingToken}>
-          {creatingToken ? 'Creating…' : 'Create token'}
-        </button>
-      </form>
-
-      <div class="settings-subsection">
-        <h3>Active tokens</h3>
-        {#if tokens.length === 0}
-          <div class="empty-state">
-            <h3>No tokens yet</h3>
-            <p>Create one above for CI, publishing, or local automation.</p>
-          </div>
-        {:else}
-          <div class="token-list">
-            {#each tokens as token}
-              <div class="token-row">
-                <div class="token-row__main">
-                  <div class="token-row__title">
-                    {token.name || 'Unnamed token'}
-                  </div>
-                  <div class="token-row__meta">
-                    <span>{token.kind || 'personal'}</span>
-                    <span>created {formatDate(token.created_at)}</span>
-                    {#if token.last_used_at}<span
-                        >last used {formatDate(token.last_used_at)}</span
-                      >{:else}<span>never used</span>{/if}
-                    {#if token.expires_at}<span
-                        >expires {formatDate(token.expires_at)}</span
-                      >{:else}<span>no expiry</span>{/if}
-                  </div>
-                  <div class="token-row__scopes">
-                    {#each token.scopes || [] as scope}
-                      <span class="badge badge-ecosystem">{scope}</span>
-                    {/each}
-                  </div>
-                </div>
-                <div class="token-row__actions">
-                  <button
-                    class="btn btn-secondary btn-sm"
-                    type="button"
-                    on:click={() => copyToClipboard(token.prefix || 'pub_')}
-                    >Copy prefix</button
-                  >
-                  {#if token.id}<button
-                      class="btn btn-danger btn-sm"
-                      type="button"
-                      on:click={() => handleRevokeToken(token.id || '')}
-                      >Revoke</button
-                    >{/if}
-                </div>
-              </div>
-            {/each}
-          </div>
-        {/if}
-      </div>
-    </section>
+    <SettingsTokenSection
+      {createdToken}
+      bind:tokenName
+      bind:tokenExpiryDays
+      {selectedScopes}
+      tokenScopeOptions={TOKEN_SCOPE_OPTIONS}
+      {creatingToken}
+      {tokens}
+      {handleScopeToggle}
+      {handleTokenSubmit}
+      {handleRevokeToken}
+    />
   </div>
 {/if}
