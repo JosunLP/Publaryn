@@ -4123,7 +4123,10 @@ mod tests {
     #[test]
     fn normalize_required_org_name_rejects_blank_values() {
         let error = normalize_required_org_name("   ").expect_err("blank names must fail");
-        assert_eq!(error.0.to_string(), "Validation error: Organization name is required");
+        assert_eq!(
+            error.0.to_string(),
+            "Validation error: Organization name is required"
+        );
     }
 
     #[test]
@@ -4187,7 +4190,10 @@ mod tests {
         )
         .expect_err("blank names must fail");
 
-        assert_eq!(error.0.to_string(), "Validation error: Organization name is required");
+        assert_eq!(
+            error.0.to_string(),
+            "Validation error: Organization name is required"
+        );
     }
 
     #[test]
