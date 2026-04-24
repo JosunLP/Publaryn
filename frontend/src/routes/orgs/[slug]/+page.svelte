@@ -1568,6 +1568,9 @@
                 value={org.website || ''}
                 placeholder="https://example.com"
               />
+              <p class="settings-copy">
+                Optional public homepage. Use a full http:// or https:// URL.
+              </p>
             </div>
             <div class="form-group">
               <label for="org-profile-email">Email</label>
@@ -1579,6 +1582,9 @@
                 value={org.email || ''}
                 placeholder="registry@example.com"
               />
+              <p class="settings-copy">
+                Optional public contact email for registry and organization support.
+              </p>
             </div>
           </div>
           <div class="form-group">

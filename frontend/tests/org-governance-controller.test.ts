@@ -136,6 +136,74 @@ describe('org governance controller harness', () => {
     }
   });
 
+  test('blocks invalid organization website URLs before submitting the profile mutation', async () => {
+    const scenario = createScenario();
+    const { target, unmount, flush } = await renderSvelte(HarnessPath, {
+      loadState: createLoadState(scenario),
+      mutations: createMutations({
+        async updateOrg(_slug, updates) {
+          scenario.updateOrgCalls.push(updates);
+          return scenario.org;
+        },
+      }),
+    });
+
+    try {
+      await waitFor(() => {
+        flush();
+        expect(queryRequiredInput(target, '#org-profile-name').value).toBe('Source Org');
+      });
+
+      changeValue(queryRequiredInput(target, '#org-profile-website'), 'example.test');
+      submitForm(queryRequiredForm(target, '#org-profile-form'));
+
+      await waitFor(() => {
+        flush();
+        expect(target.textContent).toContain(
+          'Website must be a valid http:// or https:// URL.'
+        );
+      });
+
+      expect(scenario.updateOrgCalls).toEqual([]);
+    } finally {
+      unmount();
+    }
+  });
+
+  test('blocks invalid organization contact emails before submitting the profile mutation', async () => {
+    const scenario = createScenario();
+    const { target, unmount, flush } = await renderSvelte(HarnessPath, {
+      loadState: createLoadState(scenario),
+      mutations: createMutations({
+        async updateOrg(_slug, updates) {
+          scenario.updateOrgCalls.push(updates);
+          return scenario.org;
+        },
+      }),
+    });
+
+    try {
+      await waitFor(() => {
+        flush();
+        expect(queryRequiredInput(target, '#org-profile-name').value).toBe('Source Org');
+      });
+
+      changeValue(queryRequiredInput(target, '#org-profile-email'), 'not-an-email');
+      submitForm(queryRequiredForm(target, '#org-profile-form'));
+
+      await waitFor(() => {
+        flush();
+        expect(target.textContent).toContain(
+          'Email must be a valid email address.'
+        );
+      });
+
+      expect(scenario.updateOrgCalls).toEqual([]);
+    } finally {
+      unmount();
+    }
+  });
+
   test('sends invitations, resets the form, and reloads invitation state', async () => {
     const scenario = createScenario();
     const { target, unmount, flush } = await renderSvelte(HarnessPath, {

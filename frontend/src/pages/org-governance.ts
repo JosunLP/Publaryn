@@ -69,6 +69,8 @@ export function createOrgGovernanceController(options: OrgGovernanceControllerOp
       event.preventDefault();
       const formData = new FormData(event.currentTarget as HTMLFormElement);
       const name = normalizeRequiredFormText(formData.get('name'));
+      const website = normalizeOptionalFormText(formData.get('website'));
+      const email = normalizeOptionalFormText(formData.get('email'));
 
       if (!name) {
         options.clearFlash();
@@ -76,12 +78,24 @@ export function createOrgGovernanceController(options: OrgGovernanceControllerOp
         return;
       }
 
+      if (website && !isValidWebsiteUrl(website)) {
+        options.clearFlash();
+        options.setError('Website must be a valid http:// or https:// URL.');
+        return;
+      }
+
+      if (email && !isValidEmailAddress(email)) {
+        options.clearFlash();
+        options.setError('Email must be a valid email address.');
+        return;
+      }
+
       try {
         await mutations.updateOrg(options.getOrgSlug(), {
           name,
           description: normalizeOptionalFormText(formData.get('description')),
-          website: normalizeOptionalFormText(formData.get('website')),
-          email: normalizeOptionalFormText(formData.get('email')),
+          website,
+          email,
           mfaRequired: formData.has('mfa_required'),
           memberDirectoryIsPrivate: formData.has('member_directory_is_private'),
         } satisfies UpdateOrgInput);
@@ -321,4 +335,17 @@ function normalizeRequiredFormText(
   }
 
   return value.trim();
+}
+
+function isValidWebsiteUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+function isValidEmailAddress(value: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }

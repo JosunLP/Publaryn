@@ -570,6 +570,50 @@ describe('route-level multi-page org dataset coverage', () => {
     }
   });
 
+  test('org workspace blocks invalid profile contact fields and keeps profile guidance visible', async () => {
+    const scenario = createFetchScenario();
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(queryRequiredInput(target, '#org-profile-name').value).toBe(
+          'Source Org'
+        );
+        expect(target.textContent).toContain(
+          'Use a full http:// or https:// URL.'
+        );
+        expect(target.textContent).toContain('Optional public contact email');
+      });
+
+      const websiteInput = queryRequiredInput(target, '#org-profile-website');
+      const emailInput = queryRequiredInput(target, '#org-profile-email');
+      const profileForm = queryRequiredForm(websiteInput.closest('form'));
+
+      changeValue(websiteInput, 'example.test');
+      submitForm(profileForm);
+
+      await waitFor(() => {
+        expect(target.textContent).toContain(
+          'Website must be a valid http:// or https:// URL.'
+        );
+      });
+      expect(scenario.orgUpdateCalls).toEqual([]);
+
+      changeValue(websiteInput, 'https://source.example.test');
+      changeValue(emailInput, 'not-an-email');
+      submitForm(profileForm);
+
+      await waitFor(() => {
+        expect(target.textContent).toContain(
+          'Email must be a valid email address.'
+        );
+      });
+      expect(scenario.orgUpdateCalls).toEqual([]);
+    } finally {
+      unmount();
+    }
+  });
+
   test('org workspace surfaces redirect notices from focused team actions', async () => {
     const scenario = createFetchScenario();
     currentScenario = scenario;
