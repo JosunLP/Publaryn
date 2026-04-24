@@ -1687,7 +1687,8 @@ async fn search_cargo_crates(
     per_page: u32,
 ) -> (StatusCode, Value) {
     let req = Request::builder().method(Method::GET).uri(format!(
-        "/cargo/api/v1/crates?q={query}&per_page={per_page}"
+        "/cargo/api/v1/crates?q={}&per_page={per_page}",
+        url::form_urlencoded::byte_serialize(query.as_bytes()).collect::<String>()
     ));
     let req = if let Some(token) = auth_token {
         req.header(header::AUTHORIZATION, token)
