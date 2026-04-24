@@ -578,11 +578,13 @@ async fn get_package(
         .and_then(|row| row.try_get::<String, _>("version").ok());
     let bundle_analysis = match latest_release_row {
         Some(row) => {
-            let release_id = row
-                .try_get::<Uuid, _>("id")
-                .map_err(|e| ApiError(Error::Internal(format!("missing latest release id: {e}"))))?;
+            let release_id = row.try_get::<Uuid, _>("id").map_err(|e| {
+                ApiError(Error::Internal(format!("missing latest release id: {e}")))
+            })?;
             let release_version = row.try_get::<String, _>("version").map_err(|e| {
-                ApiError(Error::Internal(format!("missing latest release version: {e}")))
+                ApiError(Error::Internal(format!(
+                    "missing latest release version: {e}"
+                )))
             })?;
             let provenance = row
                 .try_get::<Option<serde_json::Value>, _>("provenance")
@@ -602,7 +604,11 @@ async fn get_package(
                     )
                     .await?,
                 )
-                .map_err(|e| ApiError(Error::Internal(format!("bundle analysis serialization failed: {e}"))))?,
+                .map_err(|e| {
+                    ApiError(Error::Internal(format!(
+                        "bundle analysis serialization failed: {e}"
+                    )))
+                })?,
             )
         }
         None => None,
@@ -1465,7 +1471,11 @@ async fn list_releases(
             )
             .await?,
         )
-        .map_err(|e| ApiError(Error::Internal(format!("bundle analysis serialization failed: {e}"))))?;
+        .map_err(|e| {
+            ApiError(Error::Internal(format!(
+                "bundle analysis serialization failed: {e}"
+            )))
+        })?;
 
         releases.push(serde_json::json!({
             "version": version,
@@ -1533,7 +1543,11 @@ async fn get_release(
         )
         .await?,
     )
-    .map_err(|e| ApiError(Error::Internal(format!("bundle analysis serialization failed: {e}"))))?;
+    .map_err(|e| {
+        ApiError(Error::Internal(format!(
+            "bundle analysis serialization failed: {e}"
+        )))
+    })?;
 
     Ok(Json(serde_json::json!({
         "id": row.try_get::<Uuid, _>("id").ok(),

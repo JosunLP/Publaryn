@@ -144,7 +144,8 @@ pub(crate) async fn load_release_bundle_analysis(
 
     if allow_archive_probe {
         if let Some(primary_artifact) = primary_artifact {
-            if let Some(probe) = probe_primary_artifact(artifact_store, primary_artifact, &mut notes).await
+            if let Some(probe) =
+                probe_primary_artifact(artifact_store, primary_artifact, &mut notes).await
             {
                 summary.install_size_bytes = Some(probe.install_size_bytes);
                 summary.file_count = Some(probe.file_count);
@@ -156,7 +157,10 @@ pub(crate) async fn load_release_bundle_analysis(
     Ok(summary)
 }
 
-async fn load_release_artifacts(db: &sqlx::PgPool, release_id: Uuid) -> ApiResult<Vec<ArtifactRecord>> {
+async fn load_release_artifacts(
+    db: &sqlx::PgPool,
+    release_id: Uuid,
+) -> ApiResult<Vec<ArtifactRecord>> {
     sqlx::query(
         "SELECT kind::text AS kind, filename, size_bytes, storage_key \
          FROM artifacts \
@@ -319,7 +323,10 @@ async fn apply_pypi_analysis_fields(
         return Ok(());
     };
 
-    let requires_python = row.try_get::<Option<String>, _>("requires_python").ok().flatten();
+    let requires_python = row
+        .try_get::<Option<String>, _>("requires_python")
+        .ok()
+        .flatten();
     let requires_dist = row
         .try_get::<Vec<String>, _>("requires_dist")
         .unwrap_or_default();
@@ -444,7 +451,10 @@ async fn apply_nuget_analysis_fields(
     summary.package_type_count = Some(json_array_count(&package_types));
 
     if let Some(min_client_version) = min_client_version.filter(|value| !value.trim().is_empty()) {
-        notes.insert(format!("Minimum NuGet client {}", min_client_version.trim()));
+        notes.insert(format!(
+            "Minimum NuGet client {}",
+            min_client_version.trim()
+        ));
     }
 
     Ok(())
@@ -641,7 +651,8 @@ fn unique_dependency_count(groups: [Vec<String>; 5]) -> Option<usize> {
 fn bundled_dependency_count(value: Option<&Value>) -> Option<usize> {
     match value {
         Some(Value::Array(items)) => Some(
-            items.iter()
+            items
+                .iter()
                 .filter_map(Value::as_str)
                 .filter(|entry| !entry.trim().is_empty())
                 .count(),
@@ -851,7 +862,11 @@ fn inspect_gem_bytes(bytes: &[u8]) -> Option<ArchiveProbeSummary> {
 }
 
 fn plural_suffix(count: usize) -> &'static str {
-    if count == 1 { "" } else { "s" }
+    if count == 1 {
+        ""
+    } else {
+        "s"
+    }
 }
 
 #[cfg(test)]
@@ -956,9 +971,7 @@ mod tests {
             writer
                 .start_file("README.md", SimpleFileOptions::default())
                 .expect("zip file should start");
-            writer
-                .write_all(b"# demo")
-                .expect("zip entry should write");
+            writer.write_all(b"# demo").expect("zip entry should write");
             writer.finish().expect("zip writer should finish");
         }
 

@@ -218,7 +218,6 @@ export interface PackageDetail {
   repository_url?: NullableString;
   keywords?: string[] | null;
   ecosystem_metadata?: PackageEcosystemMetadata | null;
-  latest_version?: NullableString;
   bundle_analysis?: BundleAnalysisSummary | null;
 }
 
