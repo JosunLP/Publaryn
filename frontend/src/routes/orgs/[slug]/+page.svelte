@@ -4,15 +4,12 @@
 
   import { ApiError, getAuthToken } from '../../../api/client';
   import {
-    exportOrgAuditLogsCsv,
-    exportOrgSecurityFindingsCsv,
     getOrgWorkspaceBootstrap,
     listMyOrganizations,
     listOrgAuditLogs,
     listOrgSecurityFindings,
     searchOrgMembers,
   } from '../../../api/orgs';
-  import { listSecurityFindings, updateSecurityFinding } from '../../../api/packages';
   import OrgAuditFilterControls from '../../../lib/components/OrgAuditFilterControls.svelte';
   import OrgSecurityFilterControls from '../../../lib/components/OrgSecurityFilterControls.svelte';
   import OrgSecurityFindingTriageControls from '../../../lib/components/OrgSecurityFindingTriageControls.svelte';
@@ -33,8 +30,6 @@
   } from '../../../pages/org-audit-format';
   import {
     ORG_AUDIT_ACTION_VALUES,
-    buildOrgAuditExportFilename,
-    buildOrgAuditPath,
     formatAuditActorQueryLabel,
     getAuditViewFromQuery,
     normalizeAuditAction,
@@ -53,15 +48,9 @@
     resolveOrgMemberPickerInput,
   } from '../../../pages/org-member-picker';
   import {
-    buildOrgSecurityExportFilename,
-    buildOrgSecurityPath,
     getOrgSecurityViewFromQuery,
   } from '../../../pages/org-security-query';
-  import {
-    buildOrgSecurityPackageKey,
-    mergeUpdatedOrgSecurityFinding,
-    sortOrgSecurityFindings,
-  } from '../../../pages/org-security-triage';
+  import { buildOrgSecurityPackageKey } from '../../../pages/org-security-triage';
   import {
     canManageOrgInvitations,
     canManageOrgMembers,
@@ -73,13 +62,8 @@
     canViewOrgAuditWorkspace,
     canViewOrgPeopleWorkspace,
   } from '../../../pages/org-workspace-access';
-  import {
-    buildAuditExportQuery,
-    buildSecurityExportQuery,
-    renderPackageSelectionValue,
-    resolveAuditFilterSubmission,
-    resolveSecurityFilterSubmission,
-  } from '../../../pages/org-workspace-actions';
+  import { renderPackageSelectionValue } from '../../../pages/org-workspace-actions';
+  import { createOrgObservabilityController } from '../../../pages/org-observability';
   import {
     createOrgNonDestructiveActionsController,
   } from '../../../pages/org-non-destructive-actions';
@@ -787,231 +771,54 @@
   }
 
   async function handleAuditFilterSubmit(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
-    const resolution = resolveAuditFilterSubmission(
-      new FormData(event.currentTarget as HTMLFormElement),
-      auditActorOptions
-    );
-
-    if (!resolution.ok) {
-      await loadOrganizationPage({
-        error: resolution.error,
-      });
-      return;
-    }
-
-    await goto(
-      buildOrgAuditPath(slug, resolution.value, $page.url.searchParams)
-    );
+    await orgObservability.submitAuditFilter(event);
   }
 
   async function goToAuditPage(nextPage: number): Promise<void> {
-    await goto(
-      buildOrgAuditPath(
-        slug,
-        {
-          action: auditView.action,
-          actorUserId: auditView.actorUserId,
-          actorUsername: auditView.actorUsername,
-          occurredFrom: auditView.occurredFrom,
-          occurredUntil: auditView.occurredUntil,
-          page: nextPage,
-        },
-        $page.url.searchParams
-      )
-    );
+    await orgObservability.goToAuditPage(nextPage);
   }
 
   async function clearAuditActionFilter(): Promise<void> {
-    await goto(
-      buildOrgAuditPath(
-        slug,
-        {
-          action: '',
-          actorUserId: auditView.actorUserId,
-          actorUsername: auditView.actorUsername,
-          occurredFrom: auditView.occurredFrom,
-          occurredUntil: auditView.occurredUntil,
-          page: 1,
-        },
-        $page.url.searchParams
-      )
-    );
+    await orgObservability.clearAuditActionFilter();
   }
 
   async function clearAuditActorFilter(): Promise<void> {
-    await goto(
-      buildOrgAuditPath(
-        slug,
-        {
-          action: auditView.action,
-          actorUserId: '',
-          actorUsername: '',
-          occurredFrom: auditView.occurredFrom,
-          occurredUntil: auditView.occurredUntil,
-          page: 1,
-        },
-        $page.url.searchParams
-      )
-    );
+    await orgObservability.clearAuditActorFilter();
   }
 
   async function clearAuditDateFilter(): Promise<void> {
-    await goto(
-      buildOrgAuditPath(
-        slug,
-        {
-          action: auditView.action,
-          actorUserId: auditView.actorUserId,
-          actorUsername: auditView.actorUsername,
-          occurredFrom: '',
-          occurredUntil: '',
-          page: 1,
-        },
-        $page.url.searchParams
-      )
-    );
+    await orgObservability.clearAuditDateFilter();
   }
 
   async function focusAuditActor(
     actorUserId: string,
     actorUsername: string
   ): Promise<void> {
-    if (!actorUserId) {
-      return;
-    }
-
-    await goto(
-      buildOrgAuditPath(
-        slug,
-        {
-          action: auditView.action,
-          actorUserId,
-          actorUsername,
-          occurredFrom: auditView.occurredFrom,
-          occurredUntil: auditView.occurredUntil,
-          page: 1,
-        },
-        $page.url.searchParams
-      )
-    );
+    await orgObservability.focusAuditActor(actorUserId, actorUsername);
   }
 
   async function handleExportAudit(): Promise<void> {
-    exportingAudit = true;
-
-    try {
-      const csv = await exportOrgAuditLogsCsv(
-        slug,
-        buildAuditExportQuery(auditView)
-      );
-
-      downloadTextFile(
-        buildOrgAuditExportFilename(
-          slug,
-          {
-            action: auditView.action,
-            actorUsername: auditView.actorUsername,
-            occurredFrom: auditView.occurredFrom,
-            occurredUntil: auditView.occurredUntil,
-          },
-          new Date()
-        ),
-        csv,
-        'text/csv;charset=utf-8'
-      );
-    } catch (caughtError: unknown) {
-      await loadOrganizationPage({
-        error: toErrorMessage(caughtError, 'Failed to export activity log.'),
-      });
-    } finally {
-      exportingAudit = false;
-    }
+    await orgObservability.exportAudit();
   }
 
   async function handleSecurityFilterSubmit(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
-    const nextView = resolveSecurityFilterSubmission(
-      new FormData(event.currentTarget as HTMLFormElement)
-    );
-
-    await goto(buildOrgSecurityPath(slug, nextView, $page.url.searchParams));
+    await orgObservability.submitSecurityFilter(event);
   }
 
   async function clearSecuritySeverityFilter(): Promise<void> {
-    await goto(
-      buildOrgSecurityPath(
-        slug,
-        {
-          severities: [],
-          ecosystem: securityView.ecosystem,
-          packageQuery: securityView.packageQuery,
-        },
-        $page.url.searchParams
-      )
-    );
+    await orgObservability.clearSecuritySeverityFilter();
   }
 
   async function clearSecurityEcosystemFilter(): Promise<void> {
-    await goto(
-      buildOrgSecurityPath(
-        slug,
-        {
-          severities: securityView.severities,
-          ecosystem: '',
-          packageQuery: securityView.packageQuery,
-        },
-        $page.url.searchParams
-      )
-    );
+    await orgObservability.clearSecurityEcosystemFilter();
   }
 
   async function clearSecurityPackageFilter(): Promise<void> {
-    await goto(
-      buildOrgSecurityPath(
-        slug,
-        {
-          severities: securityView.severities,
-          ecosystem: securityView.ecosystem,
-          packageQuery: '',
-        },
-        $page.url.searchParams
-      )
-    );
+    await orgObservability.clearSecurityPackageFilter();
   }
 
   async function handleExportSecurity(): Promise<void> {
-    exportingSecurity = true;
-
-    try {
-      const csv = await exportOrgSecurityFindingsCsv(
-        slug,
-        buildSecurityExportQuery(securityView)
-      );
-
-      downloadTextFile(
-        buildOrgSecurityExportFilename(
-          slug,
-          {
-            severities: securityView.severities,
-            ecosystem: securityView.ecosystem,
-            packageQuery: securityView.packageQuery,
-          },
-          new Date()
-        ),
-        csv,
-        'text/csv;charset=utf-8'
-      );
-    } catch (caughtError: unknown) {
-      await loadOrganizationPage({
-        error: toErrorMessage(
-          caughtError,
-          'Failed to export security findings.'
-        ),
-      });
-    } finally {
-      exportingSecurity = false;
-    }
+    await orgObservability.exportSecurity();
   }
 
   async function handleProfileUpdate(event: SubmitEvent): Promise<void> {
@@ -1347,6 +1154,27 @@
     },
   });
 
+  const orgObservability = createOrgObservabilityController({
+    getOrgSlug: () => slug,
+    getCurrentSearchParams: () => $page.url.searchParams,
+    goto,
+    reload: loadOrganizationPage,
+    toErrorMessage,
+    downloadTextFile,
+    getAuditActorOptions: () => auditActorOptions,
+    getAuditView: () => auditView,
+    getSecurityView: () => securityView,
+    setExportingAudit: (value) => {
+      exportingAudit = value;
+    },
+    setExportingSecurity: (value) => {
+      exportingSecurity = value;
+    },
+    getSecurityFindingState: getOrgSecurityFindingState,
+    updateSecurityFindingState: updateOrgSecurityFindingState,
+    reloadSecurityOverview,
+  });
+
   function formatRole(role: string): string {
     return role
       .split('_')
@@ -1477,127 +1305,17 @@
   async function handleToggleOrgSecurityFindings(
     securityPackage: OrgSecurityPackageSummary
   ): Promise<void> {
-    const packageKey = getSecurityPackageKey(securityPackage);
-    const currentState = getOrgSecurityFindingState(securityPackage);
-
-    if (currentState.expanded) {
-      updateOrgSecurityFindingState(packageKey, { expanded: false });
-      return;
-    }
-
-    updateOrgSecurityFindingState(packageKey, {
-      expanded: true,
-      loading: true,
-      load_error: null,
-      error: null,
-      notice: null,
-    });
-
-    if (!securityPackage.ecosystem || !securityPackage.name) {
-      updateOrgSecurityFindingState(packageKey, {
-        loading: false,
-        load_error:
-          'Failed to load findings because the package identity is unavailable.',
-      });
-      return;
-    }
-
-    try {
-      const findings = await listSecurityFindings(
-        securityPackage.ecosystem,
-        securityPackage.name,
-        {
-          includeResolved: true,
-        }
-      );
-      updateOrgSecurityFindingState(packageKey, {
-        findings: sortOrgSecurityFindings(findings),
-        loading: false,
-        load_error: null,
-      });
-    } catch (caughtError: unknown) {
-      updateOrgSecurityFindingState(packageKey, {
-        findings: [],
-        loading: false,
-        load_error: toErrorMessage(
-          caughtError,
-          'Failed to load package findings.'
-        ),
-      });
-    }
+    await orgObservability.toggleSecurityFindings(securityPackage);
   }
 
   async function handleToggleOrgFindingResolution(
     securityPackage: OrgSecurityPackageSummary,
     finding: SecurityFinding
   ): Promise<void> {
-    const packageKey = getSecurityPackageKey(securityPackage);
-    const currentState = getOrgSecurityFindingState(securityPackage);
-    if (currentState.updatingFindingId) {
-      return;
-    }
-    if (!securityPackage.ecosystem || !securityPackage.name) {
-      updateOrgSecurityFindingState(packageKey, {
-        error:
-          'Failed to update the security finding because the package identity is unavailable.',
-      });
-      return;
-    }
-
-    const targetIsResolved = !finding.is_resolved;
-    const rawNote = currentState.findingNotes[finding.id] ?? '';
-    const trimmedNote = rawNote.trim();
-    if (trimmedNote.length > 2000) {
-      updateOrgSecurityFindingState(packageKey, {
-        error: 'Security finding note must be 2000 characters or fewer.',
-      });
-      return;
-    }
-
-    updateOrgSecurityFindingState(packageKey, {
-      updatingFindingId: finding.id,
-      error: null,
-      notice: null,
-    });
-
-    try {
-      const updated = await updateSecurityFinding(
-        securityPackage.ecosystem,
-        securityPackage.name,
-        finding.id,
-        {
-          isResolved: targetIsResolved,
-          note: trimmedNote.length > 0 ? trimmedNote : undefined,
-        }
-      );
-      const latestState = getOrgSecurityFindingState(securityPackage);
-      updateOrgSecurityFindingState(packageKey, {
-        findings: mergeUpdatedOrgSecurityFinding(
-          latestState.findings,
-          updated,
-          {
-            includeResolved: true,
-          }
-        ),
-        updatingFindingId: null,
-        notice: targetIsResolved
-          ? 'Finding marked as resolved.'
-          : 'Finding reopened.',
-        findingNotes: {
-          ...latestState.findingNotes,
-          [finding.id]: '',
-        },
-      });
-      await reloadSecurityOverview();
-    } catch (caughtError: unknown) {
-      updateOrgSecurityFindingState(packageKey, {
-        updatingFindingId: null,
-        error:
-          caughtError instanceof ApiError
-            ? caughtError.message
-            : 'Failed to update the security finding.',
-      });
-    }
+    await orgObservability.toggleSecurityFindingResolution(
+      securityPackage,
+      finding
+    );
   }
 </script>
 
