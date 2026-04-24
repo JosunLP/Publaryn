@@ -5,12 +5,9 @@
   import { ApiError, getAuthToken } from '../../../api/client';
   import {
     createNamespaceClaim,
-    deleteNamespaceClaim,
-    transferNamespaceClaim,
   } from '../../../api/namespaces';
   import {
     createTeam,
-    deleteTeam,
     exportOrgAuditLogsCsv,
     exportOrgSecurityFindingsCsv,
     getOrgWorkspaceBootstrap,
@@ -22,12 +19,10 @@
   import {
     createPackage,
     listSecurityFindings,
-    transferPackageOwnership,
     updateSecurityFinding,
   } from '../../../api/packages';
   import {
     createRepository,
-    transferRepositoryOwnership,
     updateRepository,
   } from '../../../api/repositories';
   import OrgAuditFilterControls from '../../../lib/components/OrgAuditFilterControls.svelte';
@@ -93,11 +88,13 @@
   import {
     buildAuditExportQuery,
     buildSecurityExportQuery,
-    decodePackageSelection,
     renderPackageSelectionValue,
     resolveAuditFilterSubmission,
     resolveSecurityFilterSubmission,
   } from '../../../pages/org-workspace-actions';
+  import {
+    createOrgDestructiveActionsController,
+  } from '../../../pages/org-destructive-actions';
   import { createOrgGovernanceController } from '../../../pages/org-governance';
   import {
     buildPackageDetailsPath,
@@ -109,7 +106,6 @@
     sortNamespaceClaims,
   } from '../../../pages/personal-namespaces';
   import {
-    TEAM_DELETE_CONFIRMATION_MESSAGE,
     TEAM_NAMESPACE_PERMISSION_OPTIONS,
     TEAM_PERMISSION_OPTIONS,
     buildEligibleTeamMemberOptions,
@@ -150,8 +146,6 @@
   } from '../../../utils/security';
 
   type NamespaceClaim = import('../../../api/namespaces').NamespaceClaim;
-  type NamespaceTransferOwnershipResult =
-    import('../../../api/namespaces').NamespaceTransferOwnershipResult;
   type OrgAuditListResponse = import('../../../api/orgs').OrgAuditListResponse;
   type OrgAuditLog = import('../../../api/orgs').OrgAuditLog;
   type OrgInvitation = import('../../../api/orgs').OrgInvitation;
@@ -189,14 +183,6 @@
   const ORG_AUDIT_PAGE_SIZE = 20;
   const DEFAULT_NAMESPACE_ECOSYSTEM = 'npm';
   const DEFAULT_PACKAGE_ECOSYSTEM = 'npm';
-  const REPOSITORY_TRANSFER_CONFIRMATION_MESSAGE =
-    'Please confirm the repository transfer.';
-  const NAMESPACE_TRANSFER_CONFIRMATION_MESSAGE =
-    'Please confirm the namespace transfer.';
-  const PACKAGE_TRANSFER_CONFIRMATION_MESSAGE =
-    'Please confirm the package transfer.';
-  const NAMESPACE_DELETE_CONFIRMATION_MESSAGE =
-    'Please confirm that you understand deleting this namespace claim is immediate and cannot be undone.';
   const REVIEW_TEAM_FALLBACK_LABEL = 'Team (no name)';
   const SECURITY_FINDING_NOTE_PLACEHOLDER =
     'Optional note (recorded in audit log)';
@@ -1121,43 +1107,18 @@
   }
 
   function openTeamDeleteConfirmation(teamSlug: string): void {
-    teamDeleteTargetSlug = teamSlug;
-    teamDeleteConfirmed = false;
-    deletingTeamSlug = null;
-    notice = null;
-    error = null;
+    orgDestructiveActions.openTeamDeleteConfirmation(teamSlug);
   }
 
   function cancelTeamDeleteConfirmation(): void {
-    teamDeleteTargetSlug = null;
-    teamDeleteConfirmed = false;
-    deletingTeamSlug = null;
-    error = null;
+    orgDestructiveActions.cancelTeamDeleteConfirmation();
   }
 
   async function handleDeleteTeam(
     event: SubmitEvent,
     teamSlug: string
   ): Promise<void> {
-    event.preventDefault();
-
-    if (!teamDeleteConfirmed) {
-      notice = null;
-      error = TEAM_DELETE_CONFIRMATION_MESSAGE;
-      return;
-    }
-
-    deletingTeamSlug = teamSlug;
-    notice = null;
-    error = null;
-
-    try {
-      await deleteTeam(slug, teamSlug);
-      await loadOrganizationPage({ notice: `Deleted team ${teamSlug}.` });
-    } catch (caughtError: unknown) {
-      error = toErrorMessage(caughtError, 'Failed to delete team.');
-      deletingTeamSlug = null;
-    }
+    await orgDestructiveActions.submitTeamDelete(event, teamSlug);
   }
 
   async function handleCreateNamespace(event: SubmitEvent): Promise<void> {
@@ -1197,18 +1158,11 @@
   }
 
   function openNamespaceDeleteConfirmation(claimId: string): void {
-    namespaceDeleteTargetId = claimId;
-    namespaceDeleteConfirmed = false;
-    deletingNamespaceClaimId = null;
-    notice = null;
-    error = null;
+    orgDestructiveActions.openNamespaceDeleteConfirmation(claimId);
   }
 
   function cancelNamespaceDeleteConfirmation(): void {
-    namespaceDeleteTargetId = null;
-    namespaceDeleteConfirmed = false;
-    deletingNamespaceClaimId = null;
-    error = null;
+    orgDestructiveActions.cancelNamespaceDeleteConfirmation();
   }
 
   async function handleDeleteNamespace(
@@ -1216,100 +1170,19 @@
     claimId: string | null | undefined,
     namespace: string
   ): Promise<void> {
-    event.preventDefault();
-
-    if (!claimId) {
-      await loadOrganizationPage({
-        error:
-          'Failed to delete namespace claim because the claim id is unavailable.',
-      });
-      return;
-    }
-
-    if (!namespaceDeleteConfirmed) {
-      notice = null;
-      error = NAMESPACE_DELETE_CONFIRMATION_MESSAGE;
-      return;
-    }
-
-    deletingNamespaceClaimId = claimId;
-    notice = null;
-    error = null;
-
-    try {
-      await deleteNamespaceClaim(claimId);
-      await loadOrganizationPage({
-        notice: `Deleted namespace claim ${namespace}.`,
-      });
-    } catch (caughtError: unknown) {
-      error = toErrorMessage(caughtError, 'Failed to delete namespace claim.');
-      deletingNamespaceClaimId = null;
-    }
+    await orgDestructiveActions.submitNamespaceDelete(event, claimId, namespace);
   }
 
   async function handleNamespaceTransfer(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
-    const formData = new FormData(event.currentTarget as HTMLFormElement);
-    const claimId = formData.get('claim_id')?.toString().trim() || '';
-    const targetOrgSlug =
-      formData.get('target_org_slug')?.toString().trim() || '';
-
-    if (!claimId) {
-      notice = null;
-      error = 'Select a namespace claim to transfer.';
-      return;
-    }
-
-    if (!targetOrgSlug) {
-      notice = null;
-      error = 'Select a target organization.';
-      return;
-    }
-
-    if (!namespaceTransferConfirmed) {
-      notice = null;
-      error = NAMESPACE_TRANSFER_CONFIRMATION_MESSAGE;
-      return;
-    }
-
-    transferringNamespaceOwnership = true;
-    notice = null;
-    error = null;
-
-    try {
-      const result: NamespaceTransferOwnershipResult =
-        await transferNamespaceClaim(claimId, {
-          targetOrgSlug,
-        });
-      const namespace =
-        result.namespace_claim?.namespace ||
-        namespaceClaims.find((claim) => claim.id === claimId)?.namespace ||
-        'namespace claim';
-      await loadOrganizationPage({
-        notice: `Transferred ${namespace} to ${result.owner?.name || result.owner?.slug || targetOrgSlug}.`,
-      });
-    } catch (caughtError: unknown) {
-      error = toErrorMessage(
-        caughtError,
-        'Failed to transfer namespace claim ownership.'
-      );
-      transferringNamespaceOwnership = false;
-    }
+    await orgDestructiveActions.submitNamespaceTransfer(event);
   }
 
   function openNamespaceTransferConfirmation(): void {
-    namespaceTransferConfirmationOpen = true;
-    namespaceTransferConfirmed = false;
-    transferringNamespaceOwnership = false;
-    notice = null;
-    error = null;
+    orgDestructiveActions.openNamespaceTransferConfirmation();
   }
 
   function cancelNamespaceTransferConfirmation(): void {
-    namespaceTransferConfirmationOpen = false;
-    namespaceTransferConfirmed = false;
-    transferringNamespaceOwnership = false;
-    error = null;
+    orgDestructiveActions.cancelNamespaceTransferConfirmation();
   }
 
   async function handleCreateRepository(event: SubmitEvent): Promise<void> {
@@ -1427,132 +1300,27 @@
   }
 
   async function handleRepositoryTransfer(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
-    const formData = new FormData(event.currentTarget as HTMLFormElement);
-    const repositorySlug =
-      formData.get('repository_slug')?.toString().trim() || '';
-    const targetOrgSlug =
-      formData.get('target_org_slug')?.toString().trim() || '';
-
-    if (!repositorySlug) {
-      notice = null;
-      error = 'Select a repository to transfer.';
-      return;
-    }
-
-    if (!targetOrgSlug) {
-      notice = null;
-      error = 'Select a target organization.';
-      return;
-    }
-
-    if (!repositoryTransferConfirmed) {
-      notice = null;
-      error = REPOSITORY_TRANSFER_CONFIRMATION_MESSAGE;
-      return;
-    }
-
-    transferringRepositoryOwnership = true;
-    notice = null;
-    error = null;
-
-    try {
-      const result = await transferRepositoryOwnership(repositorySlug, {
-        targetOrgSlug,
-      });
-
-      await loadOrganizationPage({
-        notice: `Transferred ${result.repository?.name || result.repository?.slug || repositorySlug} to ${result.owner?.name || result.owner?.slug || targetOrgSlug}.`,
-      });
-    } catch (caughtError: unknown) {
-      error = toErrorMessage(
-        caughtError,
-        'Failed to transfer repository ownership.'
-      );
-      transferringRepositoryOwnership = false;
-    }
+    await orgDestructiveActions.submitRepositoryTransfer(event);
   }
 
   function openRepositoryTransferConfirmation(): void {
-    repositoryTransferConfirmationOpen = true;
-    repositoryTransferConfirmed = false;
-    transferringRepositoryOwnership = false;
-    notice = null;
-    error = null;
+    orgDestructiveActions.openRepositoryTransferConfirmation();
   }
 
   function cancelRepositoryTransferConfirmation(): void {
-    repositoryTransferConfirmationOpen = false;
-    repositoryTransferConfirmed = false;
-    transferringRepositoryOwnership = false;
-    error = null;
+    orgDestructiveActions.cancelRepositoryTransferConfirmation();
   }
 
   async function handlePackageTransfer(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
-    const formData = new FormData(event.currentTarget as HTMLFormElement);
-    const packageTarget = decodePackageSelection(
-      formData.get('package_key')?.toString().trim() || ''
-    );
-    const targetOrgSlug =
-      formData.get('target_org_slug')?.toString().trim() || '';
-
-    if (!packageTarget) {
-      notice = null;
-      error = 'Select a package to transfer.';
-      return;
-    }
-
-    if (!targetOrgSlug) {
-      notice = null;
-      error = 'Select a target organization.';
-      return;
-    }
-
-    if (!packageTransferConfirmed) {
-      notice = null;
-      error = PACKAGE_TRANSFER_CONFIRMATION_MESSAGE;
-      return;
-    }
-
-    transferringPackageOwnershipFlow = true;
-    notice = null;
-    error = null;
-
-    try {
-      const result = await transferPackageOwnership(
-        packageTarget.ecosystem,
-        packageTarget.name,
-        {
-          targetOrgSlug,
-        }
-      );
-
-      await loadOrganizationPage({
-        notice: `Transferred ${packageTarget.name} to ${result.owner?.name || result.owner?.slug || targetOrgSlug}.`,
-      });
-    } catch (caughtError: unknown) {
-      error = toErrorMessage(
-        caughtError,
-        'Failed to transfer package ownership.'
-      );
-      transferringPackageOwnershipFlow = false;
-    }
+    await orgDestructiveActions.submitPackageTransfer(event);
   }
 
   function openPackageTransferConfirmation(): void {
-    packageTransferConfirmationOpen = true;
-    packageTransferConfirmed = false;
-    transferringPackageOwnershipFlow = false;
-    notice = null;
-    error = null;
+    orgDestructiveActions.openPackageTransferConfirmation();
   }
 
   function cancelPackageTransferConfirmation(): void {
-    packageTransferConfirmationOpen = false;
-    packageTransferConfirmed = false;
-    transferringPackageOwnershipFlow = false;
-    error = null;
+    orgDestructiveActions.cancelPackageTransferConfirmation();
   }
 
   function getEligibleTeamMemberOptions(
@@ -1649,6 +1417,71 @@
     },
     setRemovingMemberUsername: (value) => {
       removingMemberUsername = value;
+    },
+  });
+
+  const orgDestructiveActions = createOrgDestructiveActionsController({
+    getOrgSlug: () => slug,
+    reload: loadOrganizationPage,
+    toErrorMessage,
+    clearFlash: () => {
+      notice = null;
+      error = null;
+    },
+    setError: (value) => {
+      error = value;
+    },
+    setTeamDeleteTargetSlug: (value) => {
+      teamDeleteTargetSlug = value;
+    },
+    getTeamDeleteConfirmed: () => teamDeleteConfirmed,
+    setTeamDeleteConfirmed: (value) => {
+      teamDeleteConfirmed = value;
+    },
+    setDeletingTeamSlug: (value) => {
+      deletingTeamSlug = value;
+    },
+    setNamespaceDeleteTargetId: (value) => {
+      namespaceDeleteTargetId = value;
+    },
+    getNamespaceDeleteConfirmed: () => namespaceDeleteConfirmed,
+    setNamespaceDeleteConfirmed: (value) => {
+      namespaceDeleteConfirmed = value;
+    },
+    setDeletingNamespaceClaimId: (value) => {
+      deletingNamespaceClaimId = value;
+    },
+    setNamespaceTransferConfirmationOpen: (value) => {
+      namespaceTransferConfirmationOpen = value;
+    },
+    getNamespaceTransferConfirmed: () => namespaceTransferConfirmed,
+    setNamespaceTransferConfirmed: (value) => {
+      namespaceTransferConfirmed = value;
+    },
+    setTransferringNamespaceOwnership: (value) => {
+      transferringNamespaceOwnership = value;
+    },
+    resolveNamespaceLabel: (claimId) =>
+      namespaceClaims.find((claim) => claim.id === claimId)?.namespace || null,
+    setRepositoryTransferConfirmationOpen: (value) => {
+      repositoryTransferConfirmationOpen = value;
+    },
+    getRepositoryTransferConfirmed: () => repositoryTransferConfirmed,
+    setRepositoryTransferConfirmed: (value) => {
+      repositoryTransferConfirmed = value;
+    },
+    setTransferringRepositoryOwnership: (value) => {
+      transferringRepositoryOwnership = value;
+    },
+    setPackageTransferConfirmationOpen: (value) => {
+      packageTransferConfirmationOpen = value;
+    },
+    getPackageTransferConfirmed: () => packageTransferConfirmed,
+    setPackageTransferConfirmed: (value) => {
+      packageTransferConfirmed = value;
+    },
+    setTransferringPackageOwnershipFlow: (value) => {
+      transferringPackageOwnershipFlow = value;
     },
   });
 
