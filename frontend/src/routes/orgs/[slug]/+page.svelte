@@ -9,7 +9,6 @@
     transferNamespaceClaim,
   } from '../../../api/namespaces';
   import {
-    addMember,
     createTeam,
     deleteTeam,
     exportOrgAuditLogsCsv,
@@ -18,12 +17,7 @@
     listMyOrganizations,
     listOrgAuditLogs,
     listOrgSecurityFindings,
-    removeMember,
-    revokeInvitation,
     searchOrgMembers,
-    sendInvitation,
-    transferOwnership,
-    updateOrg,
   } from '../../../api/orgs';
   import {
     createPackage,
@@ -104,6 +98,7 @@
     resolveAuditFilterSubmission,
     resolveSecurityFilterSubmission,
   } from '../../../pages/org-workspace-actions';
+  import { createOrgGovernanceController } from '../../../pages/org-governance';
   import {
     buildPackageDetailsPath,
     buildPackageSecurityFindingPath,
@@ -175,8 +170,6 @@
   type OrganizationMembership =
     import('../../../api/orgs').OrganizationMembership;
   type Team = import('../../../api/orgs').Team;
-  type TransferOwnershipResult =
-    import('../../../api/orgs').TransferOwnershipResult;
   type SecurityFinding = import('../../../api/packages').SecurityFinding;
   type RepositoryPackageSummary =
     import('../../../api/repositories').RepositoryPackageSummary;
@@ -196,18 +189,12 @@
   const ORG_AUDIT_PAGE_SIZE = 20;
   const DEFAULT_NAMESPACE_ECOSYSTEM = 'npm';
   const DEFAULT_PACKAGE_ECOSYSTEM = 'npm';
-  const OWNERSHIP_TRANSFER_CONFIRMATION_MESSAGE =
-    'Please confirm the ownership transfer.';
   const REPOSITORY_TRANSFER_CONFIRMATION_MESSAGE =
     'Please confirm the repository transfer.';
   const NAMESPACE_TRANSFER_CONFIRMATION_MESSAGE =
     'Please confirm the namespace transfer.';
   const PACKAGE_TRANSFER_CONFIRMATION_MESSAGE =
     'Please confirm the package transfer.';
-  const INVITATION_REVOKE_CONFIRMATION_MESSAGE =
-    'Please confirm that you want to revoke this invitation immediately.';
-  const MEMBER_REMOVE_CONFIRMATION_MESSAGE =
-    'Please confirm that you want to remove this member from the organization.';
   const NAMESPACE_DELETE_CONFIRMATION_MESSAGE =
     'Please confirm that you understand deleting this namespace claim is immediate and cannot be undone.';
   const REVIEW_TEAM_FALLBACK_LABEL = 'Team (no name)';
@@ -1051,161 +1038,42 @@
   }
 
   async function handleProfileUpdate(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
-    if (!org) {
-      return;
-    }
-
-    const formData = new FormData(event.currentTarget as HTMLFormElement);
-
-    try {
-      await updateOrg(slug, {
-        description: normalizeFormOptionalText(formData.get('description')),
-        website: normalizeFormOptionalText(formData.get('website')),
-        email: normalizeFormOptionalText(formData.get('email')),
-        mfaRequired: formData.has('mfa_required'),
-        memberDirectoryIsPrivate: formData.has('member_directory_is_private'),
-      });
-      await loadOrganizationPage({ notice: 'Organization profile updated.' });
-    } catch (caughtError: unknown) {
-      await loadOrganizationPage({
-        error: toErrorMessage(
-          caughtError,
-          'Failed to update organization profile.'
-        ),
-      });
-    }
+    await orgGovernance.submitProfile(event);
   }
 
   async function handleInviteMember(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
-    const formData = new FormData(event.currentTarget as HTMLFormElement);
-
-    try {
-      await sendInvitation(slug, {
-        usernameOrEmail:
-          formData.get('username_or_email')?.toString().trim() || '',
-        role: formData.get('role')?.toString() || 'viewer',
-        expiresInDays:
-          Number(formData.get('expires_in_days')?.toString() || '7') || 7,
-      });
-
-      (event.currentTarget as HTMLFormElement).reset();
-      await loadOrganizationPage({ notice: 'Invitation sent successfully.' });
-    } catch (caughtError: unknown) {
-      await loadOrganizationPage({
-        error: toErrorMessage(caughtError, 'Failed to send invitation.'),
-      });
-    }
+    await orgGovernance.submitInvitation(event);
   }
 
   async function handleAddMember(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
-    const formData = new FormData(event.currentTarget as HTMLFormElement);
-
-    try {
-      await addMember(slug, {
-        username: formData.get('username')?.toString().trim() || '',
-        role: formData.get('role')?.toString() || 'viewer',
-      });
-
-      (event.currentTarget as HTMLFormElement).reset();
-      await loadOrganizationPage({ notice: 'Member added successfully.' });
-    } catch (caughtError: unknown) {
-      await loadOrganizationPage({
-        error: toErrorMessage(caughtError, 'Failed to add member.'),
-      });
-    }
+    await orgGovernance.submitMember(event);
   }
 
   async function handleTransferOwnership(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
-    const formData = new FormData(event.currentTarget as HTMLFormElement);
-    const username = resolveOrgMemberPickerInput(
-      formData.get('username')?.toString() || '',
-      ownershipMemberOptions
-    );
-
-    if (!ownershipTransferConfirmed) {
-      notice = null;
-      error = OWNERSHIP_TRANSFER_CONFIRMATION_MESSAGE;
-      return;
-    }
-
-    transferringOwnership = true;
-    notice = null;
-    error = null;
-
-    try {
-      const result: TransferOwnershipResult = await transferOwnership(slug, {
-        username,
-      });
-
-      await loadOrganizationPage({
-        notice: `Ownership transferred to @${result.new_owner?.username || 'the selected user'}.`,
-      });
-    } catch (caughtError: unknown) {
-      error = toErrorMessage(
-        caughtError,
-        'Failed to transfer organization ownership.'
-      );
-      transferringOwnership = false;
-    }
+    await orgGovernance.submitOwnershipTransfer(event);
   }
 
   function openOwnershipTransferConfirmation(): void {
-    ownershipTransferConfirmationOpen = true;
-    ownershipTransferConfirmed = false;
-    transferringOwnership = false;
-    notice = null;
-    error = null;
+    orgGovernance.openOwnershipTransferConfirmation();
   }
 
   function cancelOwnershipTransferConfirmation(): void {
-    ownershipTransferConfirmationOpen = false;
-    ownershipTransferConfirmed = false;
-    transferringOwnership = false;
-    error = null;
+    orgGovernance.cancelOwnershipTransferConfirmation();
   }
 
   function openInvitationRevokeConfirmation(invitationId: string): void {
-    invitationRevokeTargetId = invitationId;
-    invitationRevokeConfirmed = false;
-    revokingInvitationId = null;
-    notice = null;
-    error = null;
+    orgGovernance.openInvitationRevokeConfirmation(invitationId);
   }
 
   function cancelInvitationRevokeConfirmation(): void {
-    invitationRevokeTargetId = null;
-    invitationRevokeConfirmed = false;
-    revokingInvitationId = null;
-    error = null;
+    orgGovernance.cancelInvitationRevokeConfirmation();
   }
 
   async function handleRevokeInvitation(
     event: SubmitEvent,
     invitationId: string
   ): Promise<void> {
-    event.preventDefault();
-
-    if (!invitationRevokeConfirmed) {
-      notice = null;
-      error = INVITATION_REVOKE_CONFIRMATION_MESSAGE;
-      return;
-    }
-
-    revokingInvitationId = invitationId;
-    notice = null;
-    error = null;
-
-    try {
-      await revokeInvitation(slug, invitationId);
-      await loadOrganizationPage({ notice: 'Invitation revoked.' });
-    } catch (caughtError: unknown) {
-      error = toErrorMessage(caughtError, 'Failed to revoke invitation.');
-      revokingInvitationId = null;
-    }
+    await orgGovernance.submitInvitationRevoke(event, invitationId);
   }
 
   async function handleUpdateMemberRole(
@@ -1213,69 +1081,22 @@
     username: string,
     currentRole: string
   ): Promise<void> {
-    event.preventDefault();
-    const formData = new FormData(event.currentTarget as HTMLFormElement);
-    const role = formData.get('role')?.toString().trim() || 'viewer';
-
-    if (role === currentRole) {
-      await loadOrganizationPage({
-        notice: `@${username} already has the ${formatRole(role)} role.`,
-      });
-      return;
-    }
-
-    try {
-      await addMember(slug, { username, role });
-      await loadOrganizationPage({
-        notice: `Updated @${username} to ${formatRole(role)}.`,
-      });
-    } catch (caughtError: unknown) {
-      await loadOrganizationPage({
-        error: toErrorMessage(caughtError, 'Failed to update member role.'),
-      });
-    }
+    await orgGovernance.updateMemberRole(event, username, currentRole);
   }
 
   function openMemberRemoveConfirmation(username: string): void {
-    memberRemoveTargetUsername = username;
-    memberRemoveConfirmed = false;
-    removingMemberUsername = null;
-    notice = null;
-    error = null;
+    orgGovernance.openMemberRemoveConfirmation(username);
   }
 
   function cancelMemberRemoveConfirmation(): void {
-    memberRemoveTargetUsername = null;
-    memberRemoveConfirmed = false;
-    removingMemberUsername = null;
-    error = null;
+    orgGovernance.cancelMemberRemoveConfirmation();
   }
 
   async function handleRemoveMember(
     event: SubmitEvent,
     username: string
   ): Promise<void> {
-    event.preventDefault();
-
-    if (!memberRemoveConfirmed) {
-      notice = null;
-      error = MEMBER_REMOVE_CONFIRMATION_MESSAGE;
-      return;
-    }
-
-    removingMemberUsername = username;
-    notice = null;
-    error = null;
-
-    try {
-      await removeMember(slug, username);
-      await loadOrganizationPage({
-        notice: `Removed @${username} from the organization.`,
-      });
-    } catch (caughtError: unknown) {
-      error = toErrorMessage(caughtError, 'Failed to remove member.');
-      removingMemberUsername = null;
-    }
+    await orgGovernance.submitMemberRemoval(event, username);
   }
 
   async function handleCreateTeam(event: SubmitEvent): Promise<void> {
@@ -1783,6 +1604,52 @@
     reload: loadOrganizationPage,
     resolveEligibleTeamMemberOptions: getEligibleTeamMemberOptions,
     toErrorMessage,
+  });
+
+  const orgGovernance = createOrgGovernanceController({
+    getOrgSlug: () => slug,
+    reload: loadOrganizationPage,
+    toErrorMessage,
+    formatRole,
+    resolveOwnerUsername: (value) =>
+      resolveOrgMemberPickerInput(value, ownershipMemberOptions),
+    clearFlash: () => {
+      notice = null;
+      error = null;
+    },
+    setError: (value) => {
+      error = value;
+    },
+    setOwnershipTransferConfirmationOpen: (value) => {
+      ownershipTransferConfirmationOpen = value;
+    },
+    getOwnershipTransferConfirmed: () => ownershipTransferConfirmed,
+    setOwnershipTransferConfirmed: (value) => {
+      ownershipTransferConfirmed = value;
+    },
+    setTransferringOwnership: (value) => {
+      transferringOwnership = value;
+    },
+    setInvitationRevokeTargetId: (value) => {
+      invitationRevokeTargetId = value;
+    },
+    getInvitationRevokeConfirmed: () => invitationRevokeConfirmed,
+    setInvitationRevokeConfirmed: (value) => {
+      invitationRevokeConfirmed = value;
+    },
+    setRevokingInvitationId: (value) => {
+      revokingInvitationId = value;
+    },
+    setMemberRemoveTargetUsername: (value) => {
+      memberRemoveTargetUsername = value;
+    },
+    getMemberRemoveConfirmed: () => memberRemoveConfirmed,
+    setMemberRemoveConfirmed: (value) => {
+      memberRemoveConfirmed = value;
+    },
+    setRemovingMemberUsername: (value) => {
+      removingMemberUsername = value;
+    },
   });
 
   function formatRole(role: string): string {
