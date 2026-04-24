@@ -38,6 +38,12 @@
   const MAX_VISIBLE_PACKAGES = 100;
   const DEFAULT_PACKAGE_ECOSYSTEM = 'npm';
 
+  interface TransferState {
+    showTransfer: boolean;
+    organizations: OrganizationMembership[];
+    loadError: string | null;
+  }
+
   let lastSlug = '';
   let loading = true;
   let loadError: string | null = null;
@@ -66,12 +72,6 @@
   let newPackageDisplayName = '';
   let newPackageDescription = '';
   let newPackageVisibility = '';
-
-  interface TransferState {
-    showTransfer: boolean;
-    organizations: OrganizationMembership[];
-    loadError: string | null;
-  }
 
   $: slug = $page.params.slug ?? '';
   $: if (slug && slug !== lastSlug) {
