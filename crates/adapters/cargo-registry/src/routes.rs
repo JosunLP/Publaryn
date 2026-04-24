@@ -315,7 +315,7 @@ async fn serve_index_entry<S: CargoAppState>(
 
     // Find the package
     let package_row = match sqlx::query(
-        "SELECT p.id, p.name, p.visibility, p.owner_user_id, p.owner_org_id, \
+        "SELECT p.id, p.repository_id, p.name, p.visibility, p.owner_user_id, p.owner_org_id, \
                 r.visibility AS repo_visibility, \
                 r.owner_user_id AS repo_owner_user_id, \
                 r.owner_org_id AS repo_owner_org_id \
@@ -336,8 +336,19 @@ async fn serve_index_entry<S: CargoAppState>(
     let pkg_vis: String = package_row.try_get("visibility").unwrap_or_default();
     let repo_vis: String = package_row.try_get("repo_visibility").unwrap_or_default();
     let actor_user_id = authenticate(state, headers).await.ok().map(|id| id.user_id);
+    let package_id: Uuid = match package_row.try_get("id") {
+        Ok(id) => id,
+        Err(_) => return cargo_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error"),
+    };
+    let repository_id: Uuid = match package_row.try_get("repository_id") {
+        Ok(id) => id,
+        Err(_) => return cargo_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error"),
+    };
+
     if !can_read_package(
         state.db(),
+        package_id,
+        repository_id,
         &pkg_vis,
         &repo_vis,
         package_row.try_get("owner_user_id").unwrap_or(None),
@@ -351,10 +362,6 @@ async fn serve_index_entry<S: CargoAppState>(
         return (StatusCode::NOT_FOUND, "").into_response();
     }
 
-    let package_id: Uuid = match package_row.try_get("id") {
-        Ok(id) => id,
-        Err(_) => return cargo_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error"),
-    };
     let db_name: String = package_row.try_get("name").unwrap_or_default();
 
     // Load all published/yanked releases + their cargo metadata + artifact checksums
@@ -1236,7 +1243,7 @@ async fn download_crate<S: CargoAppState>(
 
     // Find package with visibility check
     let package_row = match sqlx::query(
-        "SELECT p.id, p.visibility, p.owner_user_id, p.owner_org_id, \
+        "SELECT p.id, p.repository_id, p.visibility, p.owner_user_id, p.owner_org_id, \
                 r.visibility AS repo_visibility, \
                 r.owner_user_id AS repo_owner_user_id, \
                 r.owner_org_id AS repo_owner_org_id \
@@ -1253,8 +1260,19 @@ async fn download_crate<S: CargoAppState>(
         Err(_) => return cargo_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error"),
     };
 
+    let package_id: Uuid = match package_row.try_get("id") {
+        Ok(id) => id,
+        Err(_) => return cargo_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error"),
+    };
+    let repository_id: Uuid = match package_row.try_get("repository_id") {
+        Ok(id) => id,
+        Err(_) => return cargo_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error"),
+    };
+
     if !can_read_package(
         state.db(),
+        package_id,
+        repository_id,
         &package_row
             .try_get::<String, _>("visibility")
             .unwrap_or_default(),
@@ -1271,11 +1289,6 @@ async fn download_crate<S: CargoAppState>(
     {
         return cargo_error_response(StatusCode::NOT_FOUND, "Crate not found");
     }
-
-    let package_id: Uuid = match package_row.try_get("id") {
-        Ok(id) => id,
-        Err(_) => return cargo_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error"),
-    };
 
     // Find the .crate artifact for this version
     let artifact_row = match sqlx::query(
@@ -1512,9 +1525,59 @@ async fn has_package_write_access(
     false
 }
 
+async fn actor_has_any_team_package_access(
+    db: &PgPool,
+    package_id: Uuid,
+    actor_user_id: Uuid,
+) -> bool {
+    sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (\
+             SELECT 1 \
+             FROM team_package_access tpa \
+             JOIN team_memberships tm ON tm.team_id = tpa.team_id \
+             JOIN teams t ON t.id = tpa.team_id \
+             JOIN packages p ON p.id = tpa.package_id \
+             WHERE tpa.package_id = $1 \
+               AND tm.user_id = $2 \
+               AND t.org_id = p.owner_org_id \
+         )",
+    )
+    .bind(package_id)
+    .bind(actor_user_id)
+    .fetch_one(db)
+    .await
+    .unwrap_or(false)
+}
+
+async fn actor_has_any_team_repository_access(
+    db: &PgPool,
+    repository_id: Uuid,
+    actor_user_id: Uuid,
+) -> bool {
+    sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (\
+             SELECT 1 \
+             FROM team_repository_access tra \
+             JOIN team_memberships tm ON tm.team_id = tra.team_id \
+             JOIN teams t ON t.id = tra.team_id \
+             JOIN repositories r ON r.id = tra.repository_id \
+             WHERE tra.repository_id = $1 \
+               AND tm.user_id = $2 \
+               AND t.org_id = r.owner_org_id \
+         )",
+    )
+    .bind(repository_id)
+    .bind(actor_user_id)
+    .fetch_one(db)
+    .await
+    .unwrap_or(false)
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn can_read_package(
     db: &PgPool,
+    package_id: Uuid,
+    repository_id: Uuid,
     pkg_visibility: &str,
     repo_visibility: &str,
     pkg_owner_user_id: Option<Uuid>,
@@ -1534,10 +1597,16 @@ async fn can_read_package(
         return false;
     };
 
-    let pkg_access = is_owner_or_member(db, pkg_owner_user_id, pkg_owner_org_id, actor).await;
-    let repo_access = is_owner_or_member(db, repo_owner_user_id, repo_owner_org_id, actor).await;
+    let (pkg_access, repo_access, team_package_access, team_repository_access) = tokio::join!(
+        is_owner_or_member(db, pkg_owner_user_id, pkg_owner_org_id, actor),
+        is_owner_or_member(db, repo_owner_user_id, repo_owner_org_id, actor),
+        actor_has_any_team_package_access(db, package_id, actor),
+        actor_has_any_team_repository_access(db, repository_id, actor),
+    );
+    let delegated_read_access = team_package_access || team_repository_access;
 
-    (pkg_anonymous || pkg_access) && (repo_anonymous || repo_access)
+    (pkg_anonymous || pkg_access || delegated_read_access)
+        && (repo_anonymous || repo_access || delegated_read_access)
 }
 
 async fn is_owner_or_member(

@@ -665,9 +665,7 @@ fn bundled_dependency_count(value: Option<&Value>) -> Option<usize> {
 }
 
 fn install_lifecycle_script_count(value: Option<&Value>) -> Option<usize> {
-    let Some(object) = value.and_then(Value::as_object) else {
-        return None;
-    };
+    let object = value.and_then(Value::as_object)?;
 
     Some(
         NPM_INSTALL_LIFECYCLE_SCRIPTS
