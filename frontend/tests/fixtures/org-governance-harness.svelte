@@ -119,6 +119,7 @@
 
 {#if org}
   <form id="org-profile-form" on:submit={(event) => controller.submitProfile(event)}>
+    <input id="org-profile-name" name="name" value={org.name || ''} />
     <textarea id="org-profile-description" name="description">{org.description || ''}</textarea>
     <input id="org-profile-website" name="website" value={org.website || ''} />
     <input id="org-profile-email" name="email" value={org.email || ''} />

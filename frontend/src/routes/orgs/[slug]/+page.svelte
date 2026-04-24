@@ -1523,15 +1523,15 @@
     {#if canAdminister}
       <section class="card settings-section">
         <h2>Organization profile</h2>
-        <form on:submit={handleProfileUpdate}>
+        <form id="org-profile-form" on:submit={handleProfileUpdate}>
           <div class="grid gap-4 xl:grid-cols-2">
             <div class="form-group">
               <label for="org-profile-name">Organization name</label>
               <input
                 id="org-profile-name"
+                name="name"
                 class="form-input"
                 value={org.name || slug}
-                disabled
               />
             </div>
             <div class="form-group">

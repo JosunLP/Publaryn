@@ -31,6 +31,7 @@ describe('org governance controller harness', () => {
         async updateOrg(_slug, updates) {
           scenario.org = {
             ...scenario.org,
+            name: updates.name || scenario.org.name,
             description: updates.description ?? null,
             website: updates.website ?? null,
             email: updates.email ?? null,
@@ -48,11 +49,13 @@ describe('org governance controller harness', () => {
     try {
       await waitFor(() => {
         flush();
+        expect(queryRequiredInput(target, '#org-profile-name').value).toBe('Source Org');
         expect(queryRequiredTextArea(target, '#org-profile-description').value).toBe(
           'Initial description'
         );
       });
 
+      changeValue(queryRequiredInput(target, '#org-profile-name'), 'Source Registry');
       changeValue(
         queryRequiredTextArea(target, '#org-profile-description'),
         'Updated org profile copy'
@@ -75,6 +78,9 @@ describe('org governance controller harness', () => {
       await waitFor(() => {
         flush();
         expect(target.textContent).toContain('Organization profile updated.');
+        expect(queryRequiredInput(target, '#org-profile-name').value).toBe(
+          'Source Registry'
+        );
         expect(queryRequiredTextArea(target, '#org-profile-description').value).toBe(
           'Updated org profile copy'
         );
@@ -85,6 +91,7 @@ describe('org governance controller harness', () => {
 
       expect(scenario.updateOrgCalls).toEqual([
         {
+          name: 'Source Registry',
           description: 'Updated org profile copy',
           website: 'https://source.example.test',
           email: 'ops@example.test',
@@ -397,7 +404,7 @@ function createMutations(
       return {
         id: 'org-1',
         slug: 'source-org',
-        name: 'Source Org',
+        name: updates.name || 'Source Org',
         description: updates.description ?? null,
         website: updates.website ?? null,
         email: updates.email ?? null,

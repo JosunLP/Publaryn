@@ -118,6 +118,7 @@ interface FetchScenario {
   memberRemoveCalls: string[];
   orgUpdateCalls: MutationCall[];
   ownershipTransfers: MutationCall[];
+  orgName: string;
   orgMfaRequired: boolean;
   orgMemberDirectoryIsPrivate: boolean;
   teamRepositoryAccessUpdates: MutationCall[];
@@ -439,6 +440,7 @@ describe('route-level multi-page org dataset coverage', () => {
       expect(scenario.orgUpdateCalls[0]).toEqual({
         path: `/v1/orgs/${ORG_SLUG}`,
         body: {
+          name: 'Source Org',
           description: 'Source organization',
           website: null,
           email: null,
@@ -482,6 +484,7 @@ describe('route-level multi-page org dataset coverage', () => {
       expect(scenario.orgUpdateCalls[0]).toEqual({
         path: `/v1/orgs/${ORG_SLUG}`,
         body: {
+          name: 'Source Org',
           description: 'Source organization',
           website: null,
           email: null,
@@ -492,6 +495,46 @@ describe('route-level multi-page org dataset coverage', () => {
       expect(
         queryCheckbox(target, '#org-profile-member-directory-private').checked
       ).toBe(true);
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace saves and reloads the organization display name', async () => {
+    const scenario = createFetchScenario();
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(queryRequiredInput(target, '#org-profile-name').value).toBe(
+          'Source Org'
+        );
+      });
+
+      const nameInput = queryRequiredInput(target, '#org-profile-name');
+      const profileForm = queryRequiredForm(nameInput.closest('form'));
+      changeValue(nameInput, 'Source Registry');
+      submitForm(profileForm);
+
+      await waitFor(() => {
+        expect(scenario.orgUpdateCalls).toHaveLength(1);
+        expect(target.textContent).toContain('Organization profile updated.');
+        expect(queryRequiredInput(target, '#org-profile-name').value).toBe(
+          'Source Registry'
+        );
+      });
+
+      expect(scenario.orgUpdateCalls[0]).toEqual({
+        path: `/v1/orgs/${ORG_SLUG}`,
+        body: {
+          name: 'Source Registry',
+          description: 'Source organization',
+          website: null,
+          email: null,
+          mfa_required: false,
+          member_directory_is_private: false,
+        },
+      });
     } finally {
       unmount();
     }
@@ -2056,6 +2099,7 @@ function createFetchScenario(): FetchScenario {
     memberRemoveCalls: [],
     orgUpdateCalls: [],
     ownershipTransfers: [],
+    orgName: 'Source Org',
     orgMfaRequired: false,
     orgMemberDirectoryIsPrivate: false,
     teamRepositoryAccessUpdates: [],
@@ -2093,7 +2137,7 @@ async function handleApiRequest(
     return apiResponse({
       org: {
         id: ORG_ID,
-        name: 'Source Org',
+        name: scenario.orgName,
         slug: ORG_SLUG,
         description: 'Source organization',
         is_verified: true,
@@ -2413,6 +2457,10 @@ async function handleApiRequest(
 
   if (method === 'PATCH' && requestPath === `/v1/orgs/${ORG_SLUG}`) {
     scenario.orgUpdateCalls.push({ path: requestPath, body });
+    scenario.orgName =
+      typeof body.name === 'string' && body.name.trim().length > 0
+        ? body.name.trim()
+        : scenario.orgName;
     scenario.orgMfaRequired = body.mfa_required === true;
     scenario.orgMemberDirectoryIsPrivate =
       body.member_directory_is_private === true;

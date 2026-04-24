@@ -71,6 +71,7 @@ export function createOrgGovernanceController(options: OrgGovernanceControllerOp
 
       try {
         await mutations.updateOrg(options.getOrgSlug(), {
+          name: normalizeRequiredFormText(formData.get('name')),
           description: normalizeOptionalFormText(formData.get('description')),
           website: normalizeOptionalFormText(formData.get('website')),
           email: normalizeOptionalFormText(formData.get('email')),
@@ -303,4 +304,14 @@ function normalizeOptionalFormText(
 
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizeRequiredFormText(
+  value: FormDataEntryValue | null | undefined
+): string {
+  if (typeof value !== 'string') {
+    return '';
+  }
+
+  return value.trim();
 }
