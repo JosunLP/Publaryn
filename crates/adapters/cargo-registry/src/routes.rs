@@ -336,10 +336,19 @@ async fn serve_index_entry<S: CargoAppState>(
     let pkg_vis: String = package_row.try_get("visibility").unwrap_or_default();
     let repo_vis: String = package_row.try_get("repo_visibility").unwrap_or_default();
     let actor_user_id = authenticate(state, headers).await.ok().map(|id| id.user_id);
+    let package_id: Uuid = match package_row.try_get("id") {
+        Ok(id) => id,
+        Err(_) => return cargo_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error"),
+    };
+    let repository_id: Uuid = match package_row.try_get("repository_id") {
+        Ok(id) => id,
+        Err(_) => return cargo_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error"),
+    };
+
     if !can_read_package(
         state.db(),
-        package_row.try_get("id").unwrap_or(Uuid::nil()),
-        package_row.try_get("repository_id").unwrap_or(Uuid::nil()),
+        package_id,
+        repository_id,
         &pkg_vis,
         &repo_vis,
         package_row.try_get("owner_user_id").unwrap_or(None),
@@ -353,10 +362,6 @@ async fn serve_index_entry<S: CargoAppState>(
         return (StatusCode::NOT_FOUND, "").into_response();
     }
 
-    let package_id: Uuid = match package_row.try_get("id") {
-        Ok(id) => id,
-        Err(_) => return cargo_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error"),
-    };
     let db_name: String = package_row.try_get("name").unwrap_or_default();
 
     // Load all published/yanked releases + their cargo metadata + artifact checksums
@@ -1255,10 +1260,19 @@ async fn download_crate<S: CargoAppState>(
         Err(_) => return cargo_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error"),
     };
 
+    let package_id: Uuid = match package_row.try_get("id") {
+        Ok(id) => id,
+        Err(_) => return cargo_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error"),
+    };
+    let repository_id: Uuid = match package_row.try_get("repository_id") {
+        Ok(id) => id,
+        Err(_) => return cargo_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error"),
+    };
+
     if !can_read_package(
         state.db(),
-        package_row.try_get("id").unwrap_or(Uuid::nil()),
-        package_row.try_get("repository_id").unwrap_or(Uuid::nil()),
+        package_id,
+        repository_id,
         &package_row
             .try_get::<String, _>("visibility")
             .unwrap_or_default(),
@@ -1275,11 +1289,6 @@ async fn download_crate<S: CargoAppState>(
     {
         return cargo_error_response(StatusCode::NOT_FOUND, "Crate not found");
     }
-
-    let package_id: Uuid = match package_row.try_get("id") {
-        Ok(id) => id,
-        Err(_) => return cargo_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error"),
-    };
 
     // Find the .crate artifact for this version
     let artifact_row = match sqlx::query(
@@ -1588,11 +1597,12 @@ async fn can_read_package(
         return false;
     };
 
-    let pkg_access = is_owner_or_member(db, pkg_owner_user_id, pkg_owner_org_id, actor).await;
-    let repo_access = is_owner_or_member(db, repo_owner_user_id, repo_owner_org_id, actor).await;
-    let team_package_access = actor_has_any_team_package_access(db, package_id, actor).await;
-    let team_repository_access =
-        actor_has_any_team_repository_access(db, repository_id, actor).await;
+    let (pkg_access, repo_access, team_package_access, team_repository_access) = tokio::join!(
+        is_owner_or_member(db, pkg_owner_user_id, pkg_owner_org_id, actor),
+        is_owner_or_member(db, repo_owner_user_id, repo_owner_org_id, actor),
+        actor_has_any_team_package_access(db, package_id, actor),
+        actor_has_any_team_repository_access(db, repository_id, actor),
+    );
     let delegated_read_access = team_package_access || team_repository_access;
 
     (pkg_anonymous || pkg_access || delegated_read_access)
