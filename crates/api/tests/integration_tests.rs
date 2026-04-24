@@ -14701,6 +14701,356 @@ async fn test_cargo_sparse_index_and_download_follow_internal_org_and_mixed_visi
 }
 
 #[sqlx::test(migrations = "../../migrations")]
+async fn test_cargo_sparse_index_and_download_allow_delegated_reads_for_mixed_visibility_crates(
+    pool: PgPool,
+) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    register_user(&app, "carol", "carol@test.dev", "super_secret_pw!").await;
+    register_user(&app, "dave", "dave@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+    let carol_jwt = login_user(&app, "carol", "super_secret_pw!").await;
+    let dave_jwt = login_user(&app, "dave", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(
+        &app,
+        &alice_jwt,
+        "Acme Cargo Mixed Delegation",
+        "acme-cargo-mixed-delegation",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{org_body}");
+    let org_id = org_body["id"]
+        .as_str()
+        .expect("organization id should be returned");
+
+    let (status, _) = add_org_member(
+        &app,
+        &alice_jwt,
+        "acme-cargo-mixed-delegation",
+        "bob",
+        "viewer",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = add_org_member(
+        &app,
+        &alice_jwt,
+        "acme-cargo-mixed-delegation",
+        "carol",
+        "viewer",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "acme-cargo-mixed-delegation",
+        "Cargo Package Readers",
+        "cargo-package-readers",
+        Some("Reads mixed-visibility cargo crates through package delegation."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "acme-cargo-mixed-delegation",
+        "Cargo Repository Readers",
+        "cargo-repository-readers",
+        Some("Reads mixed-visibility cargo crates through repository delegation."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = add_team_member_to_team(
+        &app,
+        &alice_jwt,
+        "acme-cargo-mixed-delegation",
+        "cargo-package-readers",
+        "bob",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = add_team_member_to_team(
+        &app,
+        &alice_jwt,
+        "acme-cargo-mixed-delegation",
+        "cargo-repository-readers",
+        "carol",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, token_body) = create_personal_access_token(
+        &app,
+        &alice_jwt,
+        "cargo-mixed-delegated-read",
+        &["packages:write"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
+    let cargo_token = token_body["token"]
+        .as_str()
+        .expect("cargo token should be returned")
+        .to_owned();
+
+    #[derive(Clone, Copy)]
+    enum DelegatedGrantKind {
+        Package,
+        Repository,
+    }
+
+    struct DelegatedReadCase<'a> {
+        repository_name: &'a str,
+        repository_slug: &'a str,
+        repository_kind: &'a str,
+        repository_visibility: &'a str,
+        package_name: &'a str,
+        package_visibility: &'a str,
+        crate_bytes: &'a [u8],
+        grant_kind: DelegatedGrantKind,
+    }
+
+    let cases = [
+        DelegatedReadCase {
+            repository_name: "Cargo Public Delegated Package Read",
+            repository_slug: "cargo-public-delegated-package-read",
+            repository_kind: "public",
+            repository_visibility: "public",
+            package_name: "quartz_lockbox",
+            package_visibility: "private",
+            crate_bytes: b"quartz-lockbox-crate",
+            grant_kind: DelegatedGrantKind::Package,
+        },
+        DelegatedReadCase {
+            repository_name: "Cargo Public Delegated Repository Read",
+            repository_slug: "cargo-public-delegated-repository-read",
+            repository_kind: "public",
+            repository_visibility: "public",
+            package_name: "nebula_cipher",
+            package_visibility: "private",
+            crate_bytes: b"nebula-cipher-crate",
+            grant_kind: DelegatedGrantKind::Repository,
+        },
+        DelegatedReadCase {
+            repository_name: "Cargo Public Delegated Internal Package Read",
+            repository_slug: "cargo-public-delegated-internal-package-read",
+            repository_kind: "public",
+            repository_visibility: "public",
+            package_name: "lighthouse_archive",
+            package_visibility: "internal_org",
+            crate_bytes: b"lighthouse-archive-crate",
+            grant_kind: DelegatedGrantKind::Package,
+        },
+        DelegatedReadCase {
+            repository_name: "Cargo Internal Delegated Repository Read",
+            repository_slug: "cargo-internal-delegated-repository-read",
+            repository_kind: "private",
+            repository_visibility: "internal_org",
+            package_name: "winter_atlas",
+            package_visibility: "private",
+            crate_bytes: b"winter-atlas-crate",
+            grant_kind: DelegatedGrantKind::Repository,
+        },
+    ];
+
+    for case in cases {
+        let (status, repository_body) = create_repository_with_options(
+            &app,
+            &alice_jwt,
+            case.repository_name,
+            case.repository_slug,
+            Some(org_id),
+            Some(case.repository_kind),
+            Some(case.repository_visibility),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected repository response for {}: {repository_body}",
+            case.package_name
+        );
+
+        let (status, package_body) = create_package_with_options(
+            &app,
+            &alice_jwt,
+            "cargo",
+            case.package_name,
+            case.repository_slug,
+            Some(case.package_visibility),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected package response for {}: {package_body}",
+            case.package_name
+        );
+
+        match case.grant_kind {
+            DelegatedGrantKind::Package => {
+                let (status, grant_body) = grant_team_package_access(
+                    &app,
+                    &alice_jwt,
+                    "acme-cargo-mixed-delegation",
+                    "cargo-package-readers",
+                    "cargo",
+                    case.package_name,
+                    &["read_private"],
+                )
+                .await;
+                assert_eq!(
+                    status,
+                    StatusCode::OK,
+                    "unexpected team package access response for {}: {grant_body}",
+                    case.package_name
+                );
+            }
+            DelegatedGrantKind::Repository => {
+                let (status, grant_body) = grant_team_repository_access(
+                    &app,
+                    &alice_jwt,
+                    "acme-cargo-mixed-delegation",
+                    "cargo-repository-readers",
+                    case.repository_slug,
+                    &["read_private"],
+                )
+                .await;
+                assert_eq!(
+                    status,
+                    StatusCode::OK,
+                    "unexpected team repository access response for {}: {grant_body}",
+                    case.package_name
+                );
+            }
+        }
+
+        let payload = build_cargo_publish_payload(
+            json!({
+                "name": case.package_name,
+                "vers": "0.1.0",
+                "deps": [],
+                "features": {},
+                "authors": ["Alice <alice@test.dev>"],
+                "description": format!("Cargo mixed delegated read coverage for {}", case.package_name),
+                "license": "MIT"
+            }),
+            case.crate_bytes,
+        );
+
+        let (status, publish_body) = publish_cargo_crate(&app, &cargo_token, payload).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "unexpected cargo publish response for {}: {publish_body}",
+            case.package_name
+        );
+
+        let anonymous_index_resp = get_cargo_sparse_index(&app, None, case.package_name).await;
+        assert_eq!(
+            anonymous_index_resp.status(),
+            StatusCode::NOT_FOUND,
+            "anonymous sparse index response should stay hidden for {}",
+            case.package_name
+        );
+
+        let outsider_index_resp =
+            get_cargo_sparse_index(&app, Some(&dave_jwt), case.package_name).await;
+        assert_eq!(
+            outsider_index_resp.status(),
+            StatusCode::NOT_FOUND,
+            "authenticated outsider sparse index response should stay hidden for {}",
+            case.package_name
+        );
+
+        let granted_reader = match case.grant_kind {
+            DelegatedGrantKind::Package => bob_jwt.as_str(),
+            DelegatedGrantKind::Repository => carol_jwt.as_str(),
+        };
+
+        let delegated_index_resp =
+            get_cargo_sparse_index(&app, Some(granted_reader), case.package_name).await;
+        assert_eq!(
+            delegated_index_resp.status(),
+            StatusCode::OK,
+            "delegated sparse index response should be readable for {}",
+            case.package_name
+        );
+        assert_eq!(
+            delegated_index_resp
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("text/plain")
+        );
+        let delegated_index_body = body_text(delegated_index_resp).await;
+        let delegated_index_entry: Value = serde_json::from_str(
+            delegated_index_body
+                .lines()
+                .next()
+                .expect("delegated sparse index entry should exist"),
+        )
+        .expect("delegated sparse index entry should be valid JSON");
+        assert_eq!(delegated_index_entry["name"], case.package_name);
+        assert_eq!(delegated_index_entry["vers"], "0.1.0");
+
+        let anonymous_download_resp =
+            download_cargo_crate(&app, None, case.package_name, "0.1.0").await;
+        assert_eq!(
+            anonymous_download_resp.status(),
+            StatusCode::NOT_FOUND,
+            "anonymous download response should stay hidden for {}",
+            case.package_name
+        );
+        let anonymous_download_body = body_json(anonymous_download_resp).await;
+        assert_eq!(
+            cargo_error_detail(&anonymous_download_body),
+            "Crate not found"
+        );
+
+        let outsider_download_resp =
+            download_cargo_crate(&app, Some(&dave_jwt), case.package_name, "0.1.0").await;
+        assert_eq!(
+            outsider_download_resp.status(),
+            StatusCode::NOT_FOUND,
+            "authenticated outsider download response should stay hidden for {}",
+            case.package_name
+        );
+        let outsider_download_body = body_json(outsider_download_resp).await;
+        assert_eq!(
+            cargo_error_detail(&outsider_download_body),
+            "Crate not found"
+        );
+
+        let delegated_download_resp =
+            download_cargo_crate(&app, Some(granted_reader), case.package_name, "0.1.0").await;
+        assert_eq!(
+            delegated_download_resp.status(),
+            StatusCode::OK,
+            "delegated download response should be readable for {}",
+            case.package_name
+        );
+        assert_eq!(
+            delegated_download_resp
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("application/gzip")
+        );
+        assert_eq!(body_bytes(delegated_download_resp).await, case.crate_bytes);
+    }
+}
+
+#[sqlx::test(migrations = "../../migrations")]
 async fn test_cargo_yank_and_unyank_update_sparse_index_and_audit_log(pool: PgPool) {
     let app = app(pool.clone());
     register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
