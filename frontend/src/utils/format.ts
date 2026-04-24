@@ -12,6 +12,30 @@ export function formatNumber(
 }
 
 /**
+ * Format byte counts using human-readable units.
+ */
+export function formatFileSize(
+  value: number | string | null | undefined
+): string {
+  const bytes = Number(value ?? 0);
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return '0 B';
+  }
+
+  if (bytes < 1024) {
+    return `${bytes.toFixed(0)} B`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  if (bytes < 1024 * 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+/**
  * Format an ISO date string as a relative or absolute date.
  */
 export function formatDate(iso: string | null | undefined): string {

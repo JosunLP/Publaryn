@@ -43,6 +43,7 @@ use crate::{
         ensure_repository_package_creation_access, AuthenticatedIdentity,
         OptionalAuthenticatedIdentity,
     },
+    routes::package_analysis::load_release_bundle_analysis,
     routes::parse_ecosystem,
     scopes::{ensure_scope, SCOPE_PACKAGES_TRANSFER, SCOPE_PACKAGES_WRITE},
     state::AppState,
@@ -555,6 +556,57 @@ async fn get_package(
     } else {
         None
     };
+    let latest_visible_statuses = if can_manage_releases {
+        release_management_visible_statuses()
+    } else {
+        release_history_visible_statuses()
+    };
+    let latest_release_row = sqlx::query(
+        "SELECT id, version, provenance \
+         FROM releases \
+         WHERE package_id = $1 AND status::text = ANY($2) \
+         ORDER BY published_at DESC \
+         LIMIT 1",
+    )
+    .bind(package_id)
+    .bind(&latest_visible_statuses)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+    let latest_version = latest_release_row
+        .as_ref()
+        .and_then(|row| row.try_get::<String, _>("version").ok());
+    let bundle_analysis = match latest_release_row {
+        Some(row) => {
+            let release_id = row
+                .try_get::<Uuid, _>("id")
+                .map_err(|e| ApiError(Error::Internal(format!("missing latest release id: {e}"))))?;
+            let release_version = row.try_get::<String, _>("version").map_err(|e| {
+                ApiError(Error::Internal(format!("missing latest release version: {e}")))
+            })?;
+            let provenance = row
+                .try_get::<Option<serde_json::Value>, _>("provenance")
+                .ok()
+                .flatten();
+
+            Some(
+                serde_json::to_value(
+                    load_release_bundle_analysis(
+                        &state.db,
+                        state.artifact_store.as_ref(),
+                        &eco,
+                        release_id,
+                        &release_version,
+                        provenance.as_ref(),
+                        true,
+                    )
+                    .await?,
+                )
+                .map_err(|e| ApiError(Error::Internal(format!("bundle analysis serialization failed: {e}"))))?,
+            )
+        }
+        None => None,
+    };
 
     Ok(Json(serde_json::json!({
         "id": row.try_get::<Uuid, _>("id").ok(),
@@ -574,6 +626,7 @@ async fn get_package(
         "download_count": row.try_get::<i64, _>("download_count").ok(),
         "owner_username": row.try_get::<Option<String>, _>("owner_username").ok().flatten(),
         "owner_org_slug": row.try_get::<Option<String>, _>("owner_org_slug").ok().flatten(),
+        "latest_version": latest_version,
         "can_manage_metadata": can_manage_metadata,
         "can_manage_releases": can_manage_releases,
         "can_manage_trusted_publishers": can_manage_trusted_publishers,
@@ -581,6 +634,7 @@ async fn get_package(
         "can_transfer": can_transfer,
         "team_access": team_access,
         "ecosystem_metadata": ecosystem_metadata,
+        "bundle_analysis": bundle_analysis,
         "created_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at").ok(),
         "updated_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("updated_at").ok(),
     })))
@@ -1376,7 +1430,7 @@ async fn list_releases(
         };
 
     let rows = sqlx::query(
-        "SELECT version, status::text AS status, is_yanked, is_deprecated, is_prerelease, published_at \
+        "SELECT id, version, status::text AS status, is_yanked, is_deprecated, is_prerelease, published_at, provenance \
          FROM releases \
          WHERE package_id = $1 AND status::text = ANY($2) \
          ORDER BY published_at DESC",
@@ -1387,19 +1441,42 @@ async fn list_releases(
     .await
     .map_err(|e| ApiError(Error::Database(e)))?;
 
-    let releases: Vec<serde_json::Value> = rows
-        .iter()
-        .map(|r| {
-            serde_json::json!({
-                "version": r.try_get::<String, _>("version").ok(),
-                "status": r.try_get::<String, _>("status").ok(),
-                "is_yanked": r.try_get::<bool, _>("is_yanked").ok(),
-                "is_deprecated": r.try_get::<bool, _>("is_deprecated").ok(),
-                "is_prerelease": r.try_get::<bool, _>("is_prerelease").ok(),
-                "published_at": r.try_get::<chrono::DateTime<chrono::Utc>, _>("published_at").ok(),
-            })
-        })
-        .collect();
+    let mut releases = Vec::with_capacity(rows.len());
+    for row in rows {
+        let release_id = row
+            .try_get::<Uuid, _>("id")
+            .map_err(|e| ApiError(Error::Internal(format!("missing release id: {e}"))))?;
+        let version = row
+            .try_get::<String, _>("version")
+            .map_err(|e| ApiError(Error::Internal(format!("missing release version: {e}"))))?;
+        let provenance = row
+            .try_get::<Option<serde_json::Value>, _>("provenance")
+            .ok()
+            .flatten();
+        let bundle_analysis = serde_json::to_value(
+            load_release_bundle_analysis(
+                &state.db,
+                state.artifact_store.as_ref(),
+                &eco,
+                release_id,
+                &version,
+                provenance.as_ref(),
+                false,
+            )
+            .await?,
+        )
+        .map_err(|e| ApiError(Error::Internal(format!("bundle analysis serialization failed: {e}"))))?;
+
+        releases.push(serde_json::json!({
+            "version": version,
+            "status": row.try_get::<String, _>("status").ok(),
+            "is_yanked": row.try_get::<bool, _>("is_yanked").ok(),
+            "is_deprecated": row.try_get::<bool, _>("is_deprecated").ok(),
+            "is_prerelease": row.try_get::<bool, _>("is_prerelease").ok(),
+            "published_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("published_at").ok(),
+            "bundle_analysis": bundle_analysis,
+        }));
+    }
 
     Ok(Json(serde_json::json!({ "releases": releases })))
 }
@@ -1444,6 +1521,19 @@ async fn get_release(
     let ecosystem_metadata =
         load_release_ecosystem_metadata(&state.db, &eco, release_id, release_provenance.as_ref())
             .await?;
+    let bundle_analysis = serde_json::to_value(
+        load_release_bundle_analysis(
+            &state.db,
+            state.artifact_store.as_ref(),
+            &eco,
+            release_id,
+            &version,
+            release_provenance.as_ref(),
+            true,
+        )
+        .await?,
+    )
+    .map_err(|e| ApiError(Error::Internal(format!("bundle analysis serialization failed: {e}"))))?;
 
     Ok(Json(serde_json::json!({
         "id": row.try_get::<Uuid, _>("id").ok(),
@@ -1460,6 +1550,7 @@ async fn get_release(
         "changelog": row.try_get::<Option<String>, _>("changelog").ok().flatten(),
         "source_ref": row.try_get::<Option<String>, _>("source_ref").ok().flatten(),
         "ecosystem_metadata": ecosystem_metadata,
+        "bundle_analysis": bundle_analysis,
         "published_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("published_at").ok(),
     })))
 }
