@@ -8,6 +8,7 @@
     getRelease,
     listArtifacts,
     publishRelease,
+    undeprecateRelease,
     unyankRelease,
     uploadReleaseArtifact,
     yankRelease,
@@ -52,6 +53,7 @@
   let yanking = false;
   let restoring = false;
   let deprecating = false;
+  let undeprecating = false;
 
   $: ecosystem = $page.params.ecosystem ?? '';
   $: name = $page.params.name ?? '';
@@ -223,6 +225,25 @@
     }
   }
 
+  async function handleUndeprecate(): Promise<void> {
+    undeprecating = true;
+    error = null;
+    notice = null;
+
+    try {
+      const result = await undeprecateRelease(ecosystem, name, version);
+      await loadVersionPage();
+      notice = result.message || 'Release undeprecated successfully.';
+    } catch (caughtError: unknown) {
+      error =
+        caughtError instanceof Error && caughtError.message
+          ? caughtError.message
+          : 'Failed to remove release deprecation.';
+    } finally {
+      undeprecating = false;
+    }
+  }
+
   function formatFileSize(bytes: number): string {
     if (bytes < 1024) {
       return `${bytes} B`;
@@ -344,6 +365,7 @@
         canYank: false,
         canRestore: false,
         canDeprecate: false,
+        canUndeprecate: false,
       };
   $: releaseStatus = (release?.status || '').trim().toLowerCase();
   $: readiness = release
@@ -1196,6 +1218,19 @@
                     {deprecating ? 'Deprecating…' : 'Deprecate release'}
                   </button>
                 </form>
+              {/if}
+
+              {#if actionAvailability.canUndeprecate}
+                <button
+                  id="release-undeprecate"
+                  type="button"
+                  class="btn btn-secondary"
+                  style="width:100%; justify-content:center; margin-top:12px;"
+                  disabled={undeprecating}
+                  on:click={handleUndeprecate}
+                >
+                  {undeprecating ? 'Removing deprecation…' : 'Remove deprecation'}
+                </button>
               {/if}
             </div>
           </div>

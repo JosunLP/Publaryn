@@ -17,6 +17,7 @@ pub enum AuditAction {
     ReleaseYank,
     ReleaseUnyank,
     ReleaseDeprecate,
+    ReleaseUndeprecate,
     // Auth
     UserLogin,
     UserLogout,

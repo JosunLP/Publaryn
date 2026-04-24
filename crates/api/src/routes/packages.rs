@@ -100,10 +100,14 @@ pub fn router() -> Router<AppState> {
             "/v1/packages/{ecosystem}/{name}/releases/{version}/deprecate",
             put(deprecate_release),
         )
+        .route(
+            "/v1/packages/{ecosystem}/{name}/releases/{version}/undeprecate",
+            put(undeprecate_release),
+        )
         .route("/v1/packages/{ecosystem}/{name}/tags", get(list_tags))
         .route(
             "/v1/packages/{ecosystem}/{name}/tags/{tag}",
-            put(upsert_tag),
+            put(upsert_tag).delete(delete_tag),
         )
 }
 
@@ -1695,6 +1699,97 @@ async fn deprecate_release(
     Ok(Json(serde_json::json!({ "message": "Release deprecated" })))
 }
 
+async fn undeprecate_release(
+    State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
+    Path((ecosystem_str, name, version)): Path<(String, String, String)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    ensure_scope(&identity, SCOPE_PACKAGES_WRITE)?;
+
+    let eco = parse_ecosystem(&ecosystem_str)?;
+    let normalized = normalize_package_name(&name, &eco);
+    let package_id =
+        ensure_package_publish_access(&state.db, eco.as_str(), &normalized, identity.user_id)
+            .await?;
+
+    let release_row = sqlx::query(
+        "SELECT id, is_yanked, is_deprecated \
+         FROM releases \
+         WHERE package_id = $1 AND version = $2",
+    )
+    .bind(package_id)
+    .bind(&version)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?
+    .ok_or_else(|| ApiError(Error::NotFound(format!("Release '{version}' not found"))))?;
+
+    let release_id: Uuid = release_row
+        .try_get("id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let is_yanked = release_row
+        .try_get::<bool, _>("is_yanked")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let is_deprecated = release_row
+        .try_get::<bool, _>("is_deprecated")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+
+    if !is_deprecated {
+        return Err(ApiError(Error::Conflict(format!(
+            "Release '{version}' is not deprecated"
+        ))));
+    }
+
+    let restored_status = release_status_after_undeprecate(is_yanked);
+
+    sqlx::query(
+        "UPDATE releases \
+         SET is_deprecated = false, \
+             deprecation_message = NULL, \
+             status = $1::release_status, \
+             updated_at = NOW() \
+         WHERE id = $2",
+    )
+    .bind(restored_status)
+    .bind(release_id)
+    .execute(&state.db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let owner_org_id: Option<Uuid> =
+        sqlx::query_scalar("SELECT owner_org_id FROM packages WHERE id = $1")
+            .bind(package_id)
+            .fetch_one(&state.db)
+            .await
+            .map_err(|e| ApiError(Error::Database(e)))?;
+
+    sqlx::query(
+        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_org_id, target_package_id, target_release_id, metadata, occurred_at) \
+         VALUES ($1, 'release_undeprecate', $2, $3, $4, $5, $6, $7, NOW())",
+    )
+    .bind(Uuid::new_v4())
+    .bind(identity.user_id)
+    .bind(identity.audit_actor_token_id())
+    .bind(owner_org_id)
+    .bind(package_id)
+    .bind(release_id)
+    .bind(serde_json::json!({
+        "ecosystem": eco.as_str(),
+        "name": normalized,
+        "version": version,
+        "restored_status": restored_status,
+    }))
+    .execute(&state.db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    Ok(Json(serde_json::json!({
+        "message": "Release undeprecated",
+        "version": version,
+        "status": restored_status,
+    })))
+}
+
 async fn list_tags(
     State(state): State<AppState>,
     identity: OptionalAuthenticatedIdentity,
@@ -1788,6 +1883,36 @@ async fn upsert_tag(
         "message": "Tag updated",
         "tag": tag,
         "version": body.version,
+    })))
+}
+
+async fn delete_tag(
+    State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
+    Path((ecosystem_str, name, tag)): Path<(String, String, String)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    ensure_scope(&identity, SCOPE_PACKAGES_WRITE)?;
+
+    let eco = parse_ecosystem(&ecosystem_str)?;
+    let normalized = normalize_package_name(&name, &eco);
+    let pkg_id =
+        ensure_package_publish_access(&state.db, eco.as_str(), &normalized, identity.user_id)
+            .await?;
+
+    let delete_result = sqlx::query("DELETE FROM channel_refs WHERE package_id = $1 AND name = $2")
+        .bind(pkg_id)
+        .bind(&tag)
+        .execute(&state.db)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    if delete_result.rows_affected() == 0 {
+        return Err(ApiError(Error::NotFound(format!("Tag '{tag}' not found"))));
+    }
+
+    Ok(Json(serde_json::json!({
+        "message": "Tag deleted",
+        "tag": tag,
     })))
 }
 
@@ -2320,6 +2445,14 @@ fn release_status_after_unyank(is_deprecated: bool) -> &'static str {
     }
 }
 
+fn release_status_after_undeprecate(is_yanked: bool) -> &'static str {
+    if is_yanked {
+        "yanked"
+    } else {
+        "published"
+    }
+}
+
 fn release_status_accepts_artifact_upload(status: &str) -> bool {
     matches!(status, "quarantine" | "scanning")
 }
@@ -2774,8 +2907,9 @@ mod tests {
         ensure_release_allows_status_mutation, extract_namespace_claim_value,
         join_policy_violations, package_owner_from_fields, release_history_visible_statuses,
         release_management_visible_statuses, release_status_accepts_artifact_upload,
-        release_status_after_unyank, release_status_allows_direct_read,
-        release_status_can_be_published, validate_artifact_filename, validate_expected_sha256,
+        release_status_after_undeprecate, release_status_after_unyank,
+        release_status_allows_direct_read, release_status_can_be_published,
+        validate_artifact_filename, validate_expected_sha256,
         validate_package_creation_repository_kind, validate_package_transfer_target,
         version_looks_prerelease, visibility_scope_rank, PackageOwner,
     };
@@ -2937,6 +3071,16 @@ mod tests {
     #[test]
     fn release_status_after_unyank_restores_deprecated_for_deprecated_release() {
         assert_eq!(release_status_after_unyank(true), "deprecated");
+    }
+
+    #[test]
+    fn release_status_after_undeprecate_restores_published_for_normal_release() {
+        assert_eq!(release_status_after_undeprecate(false), "published");
+    }
+
+    #[test]
+    fn release_status_after_undeprecate_restores_yanked_for_yanked_release() {
+        assert_eq!(release_status_after_undeprecate(true), "yanked");
     }
 
     #[test]
