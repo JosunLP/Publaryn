@@ -129,6 +129,30 @@ export type ReleaseEcosystemMetadata =
       };
     };
 
+export interface BundleAnalysisSummary {
+  source_version?: NullableString;
+  artifact_count?: number | null;
+  total_artifact_size_bytes?: number | null;
+  compressed_size_bytes?: number | null;
+  install_size_bytes?: number | null;
+  file_count?: number | null;
+  direct_dependency_count?: number | null;
+  runtime_dependency_count?: number | null;
+  development_dependency_count?: number | null;
+  peer_dependency_count?: number | null;
+  optional_dependency_count?: number | null;
+  bundled_dependency_count?: number | null;
+  dependency_group_count?: number | null;
+  extra_count?: number | null;
+  package_type_count?: number | null;
+  layer_count?: number | null;
+  install_script_count?: number | null;
+  has_cli_entrypoints?: boolean | null;
+  has_tree_shaking_hints?: boolean | null;
+  has_native_code?: boolean | null;
+  notes?: string[] | null;
+}
+
 export interface SearchPackagesOptions {
   q?: string;
   ecosystem?: string;
@@ -194,6 +218,7 @@ export interface PackageDetail {
   repository_url?: NullableString;
   keywords?: string[] | null;
   ecosystem_metadata?: PackageEcosystemMetadata | null;
+  bundle_analysis?: BundleAnalysisSummary | null;
 }
 
 export interface CreatePackageInput {
@@ -279,6 +304,7 @@ export interface Release {
   can_manage_releases?: boolean;
   sha256?: NullableString;
   ecosystem_metadata?: ReleaseEcosystemMetadata | null;
+  bundle_analysis?: BundleAnalysisSummary | null;
 }
 
 export interface Artifact {

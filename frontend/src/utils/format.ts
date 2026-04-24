@@ -1,3 +1,7 @@
+const KB = 1024;
+const MB = KB * 1024;
+const GB = MB * 1024;
+
 /**
  * Format a number with locale-aware separators.
  */
@@ -9,6 +13,30 @@ export function formatNumber(
   }
 
   return Number(value).toLocaleString('en-US');
+}
+
+/**
+ * Format byte counts using human-readable units.
+ */
+export function formatFileSize(
+  value: number | string | null | undefined
+): string {
+  const bytes = Number(value ?? 0);
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return '0 B';
+  }
+
+  if (bytes < KB) {
+    return `${bytes.toFixed(0)} B`;
+  }
+  if (bytes < MB) {
+    return `${(bytes / KB).toFixed(1)} KB`;
+  }
+  if (bytes < GB) {
+    return `${(bytes / MB).toFixed(1)} MB`;
+  }
+
+  return `${(bytes / GB).toFixed(1)} GB`;
 }
 
 /**

@@ -69,6 +69,12 @@
   } from '../../../../utils/format';
   import { renderMarkdown } from '../../../../utils/markdown';
   import {
+    buildBundleAnalysisHighlights,
+    buildBundleAnalysisQuickFacts,
+    buildBundleAnalysisStats,
+    bundleAnalysisNotes,
+  } from '../../../../utils/package-analysis';
+  import {
     buildPackageMetadataUpdateInput,
     createPackageMetadataFormValues,
     packageMetadataHasChanges,
@@ -1189,6 +1195,7 @@
   }
 
   $: packageMetadata = pkg?.ecosystem_metadata ?? null;
+  $: packageBundleAnalysis = pkg?.bundle_analysis ?? null;
   $: canonicalPackageEcosystem = pkg?.ecosystem ?? ecosystem;
   $: normalizedFindingSearchQuery =
     normalizePackageSecuritySearchQuery(findingSearchQuery);
@@ -1410,6 +1417,13 @@
                   {/if}
                   {#if release.status && release.status !== 'deprecated'}
                     <span class="badge badge-ecosystem">{release.status}</span>
+                  {/if}
+                  {#if release.bundle_analysis}
+                    <div class="token-row__scopes" style="margin-top:0.5rem;">
+                      {#each buildBundleAnalysisQuickFacts(release.bundle_analysis) as fact}
+                        <span class="badge badge-ecosystem">{fact}</span>
+                      {/each}
+                    </div>
                   {/if}
                 </div>
                 <div class="release-row__meta">
@@ -1898,6 +1912,43 @@
                     </div>
                   </div>
                 {/if}
+              {/if}
+            </div>
+          </div>
+        {/if}
+
+        {#if packageBundleAnalysis}
+          <div class="card">
+            <div class="sidebar-section">
+              <h3>Bundle analysis</h3>
+              <p class="settings-copy" style="margin-bottom:12px;">
+                Bundlephobia-inspired metadata derived from the latest visible
+                release{packageBundleAnalysis.source_version
+                  ? ` (${packageBundleAnalysis.source_version})`
+                  : ''}.
+              </p>
+              {#each buildBundleAnalysisStats(packageBundleAnalysis) as stat}
+                <div class="sidebar-row">
+                  <span class="sidebar-row__label">{stat.label}</span>
+                  <span class="sidebar-row__value">{stat.value}</span>
+                </div>
+              {/each}
+              {#if buildBundleAnalysisHighlights(packageBundleAnalysis).length > 0}
+                <div
+                  class="token-row__scopes"
+                  style="margin-top:12px; margin-bottom:12px;"
+                >
+                  {#each buildBundleAnalysisHighlights(packageBundleAnalysis) as highlight}
+                    <span class="badge badge-ecosystem">{highlight}</span>
+                  {/each}
+                </div>
+              {/if}
+              {#if bundleAnalysisNotes(packageBundleAnalysis).length > 0}
+                <div class="settings-copy" style="display:grid; gap:6px; margin:0;">
+                  {#each bundleAnalysisNotes(packageBundleAnalysis) as note}
+                    <span>{note}</span>
+                  {/each}
+                </div>
               {/if}
             </div>
           </div>

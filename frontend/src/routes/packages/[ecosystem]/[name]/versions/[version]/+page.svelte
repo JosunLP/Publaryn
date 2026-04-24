@@ -19,7 +19,16 @@
     formatVersionLabel,
     installCommand,
   } from '../../../../../../utils/ecosystem';
-  import { copyToClipboard, formatDate } from '../../../../../../utils/format';
+  import {
+    copyToClipboard,
+    formatDate,
+    formatFileSize,
+  } from '../../../../../../utils/format';
+  import {
+    buildBundleAnalysisHighlights,
+    buildBundleAnalysisStats,
+    bundleAnalysisNotes,
+  } from '../../../../../../utils/package-analysis';
   import {
     ARTIFACT_KIND_OPTIONS,
     describeReleaseReadiness,
@@ -231,7 +240,11 @@
     notice = null;
 
     try {
-      const result = await undeprecateRelease(ecosystem, name, version);
+      const result = await undeprecateRelease(
+        eecosystem(),
+        ename(),
+        eversion()
+      );
       await loadVersionPage();
       notice = result.message || 'Release undeprecated successfully.';
     } catch (caughtError: unknown) {
@@ -251,9 +264,7 @@
     if (bytes < 1024 * 1024) {
       return `${(bytes / 1024).toFixed(1)} KB`;
     }
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   }
-
   function formatJson(value: unknown): string {
     return JSON.stringify(value ?? null, null, 2);
   }
@@ -323,6 +334,7 @@
   }
 
   $: artifactCount = artifacts.length;
+  $: bundleAnalysis = release?.bundle_analysis ?? null;
   $: releaseMetadata = release?.ecosystem_metadata ?? null;
   $: cargoMetadata =
     releaseMetadata?.kind === 'cargo' ? releaseMetadata.details : null;
@@ -1070,6 +1082,41 @@
             </div>
           </div>
         </div>
+
+        {#if bundleAnalysis}
+          <div class="card">
+            <div class="sidebar-section">
+              <h3>Bundle analysis</h3>
+              <p class="settings-copy" style="margin-bottom:12px;">
+                Bundlephobia-inspired metadata derived from stored artifacts and
+                ecosystem-specific release metadata.
+              </p>
+              {#each buildBundleAnalysisStats(bundleAnalysis) as stat}
+                <div class="sidebar-row">
+                  <span class="sidebar-row__label">{stat.label}</span>
+                  <span class="sidebar-row__value">{stat.value}</span>
+                </div>
+              {/each}
+              {#if buildBundleAnalysisHighlights(bundleAnalysis).length > 0}
+                <div
+                  class="token-row__scopes"
+                  style="margin-top:12px; margin-bottom:12px;"
+                >
+                  {#each buildBundleAnalysisHighlights(bundleAnalysis) as highlight}
+                    <span class="badge badge-ecosystem">{highlight}</span>
+                  {/each}
+                </div>
+              {/if}
+              {#if bundleAnalysisNotes(bundleAnalysis).length > 0}
+                <div class="settings-copy" style="display:grid; gap:6px; margin:0;">
+                  {#each bundleAnalysisNotes(bundleAnalysis) as note}
+                    <span>{note}</span>
+                  {/each}
+                </div>
+              {/if}
+            </div>
+          </div>
+        {/if}
 
         {#if release.can_manage_releases}
           <div class="card">
