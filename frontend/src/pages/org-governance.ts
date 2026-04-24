@@ -347,5 +347,44 @@ function isValidWebsiteUrl(value: string): boolean {
 }
 
 function isValidEmailAddress(value: string): boolean {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+  if (value.length > 254 || /\s/.test(value)) {
+    return false;
+  }
+
+  const parts = value.split('@');
+  if (parts.length !== 2) {
+    return false;
+  }
+
+  const [localPart, domain] = parts;
+  if (
+    !localPart ||
+    !domain ||
+    localPart.length > 64 ||
+    localPart.startsWith('.') ||
+    localPart.endsWith('.') ||
+    localPart.includes('..') ||
+    domain.includes('..')
+  ) {
+    return false;
+  }
+
+  const labels = domain.split('.');
+  if (labels.length < 2) {
+    return false;
+  }
+
+  const topLevelDomain = labels[labels.length - 1];
+  if (!/^[A-Za-z]{2,}$/.test(topLevelDomain)) {
+    return false;
+  }
+
+  return labels.every(
+    (label) =>
+      /^[A-Za-z0-9-]+$/.test(label) &&
+      label.length > 0 &&
+      label.length <= 63 &&
+      !label.startsWith('-') &&
+      !label.endsWith('-')
+  );
 }
