@@ -272,6 +272,7 @@ async fn get_org_workspace_bootstrap(
 
 #[derive(Debug, Deserialize)]
 struct UpdateOrgRequest {
+    name: Option<String>,
     description: Option<Option<String>>,
     website: Option<Option<String>>,
     email: Option<Option<String>>,
@@ -281,6 +282,7 @@ struct UpdateOrgRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ResolvedOrgProfileUpdate {
+    name: String,
     description: Option<String>,
     website: Option<String>,
     email: Option<String>,
@@ -365,13 +367,14 @@ async fn update_org(
         .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
 
     let current_profile = ResolvedOrgProfileUpdate {
+        name: org_name.clone(),
         description: current_description,
         website: current_website,
         email: current_email,
         mfa_required: current_mfa_required,
         member_directory_is_private: current_member_directory_is_private,
     };
-    let updated_profile = resolve_org_profile_update(&current_profile, &body);
+    let updated_profile = resolve_org_profile_update(&current_profile, &body)?;
     let changes = collect_org_profile_changes(&current_profile, &updated_profile);
 
     if changes.is_empty() {
@@ -391,14 +394,16 @@ async fn update_org(
 
     sqlx::query(
         "UPDATE organizations \
-         SET description = $1, \
-              website     = $2, \
-              email       = $3, \
-              mfa_required = $4, \
-                member_directory_is_private = $5, \
-              updated_at   = NOW() \
-            WHERE id = $6",
+         SET name = $1, \
+               description = $2, \
+               website     = $3, \
+               email       = $4, \
+               mfa_required = $5, \
+               member_directory_is_private = $6, \
+               updated_at   = NOW() \
+            WHERE id = $7",
     )
+    .bind(&updated_profile.name)
     .bind(&updated_profile.description)
     .bind(&updated_profile.website)
     .bind(&updated_profile.email)
@@ -449,11 +454,26 @@ fn normalize_optional_org_field(value: Option<String>) -> Option<String> {
     })
 }
 
+fn normalize_required_org_name(value: &str) -> Result<String, ApiError> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(ApiError(Error::Validation(
+            "Organization name is required".into(),
+        )));
+    }
+
+    Ok(trimmed.to_owned())
+}
+
 fn resolve_org_profile_update(
     current: &ResolvedOrgProfileUpdate,
     body: &UpdateOrgRequest,
-) -> ResolvedOrgProfileUpdate {
-    ResolvedOrgProfileUpdate {
+) -> Result<ResolvedOrgProfileUpdate, ApiError> {
+    Ok(ResolvedOrgProfileUpdate {
+        name: match body.name.as_deref() {
+            Some(name) => normalize_required_org_name(name)?,
+            None => current.name.clone(),
+        },
         description: body
             .description
             .clone()
@@ -473,7 +493,7 @@ fn resolve_org_profile_update(
         member_directory_is_private: body
             .member_directory_is_private
             .unwrap_or(current.member_directory_is_private),
-    }
+    })
 }
 
 fn collect_org_profile_changes(
@@ -481,6 +501,16 @@ fn collect_org_profile_changes(
     updated: &ResolvedOrgProfileUpdate,
 ) -> serde_json::Map<String, serde_json::Value> {
     let mut changes = serde_json::Map::new();
+
+    if current.name != updated.name {
+        changes.insert(
+            "name".into(),
+            serde_json::json!({
+                "before": current.name,
+                "after": updated.name,
+            }),
+        );
+    }
 
     if current.description != updated.description {
         changes.insert(
@@ -4075,9 +4105,9 @@ mod tests {
 
     use super::{
         collect_org_profile_changes, normalize_namespace_team_permissions,
-        normalize_optional_org_field, normalize_team_permissions, resolve_org_profile_update,
-        resolve_org_security_filters, validate_ownership_transfer, OrgSecurityFindingsQuery,
-        ResolvedOrgProfileUpdate, UpdateOrgRequest,
+        normalize_optional_org_field, normalize_required_org_name, normalize_team_permissions,
+        resolve_org_profile_update, resolve_org_security_filters, validate_ownership_transfer,
+        OrgSecurityFindingsQuery, ResolvedOrgProfileUpdate, UpdateOrgRequest,
     };
 
     #[test]
@@ -4091,8 +4121,18 @@ mod tests {
     }
 
     #[test]
+    fn normalize_required_org_name_rejects_blank_values() {
+        let error = normalize_required_org_name("   ").expect_err("blank names must fail");
+        assert_eq!(
+            error.0.to_string(),
+            "Validation error: Organization name is required"
+        );
+    }
+
+    #[test]
     fn resolve_org_profile_update_preserves_existing_fields_and_normalizes_mfa_policy() {
         let current = ResolvedOrgProfileUpdate {
+            name: "Source Org".into(),
             description: Some("Current description".into()),
             website: Some("https://packages.example.com".into()),
             email: Some("team@example.com".into()),
@@ -4103,17 +4143,20 @@ mod tests {
         let updated = resolve_org_profile_update(
             &current,
             &UpdateOrgRequest {
+                name: Some("  Source Registry  ".into()),
                 description: Some(Some("  Updated description  ".into())),
                 website: None,
                 email: Some(Some("   ".into())),
                 mfa_required: Some(true),
                 member_directory_is_private: Some(true),
             },
-        );
+        )
+        .expect("profile update should resolve");
 
         assert_eq!(
             updated,
             ResolvedOrgProfileUpdate {
+                name: "Source Registry".into(),
                 description: Some("Updated description".into()),
                 website: Some("https://packages.example.com".into()),
                 email: None,
@@ -4124,8 +4167,39 @@ mod tests {
     }
 
     #[test]
+    fn resolve_org_profile_update_rejects_blank_name_updates() {
+        let current = ResolvedOrgProfileUpdate {
+            name: "Source Org".into(),
+            description: None,
+            website: None,
+            email: None,
+            mfa_required: false,
+            member_directory_is_private: false,
+        };
+
+        let error = resolve_org_profile_update(
+            &current,
+            &UpdateOrgRequest {
+                name: Some("   ".into()),
+                description: None,
+                website: None,
+                email: None,
+                mfa_required: None,
+                member_directory_is_private: None,
+            },
+        )
+        .expect_err("blank names must fail");
+
+        assert_eq!(
+            error.0.to_string(),
+            "Validation error: Organization name is required"
+        );
+    }
+
+    #[test]
     fn collect_org_profile_changes_tracks_mfa_policy_changes() {
         let current = ResolvedOrgProfileUpdate {
+            name: "Source Org".into(),
             description: Some("Current description".into()),
             website: Some("https://packages.example.com".into()),
             email: Some("team@example.com".into()),
@@ -4133,6 +4207,7 @@ mod tests {
             member_directory_is_private: false,
         };
         let updated = ResolvedOrgProfileUpdate {
+            name: "Source Registry".into(),
             description: Some("Current description".into()),
             website: Some("https://packages.example.com".into()),
             email: Some("team@example.com".into()),
@@ -4142,6 +4217,13 @@ mod tests {
 
         let changes = collect_org_profile_changes(&current, &updated);
 
+        assert_eq!(
+            changes.get("name"),
+            Some(&serde_json::json!({
+                "before": "Source Org",
+                "after": "Source Registry",
+            }))
+        );
         assert_eq!(
             changes.get("mfa_required"),
             Some(&serde_json::json!({

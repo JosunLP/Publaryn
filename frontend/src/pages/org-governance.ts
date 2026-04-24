@@ -68,12 +68,34 @@ export function createOrgGovernanceController(options: OrgGovernanceControllerOp
     async submitProfile(event: SubmitEvent): Promise<void> {
       event.preventDefault();
       const formData = new FormData(event.currentTarget as HTMLFormElement);
+      const name = normalizeRequiredFormText(formData.get('name'));
+      const website = normalizeOptionalFormText(formData.get('website'));
+      const email = normalizeOptionalFormText(formData.get('email'));
+
+      if (!name) {
+        options.clearFlash();
+        options.setError('Organization name is required.');
+        return;
+      }
+
+      if (website && !isValidWebsiteUrl(website)) {
+        options.clearFlash();
+        options.setError('Website must be a valid http:// or https:// URL.');
+        return;
+      }
+
+      if (email && !isValidEmailAddress(email)) {
+        options.clearFlash();
+        options.setError('Email must be a valid email address.');
+        return;
+      }
 
       try {
         await mutations.updateOrg(options.getOrgSlug(), {
+          name,
           description: normalizeOptionalFormText(formData.get('description')),
-          website: normalizeOptionalFormText(formData.get('website')),
-          email: normalizeOptionalFormText(formData.get('email')),
+          website,
+          email,
           mfaRequired: formData.has('mfa_required'),
           memberDirectoryIsPrivate: formData.has('member_directory_is_private'),
         } satisfies UpdateOrgInput);
@@ -303,4 +325,66 @@ function normalizeOptionalFormText(
 
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizeRequiredFormText(
+  value: FormDataEntryValue | null | undefined
+): string {
+  if (typeof value !== 'string') {
+    return '';
+  }
+
+  return value.trim();
+}
+
+function isValidWebsiteUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+function isValidEmailAddress(value: string): boolean {
+  if (value.length > 254 || /\s/.test(value)) {
+    return false;
+  }
+
+  const parts = value.split('@');
+  if (parts.length !== 2) {
+    return false;
+  }
+
+  const [localPart, domain] = parts;
+  if (
+    !localPart ||
+    !domain ||
+    localPart.length > 64 ||
+    localPart.startsWith('.') ||
+    localPart.endsWith('.') ||
+    localPart.includes('..') ||
+    domain.includes('..')
+  ) {
+    return false;
+  }
+
+  const labels = domain.split('.');
+  if (labels.length < 2) {
+    return false;
+  }
+
+  const topLevelDomain = labels[labels.length - 1];
+  if (!/^[A-Za-z]{2,}$/.test(topLevelDomain)) {
+    return false;
+  }
+
+  return labels.every(
+    (label) =>
+      /^[A-Za-z0-9-]+$/.test(label) &&
+      label.length > 0 &&
+      label.length <= 63 &&
+      !label.startsWith('-') &&
+      !label.endsWith('-')
+  );
 }

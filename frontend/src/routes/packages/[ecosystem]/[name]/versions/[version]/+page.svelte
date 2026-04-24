@@ -257,14 +257,6 @@
     }
   }
 
-  function formatFileSize(bytes: number): string {
-    if (bytes < 1024) {
-      return `${bytes} B`;
-    }
-    if (bytes < 1024 * 1024) {
-      return `${(bytes / 1024).toFixed(1)} KB`;
-    }
-  }
   function formatJson(value: unknown): string {
     return JSON.stringify(value ?? null, null, 2);
   }

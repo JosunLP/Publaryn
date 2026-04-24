@@ -1,7 +1,9 @@
 <script lang="ts">
   import { page } from '$app/stores';
 
-  import { ApiError } from '../../../api/client';
+  import { ApiError, getAuthToken } from '../../../api/client';
+  import type { OrganizationMembership } from '../../../api/orgs';
+  import { listMyOrganizations } from '../../../api/orgs';
   import { createPackage } from '../../../api/packages';
   import type {
     RepositoryDetail,
@@ -10,6 +12,7 @@
   import {
     getRepository,
     listRepositoryPackages,
+    transferRepositoryOwnership,
     updateRepository,
   } from '../../../api/repositories';
   import {
@@ -28,11 +31,18 @@
     formatRepositoryPackageCoverageLabel,
     formatRepositoryVisibilityLabel,
     resolveRepositoryOwnerSummary,
+    selectRepositoryTransferTargets,
   } from '../../../utils/repositories';
   import { deriveRepositoryDetailCapabilities } from '../../../utils/repository-detail';
 
   const MAX_VISIBLE_PACKAGES = 100;
   const DEFAULT_PACKAGE_ECOSYSTEM = 'npm';
+
+  interface TransferState {
+    showTransfer: boolean;
+    organizations: OrganizationMembership[];
+    loadError: string | null;
+  }
 
   let lastSlug = '';
   let loading = true;
@@ -47,6 +57,14 @@
   let updatingRepository = false;
   let repositoryDescription = '';
   let repositoryVisibility = 'public';
+  let transferState: TransferState = {
+    showTransfer: false,
+    organizations: [],
+    loadError: null,
+  };
+  let targetOrgSlug = '';
+  let transferConfirmed = false;
+  let transferringRepository = false;
 
   let creatingPackage = false;
   let newPackageEcosystem = DEFAULT_PACKAGE_ECOSYSTEM;
@@ -89,6 +107,14 @@
     packages = [];
     packageError = null;
     notFound = false;
+    transferState = {
+      showTransfer: false,
+      organizations: [],
+      loadError: null,
+    };
+    targetOrgSlug = '';
+    transferConfirmed = false;
+    transferringRepository = false;
 
     try {
       repository = await getRepository(slug);
@@ -105,6 +131,8 @@
       return;
     }
 
+    transferState = await loadTransferState(repository);
+
     try {
       const packageData = await listRepositoryPackages(slug, {
         perPage: MAX_VISIBLE_PACKAGES,
@@ -118,6 +146,43 @@
       );
     } finally {
       loading = false;
+    }
+  }
+
+  async function loadTransferState(
+    currentRepository: RepositoryDetail | null
+  ): Promise<TransferState> {
+    if (
+      !currentRepository ||
+      !getAuthToken() ||
+      currentRepository.can_transfer !== true
+    ) {
+      return {
+        showTransfer: false,
+        organizations: [],
+        loadError: null,
+      };
+    }
+
+    try {
+      const response = await listMyOrganizations();
+      return {
+        showTransfer: true,
+        organizations: selectRepositoryTransferTargets(
+          response.organizations || [],
+          currentRepository.owner_org_slug
+        ),
+        loadError: null,
+      };
+    } catch (caughtError: unknown) {
+      return {
+        showTransfer: true,
+        organizations: [],
+        loadError:
+          caughtError instanceof Error && caughtError.message
+            ? caughtError.message
+            : 'Failed to load your organizations for repository transfer.',
+      };
     }
   }
 
@@ -219,6 +284,52 @@
       });
     } finally {
       creatingPackage = false;
+    }
+  }
+
+  async function handleTransferRepository(event: SubmitEvent): Promise<void> {
+    event.preventDefault();
+
+    if (!repository || repository.can_transfer !== true) {
+      return;
+    }
+
+    const formData = new FormData(event.currentTarget as HTMLFormElement);
+    const repositorySlug = repository.slug?.trim() || slug;
+    const nextTargetOrgSlug =
+      formData.get('target_org_slug')?.toString().trim() || targetOrgSlug.trim();
+    const confirmed = formData.get('confirm') !== null || transferConfirmed;
+
+    if (!nextTargetOrgSlug) {
+      notice = null;
+      error = 'Select a target organization.';
+      return;
+    }
+
+    if (!confirmed) {
+      notice = null;
+      error = 'Please confirm the repository transfer.';
+      return;
+    }
+
+    transferringRepository = true;
+    notice = null;
+    error = null;
+
+    try {
+      const result = await transferRepositoryOwnership(repositorySlug, {
+        targetOrgSlug: nextTargetOrgSlug,
+      });
+
+      await loadRepositoryPage({
+        notice: `Repository ownership transferred to ${result.owner?.name || result.owner?.slug || nextTargetOrgSlug}.`,
+      });
+    } catch (caughtError: unknown) {
+      error = toErrorMessage(
+        caughtError,
+        'Failed to transfer repository ownership.'
+      );
+      transferringRepository = false;
     }
   }
 
@@ -659,6 +770,83 @@
             {/if}
           </div>
         </div>
+
+        {#if transferState.showTransfer}
+          <div class="card">
+            <div class="sidebar-section">
+              <h3>Transfer ownership</h3>
+              <div class="alert alert-warning" style="margin-bottom:12px;">
+                This transfer is immediate.
+              </div>
+              <p class="settings-copy" style="margin-bottom:12px;">
+                Move this repository away from {repository.owner_org_slug ||
+                  repository.owner_username ||
+                  'the current owner'} into an organization you already
+                administer.
+              </p>
+              {#if transferState.loadError}
+                <div class="alert alert-error" style="margin-bottom:12px;">
+                  {transferState.loadError}
+                </div>
+              {/if}
+              {#if transferState.organizations.length === 0}
+                <p class="settings-copy" style="margin-bottom:0;">
+                  You can transfer this repository, but you do not currently
+                  administer another organization that can receive it.
+                </p>
+              {:else}
+                <form
+                  id="repository-transfer-form"
+                  on:submit={handleTransferRepository}
+                >
+                  <div class="form-group" style="margin-bottom:12px;">
+                    <label for="repository-transfer-target"
+                      >Target organization</label
+                    >
+                    <select
+                      bind:value={targetOrgSlug}
+                      id="repository-transfer-target"
+                      name="target_org_slug"
+                      class="form-input"
+                      required
+                    >
+                      <option value="">Select an organization</option>
+                      {#each transferState.organizations as organization}
+                        <option value={organization.slug || ''}
+                          >{organization.name ||
+                            organization.slug ||
+                            'Unnamed organization'}</option
+                        >
+                      {/each}
+                    </select>
+                  </div>
+                  <div class="form-group" style="margin-bottom:12px;">
+                    <label class="flex items-start gap-2">
+                      <input
+                        bind:checked={transferConfirmed}
+                        type="checkbox"
+                        id="repository-transfer-confirm"
+                        name="confirm"
+                        required
+                      />
+                      <span>I understand this repository transfer is immediate.</span>
+                    </label>
+                  </div>
+                  <button
+                    type="submit"
+                    class="btn btn-danger"
+                    style="width:100%; justify-content:center;"
+                    disabled={transferringRepository}
+                  >
+                    {transferringRepository
+                      ? 'Transferring…'
+                      : 'Transfer repository'}
+                  </button>
+                </form>
+              {/if}
+            </div>
+          </div>
+        {/if}
 
         {#if repository.upstream_url}
           <div class="card">

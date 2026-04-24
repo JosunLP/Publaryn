@@ -31,6 +31,7 @@ describe('org governance controller harness', () => {
         async updateOrg(_slug, updates) {
           scenario.org = {
             ...scenario.org,
+            name: updates.name || scenario.org.name,
             description: updates.description ?? null,
             website: updates.website ?? null,
             email: updates.email ?? null,
@@ -48,11 +49,13 @@ describe('org governance controller harness', () => {
     try {
       await waitFor(() => {
         flush();
+        expect(queryRequiredInput(target, '#org-profile-name').value).toBe('Source Org');
         expect(queryRequiredTextArea(target, '#org-profile-description').value).toBe(
           'Initial description'
         );
       });
 
+      changeValue(queryRequiredInput(target, '#org-profile-name'), 'Source Registry');
       changeValue(
         queryRequiredTextArea(target, '#org-profile-description'),
         'Updated org profile copy'
@@ -75,6 +78,9 @@ describe('org governance controller harness', () => {
       await waitFor(() => {
         flush();
         expect(target.textContent).toContain('Organization profile updated.');
+        expect(queryRequiredInput(target, '#org-profile-name').value).toBe(
+          'Source Registry'
+        );
         expect(queryRequiredTextArea(target, '#org-profile-description').value).toBe(
           'Updated org profile copy'
         );
@@ -85,6 +91,7 @@ describe('org governance controller harness', () => {
 
       expect(scenario.updateOrgCalls).toEqual([
         {
+          name: 'Source Registry',
           description: 'Updated org profile copy',
           website: 'https://source.example.test',
           email: 'ops@example.test',
@@ -92,6 +99,140 @@ describe('org governance controller harness', () => {
           memberDirectoryIsPrivate: true,
         },
       ]);
+    } finally {
+      unmount();
+    }
+  });
+
+  test('blocks blank organization names before submitting the profile mutation', async () => {
+    const scenario = createScenario();
+    const { target, unmount, flush } = await renderSvelte(HarnessPath, {
+      loadState: createLoadState(scenario),
+      mutations: createMutations({
+        async updateOrg(_slug, updates) {
+          scenario.updateOrgCalls.push(updates);
+          return scenario.org;
+        },
+      }),
+    });
+
+    try {
+      await waitFor(() => {
+        flush();
+        expect(queryRequiredInput(target, '#org-profile-name').value).toBe('Source Org');
+      });
+
+      changeValue(queryRequiredInput(target, '#org-profile-name'), '   ');
+      submitForm(queryRequiredForm(target, '#org-profile-form'));
+
+      await waitFor(() => {
+        flush();
+        expect(target.textContent).toContain('Organization name is required.');
+      });
+
+      expect(scenario.updateOrgCalls).toEqual([]);
+    } finally {
+      unmount();
+    }
+  });
+
+  test('blocks invalid organization website URLs before submitting the profile mutation', async () => {
+    const scenario = createScenario();
+    const { target, unmount, flush } = await renderSvelte(HarnessPath, {
+      loadState: createLoadState(scenario),
+      mutations: createMutations({
+        async updateOrg(_slug, updates) {
+          scenario.updateOrgCalls.push(updates);
+          return scenario.org;
+        },
+      }),
+    });
+
+    try {
+      await waitFor(() => {
+        flush();
+        expect(queryRequiredInput(target, '#org-profile-name').value).toBe('Source Org');
+      });
+
+      changeValue(queryRequiredInput(target, '#org-profile-website'), 'example.test');
+      submitForm(queryRequiredForm(target, '#org-profile-form'));
+
+      await waitFor(() => {
+        flush();
+        expect(target.textContent).toContain(
+          'Website must be a valid http:// or https:// URL.'
+        );
+      });
+
+      expect(scenario.updateOrgCalls).toEqual([]);
+    } finally {
+      unmount();
+    }
+  });
+
+  test('blocks invalid organization contact emails before submitting the profile mutation', async () => {
+    const scenario = createScenario();
+    const { target, unmount, flush } = await renderSvelte(HarnessPath, {
+      loadState: createLoadState(scenario),
+      mutations: createMutations({
+        async updateOrg(_slug, updates) {
+          scenario.updateOrgCalls.push(updates);
+          return scenario.org;
+        },
+      }),
+    });
+
+    try {
+      await waitFor(() => {
+        flush();
+        expect(queryRequiredInput(target, '#org-profile-name').value).toBe('Source Org');
+      });
+
+      changeValue(queryRequiredInput(target, '#org-profile-email'), 'not-an-email');
+      submitForm(queryRequiredForm(target, '#org-profile-form'));
+
+      await waitFor(() => {
+        flush();
+        expect(target.textContent).toContain(
+          'Email must be a valid email address.'
+        );
+      });
+
+      expect(scenario.updateOrgCalls).toEqual([]);
+    } finally {
+      unmount();
+    }
+  });
+
+  test('blocks malformed organization contact email domains before submitting the profile mutation', async () => {
+    const scenario = createScenario();
+    const { target, unmount, flush } = await renderSvelte(HarnessPath, {
+      loadState: createLoadState(scenario),
+      mutations: createMutations({
+        async updateOrg(_slug, updates) {
+          scenario.updateOrgCalls.push(updates);
+          return scenario.org;
+        },
+      }),
+    });
+
+    try {
+      await waitFor(() => {
+        flush();
+        expect(queryRequiredInput(target, '#org-profile-name').value).toBe('Source Org');
+      });
+
+      changeValue(queryRequiredInput(target, '#org-profile-email'), 'user@domain..com');
+      submitForm(queryRequiredForm(target, '#org-profile-form'));
+
+      await waitFor(() => {
+        flush();
+        expect(target.textContent).toContain(
+          'Email must be a valid email address.'
+        );
+      });
+
+      expect(scenario.updateOrgCalls).toEqual([]);
     } finally {
       unmount();
     }
@@ -397,7 +538,7 @@ function createMutations(
       return {
         id: 'org-1',
         slug: 'source-org',
-        name: 'Source Org',
+        name: updates.name || 'Source Org',
         description: updates.description ?? null,
         website: updates.website ?? null,
         email: updates.email ?? null,
