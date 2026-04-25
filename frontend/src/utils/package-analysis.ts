@@ -1,17 +1,10 @@
 import type { BundleAnalysisSummary, BundleRiskSummary } from '../api/packages';
 import { formatFileSize, formatNumber } from './format';
+import { titleCase } from './strings';
 
 export interface BundleAnalysisStat {
   label: string;
   value: string;
-}
-
-function titleCase(value: string): string {
-  return value
-    .split(/[_\s-]+/)
-    .filter(Boolean)
-    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
-    .join(' ');
 }
 
 function metricValue(
@@ -34,7 +27,7 @@ export function buildBundleAnalysisStats(
   > = [
     ['Compressed size', summary.compressed_size_bytes, formatFileSize],
     ['Install size', summary.install_size_bytes, formatFileSize],
-    ['Total artifacts', summary.total_artifact_size_bytes, formatFileSize],
+    ['Total artifact size', summary.total_artifact_size_bytes, formatFileSize],
     ['Files', summary.file_count, formatNumber],
     ['Direct deps', summary.direct_dependency_count, formatNumber],
     ['Runtime deps', summary.runtime_dependency_count, formatNumber],

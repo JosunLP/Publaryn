@@ -1,4 +1,5 @@
 import type { SearchPackage } from '../api/packages';
+import { titleCase } from '../utils/strings';
 
 function normalizeSearchResultValue(value: string | null | undefined): string {
   return typeof value === 'string' ? value.trim() : '';
@@ -15,14 +16,6 @@ export function formatSearchResultRepository(
   }
 
   return repositoryName || repositorySlug;
-}
-
-function titleCase(value: string): string {
-  return value
-    .split(/[_\s-]+/)
-    .filter(Boolean)
-    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
-    .join(' ');
 }
 
 export function searchResultRiskBadgeSeverity(

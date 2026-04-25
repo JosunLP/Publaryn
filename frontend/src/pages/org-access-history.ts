@@ -119,7 +119,19 @@ export function buildOrgAccessHistoryExportFilename(
   exportedAt: Date
 ): string {
   const datePart = exportedAt.toISOString().slice(0, 10);
-  return `org-access-history-${slug || 'organization'}-${datePart}.csv`;
+  const safeSlug = sanitizeExportFilenameSlug(slug);
+  return `org-access-history-${safeSlug}-${datePart}.csv`;
+}
+
+function sanitizeExportFilenameSlug(slug?: string | null): string {
+  const normalized = (slug || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^[-_]+|[-_]+$/g, '');
+
+  return normalized || 'organization';
 }
 
 function normalizePermissionList(permissions?: string[] | null): string[] {

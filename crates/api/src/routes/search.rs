@@ -94,7 +94,7 @@ pub(crate) struct VisibleSearchPage {
 
 #[derive(Debug, Clone, serde::Serialize, Default, PartialEq, Eq)]
 struct SearchPackageDiscoverySummary {
-    risk_level: String,
+    risk_level: Option<String>,
     unresolved_security_finding_count: i64,
     worst_unresolved_security_severity: Option<String>,
     has_trusted_publisher: bool,
@@ -360,8 +360,9 @@ fn build_search_discovery_summary(
     let risk_level = search_discovery_risk_level(
         unresolved_security_finding_count,
         worst_unresolved_security_severity.as_deref(),
+        latest_release_status.is_some(),
     )
-    .to_owned();
+    .map(str::to_owned);
     let has_trusted_publisher = trusted_publisher_count > 0;
     let mut signals = Vec::new();
 
@@ -407,16 +408,19 @@ fn build_search_discovery_summary(
 fn search_discovery_risk_level(
     unresolved_security_finding_count: i64,
     worst_unresolved_security_severity: Option<&str>,
-) -> &'static str {
+    latest_release_visible: bool,
+) -> Option<&'static str> {
     match worst_unresolved_security_severity
         .map(str::to_ascii_lowercase)
         .as_deref()
     {
-        Some("critical") => "critical",
-        Some("high") => "high",
-        Some("medium") => "moderate",
-        Some("low" | "info") if unresolved_security_finding_count > 0 => "low",
-        _ => "low",
+        Some("critical") => Some("critical"),
+        Some("high") => Some("high"),
+        Some("medium") => Some("moderate"),
+        Some("low" | "info") if unresolved_security_finding_count > 0 => Some("low"),
+        _ if unresolved_security_finding_count > 0 => Some("low"),
+        _ if latest_release_visible => Some("low"),
+        _ => None,
     }
 }
 
@@ -1370,7 +1374,7 @@ mod tests {
             1,
         );
 
-        assert_eq!(summary.risk_level, "high");
+        assert_eq!(summary.risk_level.as_deref(), Some("high"));
         assert_eq!(summary.unresolved_security_finding_count, 2);
         assert_eq!(
             summary.worst_unresolved_security_severity.as_deref(),
@@ -1385,6 +1389,19 @@ mod tests {
                 "Latest visible release is deprecated".to_owned(),
                 "1 trusted publisher configured".to_owned(),
             ]
+        );
+    }
+
+    #[test]
+    fn search_discovery_summary_leaves_risk_pending_without_release_or_findings() {
+        let summary = build_search_discovery_summary(None, None, 0, None, 0);
+
+        assert_eq!(summary.risk_level, None);
+        assert_eq!(summary.unresolved_security_finding_count, 0);
+        assert_eq!(summary.latest_release_status, None);
+        assert_eq!(
+            summary.signals,
+            vec!["No published release is currently visible".to_owned()]
         );
     }
 }

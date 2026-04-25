@@ -1150,11 +1150,19 @@ async fn get_versions<S: NuGetAppState>(
         Ok(None) => return (StatusCode::NOT_FOUND, "").into_response(),
         Err(_) => return nuget_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error"),
     };
+    let package_id: Uuid = match pkg_row.try_get("id") {
+        Ok(id) => id,
+        Err(_) => return nuget_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error"),
+    };
+    let repository_id: Uuid = match pkg_row.try_get("repository_id") {
+        Ok(id) => id,
+        Err(_) => return nuget_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error"),
+    };
 
     if !can_read_package(
         state.db(),
-        pkg_row.try_get("id").unwrap_or_default(),
-        pkg_row.try_get("repository_id").unwrap_or_default(),
+        package_id,
+        repository_id,
         &pkg_row
             .try_get::<String, _>("visibility")
             .unwrap_or_default(),
@@ -1171,8 +1179,6 @@ async fn get_versions<S: NuGetAppState>(
     {
         return (StatusCode::NOT_FOUND, "").into_response();
     }
-
-    let package_id: Uuid = pkg_row.try_get("id").unwrap();
 
     // NuGet flat container includes both listed and unlisted versions
     let rows = sqlx::query(
@@ -1229,11 +1235,19 @@ async fn download_content<S: NuGetAppState>(
         Ok(None) => return (StatusCode::NOT_FOUND, "").into_response(),
         Err(_) => return nuget_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error"),
     };
+    let package_id: Uuid = match pkg_row.try_get("id") {
+        Ok(id) => id,
+        Err(_) => return nuget_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error"),
+    };
+    let repository_id: Uuid = match pkg_row.try_get("repository_id") {
+        Ok(id) => id,
+        Err(_) => return nuget_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error"),
+    };
 
     if !can_read_package(
         state.db(),
-        pkg_row.try_get("id").unwrap_or_default(),
-        pkg_row.try_get("repository_id").unwrap_or_default(),
+        package_id,
+        repository_id,
         &pkg_row
             .try_get::<String, _>("visibility")
             .unwrap_or_default(),
@@ -1250,8 +1264,6 @@ async fn download_content<S: NuGetAppState>(
     {
         return (StatusCode::NOT_FOUND, "").into_response();
     }
-
-    let package_id: Uuid = pkg_row.try_get("id").unwrap();
 
     // Determine if this is a .nupkg or .nuspec request
     let is_nuspec = filename.ends_with(".nuspec");
@@ -1402,11 +1414,19 @@ async fn get_registration_index<S: NuGetAppState>(
         Ok(None) => return (StatusCode::NOT_FOUND, "").into_response(),
         Err(_) => return nuget_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error"),
     };
+    let package_id: Uuid = match pkg_row.try_get("id") {
+        Ok(id) => id,
+        Err(_) => return nuget_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error"),
+    };
+    let repository_id: Uuid = match pkg_row.try_get("repository_id") {
+        Ok(id) => id,
+        Err(_) => return nuget_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error"),
+    };
 
     if !can_read_package(
         state.db(),
-        pkg_row.try_get("id").unwrap_or_default(),
-        pkg_row.try_get("repository_id").unwrap_or_default(),
+        package_id,
+        repository_id,
         &pkg_row
             .try_get::<String, _>("visibility")
             .unwrap_or_default(),
@@ -1424,7 +1444,6 @@ async fn get_registration_index<S: NuGetAppState>(
         return (StatusCode::NOT_FOUND, "").into_response();
     }
 
-    let package_id: Uuid = pkg_row.try_get("id").unwrap();
     let package_name: String = pkg_row.try_get("name").unwrap_or_default();
 
     // Load releases + NuGet metadata

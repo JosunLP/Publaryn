@@ -3,6 +3,42 @@ import { describe, expect, test } from 'bun:test';
 import { buildReleaseDependencyOverview } from '../src/utils/release-metadata';
 
 describe('release dependency overview helpers', () => {
+  test('summarizes Cargo dependency kinds', () => {
+    expect(
+      buildReleaseDependencyOverview({
+        kind: 'cargo',
+        details: {
+          dependencies: [
+            { name: 'serde' },
+            { name: 'cc', kind: 'build' },
+            { name: 'insta', kind: 'dev' },
+          ],
+          features: {},
+        },
+      })
+    ).toEqual({
+      ecosystem: 'cargo',
+      total: 3,
+      groups: [
+        {
+          label: 'Runtime dependencies',
+          count: 1,
+          names: ['serde'],
+        },
+        {
+          label: 'Build dependencies',
+          count: 1,
+          names: ['cc'],
+        },
+        {
+          label: 'Development dependencies',
+          count: 1,
+          names: ['insta'],
+        },
+      ],
+    });
+  });
+
   test('summarizes Composer runtime and development requirements', () => {
     expect(
       buildReleaseDependencyOverview({
@@ -66,5 +102,110 @@ describe('release dependency overview helpers', () => {
         },
       ],
     });
+  });
+
+  test('summarizes RubyGems runtime and development dependencies', () => {
+    expect(
+      buildReleaseDependencyOverview({
+        kind: 'rubygems',
+        details: {
+          platform: 'ruby',
+          authors: ['Alice'],
+          licenses: ['MIT'],
+          runtime_dependencies: [{ name: 'rack' }],
+          development_dependencies: [{ name: 'rspec' }],
+        },
+      })
+    ).toEqual({
+      ecosystem: 'rubygems',
+      total: 2,
+      groups: [
+        {
+          label: 'Runtime dependencies',
+          count: 1,
+          names: ['rack'],
+        },
+        {
+          label: 'Development dependencies',
+          count: 1,
+          names: ['rspec'],
+        },
+      ],
+    });
+  });
+
+  test('summarizes Maven dependency scopes and limits unique names', () => {
+    expect(
+      buildReleaseDependencyOverview({
+        kind: 'maven',
+        details: {
+          dependencies: [
+            { group_id: 'org.example', artifact_id: 'alpha', scope: 'runtime' },
+            { group_id: 'org.example', artifact_id: 'beta', scope: 'runtime' },
+            { group_id: 'org.example', artifact_id: 'gamma', scope: 'runtime' },
+            { group_id: 'org.example', artifact_id: 'delta', scope: 'runtime' },
+            { group_id: 'org.example', artifact_id: 'epsilon', scope: 'runtime' },
+            { group_id: 'org.example', artifact_id: 'zeta', scope: 'runtime' },
+            { group_id: 'org.example', artifact_id: 'eta', scope: 'runtime' },
+            { group_id: 'org.example', artifact_id: 'alpha', scope: 'runtime' },
+            { artifact_id: 'junit', scope: 'test' },
+          ],
+        },
+      })
+    ).toEqual({
+      ecosystem: 'maven',
+      total: 9,
+      groups: [
+        {
+          label: 'Runtime dependencies',
+          count: 8,
+          names: [
+            'org.example:alpha',
+            'org.example:beta',
+            'org.example:gamma',
+            'org.example:delta',
+            'org.example:epsilon',
+            'org.example:zeta',
+          ],
+        },
+        {
+          label: 'Test dependencies',
+          count: 1,
+          names: ['junit'],
+        },
+      ],
+    });
+  });
+
+  test('returns no overview for empty, malformed, or unsupported metadata', () => {
+    expect(
+      buildReleaseDependencyOverview({
+        kind: 'cargo',
+        details: {
+          dependencies: 'not-an-array',
+          features: {},
+        },
+      })
+    ).toBeNull();
+    expect(
+      buildReleaseDependencyOverview({
+        kind: 'nuget',
+        details: {
+          dependency_groups: [{ dependencies: 'not-an-array' }],
+          tags: [],
+          package_types: [],
+          is_listed: true,
+        },
+      })
+    ).toBeNull();
+    expect(
+      buildReleaseDependencyOverview({
+        kind: 'oci',
+        details: {
+          references: [],
+        },
+      })
+    ).toBeNull();
+    expect(buildReleaseDependencyOverview(null)).toBeNull();
   });
 });

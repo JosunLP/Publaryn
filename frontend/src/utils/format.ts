@@ -30,13 +30,13 @@ export function formatFileSize(
     return `${bytes.toFixed(0)} B`;
   }
   if (bytes < MB) {
-    return `${(bytes / KB).toFixed(1)} KB`;
+    return `${(bytes / KB).toFixed(1)} KiB`;
   }
   if (bytes < GB) {
-    return `${(bytes / MB).toFixed(1)} MB`;
+    return `${(bytes / MB).toFixed(1)} MiB`;
   }
 
-  return `${(bytes / GB).toFixed(1)} GB`;
+  return `${(bytes / GB).toFixed(1)} GiB`;
 }
 
 /**

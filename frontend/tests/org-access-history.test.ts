@@ -67,5 +67,17 @@ describe('org access history helpers', () => {
         new Date('2026-04-25T12:00:00Z')
       )
     ).toBe('org-access-history-source-org-2026-04-25.csv');
+    expect(
+      buildOrgAccessHistoryExportFilename(
+        ' Source Org: Team/One ',
+        new Date('2026-04-25T12:00:00Z')
+      )
+    ).toBe('org-access-history-source-org-team-one-2026-04-25.csv');
+    expect(
+      buildOrgAccessHistoryExportFilename(
+        ' / ',
+        new Date('2026-04-25T12:00:00Z')
+      )
+    ).toBe('org-access-history-organization-2026-04-25.csv');
   });
 });
