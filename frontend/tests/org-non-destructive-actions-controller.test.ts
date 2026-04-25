@@ -300,7 +300,11 @@ describe('org non-destructive actions controller harness', () => {
             name: input.name,
             repositorySlug: input.repositorySlug,
             visibility:
-              typeof input.visibility === 'string' ? input.visibility : undefined,
+              input.visibility === null
+                ? null
+                : typeof input.visibility === 'string'
+                  ? input.visibility
+                  : undefined,
             displayName:
               typeof input.displayName === 'string' ? input.displayName : null,
             description:
@@ -443,6 +447,69 @@ describe('org non-destructive actions controller harness', () => {
       unmount();
     }
   });
+
+  test('normalizes blank package visibility to null before create requests', async () => {
+    const scenario = createScenario();
+    const { target, unmount, flush } = await renderSvelte(HarnessPath, {
+      loadState: createLoadState(scenario),
+      mutations: createMutations({
+        async createPackage(input) {
+          scenario.createPackageCalls.push({
+            ecosystem: input.ecosystem,
+            name: input.name,
+            repositorySlug: input.repositorySlug,
+            visibility:
+              input.visibility === null
+                ? null
+                : typeof input.visibility === 'string'
+                  ? input.visibility
+                  : undefined,
+            displayName:
+              typeof input.displayName === 'string' ? input.displayName : null,
+            description:
+              typeof input.description === 'string' ? input.description : null,
+          });
+          return {
+            ecosystem: input.ecosystem,
+            name: input.name,
+          };
+        },
+      }),
+    });
+
+    try {
+      await waitFor(() => {
+        flush();
+        expect(queryRequiredSelect(target, '#package-create-repository').value).toBe(
+          'repo-alpha'
+        );
+      });
+
+      changeValue(queryRequiredSelect(target, '#package-create-ecosystem'), 'cargo');
+      changeValue(queryRequiredInput(target, '#package-create-name'), 'defaulted_pkg');
+      submitForm(queryRequiredForm(target, '#package-create-form'));
+
+      await waitFor(() => {
+        flush();
+        expect(target.textContent).toContain(
+          'Created Cargo package defaulted_pkg in Repository Alpha.'
+        );
+      });
+
+      expect(scenario.createPackageCalls).toEqual([
+        {
+          ecosystem: 'cargo',
+          name: 'defaulted_pkg',
+          repositorySlug: 'repo-alpha',
+          visibility: null,
+          displayName: '',
+          description: '',
+        },
+      ]);
+    } finally {
+      unmount();
+    }
+  });
 });
 
 function createLoadState(scenario: Scenario) {
@@ -524,7 +591,7 @@ interface Scenario {
     ecosystem: string;
     name: string;
     repositorySlug: string;
-    visibility?: string;
+    visibility?: string | null;
     displayName?: string | null;
     description?: string | null;
   }>;
