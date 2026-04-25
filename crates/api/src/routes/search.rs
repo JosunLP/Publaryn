@@ -1404,4 +1404,15 @@ mod tests {
             vec!["No published release is currently visible".to_owned()]
         );
     }
+
+    #[test]
+    fn search_discovery_summary_marks_visible_release_without_findings_low_risk() {
+        let summary =
+            build_search_discovery_summary(Some("published".to_owned()), None, 0, None, 0);
+
+        assert_eq!(summary.risk_level.as_deref(), Some("low"));
+        assert_eq!(summary.unresolved_security_finding_count, 0);
+        assert_eq!(summary.latest_release_status.as_deref(), Some("published"));
+        assert!(summary.signals.is_empty());
+    }
 }
