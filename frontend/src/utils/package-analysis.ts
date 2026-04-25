@@ -49,10 +49,12 @@ export function buildBundleAnalysisStats(
     }
   }
 
-  stats.unshift({
-    label: 'Artifacts',
-    value: formatNumber(summary.artifact_count ?? 0),
-  });
+  if (summary.artifact_count != null) {
+    stats.unshift({
+      label: 'Artifacts',
+      value: formatNumber(summary.artifact_count),
+    });
+  }
 
   return stats;
 }

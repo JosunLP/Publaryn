@@ -14,4 +14,12 @@ describe('package analysis helpers', () => {
       { label: 'Total artifact size', value: '2.0 KiB' },
     ]);
   });
+
+  test('omits artifact count when the backend does not provide it', () => {
+    expect(
+      buildBundleAnalysisStats({
+        total_artifact_size_bytes: 2048,
+      })
+    ).toEqual([{ label: 'Total artifact size', value: '2.0 KiB' }]);
+  });
 });

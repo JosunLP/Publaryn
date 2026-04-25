@@ -344,7 +344,7 @@ async fn actor_has_any_team_package_access(
     db: &PgPool,
     package_id: Uuid,
     actor_user_id: Uuid,
-) -> bool {
+) -> Result<bool, Response> {
     sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS (\
              SELECT 1 \
@@ -361,14 +361,14 @@ async fn actor_has_any_team_package_access(
     .bind(actor_user_id)
     .fetch_one(db)
     .await
-    .unwrap_or(false)
+    .map_err(|_| nuget_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error"))
 }
 
 async fn actor_has_any_team_repository_access(
     db: &PgPool,
     repository_id: Uuid,
     actor_user_id: Uuid,
-) -> bool {
+) -> Result<bool, Response> {
     sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS (\
              SELECT 1 \
@@ -385,7 +385,7 @@ async fn actor_has_any_team_repository_access(
     .bind(actor_user_id)
     .fetch_one(db)
     .await
-    .unwrap_or(false)
+    .map_err(|_| nuget_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error"))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -400,32 +400,32 @@ async fn can_read_package(
     repo_owner_user_id: Option<Uuid>,
     repo_owner_org_id: Option<Uuid>,
     actor_user_id: Option<Uuid>,
-) -> bool {
+) -> Result<bool, Response> {
     let pkg_anonymous = matches!(pkg_visibility, "public" | "unlisted");
     let repo_anonymous = matches!(repo_visibility, "public" | "unlisted");
 
     if pkg_anonymous && repo_anonymous {
-        return true;
+        return Ok(true);
     }
 
     let Some(actor) = actor_user_id else {
-        return false;
+        return Ok(false);
     };
 
-    let pkg_access = is_owner_or_member(db, pkg_owner_user_id, pkg_owner_org_id, actor).await;
-    let repo_access = is_owner_or_member(db, repo_owner_user_id, repo_owner_org_id, actor).await;
+    let pkg_access = is_owner_or_member(db, pkg_owner_user_id, pkg_owner_org_id, actor).await?;
+    let repo_access = is_owner_or_member(db, repo_owner_user_id, repo_owner_org_id, actor).await?;
     let (team_package_access, team_repository_access) = if pkg_access && repo_access {
         (false, false)
     } else {
-        let team_package_access = actor_has_any_team_package_access(db, package_id, actor).await;
+        let team_package_access = actor_has_any_team_package_access(db, package_id, actor).await?;
         let team_repository_access =
-            actor_has_any_team_repository_access(db, repository_id, actor).await;
+            actor_has_any_team_repository_access(db, repository_id, actor).await?;
         (team_package_access, team_repository_access)
     };
     let delegated_read_access = team_package_access || team_repository_access;
 
-    (pkg_anonymous || pkg_access || delegated_read_access)
-        && (repo_anonymous || repo_access || delegated_read_access)
+    Ok((pkg_anonymous || pkg_access || delegated_read_access)
+        && (repo_anonymous || repo_access || delegated_read_access))
 }
 
 async fn is_owner_or_member(
@@ -433,23 +433,23 @@ async fn is_owner_or_member(
     owner_user_id: Option<Uuid>,
     owner_org_id: Option<Uuid>,
     actor_user_id: Uuid,
-) -> bool {
+) -> Result<bool, Response> {
     if owner_user_id == Some(actor_user_id) {
-        return true;
+        return Ok(true);
     }
 
     if let Some(org_id) = owner_org_id {
-        let result = sqlx::query_scalar::<_, bool>(
+        return sqlx::query_scalar::<_, bool>(
             "SELECT EXISTS (SELECT 1 FROM org_memberships WHERE org_id = $1 AND user_id = $2)",
         )
         .bind(org_id)
         .bind(actor_user_id)
         .fetch_one(db)
-        .await;
-        return result.unwrap_or(false);
+        .await
+        .map_err(|_| nuget_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error"));
     }
 
-    false
+    Ok(false)
 }
 
 // ─── GET /v3/index.json — Service index ──────────────────────────────────────
@@ -1159,7 +1159,7 @@ async fn get_versions<S: NuGetAppState>(
         Err(_) => return nuget_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error"),
     };
 
-    if !can_read_package(
+    if !match can_read_package(
         state.db(),
         package_id,
         repository_id,
@@ -1177,6 +1177,9 @@ async fn get_versions<S: NuGetAppState>(
     )
     .await
     {
+        Ok(can_read) => can_read,
+        Err(response) => return response,
+    } {
         return (StatusCode::NOT_FOUND, "").into_response();
     }
 
@@ -1244,7 +1247,7 @@ async fn download_content<S: NuGetAppState>(
         Err(_) => return nuget_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error"),
     };
 
-    if !can_read_package(
+    if !match can_read_package(
         state.db(),
         package_id,
         repository_id,
@@ -1262,6 +1265,9 @@ async fn download_content<S: NuGetAppState>(
     )
     .await
     {
+        Ok(can_read) => can_read,
+        Err(response) => return response,
+    } {
         return (StatusCode::NOT_FOUND, "").into_response();
     }
 
@@ -1423,7 +1429,7 @@ async fn get_registration_index<S: NuGetAppState>(
         Err(_) => return nuget_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error"),
     };
 
-    if !can_read_package(
+    if !match can_read_package(
         state.db(),
         package_id,
         repository_id,
@@ -1441,6 +1447,9 @@ async fn get_registration_index<S: NuGetAppState>(
     )
     .await
     {
+        Ok(can_read) => can_read,
+        Err(response) => return response,
+    } {
         return (StatusCode::NOT_FOUND, "").into_response();
     }
 

@@ -43,7 +43,7 @@ async fn search_packages(
     State(state): State<AppState>,
     identity: OptionalAuthenticatedIdentity,
     Query(params): Query<SearchQueryParams>,
-) -> ApiResult<Json<serde_json::Value>> {
+) -> ApiResult<Json<SearchPackagesResponse>> {
     let per_page = params
         .per_page
         .unwrap_or(DEFAULT_SEARCH_PER_PAGE)
@@ -79,12 +79,33 @@ async fn search_packages(
     .await?;
     let packages = build_search_package_responses(&state.db, results.packages).await?;
 
-    Ok(Json(serde_json::json!({
-        "total": results.total,
-        "page": page,
-        "per_page": per_page,
-        "packages": packages,
-    })))
+    Ok(Json(SearchPackagesResponse {
+        total: results.total,
+        page,
+        per_page,
+        packages,
+    }))
+}
+
+#[derive(Debug, serde::Serialize)]
+struct SearchPackagesResponse {
+    total: u64,
+    page: u32,
+    per_page: u32,
+    packages: Vec<SearchPackageResponse>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct SearchPackageResponse {
+    #[serde(flatten)]
+    package: PackageDocument,
+    discovery: SearchPackageDiscoverySummary,
+}
+
+impl SearchPackageResponse {
+    fn new(package: PackageDocument, discovery: SearchPackageDiscoverySummary) -> Self {
+        Self { package, discovery }
+    }
 }
 
 pub(crate) struct VisibleSearchPage {
@@ -225,38 +246,18 @@ async fn filter_visible_search_hits(
 async fn build_search_package_responses(
     db: &sqlx::PgPool,
     packages: Vec<PackageDocument>,
-) -> ApiResult<Vec<serde_json::Value>> {
+) -> ApiResult<Vec<SearchPackageResponse>> {
     let discovery = load_search_discovery_summaries(db, &packages).await?;
-    packages
+    Ok(packages
         .into_iter()
         .map(|package| {
-            let package_id = Uuid::parse_str(&package.id).ok();
-            let mut value = serde_json::to_value(package).map_err(|error| {
-                ApiError(Error::Internal(format!(
-                    "search package serialization failed: {error}"
-                )))
-            })?;
-
-            if let (serde_json::Value::Object(ref mut object), Some(package_id)) =
-                (&mut value, package_id)
-            {
-                let summary = discovery
-                    .get(&package_id)
-                    .cloned()
-                    .unwrap_or_else(|| build_search_discovery_summary(None, None, 0, None, 0));
-                object.insert(
-                    "discovery".to_owned(),
-                    serde_json::to_value(summary).map_err(|error| {
-                        ApiError(Error::Internal(format!(
-                            "search discovery serialization failed: {error}"
-                        )))
-                    })?,
-                );
-            }
-
-            Ok(value)
+            let summary = Uuid::parse_str(&package.id)
+                .ok()
+                .and_then(|package_id| discovery.get(&package_id).cloned())
+                .unwrap_or_else(|| build_search_discovery_summary(None, None, 0, None, 0));
+            SearchPackageResponse::new(package, summary)
         })
-        .collect()
+        .collect())
 }
 
 async fn load_search_discovery_summaries(
@@ -564,7 +565,8 @@ fn normalize_search_slug(slug: Option<String>) -> ApiResult<Option<String>> {
 mod tests {
     use super::{
         build_search_discovery_summary, load_visible_search_package_ids, load_visible_search_page,
-        normalize_search_org_slug, normalize_search_repository_slug, SearchScopeFilters,
+        normalize_search_org_slug, normalize_search_repository_slug, SearchPackageResponse,
+        SearchScopeFilters,
     };
     use crate::{config::Config, state::AppState};
     use publaryn_search::{
@@ -1414,5 +1416,30 @@ mod tests {
         assert_eq!(summary.unresolved_security_finding_count, 0);
         assert_eq!(summary.latest_release_status.as_deref(), Some("published"));
         assert!(summary.signals.is_empty());
+    }
+
+    #[test]
+    fn search_package_response_flattens_package_fields_and_discovery() {
+        let package_id = Uuid::new_v4();
+        let package = package_doc(package_id, "pkg", "public", "Repo", "repo");
+        let response = SearchPackageResponse::new(
+            package,
+            build_search_discovery_summary(Some("published".to_owned()), None, 0, None, 0),
+        );
+
+        let value =
+            serde_json::to_value(response).expect("search package response should serialize");
+
+        assert_eq!(
+            value.get("name").and_then(|value| value.as_str()),
+            Some("pkg")
+        );
+        assert_eq!(
+            value
+                .get("discovery")
+                .and_then(|value| value.get("risk_level"))
+                .and_then(|value| value.as_str()),
+            Some("low")
+        );
     }
 }
