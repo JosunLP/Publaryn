@@ -225,6 +225,10 @@ impl Config {
     /// Build a configuration suitable for integration tests.
     /// Uses the provided database URL and sensible defaults for everything else.
     pub fn test_config(database_url: &str) -> Self {
+        let search_url =
+            std::env::var("SEARCH__URL").unwrap_or_else(|_| "http://localhost:7700".to_owned());
+        let search_api_key = std::env::var("SEARCH__API_KEY").ok();
+
         Self {
             server: ServerConfig {
                 bind_address: "127.0.0.1:0".to_owned(),
@@ -250,8 +254,8 @@ impl Config {
                 region: "us-east-1".to_owned(),
             },
             search: SearchConfig {
-                url: "http://localhost:7700".to_owned(),
-                api_key: None,
+                url: search_url,
+                api_key: search_api_key,
             },
             redis: RedisConfig {
                 url: "redis://localhost:6379".to_owned(),

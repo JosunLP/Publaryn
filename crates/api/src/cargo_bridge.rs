@@ -55,6 +55,11 @@ impl CargoAppState for AppState {
         &self.config.auth.issuer
     }
 
+    async fn reindex_package_document(&self, package_id: Uuid) -> Result<(), Error> {
+        crate::package_search::reindex_package_document(&self.db, self.search.as_ref(), package_id)
+            .await
+    }
+
     async fn search_crates(
         &self,
         query: &str,

@@ -21,7 +21,8 @@ use publaryn_workers::{
     scanners::{PolicyScanner, ScanArtifactHandler, SecretsScanner},
 };
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers
 
 const TEST_RESPONSE_BODY_LIMIT: usize = 8 * 1024 * 1024;
 
@@ -1692,6 +1693,35 @@ async fn search_cargo_crates(
     ));
     let req = if let Some(token) = auth_token {
         req.header(header::AUTHORIZATION, format!("Bearer {token}"))
+    } else {
+        req
+    };
+    let req = req.body(Body::empty()).unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// Search NuGet packages through the native adapter and return the response.
+async fn search_nuget_packages(
+    app: &axum::Router,
+    auth_token: Option<&str>,
+    query: &str,
+    take: u32,
+    skip: u32,
+) -> (StatusCode, Value) {
+    let encoded_query = url::form_urlencoded::byte_serialize(query.as_bytes()).collect::<String>();
+    let req = Request::builder().method(Method::GET).uri(format!(
+        "/nuget/v3/search?q={encoded_query}&take={take}&skip={skip}"
+    ));
+    let req = if let Some(token) = auth_token {
+        if token.starts_with("pub_") {
+            req.header("x-nuget-apikey", token)
+        } else {
+            req.header(header::AUTHORIZATION, format!("Bearer {token}"))
+        }
     } else {
         req
     };
@@ -20427,6 +20457,301 @@ async fn test_native_nuget_push_unlist_and_relist_roundtrip(pool: PgPool) {
         registration_after_relist_body["items"][0]["items"][0]["catalogEntry"]["listed"],
         true
     );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_native_nuget_search_follows_mixed_visibility_rules(pool: PgPool) {
+    if !is_search_backend_available() {
+        eprintln!(
+            "Skipping NuGet search visibility verification because the search backend is unavailable."
+        );
+        return;
+    }
+
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    register_user(&app, "carol", "carol@test.dev", "super_secret_pw!").await;
+
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+    let carol_jwt = login_user(&app, "carol", "super_secret_pw!").await;
+
+    let (status, org_body) =
+        create_org(&app, &alice_jwt, "Acme NuGet Search", "acme-nuget-search").await;
+    assert_eq!(status, StatusCode::CREATED, "{org_body}");
+    let org_id = org_body["id"]
+        .as_str()
+        .expect("organization id should be returned");
+
+    let (status, _) = add_org_member(&app, &alice_jwt, "acme-nuget-search", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, token_body) =
+        create_personal_access_token(&app, &alice_jwt, "alice-nuget-search", &["packages:write"])
+            .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
+    let nuget_token = token_body["token"]
+        .as_str()
+        .expect("nuget token should be returned")
+        .to_owned();
+
+    let search_token = "integration";
+    let cases = [
+        (
+            "NuGet Public Search Packages",
+            "nuget-public-search-packages",
+            "public",
+            "public",
+            "Orchid.Atlas",
+            "public",
+        ),
+        (
+            "NuGet Private Package Search",
+            "nuget-private-package-search",
+            "public",
+            "public",
+            "Harbor.Switch",
+            "private",
+        ),
+        (
+            "NuGet Internal Package Search",
+            "nuget-internal-package-search",
+            "public",
+            "public",
+            "Nimbus.Forge",
+            "internal_org",
+        ),
+        (
+            "NuGet Internal Repository Search",
+            "nuget-internal-repository-search",
+            "private",
+            "internal_org",
+            "Quartz.Relay",
+            "internal_org",
+        ),
+        (
+            "NuGet Unlisted Package Search",
+            "nuget-unlisted-package-search",
+            "public",
+            "public",
+            "Velvet.Ledger",
+            "unlisted",
+        ),
+    ];
+
+    for (
+        repository_name,
+        repository_slug,
+        repository_kind,
+        repository_visibility,
+        package_name,
+        package_visibility,
+    ) in cases
+    {
+        let (status, repository_body) = create_repository_with_options(
+            &app,
+            &alice_jwt,
+            repository_name,
+            repository_slug,
+            Some(org_id),
+            Some(repository_kind),
+            Some(repository_visibility),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected repository response for {package_name}: {repository_body}"
+        );
+
+        let (status, package_body) = create_package_with_options(
+            &app,
+            &alice_jwt,
+            "nuget",
+            package_name,
+            repository_slug,
+            Some(package_visibility),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected package response for {package_name}: {package_body}"
+        );
+
+        let nupkg_bytes = build_nuget_package(package_name, "1.0.0");
+        let (status, push_body) =
+            push_nuget_package(&app, &nuget_token, package_name, "1.0.0", &nupkg_bytes).await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected NuGet push response for {package_name}: {push_body}"
+        );
+    }
+
+    let expected_member_names = std::collections::BTreeSet::from([
+        "Orchid.Atlas".to_owned(),
+        "Harbor.Switch".to_owned(),
+        "Nimbus.Forge".to_owned(),
+        "Quartz.Relay".to_owned(),
+    ]);
+    let expected_anonymous_names = std::collections::BTreeSet::from(["Orchid.Atlas".to_owned()]);
+
+    let mut latest_management_member = Value::Null;
+    let mut latest_management_anonymous = Value::Null;
+    let mut latest_management_outsider = Value::Null;
+    let mut latest_nuget_member = Value::Null;
+    let mut latest_nuget_anonymous = Value::Null;
+    let mut latest_nuget_outsider = Value::Null;
+    let mut found = false;
+
+    for _ in 0..30 {
+        let (management_member_status, management_member_body) = search_packages_with_options(
+            &app,
+            Some(&bob_jwt),
+            search_token,
+            SearchPackagesRequestOptions {
+                ecosystem: Some("nuget"),
+                ..SearchPackagesRequestOptions::default()
+            },
+        )
+        .await;
+        let (management_anonymous_status, management_anonymous_body) =
+            search_packages_with_options(
+                &app,
+                None,
+                search_token,
+                SearchPackagesRequestOptions {
+                    ecosystem: Some("nuget"),
+                    ..SearchPackagesRequestOptions::default()
+                },
+            )
+            .await;
+        let (management_outsider_status, management_outsider_body) = search_packages_with_options(
+            &app,
+            Some(&carol_jwt),
+            search_token,
+            SearchPackagesRequestOptions {
+                ecosystem: Some("nuget"),
+                ..SearchPackagesRequestOptions::default()
+            },
+        )
+        .await;
+
+        let (nuget_member_status, nuget_member_body) =
+            search_nuget_packages(&app, Some(&bob_jwt), search_token, 10, 0).await;
+        let (nuget_anonymous_status, nuget_anonymous_body) =
+            search_nuget_packages(&app, None, search_token, 10, 0).await;
+        let (nuget_outsider_status, nuget_outsider_body) =
+            search_nuget_packages(&app, Some(&carol_jwt), search_token, 10, 0).await;
+
+        latest_management_member = management_member_body.clone();
+        latest_management_anonymous = management_anonymous_body.clone();
+        latest_management_outsider = management_outsider_body.clone();
+        latest_nuget_member = nuget_member_body.clone();
+        latest_nuget_anonymous = nuget_anonymous_body.clone();
+        latest_nuget_outsider = nuget_outsider_body.clone();
+
+        if management_member_status != StatusCode::OK
+            || management_anonymous_status != StatusCode::OK
+            || management_outsider_status != StatusCode::OK
+            || nuget_member_status != StatusCode::OK
+            || nuget_anonymous_status != StatusCode::OK
+            || nuget_outsider_status != StatusCode::OK
+        {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            continue;
+        }
+
+        let management_member_names = management_member_body["packages"]
+            .as_array()
+            .expect("member management packages should be an array")
+            .iter()
+            .filter_map(|item| item["name"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+        let management_anonymous_names = management_anonymous_body["packages"]
+            .as_array()
+            .expect("anonymous management packages should be an array")
+            .iter()
+            .filter_map(|item| item["name"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+        let management_outsider_names = management_outsider_body["packages"]
+            .as_array()
+            .expect("outsider management packages should be an array")
+            .iter()
+            .filter_map(|item| item["name"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+
+        let nuget_member_names = nuget_member_body["data"]
+            .as_array()
+            .expect("member NuGet data should be an array")
+            .iter()
+            .filter_map(|item| item["id"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+        let nuget_anonymous_names = nuget_anonymous_body["data"]
+            .as_array()
+            .expect("anonymous NuGet data should be an array")
+            .iter()
+            .filter_map(|item| item["id"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+        let nuget_outsider_names = nuget_outsider_body["data"]
+            .as_array()
+            .expect("outsider NuGet data should be an array")
+            .iter()
+            .filter_map(|item| item["id"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+
+        if management_member_names == expected_member_names
+            && management_anonymous_names == expected_anonymous_names
+            && management_outsider_names == expected_anonymous_names
+            && nuget_member_names == expected_member_names
+            && nuget_anonymous_names == expected_anonymous_names
+            && nuget_outsider_names == expected_anonymous_names
+            && latest_management_member["total"] == 4
+            && latest_management_anonymous["total"] == 1
+            && latest_management_outsider["total"] == 1
+            && latest_nuget_member["totalHits"] == 4
+            && latest_nuget_anonymous["totalHits"] == 1
+            && latest_nuget_outsider["totalHits"] == 1
+        {
+            found = true;
+            break;
+        }
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    assert!(
+        found,
+        "NuGet search did not converge to expected visibility results.\nmanagement member={latest_management_member}\nmanagement anonymous={latest_management_anonymous}\nmanagement outsider={latest_management_outsider}\nnuget member={latest_nuget_member}\nnuget anonymous={latest_nuget_anonymous}\nnuget outsider={latest_nuget_outsider}"
+    );
+
+    let (status, paged_nuget_body) =
+        search_nuget_packages(&app, Some(&bob_jwt), search_token, 2, 1).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected paged NuGet search response: {paged_nuget_body}"
+    );
+    assert_eq!(paged_nuget_body["totalHits"], 4);
+    assert_eq!(
+        paged_nuget_body["data"]
+            .as_array()
+            .expect("paged NuGet data should be an array")
+            .len(),
+        2
+    );
+    for item in paged_nuget_body["data"]
+        .as_array()
+        .expect("paged NuGet data should be an array")
+    {
+        assert_eq!(item["version"], "1.0.0");
+    }
 }
 
 #[sqlx::test(migrations = "../../migrations")]

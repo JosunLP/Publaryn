@@ -54,6 +54,10 @@ pub trait CargoAppState: Clone + Send + Sync + 'static {
     fn base_url(&self) -> &str;
     fn jwt_secret(&self) -> &str;
     fn jwt_issuer(&self) -> &str;
+    fn reindex_package_document(
+        &self,
+        package_id: Uuid,
+    ) -> impl std::future::Future<Output = Result<(), Error>> + Send;
     fn search_crates(
         &self,
         query: &str,
@@ -884,7 +888,7 @@ async fn publish_crate<S: CargoAppState>(
     .await;
 
     // Trigger search reindex (best-effort)
-    let _ = reindex_package(state.db(), package_id).await;
+    let _ = state.reindex_package_document(package_id).await;
 
     let body = serde_json::json!({
         "warnings": {
@@ -1633,15 +1637,6 @@ async fn is_owner_or_member(
     false
 }
 
-async fn reindex_package(db: &PgPool, package_id: Uuid) -> Result<(), Error> {
-    sqlx::query("UPDATE packages SET updated_at = NOW() WHERE id = $1")
-        .bind(package_id)
-        .execute(db)
-        .await
-        .map_err(Error::Database)?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1726,6 +1721,12 @@ mod tests {
 
         fn jwt_issuer(&self) -> &str {
             &self.jwt_issuer
+        }
+
+        async fn reindex_package_document(&self, _package_id: Uuid) -> Result<(), Error> {
+            unreachable!(
+                "reindex_package_document should not be called in these adapter route tests"
+            )
         }
 
         async fn search_crates(

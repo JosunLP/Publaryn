@@ -423,12 +423,14 @@
           </p>
           <div class="page-hero__meta">
             <span class="badge badge-ecosystem"
-              >{ecosystemIcon(eecosystem())} {ecosystemLabel(eecosystem())}</span
+              >{ecosystemIcon(eecosystem())}
+              {ecosystemLabel(eecosystem())}</span
             >
             <span class="badge badge-ecosystem"
               >{formatVersionLabel(eecosystem(), eversion())}</span
             >
-            {#if release.is_yanked}<span class="badge badge-yanked">yanked</span>{/if}
+            {#if release.is_yanked}<span class="badge badge-yanked">yanked</span
+              >{/if}
             {#if release.is_deprecated}<span class="badge badge-deprecated"
                 >deprecated</span
               >{/if}
@@ -1100,7 +1102,10 @@
                 </div>
               {/if}
               {#if bundleAnalysisNotes(bundleAnalysis).length > 0}
-                <div class="settings-copy" style="display:grid; gap:6px; margin:0;">
+                <div
+                  class="settings-copy"
+                  style="display:grid; gap:6px; margin:0;"
+                >
                   {#each bundleAnalysisNotes(bundleAnalysis) as note}
                     <span>{note}</span>
                   {/each}
@@ -1268,7 +1273,9 @@
                   disabled={undeprecating}
                   on:click={handleUndeprecate}
                 >
-                  {undeprecating ? 'Removing deprecation…' : 'Remove deprecation'}
+                  {undeprecating
+                    ? 'Removing deprecation…'
+                    : 'Remove deprecation'}
                 </button>
               {/if}
             </div>

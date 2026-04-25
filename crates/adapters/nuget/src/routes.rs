@@ -71,12 +71,17 @@ pub trait NuGetAppState: Clone + Send + Sync + 'static {
     fn base_url(&self) -> &str;
     fn jwt_secret(&self) -> &str;
     fn jwt_issuer(&self) -> &str;
+    fn reindex_package_document(
+        &self,
+        package_id: Uuid,
+    ) -> impl std::future::Future<Output = Result<(), Error>> + Send;
     fn search_packages(
         &self,
         query: &str,
         take: u32,
         skip: u32,
-    ) -> impl std::future::Future<Output = Result<Vec<NuGetSearchHit>, Error>> + Send;
+        actor_user_id: Option<Uuid>,
+    ) -> impl std::future::Future<Output = Result<NuGetSearchResults, Error>> + Send;
 }
 
 /// A retrieved object from artifact storage.
@@ -94,6 +99,13 @@ pub struct NuGetSearchHit {
     pub description: Option<String>,
     pub tags: Vec<String>,
     pub total_downloads: i64,
+}
+
+/// Search results projected for the NuGet search response format.
+#[derive(Debug, Clone)]
+pub struct NuGetSearchResults {
+    pub total: u64,
+    pub hits: Vec<NuGetSearchHit>,
 }
 
 /// Identity extracted from an API key or bearer token.
@@ -378,15 +390,6 @@ async fn is_owner_or_member(
     }
 
     false
-}
-
-async fn reindex_package(db: &PgPool, package_id: Uuid) -> Result<(), Error> {
-    sqlx::query("UPDATE packages SET updated_at = NOW() WHERE id = $1")
-        .bind(package_id)
-        .execute(db)
-        .await
-        .map_err(Error::Database)?;
-    Ok(())
 }
 
 // ─── GET /v3/index.json — Service index ──────────────────────────────────────
@@ -703,7 +706,7 @@ async fn push_package<S: NuGetAppState>(
     .await;
 
     // Trigger search reindex (best-effort)
-    let _ = reindex_package(state.db(), package_id).await;
+    let _ = state.reindex_package_document(package_id).await;
 
     (StatusCode::CREATED, "").into_response()
 }
@@ -1443,19 +1446,28 @@ struct SearchParams {
 async fn search<S: NuGetAppState>(
     State(state): State<S>,
     Query(params): Query<SearchParams>,
+    headers: HeaderMap,
 ) -> Response {
     let query = params.q.unwrap_or_default();
     let skip = params.skip.unwrap_or(0);
     let take = params.take.unwrap_or(20).min(1000);
+    let actor_user_id = authenticate(&state, &headers)
+        .await
+        .ok()
+        .map(|id| id.user_id);
 
-    let hits = match state.search_packages(&query, take, skip).await {
+    let search_results = match state
+        .search_packages(&query, take, skip, actor_user_id)
+        .await
+    {
         Ok(h) => h,
         Err(_) => return nuget_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Search error"),
     };
 
-    let total_hits = hits.len() as i64;
+    let total_hits = search_results.total as i64;
 
-    let results: Vec<SearchResultInput> = hits
+    let results: Vec<SearchResultInput> = search_results
+        .hits
         .into_iter()
         .map(|hit| SearchResultInput {
             package_id: hit.id.clone(),

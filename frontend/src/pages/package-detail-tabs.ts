@@ -4,6 +4,7 @@ export const PACKAGE_DETAIL_TAB_VALUES = [
   'readme',
   'versions',
   'security',
+  'settings',
 ] as const;
 
 export type PackageDetailTab = (typeof PACKAGE_DETAIL_TAB_VALUES)[number];
@@ -18,7 +19,9 @@ export function normalizePackageDetailTab(
   }
 
   const trimmed = value.trim().toLowerCase();
-  return PACKAGE_DETAIL_TAB_SET.has(trimmed) ? (trimmed as PackageDetailTab) : 'readme';
+  return PACKAGE_DETAIL_TAB_SET.has(trimmed)
+    ? (trimmed as PackageDetailTab)
+    : 'readme';
 }
 
 export function getPackageDetailTabFromQuery(

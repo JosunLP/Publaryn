@@ -28,9 +28,15 @@ interface ApiRequestOptions {
   body?: JsonRecord;
 }
 
+interface MutationCall {
+  path: string;
+  body?: JsonRecord;
+}
+
 interface Scenario {
   requests: string[];
   gotoCalls: string[];
+  packageMutations: MutationCall[];
   packageDetail: JsonRecord;
   releases: JsonRecord[];
   findings: JsonRecord[];
@@ -44,7 +50,8 @@ interface Scenario {
 const ECOSYSTEM = 'npm';
 const PACKAGE_NAME = 'demo-widget';
 const ORG_SLUG = 'acme';
-const apiClientModuleUrl = new URL('../src/api/client.ts', import.meta.url).href;
+const apiClientModuleUrl = new URL('../src/api/client.ts', import.meta.url)
+  .href;
 const pageStore = writable<TestPageState>(
   buildPageState(
     `https://example.test/packages/${ECOSYSTEM}/${PACKAGE_NAME}?tab=security`
@@ -117,11 +124,14 @@ mock.module(apiClientModuleUrl, () => {
   };
 });
 
-const PackagePage = await import('../src/routes/packages/[ecosystem]/[name]/+page.svelte');
+const PackagePage =
+  await import('../src/routes/packages/[ecosystem]/[name]/+page.svelte');
 
 afterEach(() => {
   currentScenario = null;
-  setPageHref(`https://example.test/packages/${ECOSYSTEM}/${PACKAGE_NAME}?tab=security`);
+  setPageHref(
+    `https://example.test/packages/${ECOSYSTEM}/${PACKAGE_NAME}?tab=security`
+  );
 });
 
 describe('package detail security access route', () => {
@@ -157,7 +167,9 @@ describe('package detail security access route', () => {
         'Delegated team access'
       );
       expect(delegatedAccessSection.textContent).toContain('Readers Team');
-      expect(delegatedAccessSection.textContent).toContain('Can triage findings');
+      expect(delegatedAccessSection.textContent).toContain(
+        'Can triage findings'
+      );
 
       await waitFor(() => {
         expect(normalizeWhitespace(target.textContent)).toContain(
@@ -180,7 +192,10 @@ describe('package detail security access route', () => {
         expect(target.textContent).not.toContain('Known malicious payload');
       });
 
-      changeValue(queryRequiredInput(target, '#package-security-search'), 'prototype');
+      changeValue(
+        queryRequiredInput(target, '#package-security-search'),
+        'prototype'
+      );
 
       await waitFor(() => {
         expect(normalizeWhitespace(target.textContent)).toContain(
@@ -191,10 +206,7 @@ describe('package detail security access route', () => {
       });
 
       setChecked(
-        queryRequiredCheckbox(
-          target,
-          'input[type="checkbox"][value="high"]'
-        ),
+        queryRequiredCheckbox(target, 'input[type="checkbox"][value="high"]'),
         true
       );
 
@@ -240,21 +252,112 @@ describe('package detail security access route', () => {
         expect(target.textContent).not.toContain('Prototype pollution');
       });
 
+      expect(queryRequiredSelect(target, '#package-security-focus').value).toBe(
+        'resolved'
+      );
       expect(
-        queryRequiredSelect(target, '#package-security-focus').value
-      ).toBe('resolved');
-      expect(
-        queryRequiredCheckbox(target, '#package-security-include-resolved').checked
+        queryRequiredCheckbox(target, '#package-security-include-resolved')
+          .checked
       ).toBe(true);
       expect(queryRequiredInput(target, '#package-security-search').value).toBe(
         'pub-2026-0007'
       );
       expect(
-        queryRequiredCheckbox(target, 'input[type="checkbox"][value="critical"]')
-          .checked
+        queryRequiredCheckbox(
+          target,
+          'input[type="checkbox"][value="critical"]'
+        ).checked
       ).toBe(true);
 
       expect(currentScenario.requests).toEqual([
+        `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}`,
+        `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/releases`,
+        `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/tags`,
+        `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/security-findings`,
+        '/v1/users/me/organizations',
+        `/v1/orgs/${ORG_SLUG}/teams`,
+      ]);
+    } finally {
+      unmount();
+    }
+  });
+
+  test('loads and saves package metadata from the dedicated settings tab', async () => {
+    currentScenario = createScenario({
+      packageDetail: {
+        can_manage_metadata: true,
+        description: 'Original package summary.',
+        readme: '# Demo Widget\n\nOriginal readme content.',
+        homepage: 'https://example.test/demo-widget',
+        repository_url: 'https://github.com/acme/demo-widget',
+        license: 'MIT',
+        keywords: ['widgets', 'cli'],
+      },
+    });
+    setPageHref(
+      `https://example.test/packages/${ECOSYSTEM}/${PACKAGE_NAME}?tab=settings`
+    );
+
+    const { target, unmount } = await renderSvelte(PackagePage.default);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Package settings');
+        expect(
+          queryRequiredTextArea(target, '#package-settings-description').value
+        ).toBe('Original package summary.');
+        expect(
+          queryRequiredInput(target, '#package-settings-homepage').value
+        ).toBe('https://example.test/demo-widget');
+        expect(
+          queryRequiredInput(target, '#package-settings-keywords').value
+        ).toBe('widgets, cli');
+      });
+
+      changeValue(
+        queryRequiredTextArea(target, '#package-settings-description'),
+        'Updated package summary for release automation.'
+      );
+      changeValue(
+        queryRequiredInput(target, '#package-settings-homepage'),
+        'https://example.test/demo-widget/v2'
+      );
+      changeValue(
+        queryRequiredInput(target, '#package-settings-keywords'),
+        'widgets, cli, release'
+      );
+      submitForm(queryRequiredForm(target, '#package-settings-form'));
+
+      await waitFor(() => {
+        expect(target.textContent).toContain('Package updated');
+        expect(
+          queryRequiredTextArea(target, '#package-settings-description').value
+        ).toBe('Updated package summary for release automation.');
+        expect(
+          queryRequiredInput(target, '#package-settings-homepage').value
+        ).toBe('https://example.test/demo-widget/v2');
+        expect(
+          queryRequiredInput(target, '#package-settings-keywords').value
+        ).toBe('widgets, cli, release');
+      });
+
+      expect(currentScenario?.packageMutations).toEqual([
+        {
+          path: `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}`,
+          body: {
+            description: 'Updated package summary for release automation.',
+            homepage: 'https://example.test/demo-widget/v2',
+            keywords: ['widgets', 'cli', 'release'],
+          },
+        },
+      ]);
+      expect(currentScenario?.requests).toEqual([
+        `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}`,
+        `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/releases`,
+        `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/tags`,
+        `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/security-findings`,
+        '/v1/users/me/organizations',
+        `/v1/orgs/${ORG_SLUG}/teams`,
         `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}`,
         `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/releases`,
         `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/tags`,
@@ -348,7 +451,9 @@ describe('package detail security access route', () => {
         },
       ],
     });
-    setPageHref(`https://example.test/packages/${ECOSYSTEM}/${PACKAGE_NAME}?tab=versions`);
+    setPageHref(
+      `https://example.test/packages/${ECOSYSTEM}/${PACKAGE_NAME}?tab=versions`
+    );
 
     const { target, unmount } = await renderSvelte(PackagePage.default);
 
@@ -387,11 +492,55 @@ async function handleApiRequest(
     currentScenario.requests.push(path);
   }
 
-  if (method === 'GET' && path === `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}`) {
+  if (
+    method === 'GET' &&
+    path === `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}`
+  ) {
     return apiResponse(currentScenario.packageDetail);
   }
 
-  if (method === 'GET' && path === `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/releases`) {
+  if (
+    method === 'PATCH' &&
+    path === `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}`
+  ) {
+    currentScenario.packageMutations.push({
+      path,
+      body: options?.body,
+    });
+    currentScenario.packageDetail = {
+      ...currentScenario.packageDetail,
+      ...(Object.prototype.hasOwnProperty.call(
+        options?.body || {},
+        'description'
+      )
+        ? { description: options?.body?.description ?? null }
+        : {}),
+      ...(Object.prototype.hasOwnProperty.call(options?.body || {}, 'readme')
+        ? { readme: options?.body?.readme ?? null }
+        : {}),
+      ...(Object.prototype.hasOwnProperty.call(options?.body || {}, 'homepage')
+        ? { homepage: options?.body?.homepage ?? null }
+        : {}),
+      ...(Object.prototype.hasOwnProperty.call(
+        options?.body || {},
+        'repository_url'
+      )
+        ? { repository_url: options?.body?.repository_url ?? null }
+        : {}),
+      ...(Object.prototype.hasOwnProperty.call(options?.body || {}, 'license')
+        ? { license: options?.body?.license ?? null }
+        : {}),
+      ...(Object.prototype.hasOwnProperty.call(options?.body || {}, 'keywords')
+        ? { keywords: options?.body?.keywords ?? null }
+        : {}),
+    };
+    return apiResponse({ message: 'Package updated' });
+  }
+
+  if (
+    method === 'GET' &&
+    path === `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/releases`
+  ) {
     expect(options?.query).toEqual({
       page: undefined,
       per_page: 20,
@@ -399,15 +548,16 @@ async function handleApiRequest(
     return apiResponse({ releases: currentScenario.releases });
   }
 
-  if (method === 'GET' && path === `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/tags`) {
+  if (
+    method === 'GET' &&
+    path === `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/tags`
+  ) {
     return apiResponse({ tags: currentScenario.tags });
   }
 
   if (
     method === 'PUT' &&
-    path.startsWith(
-      `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/releases/`
-    ) &&
+    path.startsWith(`/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/releases/`) &&
     path.endsWith('/undeprecate')
   ) {
     const version = decodeURIComponent(path.split('/').at(-2) || '');
@@ -422,10 +572,17 @@ async function handleApiRequest(
           }
         : release
     );
-    return apiResponse({ message: 'Release undeprecated', version, status: 'published' });
+    return apiResponse({
+      message: 'Release undeprecated',
+      version,
+      status: 'published',
+    });
   }
 
-  if (method === 'PUT' && path.startsWith(`/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/tags/`)) {
+  if (
+    method === 'PUT' &&
+    path.startsWith(`/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/tags/`)
+  ) {
     const tag = decodeURIComponent(path.split('/').at(-1) || '');
     const version = String(options?.body?.version || '').trim();
     if (!tag || !version) {
@@ -460,7 +617,9 @@ async function handleApiRequest(
     return apiResponse({
       findings: includeResolved
         ? currentScenario.findings
-        : currentScenario.findings.filter((finding) => finding.is_resolved !== true),
+        : currentScenario.findings.filter(
+            (finding) => finding.is_resolved !== true
+          ),
     });
   }
 
@@ -486,6 +645,7 @@ function createScenario(overrides: Partial<Scenario> = {}): Scenario {
   return {
     requests: [],
     gotoCalls: [],
+    packageMutations: [],
     packageDetail: {
       ecosystem: ECOSYSTEM,
       name: PACKAGE_NAME,
@@ -524,14 +684,14 @@ function createScenario(overrides: Partial<Scenario> = {}): Scenario {
       ...(overrides.packageDetail || {}),
     },
     releases: overrides.releases || [],
-    findings:
-      overrides.findings || [
+    findings: overrides.findings || [
       {
         id: 'finding-1',
         kind: 'vulnerability',
         severity: 'high',
         title: 'Prototype pollution',
-        description: 'User-controlled merge input can pollute object prototypes.',
+        description:
+          'User-controlled merge input can pollute object prototypes.',
         advisory_id: 'CVE-2026-0001',
         is_resolved: false,
         detected_at: '2026-04-13T00:00:00Z',
@@ -576,8 +736,7 @@ function createScenario(overrides: Partial<Scenario> = {}): Scenario {
         artifact_filename: 'demo-widget-1.2.1.tgz',
       },
     ],
-    organizations:
-      overrides.organizations || [
+    organizations: overrides.organizations || [
       {
         id: 'org-1',
         slug: ORG_SLUG,
@@ -585,8 +744,7 @@ function createScenario(overrides: Partial<Scenario> = {}): Scenario {
         role: 'admin',
       },
     ],
-    teams:
-      overrides.teams || [
+    teams: overrides.teams || [
       {
         id: 'team-security',
         slug: 'security-team',
@@ -617,7 +775,10 @@ function buildPageState(href: string): TestPageState {
   };
 }
 
-function querySectionByHeading(target: HTMLElement, headingText: string): HTMLElement {
+function querySectionByHeading(
+  target: HTMLElement,
+  headingText: string
+): HTMLElement {
   const heading = Array.from(target.querySelectorAll('h2, h3, h4')).find(
     (element) => element.textContent?.trim() === headingText
   );
@@ -639,7 +800,10 @@ function querySectionByHeading(target: HTMLElement, headingText: string): HTMLEl
   return container;
 }
 
-function queryRequiredInput(target: HTMLElement, selector: string): HTMLInputElement {
+function queryRequiredInput(
+  target: HTMLElement,
+  selector: string
+): HTMLInputElement {
   const element = target.querySelector(selector);
   if (!(element instanceof HTMLInputElement)) {
     throw new Error(`Missing input for selector ${selector}.`);
@@ -647,7 +811,21 @@ function queryRequiredInput(target: HTMLElement, selector: string): HTMLInputEle
   return element;
 }
 
-function queryRequiredSelect(target: HTMLElement, selector: string): HTMLSelectElement {
+function queryRequiredTextArea(
+  target: HTMLElement,
+  selector: string
+): HTMLTextAreaElement {
+  const element = target.querySelector(selector);
+  if (!(element instanceof HTMLTextAreaElement)) {
+    throw new Error(`Missing textarea for selector ${selector}.`);
+  }
+  return element;
+}
+
+function queryRequiredSelect(
+  target: HTMLElement,
+  selector: string
+): HTMLSelectElement {
   const element = target.querySelector(selector);
   if (!(element instanceof HTMLSelectElement)) {
     throw new Error(`Missing select for selector ${selector}.`);
@@ -655,7 +833,10 @@ function queryRequiredSelect(target: HTMLElement, selector: string): HTMLSelectE
   return element;
 }
 
-function queryRequiredButton(target: ParentNode, selector: string): HTMLButtonElement {
+function queryRequiredButton(
+  target: ParentNode,
+  selector: string
+): HTMLButtonElement {
   const element = target.querySelector(selector);
   if (!(element instanceof HTMLButtonElement)) {
     throw new Error(`Missing button for selector ${selector}.`);
@@ -663,7 +844,10 @@ function queryRequiredButton(target: ParentNode, selector: string): HTMLButtonEl
   return element;
 }
 
-function queryRequiredForm(target: ParentNode, selector: string): HTMLFormElement {
+function queryRequiredForm(
+  target: ParentNode,
+  selector: string
+): HTMLFormElement {
   const element = target.querySelector(selector);
   if (!(element instanceof HTMLFormElement)) {
     throw new Error(`Missing form for selector ${selector}.`);
@@ -671,7 +855,10 @@ function queryRequiredForm(target: ParentNode, selector: string): HTMLFormElemen
   return element;
 }
 
-function queryRequiredCheckbox(target: ParentNode, selector: string): HTMLInputElement {
+function queryRequiredCheckbox(
+  target: ParentNode,
+  selector: string
+): HTMLInputElement {
   const element = target.querySelector(selector);
   if (!(element instanceof HTMLInputElement)) {
     throw new Error(`Missing checkbox for selector ${selector}.`);
@@ -681,7 +868,10 @@ function queryRequiredCheckbox(target: ParentNode, selector: string): HTMLInputE
 
 async function waitFor(
   assertion: () => void,
-  { timeout = 1000, interval = 10 }: { timeout?: number; interval?: number } = {}
+  {
+    timeout = 1000,
+    interval = 10,
+  }: { timeout?: number; interval?: number } = {}
 ): Promise<void> {
   const startedAt = Date.now();
   let lastError: unknown;
@@ -696,7 +886,9 @@ async function waitFor(
     }
   }
 
-  throw lastError instanceof Error ? lastError : new Error('Timed out waiting for assertion.');
+  throw lastError instanceof Error
+    ? lastError
+    : new Error('Timed out waiting for assertion.');
 }
 
 function normalizeWhitespace(value: string | null | undefined): string {

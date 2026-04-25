@@ -33,9 +33,9 @@
     transferPackageOwnership,
     undeprecateRelease,
     unyankRelease,
-    upsertTag as upsertPackageTag,
     updatePackage,
     updateSecurityFinding,
+    upsertTag as upsertPackageTag,
     yankRelease,
   } from '../../../../api/packages';
   import type { PackageDetailTab } from '../../../../pages/package-detail-tabs';
@@ -153,6 +153,7 @@
   let findingSearchQuery = '';
   let findingSeverityFilters: string[] = [];
   let findingFocusMode: PackageSecurityFocusMode = 'triage';
+  let requestedTab: PackageDetailTab = 'readme';
   let activeTab: PackageDetailTab = 'readme';
   let findingsNotice: string | null = null;
   let findingsError: string | null = null;
@@ -197,7 +198,11 @@
 
   $: ecosystem = $page.params.ecosystem ?? '';
   $: name = $page.params.name ?? '';
-  $: activeTab = getPackageDetailTabFromQuery($page.url.searchParams);
+  $: requestedTab = getPackageDetailTabFromQuery($page.url.searchParams);
+  $: activeTab =
+    requestedTab === 'settings' && pkg?.can_manage_metadata !== true
+      ? 'readme'
+      : requestedTab;
   $: packageSecurityView = getPackageSecurityViewFromQuery(
     $page.url.searchParams
   );
@@ -484,7 +489,7 @@
   }
 
   async function handlePackageTabChange(tab: PackageDetailTab): Promise<void> {
-    if (tab === activeTab) {
+    if (tab === requestedTab) {
       return;
     }
 
@@ -1009,11 +1014,10 @@
       const result = await upsertPackageTag(ecosystem, name, resolvedTag, {
         version: resolvedVersion,
       });
-      tags = sortTags(
-        (await listTags(ecosystem, name)) || []
-      );
+      tags = sortTags((await listTags(ecosystem, name)) || []);
       tagNotice =
-        result.message || `Tag ${resolvedTag} now points to ${resolvedVersion}.`;
+        result.message ||
+        `Tag ${resolvedTag} now points to ${resolvedVersion}.`;
       resetTagForm(resolvedVersion);
     } catch (caughtError: unknown) {
       tagError = toErrorMessage(caughtError, 'Failed to save tag.');
@@ -1041,7 +1045,8 @@
       const result = await deletePackageTag(ecosystem, name, resolvedTag);
       tags = tags.filter(
         (currentTag) =>
-          (currentTag.tag?.trim() || currentTag.name?.trim() || '') !== resolvedTag
+          (currentTag.tag?.trim() || currentTag.name?.trim() || '') !==
+          resolvedTag
       );
       tagNotice = result.message || `Deleted tag ${resolvedTag}.`;
       if (!tagName.trim()) {
@@ -1376,6 +1381,15 @@
               >
             {/if}
           </button>
+          {#if pkg.can_manage_metadata}
+            <button
+              class:active={activeTab === 'settings'}
+              class="tab"
+              type="button"
+              on:click={() => handlePackageTabChange('settings')}
+              >Settings</button
+            >
+          {/if}
         </div>
 
         {#if activeTab === 'readme'}
@@ -1779,6 +1793,127 @@
             {/each}
           {/if}
         {/if}
+
+        {#if activeTab === 'settings' && pkg.can_manage_metadata}
+          <section class="surface-card settings-section">
+            <div class="surface-card__header">
+              <h2 class="surface-card__title">Package settings</h2>
+              <p class="surface-card__copy">
+                Update package metadata that appears on the detail page and in
+                search. Leave a field blank to clear its stored value.
+              </p>
+            </div>
+
+            <div class="surface-card__body">
+              {#if packageSettingsNotice}
+                <div class="alert alert-success" style="margin-bottom:12px;">
+                  {packageSettingsNotice}
+                </div>
+              {/if}
+              {#if packageSettingsError}
+                <div class="alert alert-error" style="margin-bottom:12px;">
+                  {packageSettingsError}
+                </div>
+              {/if}
+
+              <form id="package-settings-form" on:submit={handleUpdatePackage}>
+                <div class="form-group" style="margin-bottom:12px;">
+                  <label for="package-settings-description">Description</label>
+                  <textarea
+                    bind:value={packageSettingsDescription}
+                    id="package-settings-description"
+                    name="description"
+                    class="form-input"
+                    rows="3"
+                    placeholder="Short package summary"
+                  ></textarea>
+                </div>
+
+                <div class="grid gap-4 xl:grid-cols-2">
+                  <div class="form-group" style="margin-bottom:12px;">
+                    <label for="package-settings-homepage">Homepage</label>
+                    <input
+                      bind:value={packageSettingsHomepage}
+                      id="package-settings-homepage"
+                      name="homepage"
+                      class="form-input"
+                      placeholder="https://example.test/project"
+                    />
+                  </div>
+
+                  <div class="form-group" style="margin-bottom:12px;">
+                    <label for="package-settings-repository-url"
+                      >Repository URL</label
+                    >
+                    <input
+                      bind:value={packageSettingsRepositoryUrl}
+                      id="package-settings-repository-url"
+                      name="repository_url"
+                      class="form-input"
+                      placeholder="https://github.com/acme/demo-widget"
+                    />
+                  </div>
+                </div>
+
+                <div class="grid gap-4 xl:grid-cols-2">
+                  <div class="form-group" style="margin-bottom:12px;">
+                    <label for="package-settings-license">License</label>
+                    <input
+                      bind:value={packageSettingsLicense}
+                      id="package-settings-license"
+                      name="license"
+                      class="form-input"
+                      placeholder="MIT"
+                    />
+                  </div>
+
+                  <div class="form-group" style="margin-bottom:12px;">
+                    <label for="package-settings-keywords">Keywords</label>
+                    <input
+                      bind:value={packageSettingsKeywords}
+                      id="package-settings-keywords"
+                      name="keywords"
+                      class="form-input"
+                      placeholder="docs, cli, api"
+                    />
+                  </div>
+                </div>
+
+                <div class="form-group" style="margin-bottom:12px;">
+                  <label for="package-settings-readme">README</label>
+                  <textarea
+                    bind:value={packageSettingsReadme}
+                    id="package-settings-readme"
+                    name="readme"
+                    class="form-input"
+                    rows="12"
+                    placeholder="# Demo Widget"
+                  ></textarea>
+                </div>
+
+                <div style="display:flex; gap:8px;">
+                  <button
+                    type="submit"
+                    class="btn btn-primary"
+                    disabled={!packageSettingsHasChanges ||
+                      updatingPackageSettings}
+                  >
+                    {updatingPackageSettings ? 'Saving…' : 'Save settings'}
+                  </button>
+                  <button
+                    type="button"
+                    class="btn btn-secondary"
+                    on:click={() => resetPackageSettingsForm(pkg)}
+                    disabled={!packageSettingsHasChanges ||
+                      updatingPackageSettings}
+                  >
+                    Reset
+                  </button>
+                </div>
+              </form>
+            </div>
+          </section>
+        {/if}
       </div>
 
       <div class="detail-sidebar">
@@ -1944,7 +2079,10 @@
                 </div>
               {/if}
               {#if bundleAnalysisNotes(packageBundleAnalysis).length > 0}
-                <div class="settings-copy" style="display:grid; gap:6px; margin:0;">
+                <div
+                  class="settings-copy"
+                  style="display:grid; gap:6px; margin:0;"
+                >
                   {#each bundleAnalysisNotes(packageBundleAnalysis) as note}
                     <span>{note}</span>
                   {/each}
@@ -2167,122 +2305,6 @@
                   {/if}
                 </div>
               {/if}
-            </div>
-          </div>
-        {/if}
-
-        {#if pkg.can_manage_metadata}
-          <div class="card">
-            <div class="sidebar-section">
-              <h3>Package settings</h3>
-              <p class="settings-copy" style="margin-bottom:12px;">
-                Update package metadata that appears on the detail page and in
-                search. Leave a field blank to clear its stored value.
-              </p>
-
-              {#if packageSettingsNotice}
-                <div class="alert alert-success" style="margin-bottom:12px;">
-                  {packageSettingsNotice}
-                </div>
-              {/if}
-              {#if packageSettingsError}
-                <div class="alert alert-error" style="margin-bottom:12px;">
-                  {packageSettingsError}
-                </div>
-              {/if}
-
-              <form id="package-settings-form" on:submit={handleUpdatePackage}>
-                <div class="form-group" style="margin-bottom:12px;">
-                  <label for="package-settings-description">Description</label>
-                  <textarea
-                    bind:value={packageSettingsDescription}
-                    id="package-settings-description"
-                    name="description"
-                    class="form-input"
-                    rows="3"
-                    placeholder="Short package summary"
-                  ></textarea>
-                </div>
-
-                <div class="form-group" style="margin-bottom:12px;">
-                  <label for="package-settings-homepage">Homepage</label>
-                  <input
-                    bind:value={packageSettingsHomepage}
-                    id="package-settings-homepage"
-                    name="homepage"
-                    class="form-input"
-                    placeholder="https://example.test/project"
-                  />
-                </div>
-
-                <div class="form-group" style="margin-bottom:12px;">
-                  <label for="package-settings-repository-url"
-                    >Repository URL</label
-                  >
-                  <input
-                    bind:value={packageSettingsRepositoryUrl}
-                    id="package-settings-repository-url"
-                    name="repository_url"
-                    class="form-input"
-                    placeholder="https://github.com/acme/demo-widget"
-                  />
-                </div>
-
-                <div class="form-group" style="margin-bottom:12px;">
-                  <label for="package-settings-license">License</label>
-                  <input
-                    bind:value={packageSettingsLicense}
-                    id="package-settings-license"
-                    name="license"
-                    class="form-input"
-                    placeholder="MIT"
-                  />
-                </div>
-
-                <div class="form-group" style="margin-bottom:12px;">
-                  <label for="package-settings-keywords">Keywords</label>
-                  <input
-                    bind:value={packageSettingsKeywords}
-                    id="package-settings-keywords"
-                    name="keywords"
-                    class="form-input"
-                    placeholder="docs, cli, api"
-                  />
-                </div>
-
-                <div class="form-group" style="margin-bottom:12px;">
-                  <label for="package-settings-readme">README</label>
-                  <textarea
-                    bind:value={packageSettingsReadme}
-                    id="package-settings-readme"
-                    name="readme"
-                    class="form-input"
-                    rows="8"
-                    placeholder="# Demo Widget"
-                  ></textarea>
-                </div>
-
-                <div style="display:flex; gap:8px;">
-                  <button
-                    type="submit"
-                    class="btn btn-primary"
-                    style="flex:1; justify-content:center;"
-                    disabled={!packageSettingsHasChanges ||
-                      updatingPackageSettings}
-                  >
-                    {updatingPackageSettings ? 'Saving…' : 'Save settings'}
-                  </button>
-                  <button
-                    type="button"
-                    class="btn btn-secondary"
-                    on:click={() => resetPackageSettingsForm(pkg)}
-                    disabled={!packageSettingsHasChanges ||
-                      updatingPackageSettings}
-                  >
-                    Reset
-                  </button>
-                </div>
-              </form>
             </div>
           </div>
         {/if}
@@ -2776,7 +2798,9 @@
                         on:click={() => handleDeleteTag(tag)}
                         disabled={savingTag || deletingTagName === resolvedTag}
                       >
-                        {deletingTagName === resolvedTag ? 'Removing…' : 'Delete'}
+                        {deletingTagName === resolvedTag
+                          ? 'Removing…'
+                          : 'Delete'}
                       </button>
                     {/if}
                   </div>
@@ -2797,8 +2821,8 @@
                     Create or retarget a tag
                   </h4>
                   <p class="settings-copy" style="margin-bottom:12px;">
-                    Point a mutable channel tag at a published release version for
-                    installs and automation.
+                    Point a mutable channel tag at a published release version
+                    for installs and automation.
                   </p>
                   <form id="package-tag-form" on:submit={handleSaveTag}>
                     <div class="form-group" style="margin-bottom:12px;">
@@ -2826,7 +2850,9 @@
                           Select a release version
                         </option>
                         {#each releases as release}
-                          <option value={release.version}>{release.version}</option>
+                          <option value={release.version}
+                            >{release.version}</option
+                          >
                         {/each}
                       </select>
                     </div>
