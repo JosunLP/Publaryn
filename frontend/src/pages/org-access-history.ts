@@ -80,7 +80,9 @@ export function formatAccessHistoryActor(
 
 export function formatPermissionList(permissions?: string[] | null): string {
   const values = normalizePermissionList(permissions);
-  return values.length > 0 ? values.map(titleCase).join(', ') : 'No delegated access';
+  return values.length > 0
+    ? values.map(titleCase).join(', ')
+    : 'No delegated access';
 }
 
 export function formatAccessHistoryPermissionDelta(

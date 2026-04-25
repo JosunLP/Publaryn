@@ -36,4 +36,29 @@ describe('packages api client helpers', () => {
       },
     ]);
   });
+
+  test('updatePackage still sends normalized non-null visibility values', async () => {
+    const calls: Array<{ path: string; body: unknown }> = [];
+
+    api.patch = (async <T>(path: string, options?: { body?: unknown }) => {
+      calls.push({ path, body: options?.body });
+      return {
+        data: { status: 'ok' } as T,
+        requestId: null,
+      };
+    }) as typeof api.patch;
+
+    await updatePackage('npm', 'demo-widget', {
+      visibility: ' internal_org ',
+    });
+
+    expect(calls).toEqual([
+      {
+        path: '/v1/packages/npm/demo-widget',
+        body: {
+          visibility: 'internal_org',
+        },
+      },
+    ]);
+  });
 });
