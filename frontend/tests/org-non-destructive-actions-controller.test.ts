@@ -6,7 +6,10 @@ import { fileURLToPath } from 'node:url';
 import type { NamespaceClaim } from '../src/api/namespaces';
 import type { Team } from '../src/api/orgs';
 import type { OrgPackageSummary, OrgRepositorySummary } from '../src/api/orgs';
-import type { OrgNonDestructiveActionsMutations } from '../src/pages/org-non-destructive-actions';
+import {
+  normalizeOptionalFormText,
+  type OrgNonDestructiveActionsMutations,
+} from '../src/pages/org-non-destructive-actions';
 import {
   changeValue,
   renderSvelte,
@@ -339,16 +342,7 @@ describe('org non-destructive actions controller harness', () => {
         queryRequiredInput(target, '#package-create-display-name'),
         'Acme Tools'
       );
-      const visibilitySelect = queryRequiredSelect(
-        target,
-        '#package-create-visibility'
-      );
-      const spacedVisibilityOption = document.createElement('option');
-      spacedVisibilityOption.value = ' private ';
-      spacedVisibilityOption.textContent = 'Private (spaced)';
-      visibilitySelect.append(spacedVisibilityOption);
-      changeValue(visibilitySelect, ' private ');
-      expect(visibilitySelect.value).toBe(' private ');
+      changeValue(queryRequiredSelect(target, '#package-create-visibility'), 'private');
       changeValue(
         queryRequiredTextArea(target, '#package-create-description'),
         'Private cargo package'
@@ -370,7 +364,6 @@ describe('org non-destructive actions controller harness', () => {
       expect(queryRequiredTextArea(target, '#package-create-description').value).toBe(
         ''
       );
-      expect(scenario.createPackageCalls[0]?.visibility).toBe('private');
       expect(scenario.createPackageCalls).toEqual([
         {
           ecosystem: 'cargo',
@@ -450,7 +443,7 @@ describe('org non-destructive actions controller harness', () => {
     }
   });
 
-  test('normalizes blank and whitespace-only package visibility to null before create requests', async () => {
+  test('normalizes blank package visibility to null before create requests', async () => {
     const scenario = createScenario();
     const { target, unmount, flush } = await renderSvelte(HarnessPath, {
       loadState: createLoadState(scenario),
@@ -489,16 +482,6 @@ describe('org non-destructive actions controller harness', () => {
 
       changeValue(queryRequiredSelect(target, '#package-create-ecosystem'), 'cargo');
       changeValue(queryRequiredInput(target, '#package-create-name'), 'defaulted_pkg');
-      const visibilitySelect = queryRequiredSelect(
-        target,
-        '#package-create-visibility'
-      );
-      const whitespaceOnlyVisibilityOption = document.createElement('option');
-      whitespaceOnlyVisibilityOption.value = '   ';
-      whitespaceOnlyVisibilityOption.textContent = 'Whitespace only';
-      visibilitySelect.append(whitespaceOnlyVisibilityOption);
-      changeValue(visibilitySelect, '   ');
-      expect(visibilitySelect.value).toBe('   ');
       submitForm(queryRequiredForm(target, '#package-create-form'));
 
       await waitFor(() => {
@@ -518,6 +501,14 @@ describe('org non-destructive actions controller harness', () => {
     } finally {
       unmount();
     }
+  });
+
+  test('normalizeOptionalFormText trims padded strings and collapses blank values', () => {
+    expect(normalizeOptionalFormText(' private ')).toBe('private');
+    expect(normalizeOptionalFormText('   ')).toBeNull();
+    expect(normalizeOptionalFormText('')).toBeNull();
+    expect(normalizeOptionalFormText(null)).toBeNull();
+    expect(normalizeOptionalFormText(undefined)).toBeNull();
   });
 });
 

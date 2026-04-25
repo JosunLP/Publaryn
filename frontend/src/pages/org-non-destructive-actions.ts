@@ -247,7 +247,7 @@ export function createOrgNonDestructiveActionsController(
   };
 }
 
-function normalizeOptionalFormText(
+export function normalizeOptionalFormText(
   value: FormDataEntryValue | null | undefined
 ): string | null {
   if (typeof value !== 'string') {
