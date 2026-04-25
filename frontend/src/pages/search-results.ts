@@ -1,5 +1,5 @@
 import type { SearchPackage } from '../api/packages';
-import { riskBadgeSeverity, riskLabel } from '../utils/risk';
+import { riskBadgeSeverity, riskLabel, type RiskBadgeSeverity } from '../utils/risk';
 
 function normalizeSearchResultValue(value: string | null | undefined): string {
   return typeof value === 'string' ? value.trim() : '';
@@ -20,7 +20,7 @@ export function formatSearchResultRepository(
 
 export function searchResultRiskBadgeSeverity(
   result: Pick<SearchPackage, 'discovery'>
-): 'critical' | 'high' | 'medium' | 'low' | 'info' {
+): RiskBadgeSeverity {
   return riskBadgeSeverity(result.discovery?.risk_level);
 }
 

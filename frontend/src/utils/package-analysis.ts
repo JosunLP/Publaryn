@@ -1,6 +1,6 @@
 import type { BundleAnalysisSummary, BundleRiskSummary } from '../api/packages';
 import { formatFileSize, formatNumber } from './format';
-import { riskBadgeSeverity, riskLabel } from './risk';
+import { riskBadgeSeverity, riskLabel, type RiskBadgeSeverity } from './risk';
 import { titleCase } from './strings';
 
 export interface BundleAnalysisStat {
@@ -128,7 +128,7 @@ export function bundleAnalysisRisk(
 
 export function bundleAnalysisRiskBadgeSeverity(
   summary: BundleAnalysisSummary | null | undefined
-): 'critical' | 'high' | 'medium' | 'low' | 'info' {
+): RiskBadgeSeverity {
   return riskBadgeSeverity(bundleAnalysisRisk(summary)?.level);
 }
 

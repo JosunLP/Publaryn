@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use publaryn_core::error::Error;
+use publaryn_core::{domain::AuditAction, error::Error};
 use publaryn_workers::queue::{self, Job, JobKind, JobStatus};
 
 use crate::{
@@ -361,9 +361,10 @@ async fn retry_background_job(
 
     sqlx::query(
         "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, metadata, occurred_at) \
-         VALUES ($1, 'admin_job_retry', $2, $3, $4, NOW())",
+         VALUES ($1, $2::audit_action, $3, $4, $5, NOW())",
     )
     .bind(Uuid::new_v4())
+    .bind(AuditAction::AdminJobRetry)
     .bind(identity.user_id)
     .bind(identity.audit_actor_token_id())
     .bind(serde_json::json!({
@@ -416,9 +417,10 @@ async fn recover_stale_background_jobs(
 
     sqlx::query(
         "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, metadata, occurred_at) \
-         VALUES ($1, 'admin_jobs_recover_stale', $2, $3, $4, NOW())",
+         VALUES ($1, $2::audit_action, $3, $4, $5, NOW())",
     )
     .bind(Uuid::new_v4())
+    .bind(AuditAction::AdminJobsRecoverStale)
     .bind(identity.user_id)
     .bind(identity.audit_actor_token_id())
     .bind(serde_json::json!({
