@@ -182,6 +182,44 @@ describe('settings page controller harness', () => {
     }
   });
 
+  test('disables prefix copying when a token prefix is unavailable', async () => {
+    const { target, unmount, flush } = await renderSvelte(HarnessPath, {
+      loaders: createLoaders({
+        async listTokens() {
+          return {
+            tokens: [
+              {
+                id: 'token-1',
+                name: 'bootstrap-token',
+                kind: 'personal',
+                created_at: '2026-04-20T00:00:00Z',
+                last_used_at: null,
+                expires_at: null,
+                scopes: ['tokens:read'],
+                prefix: null,
+              },
+            ],
+          };
+        },
+      }),
+      tokenActions: createTokenActions(),
+      profileActions: createProfileActions(),
+      organizationActions: createOrganizationActions(),
+    });
+
+    try {
+      await waitFor(() => {
+        flush();
+        const copyButton = queryButtonByText(target, 'Copy prefix');
+        expect(copyButton).toBeTruthy();
+        expect(copyButton.disabled).toBe(true);
+        expect(copyButton.title).toBe('Prefix unavailable');
+      });
+    } finally {
+      unmount();
+    }
+  });
+
   test('saves the profile and reloads refreshed profile details', async () => {
     const scenario = createProfileScenario();
     const { target, unmount, flush } = await renderSvelte(HarnessPath, {

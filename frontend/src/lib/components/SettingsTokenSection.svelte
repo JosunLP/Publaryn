@@ -125,7 +125,9 @@
               <button
                 class="btn btn-secondary btn-sm"
                 type="button"
-                on:click={() => copyToClipboard(token.prefix || 'pub_')}
+                disabled={!token.prefix}
+                title={token.prefix ? 'Copy token prefix' : 'Prefix unavailable'}
+                on:click={() => token.prefix && copyToClipboard(token.prefix)}
                 >Copy prefix</button
               >
               {#if token.id}<button

@@ -2,7 +2,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
+use sqlx::{Executor, PgPool, Postgres};
 use uuid::Uuid;
 
 /// The kinds of background jobs the system supports.
@@ -228,13 +228,16 @@ pub async fn fail_job(
 
 /// Recover stale jobs whose lock has expired without completion.
 /// These are likely from crashed workers. They are reset to `pending`.
-pub async fn recover_stale_jobs(db: &PgPool) -> anyhow::Result<u64> {
+pub async fn recover_stale_jobs<'e, E>(executor: E) -> anyhow::Result<u64>
+where
+    E: Executor<'e, Database = Postgres>,
+{
     let result = sqlx::query(
         "UPDATE background_jobs \
          SET status = 'pending', locked_until = NULL, locked_by = NULL \
          WHERE status = 'running' AND locked_until < NOW()",
     )
-    .execute(db)
+    .execute(executor)
     .await?;
 
     let recovered = result.rows_affected();

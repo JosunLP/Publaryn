@@ -411,7 +411,13 @@ async fn recover_stale_background_jobs(
 ) -> ApiResult<Json<AdminJobsRecoverStaleResponse>> {
     ensure_admin_jobs_access(&state.db, &identity).await?;
 
-    let recovered_count = queue::recover_stale_jobs(&state.db)
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let recovered_count = queue::recover_stale_jobs(&mut *tx)
         .await
         .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
 
@@ -426,9 +432,13 @@ async fn recover_stale_background_jobs(
     .bind(serde_json::json!({
         "recovered_count": recovered_count,
     }))
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await
     .map_err(|e| ApiError(Error::Database(e)))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
 
     Ok(Json(AdminJobsRecoverStaleResponse {
         message: "Stale background jobs recovered".to_owned(),
