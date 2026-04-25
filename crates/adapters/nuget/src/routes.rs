@@ -414,13 +414,15 @@ async fn can_read_package(
 
     let pkg_access = is_owner_or_member(db, pkg_owner_user_id, pkg_owner_org_id, actor).await?;
     let repo_access = is_owner_or_member(db, repo_owner_user_id, repo_owner_org_id, actor).await?;
-    let (team_package_access, team_repository_access) = if pkg_access && repo_access {
-        (false, false)
+    let team_package_access = if pkg_access {
+        false
     } else {
-        let team_package_access = actor_has_any_team_package_access(db, package_id, actor).await?;
-        let team_repository_access =
-            actor_has_any_team_repository_access(db, repository_id, actor).await?;
-        (team_package_access, team_repository_access)
+        actor_has_any_team_package_access(db, package_id, actor).await?
+    };
+    let team_repository_access = if repo_access {
+        false
+    } else {
+        actor_has_any_team_repository_access(db, repository_id, actor).await?
     };
     let delegated_read_access = team_package_access || team_repository_access;
 

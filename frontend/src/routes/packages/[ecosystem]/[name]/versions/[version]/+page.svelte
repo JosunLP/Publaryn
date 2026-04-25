@@ -103,10 +103,7 @@
       if (caughtError instanceof ApiError && caughtError.status === 404) {
         notFound = true;
       } else {
-        loadError =
-          caughtError instanceof Error && caughtError.message
-            ? caughtError.message
-            : 'Failed to load version.';
+        loadError = toErrorMessage(caughtError, 'Failed to load version.');
       }
       loading = false;
       return;
@@ -152,10 +149,7 @@
       await loadVersionPage();
       notice = `Uploaded ${uploadedFilename}.`;
     } catch (caughtError: unknown) {
-      error =
-        caughtError instanceof Error && caughtError.message
-          ? caughtError.message
-          : 'Failed to upload artifact.';
+      error = toErrorMessage(caughtError, 'Failed to upload artifact.');
     } finally {
       uploadingArtifact = false;
     }
@@ -171,10 +165,7 @@
       await loadVersionPage();
       notice = result.message || 'Release submitted for scanning.';
     } catch (caughtError: unknown) {
-      error =
-        caughtError instanceof Error && caughtError.message
-          ? caughtError.message
-          : 'Failed to publish release.';
+      error = toErrorMessage(caughtError, 'Failed to publish release.');
     } finally {
       publishing = false;
     }
@@ -192,10 +183,7 @@
       await loadVersionPage();
       notice = result.message || 'Release yanked successfully.';
     } catch (caughtError: unknown) {
-      error =
-        caughtError instanceof Error && caughtError.message
-          ? caughtError.message
-          : 'Failed to yank release.';
+      error = toErrorMessage(caughtError, 'Failed to yank release.');
     } finally {
       yanking = false;
     }
@@ -211,10 +199,7 @@
       await loadVersionPage();
       notice = result.message || 'Release restored successfully.';
     } catch (caughtError: unknown) {
-      error =
-        caughtError instanceof Error && caughtError.message
-          ? caughtError.message
-          : 'Failed to restore release.';
+      error = toErrorMessage(caughtError, 'Failed to restore release.');
     } finally {
       restoring = false;
     }
@@ -234,10 +219,7 @@
       await loadVersionPage();
       notice = result.message || 'Release deprecated successfully.';
     } catch (caughtError: unknown) {
-      error =
-        caughtError instanceof Error && caughtError.message
-          ? caughtError.message
-          : 'Failed to deprecate release.';
+      error = toErrorMessage(caughtError, 'Failed to deprecate release.');
     } finally {
       deprecating = false;
     }
@@ -257,10 +239,7 @@
       await loadVersionPage();
       notice = result.message || 'Release undeprecated successfully.';
     } catch (caughtError: unknown) {
-      error =
-        caughtError instanceof Error && caughtError.message
-          ? caughtError.message
-          : 'Failed to remove release deprecation.';
+      error = toErrorMessage(caughtError, 'Failed to remove release deprecation.');
     } finally {
       undeprecating = false;
     }
@@ -276,6 +255,12 @@
 
   function stringValue(value: unknown): string | null {
     return typeof value === 'string' && value.trim().length > 0 ? value : null;
+  }
+
+  function toErrorMessage(caughtError: unknown, fallback: string): string {
+    return caughtError instanceof Error && caughtError.message
+      ? caughtError.message
+      : fallback;
   }
 
   function stringArrayValue(value: unknown): string[] {
