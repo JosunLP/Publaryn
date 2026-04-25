@@ -1,4 +1,5 @@
 import type { OrgAccessHistoryEntry } from '../api/orgs';
+import { titleCase } from '../utils/strings';
 
 const EVENT_LABELS: Record<string, string> = {
   granted: 'Granted',
@@ -14,16 +15,12 @@ const SCOPE_LABELS: Record<string, string> = {
 
 export function formatAccessHistoryScope(scope?: string | null): string {
   const normalized = normalizeIdentifier(scope);
-  return (
-    SCOPE_LABELS[normalized] || formatIdentifierLabel(normalized || 'access')
-  );
+  return SCOPE_LABELS[normalized] || titleCase(normalized || 'access');
 }
 
 export function formatAccessHistoryEvent(event?: string | null): string {
   const normalized = normalizeIdentifier(event);
-  return (
-    EVENT_LABELS[normalized] || formatIdentifierLabel(normalized || 'Updated')
-  );
+  return EVENT_LABELS[normalized] || titleCase(normalized || 'updated');
 }
 
 export function formatAccessHistoryTarget(
@@ -35,17 +32,19 @@ export function formatAccessHistoryTarget(
   }
 
   const target = entry.target || {};
-  if (entry.scope === 'package') {
+  const scope = normalizeIdentifier(entry.scope);
+
+  if (scope === 'package') {
     const packageName = target.name?.trim() || target.normalized_name?.trim();
     const ecosystem = target.ecosystem?.trim();
     return ecosystem && packageName
       ? `${ecosystem} · ${packageName}`
       : packageName || 'selected package';
   }
-  if (entry.scope === 'repository') {
+  if (scope === 'repository') {
     return target.name?.trim() || target.slug?.trim() || 'selected repository';
   }
-  if (entry.scope === 'namespace') {
+  if (scope === 'namespace') {
     const namespace = target.namespace?.trim();
     const ecosystem = target.ecosystem?.trim();
     return ecosystem && namespace
@@ -81,9 +80,7 @@ export function formatAccessHistoryActor(
 
 export function formatPermissionList(permissions?: string[] | null): string {
   const values = normalizePermissionList(permissions);
-  return values.length > 0
-    ? values.map(formatIdentifierLabel).join(', ')
-    : 'No delegated access';
+  return values.length > 0 ? values.map(titleCase).join(', ') : 'No delegated access';
 }
 
 export function formatAccessHistoryPermissionDelta(
@@ -103,8 +100,9 @@ export function accessHistorySummary(entry: OrgAccessHistoryEntry): string {
   const currentPermissions = formatPermissionList(
     entry.permissions
   ).toLowerCase();
+  const event = normalizeIdentifier(entry.event);
 
-  switch (entry.event) {
+  switch (event) {
     case 'granted':
       return `Granted ${team} ${currentPermissions} access to ${target}.`;
     case 'revoked':
@@ -144,12 +142,4 @@ function normalizePermissionList(permissions?: string[] | null): string[] {
 
 function normalizeIdentifier(value?: string | null): string {
   return value?.trim().toLowerCase().replace(/-/g, '_') || '';
-}
-
-function formatIdentifierLabel(value: string): string {
-  return value
-    .split('_')
-    .filter(Boolean)
-    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
-    .join(' ');
 }

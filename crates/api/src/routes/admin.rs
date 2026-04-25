@@ -128,12 +128,12 @@ struct BackgroundJobResponse {
     recovery_hint: Option<String>,
 }
 
-impl From<Job> for BackgroundJobResponse {
-    fn from(value: Job) -> Self {
+impl BackgroundJobResponse {
+    fn from_job_at(value: Job, now: DateTime<Utc>) -> Self {
         let is_stale = value.status == JobStatus::Running
             && value
                 .locked_until
-                .is_some_and(|locked_until| locked_until < Utc::now());
+                .is_some_and(|locked_until| locked_until < now);
         let can_retry = matches!(value.status, JobStatus::Failed | JobStatus::Dead);
         let recovery_hint = if is_stale {
             Some("Use POST /v1/admin/jobs/recover-stale after confirming the worker lock is abandoned".to_owned())
@@ -164,6 +164,12 @@ impl From<Job> for BackgroundJobResponse {
             can_retry,
             recovery_hint,
         }
+    }
+}
+
+impl From<Job> for BackgroundJobResponse {
+    fn from(value: Job) -> Self {
+        Self::from_job_at(value, Utc::now())
     }
 }
 
@@ -248,6 +254,7 @@ async fn list_background_jobs(
     let by_kind = load_job_counts_by_kind(&state.db).await?;
     let oldest_pending_age_minutes = oldest_pending_age_minutes(&state.db).await?;
     let stale_jobs_count = stale_jobs_count(&state.db).await?;
+    let now = Utc::now();
 
     Ok(Json(AdminJobsResponse {
         page,
@@ -269,7 +276,10 @@ async fn list_background_jobs(
             oldest_pending_age_minutes,
             stale_jobs_count,
         },
-        jobs: jobs.into_iter().map(Into::into).collect(),
+        jobs: jobs
+            .into_iter()
+            .map(|job| BackgroundJobResponse::from_job_at(job, now))
+            .collect(),
     }))
 }
 
@@ -616,6 +626,7 @@ mod tests {
 
     #[test]
     fn background_job_response_explains_recovery_actions() {
+        let now = Utc::now();
         let stale_job = publaryn_workers::queue::Job {
             id: Uuid::new_v4(),
             kind: JobKind::ScanArtifact,
@@ -624,14 +635,14 @@ mod tests {
             attempts: 1,
             max_attempts: 5,
             last_error: None,
-            scheduled_at: Utc::now() - Duration::minutes(10),
-            locked_until: Some(Utc::now() - Duration::minutes(1)),
+            scheduled_at: now - Duration::minutes(10),
+            locked_until: Some(now - Duration::minutes(1)),
             locked_by: Some("worker-a".to_owned()),
-            started_at: Some(Utc::now() - Duration::minutes(10)),
+            started_at: Some(now - Duration::minutes(10)),
             completed_at: None,
-            created_at: Utc::now() - Duration::minutes(10),
+            created_at: now - Duration::minutes(10),
         };
-        let stale_response = BackgroundJobResponse::from(stale_job);
+        let stale_response = BackgroundJobResponse::from_job_at(stale_job, now);
         assert!(stale_response.is_stale);
         assert!(!stale_response.can_retry);
         assert!(stale_response
@@ -648,14 +659,14 @@ mod tests {
             attempts: 5,
             max_attempts: 5,
             last_error: Some("boom".to_owned()),
-            scheduled_at: Utc::now() - Duration::minutes(10),
+            scheduled_at: now - Duration::minutes(10),
             locked_until: None,
             locked_by: None,
-            started_at: Some(Utc::now() - Duration::minutes(10)),
-            completed_at: Some(Utc::now() - Duration::minutes(9)),
-            created_at: Utc::now() - Duration::minutes(10),
+            started_at: Some(now - Duration::minutes(10)),
+            completed_at: Some(now - Duration::minutes(9)),
+            created_at: now - Duration::minutes(10),
         };
-        let dead_response = BackgroundJobResponse::from(dead_job);
+        let dead_response = BackgroundJobResponse::from_job_at(dead_job, now);
         assert!(!dead_response.is_stale);
         assert!(dead_response.can_retry);
         assert!(dead_response

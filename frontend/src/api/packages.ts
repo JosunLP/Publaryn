@@ -478,9 +478,13 @@ export async function updatePackage(
     body.readme = input.readme ?? null;
   }
   if (hasOwn(input, 'visibility')) {
-    const visibility = emptyToUndefined(input.visibility);
-    if (visibility !== undefined) {
-      body.visibility = visibility;
+    if (input.visibility === null) {
+      body.visibility = null;
+    } else {
+      const visibility = emptyToUndefined(input.visibility);
+      if (visibility !== undefined) {
+        body.visibility = visibility;
+      }
     }
   }
 

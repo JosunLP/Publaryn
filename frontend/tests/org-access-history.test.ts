@@ -80,4 +80,24 @@ describe('org access history helpers', () => {
       )
     ).toBe('org-access-history-organization-2026-04-25.csv');
   });
+
+  test('normalizes event and scope identifiers consistently across labels and summaries', () => {
+    const entry: OrgAccessHistoryEntry = {
+      scope: 'Package',
+      event: 'GRANTED',
+      team_name: 'Publishers',
+      target: {
+        ecosystem: 'npm',
+        normalized_name: 'demo-widget',
+      },
+      permissions: ['publish'],
+    };
+
+    expect(formatAccessHistoryScope(entry.scope)).toBe('Package access');
+    expect(formatAccessHistoryEvent(entry.event)).toBe('Granted');
+    expect(formatAccessHistoryTarget(entry)).toBe('npm · demo-widget');
+    expect(accessHistorySummary(entry)).toBe(
+      'Granted Publishers publish access to npm · demo-widget.'
+    );
+  });
 });
