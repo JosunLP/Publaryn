@@ -131,6 +131,7 @@
     notice = null;
 
     try {
+      const uploadedFilename = artifactFile.name;
       await uploadReleaseArtifact(eecosystem(), ename(), eversion(), {
         filename: artifactFile.name,
         kind: artifactKind,
@@ -140,8 +141,8 @@
         signatureKeyId: signatureKeyId.trim() || undefined,
       });
 
-      notice = `Uploaded ${artifactFile.name}.`;
       await loadVersionPage();
+      notice = `Uploaded ${uploadedFilename}.`;
     } catch (caughtError: unknown) {
       error =
         caughtError instanceof Error && caughtError.message
@@ -159,8 +160,8 @@
 
     try {
       const result = await publishRelease(eecosystem(), ename(), eversion());
-      notice = result.message || 'Release submitted for scanning.';
       await loadVersionPage();
+      notice = result.message || 'Release submitted for scanning.';
     } catch (caughtError: unknown) {
       error =
         caughtError instanceof Error && caughtError.message
@@ -180,8 +181,8 @@
       const result = await yankRelease(eecosystem(), ename(), eversion(), {
         reason: yankReason.trim() || undefined,
       });
-      notice = result.message || 'Release yanked successfully.';
       await loadVersionPage();
+      notice = result.message || 'Release yanked successfully.';
     } catch (caughtError: unknown) {
       error =
         caughtError instanceof Error && caughtError.message
@@ -199,8 +200,8 @@
 
     try {
       const result = await unyankRelease(eecosystem(), ename(), eversion());
-      notice = result.message || 'Release restored successfully.';
       await loadVersionPage();
+      notice = result.message || 'Release restored successfully.';
     } catch (caughtError: unknown) {
       error =
         caughtError instanceof Error && caughtError.message
@@ -222,8 +223,8 @@
       const result = await deprecateRelease(eecosystem(), ename(), eversion(), {
         message: deprecationMessage.trim() || undefined,
       });
-      notice = result.message || 'Release deprecated successfully.';
       await loadVersionPage();
+      notice = result.message || 'Release deprecated successfully.';
     } catch (caughtError: unknown) {
       error =
         caughtError instanceof Error && caughtError.message

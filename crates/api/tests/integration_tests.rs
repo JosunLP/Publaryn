@@ -2517,6 +2517,90 @@ async fn get_pypi_simple_project_html(
     (status, body)
 }
 
+#[derive(Debug, Clone)]
+struct PypiDistributionFixture {
+    artifact_id: Uuid,
+    package_id: Uuid,
+    filename: String,
+    sha256: String,
+    content_type: String,
+}
+
+fn pypi_basic_token_auth(token: &str) -> String {
+    format!("Basic {}", BASE64.encode(format!("__token__:{token}")))
+}
+
+async fn download_pypi_distribution(
+    app: &axum::Router,
+    authorization: Option<&str>,
+    artifact_id: Uuid,
+    filename: &str,
+) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+    let mut request = Request::builder().method(Method::GET).uri(format!(
+        "/pypi/files/{artifact_id}/{}",
+        enc_path_segment(filename)
+    ));
+
+    if let Some(authorization) = authorization {
+        request = request.header(header::AUTHORIZATION, authorization);
+    }
+
+    let req = request.body(Body::empty()).unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let headers = resp.headers().clone();
+    let body = body_bytes(resp).await;
+    (status, headers, body)
+}
+
+async fn load_pypi_distribution_fixture(
+    pool: &PgPool,
+    package_name: &str,
+    version: &str,
+) -> PypiDistributionFixture {
+    let row = sqlx::query(
+        "SELECT a.id, a.filename, a.sha256, a.content_type, p.id AS package_id \
+         FROM artifacts a \
+         JOIN releases rel ON rel.id = a.release_id \
+         JOIN packages p ON p.id = rel.package_id \
+         WHERE p.ecosystem = 'pypi' AND p.name = $1 AND rel.version = $2 \
+           AND a.kind IN ('wheel', 'sdist') \
+         ORDER BY a.uploaded_at DESC, a.filename ASC \
+         LIMIT 1",
+    )
+    .bind(package_name)
+    .bind(version)
+    .fetch_one(pool)
+    .await
+    .expect("pypi distribution fixture should be queryable");
+
+    PypiDistributionFixture {
+        artifact_id: row
+            .try_get::<Uuid, _>("id")
+            .expect("artifact id should be readable"),
+        package_id: row
+            .try_get::<Uuid, _>("package_id")
+            .expect("package id should be readable"),
+        filename: row
+            .try_get::<String, _>("filename")
+            .expect("filename should be readable"),
+        sha256: row
+            .try_get::<String, _>("sha256")
+            .expect("sha256 should be readable"),
+        content_type: row
+            .try_get::<String, _>("content_type")
+            .expect("content type should be readable"),
+    }
+}
+
+async fn get_package_download_count(pool: &PgPool, package_id: Uuid) -> i64 {
+    sqlx::query_scalar("SELECT download_count FROM packages WHERE id = $1")
+        .bind(package_id)
+        .fetch_one(pool)
+        .await
+        .expect("package download count should be queryable")
+}
+
 /// Build a minimal Composer publish multipart body and return `(content_type, body)`.
 fn build_composer_publish_multipart(
     package_name: &str,
@@ -12486,11 +12570,9 @@ async fn test_cargo_search_surfaces_private_crates_visible_through_team_grants(p
     let expected_bob_names = std::collections::BTreeSet::from([
         "delegated-cargo-public-search-widget".to_owned(),
         "delegated-cargo-package-search-widget".to_owned(),
-    ]);
-    let expected_carol_names = std::collections::BTreeSet::from([
-        "delegated-cargo-public-search-widget".to_owned(),
         "delegated-cargo-repository-search-widget".to_owned(),
     ]);
+    let expected_carol_names = expected_bob_names.clone();
 
     let mut latest_management_bob = Value::Null;
     let mut latest_management_carol = Value::Null;
@@ -12625,11 +12707,11 @@ async fn test_cargo_search_surfaces_private_crates_visible_through_team_grants(p
             && cargo_bob_names == expected_bob_names
             && cargo_carol_names == expected_carol_names
             && cargo_anonymous_names == expected_anonymous_names
-            && latest_management_bob["total"] == 2
-            && latest_management_carol["total"] == 2
+            && latest_management_bob["total"] == 3
+            && latest_management_carol["total"] == 3
             && latest_management_anonymous["total"] == 1
-            && latest_cargo_bob["meta"]["total"] == 2
-            && latest_cargo_carol["meta"]["total"] == 2
+            && latest_cargo_bob["meta"]["total"] == 3
+            && latest_cargo_carol["meta"]["total"] == 3
             && latest_cargo_anonymous["meta"]["total"] == 1
         {
             found = true;
@@ -12733,21 +12815,21 @@ async fn test_management_search_can_scope_results_to_one_org(pool: PgPool) {
     for (jwt, package_name, repository_slug, visibility, descriptor) in [
         (
             &alice_jwt,
-            "acme-public-org-search-widget",
+            "acme-coral-search-finder",
             "acme-public-org-search",
             Some("public"),
             "acme public",
         ),
         (
             &alice_jwt,
-            "acme-private-org-search-widget",
+            "acme-onyx-package-indexer",
             "acme-private-org-search",
             Some("private"),
             "acme private",
         ),
         (
             &carol_jwt,
-            "beta-public-org-search-widget",
+            "beta-plum-discovery-catalog",
             "beta-public-org-search",
             Some("public"),
             "beta public",
@@ -12786,11 +12868,11 @@ async fn test_management_search_can_scope_results_to_one_org(pool: PgPool) {
     }
 
     let expected_member_names = std::collections::BTreeSet::from([
-        "acme-public-org-search-widget".to_owned(),
-        "acme-private-org-search-widget".to_owned(),
+        "acme-coral-search-finder".to_owned(),
+        "acme-onyx-package-indexer".to_owned(),
     ]);
     let expected_anonymous_names =
-        std::collections::BTreeSet::from(["acme-public-org-search-widget".to_owned()]);
+        std::collections::BTreeSet::from(["acme-coral-search-finder".to_owned()]);
 
     let mut latest_member_body = Value::Null;
     let mut latest_anonymous_body = Value::Null;
@@ -17254,6 +17336,335 @@ async fn test_native_pypi_simple_api_omits_missing_resolver_metadata(pool: PgPoo
         "unexpected simple html response: {simple_html}"
     );
     assert!(!simple_html.contains("data-requires-python"));
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_native_pypi_public_distribution_download_returns_exact_bytes_headers_and_updates_download_count(
+    pool: PgPool,
+) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Alice PyPI Packages",
+        "alice-pypi-packages",
+        None,
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, token_body) =
+        create_personal_access_token(&app, &alice_jwt, "alice-pypi-publish", &["packages:write"])
+            .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
+    let pypi_token = token_body["token"]
+        .as_str()
+        .expect("pypi token should be returned")
+        .to_owned();
+
+    let package_name = "native-download-widget";
+    let artifact_bytes = b"fake-sdist-bytes-for-public-download";
+    let (status, upload_body) = upload_pypi_distribution(
+        &app,
+        &pypi_token,
+        Some("alice-pypi-packages"),
+        package_name,
+        "1.0.0",
+        artifact_bytes,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected pypi upload response: {upload_body}"
+    );
+
+    let artifact = load_pypi_distribution_fixture(&pool, package_name, "1.0.0").await;
+    let baseline_download_count = get_package_download_count(&pool, artifact.package_id).await;
+
+    let (status, headers, body) =
+        download_pypi_distribution(&app, None, artifact.artifact_id, &artifact.filename).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, artifact_bytes);
+    assert_eq!(
+        headers
+            .get(header::CONTENT_TYPE)
+            .expect("pypi download should include a content type"),
+        artifact.content_type.as_str()
+    );
+    assert_eq!(
+        headers
+            .get(header::CONTENT_LENGTH)
+            .expect("pypi download should include a content length"),
+        artifact_bytes.len().to_string().as_str()
+    );
+    assert_eq!(
+        headers
+            .get(header::CONTENT_DISPOSITION)
+            .expect("pypi download should include a content disposition"),
+        format!("attachment; filename=\"{}\"", artifact.filename).as_str()
+    );
+    assert_eq!(
+        headers
+            .get("x-checksum-sha256")
+            .expect("pypi download should include a checksum header"),
+        artifact.sha256.as_str()
+    );
+
+    let updated_download_count = get_package_download_count(&pool, artifact.package_id).await;
+    assert_eq!(updated_download_count, baseline_download_count + 1);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_native_pypi_private_distribution_download_requires_visibility_and_accepts_bearer_and_basic_auth(
+    pool: PgPool,
+) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    register_user(&app, "carol", "carol@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+    let carol_jwt = login_user(&app, "carol", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &alice_jwt, "Source Org", "source-org").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let source_org_id = org_body["id"].as_str().expect("source org id");
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Source Python Packages",
+        "source-py-packages",
+        Some(source_org_id),
+        Some("private"),
+        Some("private"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, _) = add_org_member(&app, &alice_jwt, "source-org", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, alice_token_body) =
+        create_personal_access_token(&app, &alice_jwt, "alice-pypi-publish", &["packages:write"])
+            .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected alice token response: {alice_token_body}"
+    );
+    let alice_pypi_token = alice_token_body["token"]
+        .as_str()
+        .expect("alice pypi token should be returned")
+        .to_owned();
+
+    let (status, bob_token_body) =
+        create_personal_access_token(&app, &bob_jwt, "bob-pypi-download", &["packages:write"])
+            .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected bob token response: {bob_token_body}"
+    );
+    let bob_pypi_token = bob_token_body["token"]
+        .as_str()
+        .expect("bob pypi token should be returned")
+        .to_owned();
+
+    let (status, carol_token_body) =
+        create_personal_access_token(&app, &carol_jwt, "carol-pypi-download", &["packages:write"])
+            .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected carol token response: {carol_token_body}"
+    );
+    let carol_pypi_token = carol_token_body["token"]
+        .as_str()
+        .expect("carol pypi token should be returned")
+        .to_owned();
+
+    let package_name = "native-private-download-widget";
+    let artifact_bytes = b"fake-sdist-bytes-for-private-download";
+    let (status, upload_body) = upload_pypi_distribution(
+        &app,
+        &alice_pypi_token,
+        Some("source-py-packages"),
+        package_name,
+        "1.0.0",
+        artifact_bytes,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected pypi upload response: {upload_body}"
+    );
+
+    let artifact = load_pypi_distribution_fixture(&pool, package_name, "1.0.0").await;
+
+    let (status, _, _) =
+        download_pypi_distribution(&app, None, artifact.artifact_id, &artifact.filename).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let carol_bearer_auth = format!("Bearer {carol_pypi_token}");
+    let (status, _, _) = download_pypi_distribution(
+        &app,
+        Some(&carol_bearer_auth),
+        artifact.artifact_id,
+        &artifact.filename,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let bob_bearer_auth = format!("Bearer {bob_pypi_token}");
+    let (status, headers, body) = download_pypi_distribution(
+        &app,
+        Some(&bob_bearer_auth),
+        artifact.artifact_id,
+        &artifact.filename,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, artifact_bytes);
+    assert_eq!(
+        headers
+            .get(header::CONTENT_TYPE)
+            .expect("private pypi download should include a content type"),
+        artifact.content_type.as_str()
+    );
+
+    let bob_basic_auth = pypi_basic_token_auth(&bob_pypi_token);
+    let (status, basic_headers, basic_body) = download_pypi_distribution(
+        &app,
+        Some(&bob_basic_auth),
+        artifact.artifact_id,
+        &artifact.filename,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(basic_body, artifact_bytes);
+    assert_eq!(
+        basic_headers
+            .get("x-checksum-sha256")
+            .expect("basic-auth pypi download should include a checksum header"),
+        artifact.sha256.as_str()
+    );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_native_pypi_distribution_download_hides_quarantine_files_until_release_is_published(
+    pool: PgPool,
+) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Alice PyPI Packages",
+        "alice-pypi-packages",
+        None,
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let package_name = "native-quarantine-download-widget";
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "pypi",
+        package_name,
+        "alice-pypi-packages",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let (status, release_body) =
+        create_release_for_package(&app, &alice_jwt, "pypi", package_name, "1.0.0").await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected release response: {release_body}"
+    );
+
+    let artifact_bytes = b"fake-sdist-bytes-hidden-until-published";
+    let (status, upload_body) = upload_release_artifact(
+        &app,
+        &alice_jwt,
+        "pypi",
+        package_name,
+        "1.0.0",
+        "native-quarantine-download-widget-1.0.0.tar.gz",
+        "sdist",
+        "application/gzip",
+        artifact_bytes,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected upload response: {upload_body}"
+    );
+
+    let artifact = load_pypi_distribution_fixture(&pool, package_name, "1.0.0").await;
+
+    let (status, _, _) =
+        download_pypi_distribution(&app, None, artifact.artifact_id, &artifact.filename).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let owner_bearer_auth = format!("Bearer {alice_jwt}");
+    let (status, _, _) = download_pypi_distribution(
+        &app,
+        Some(&owner_bearer_auth),
+        artifact.artifact_id,
+        &artifact.filename,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    promote_release_to_published(&pool, "pypi", package_name, "1.0.0").await;
+
+    let (status, headers, body) =
+        download_pypi_distribution(&app, None, artifact.artifact_id, &artifact.filename).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, artifact_bytes);
+    assert_eq!(
+        headers
+            .get("x-checksum-sha256")
+            .expect("published pypi download should include a checksum header"),
+        artifact.sha256.as_str()
+    );
 }
 
 #[sqlx::test(migrations = "../../migrations")]

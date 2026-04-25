@@ -18,8 +18,8 @@ Use this instruction when the user asks to continue implementation, choose the n
   2. Protocol completeness for ecosystem adapters that already exist.
   3. Targeted test or documentation hardening for recently implemented slices.
 - When multiple slices are viable, prefer the smallest high-value extension of the organization workspace that reuses existing organization and team APIs.
-- For organization governance work, inspect [ADR 0012](../../docs/adr/0012-team-package-governance.md), [frontend/src/pages/org-detail.ts](../../frontend/src/pages/org-detail.ts), [frontend/src/api/orgs.ts](../../frontend/src/api/orgs.ts), and [crates/api/src/routes/orgs.rs](../../crates/api/src/routes/orgs.rs) early.
-- Likely adjacent slices include team CRUD, team member management, delegated package-access management, organization ownership transfer, or narrowly scoped delegated-authorization tests when UI scope would be too large.
+- For organization governance work, inspect [ADR 0012](../../docs/adr/0012-team-package-governance.md), [frontend/src/routes/orgs/[slug]/+page.svelte](../../frontend/src/routes/orgs/[slug]/+page.svelte), [frontend/src/routes/orgs/[slug]/teams/[team_slug]/+page.svelte](../../frontend/src/routes/orgs/[slug]/teams/[team_slug]/+page.svelte), [frontend/src/api/orgs.ts](../../frontend/src/api/orgs.ts), and [crates/api/src/routes/orgs.rs](../../crates/api/src/routes/orgs.rs) early.
+- Likely adjacent slices include team CRUD, team member management, delegated package-access management, delegated repository-access or namespace-access management, organization ownership transfer, or narrowly scoped delegated-authorization tests when UI scope would be too large.
 - Before making changes, show a concise checkbox todo list.
 - Implement incrementally, add or extend targeted tests, run the relevant checks, and fix issues before finishing.
 - Update docs only when the visible behavior or implementation surface materially changes.
