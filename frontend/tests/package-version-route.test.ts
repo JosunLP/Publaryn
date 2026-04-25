@@ -219,7 +219,7 @@ describe('package version route', () => {
       ],
     });
 
-    const { target, unmount, flush } = await renderSvelte(VersionPage.default);
+    const { target, unmount } = await renderSvelte(VersionPage.default);
 
     try {
       await waitFor(() => {
