@@ -342,7 +342,10 @@ describe('org non-destructive actions controller harness', () => {
         queryRequiredInput(target, '#package-create-display-name'),
         'Acme Tools'
       );
-      changeValue(queryRequiredSelect(target, '#package-create-visibility'), 'private');
+      changeValue(
+        queryRequiredSelect(target, '#package-create-visibility'),
+        'private'
+      );
       changeValue(
         queryRequiredTextArea(target, '#package-create-description'),
         'Private cargo package'
@@ -507,6 +510,13 @@ describe('org non-destructive actions controller harness', () => {
     expect(normalizeOptionalFormText(' private ')).toBe('private');
     expect(normalizeOptionalFormText('   ')).toBeNull();
     expect(normalizeOptionalFormText('')).toBeNull();
+    expect(
+      normalizeOptionalFormText(
+        new File(['binary payload'], 'artifact.tgz', {
+          type: 'application/gzip',
+        })
+      )
+    ).toBeNull();
     expect(normalizeOptionalFormText(null)).toBeNull();
     expect(normalizeOptionalFormText(undefined)).toBeNull();
   });
