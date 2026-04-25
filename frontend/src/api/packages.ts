@@ -205,15 +205,13 @@ export interface PackageDetail {
   can_manage_trusted_publishers?: boolean;
   can_manage_security?: boolean;
   can_transfer?: boolean;
-  team_access?:
-    | Array<{
-        team_id?: NullableString;
-        team_slug?: NullableString;
-        team_name?: NullableString;
-        permissions?: string[] | null;
-        granted_at?: NullableString;
-      }>
-    | null;
+  team_access?: Array<{
+    team_id?: NullableString;
+    team_slug?: NullableString;
+    team_name?: NullableString;
+    permissions?: string[] | null;
+    granted_at?: NullableString;
+  }> | null;
   homepage?: NullableString;
   repository_url?: NullableString;
   keywords?: string[] | null;
@@ -462,6 +460,17 @@ export async function updatePackage(
     {
       body,
     }
+  );
+
+  return data;
+}
+
+export async function deletePackage(
+  ecosystem: string,
+  name: string
+): Promise<PackageMutationResult> {
+  const { data } = await api.delete<PackageMutationResult>(
+    `/v1/packages/${enc(ecosystem)}/${enc(name)}`
   );
 
   return data;

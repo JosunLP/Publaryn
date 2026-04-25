@@ -986,19 +986,17 @@ Contents:
 
 ## 16.4 Package Management UI
 
-These workflows sit on top of the current public/search/settings baseline and the emerging organization workspace. They follow immediately after the dedicated org/team governance surfaces and the remaining typed API/auth-session hardening work.
+These workflows sit on top of the current public/search/settings baseline and the organization workspace.
 
-For maintainers:
+The current implementation already exposes package settings, release management, tags and channels, delegated team access, security findings, trusted publishers, and transfer/archive actions directly from the package detail experience.
 
-- package settings
-- releases
-- tags and channels
-- maintainers
-- visibility
-- security findings
+Remaining follow-on areas for maintainers include:
+
+- broader maintainer management
+- visibility controls
 - webhooks
 - access policies
-- delete, archive, or transfer actions
+- richer delete or takedown workflows beyond archive controls
 
 ## 16.5 Organization UX
 

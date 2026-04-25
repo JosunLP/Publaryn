@@ -37,6 +37,7 @@ interface Scenario {
   requests: string[];
   gotoCalls: string[];
   packageMutations: MutationCall[];
+  packageArchiveCalls: string[];
   packageDetail: JsonRecord;
   releases: JsonRecord[];
   findings: JsonRecord[];
@@ -370,6 +371,72 @@ describe('package detail security access route', () => {
     }
   });
 
+  test('archives a package from the settings tab after explicit confirmation', async () => {
+    currentScenario = createScenario({
+      packageDetail: {
+        can_manage_metadata: true,
+        is_archived: false,
+      },
+    });
+    setPageHref(
+      `https://example.test/packages/${ECOSYSTEM}/${PACKAGE_NAME}?tab=settings`
+    );
+
+    const { target, unmount } = await renderSvelte(PackagePage.default);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Archive package');
+        expect(
+          queryRequiredCheckbox(target, '#package-archive-confirm').checked
+        ).toBe(false);
+      });
+
+      submitForm(queryRequiredForm(target, '#package-archive-form'));
+
+      await waitFor(() => {
+        expect(target.textContent).toContain(
+          'Please confirm that you understand archiving marks this package as archived.'
+        );
+      });
+
+      setChecked(
+        queryRequiredCheckbox(target, '#package-archive-confirm'),
+        true
+      );
+      submitForm(queryRequiredForm(target, '#package-archive-form'));
+
+      await waitFor(() => {
+        expect(target.textContent).toContain('Package archived');
+        expect(target.textContent).toContain(
+          'This package is already archived.'
+        );
+        expect(target.querySelector('#package-archive-form')).toBeNull();
+      });
+
+      expect(currentScenario?.packageArchiveCalls).toEqual([
+        `DELETE /v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}`,
+      ]);
+      expect(currentScenario?.packageDetail.is_archived).toBe(true);
+      expect(currentScenario?.requests).toEqual([
+        `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}`,
+        `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/releases`,
+        `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/tags`,
+        `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/security-findings`,
+        '/v1/users/me/organizations',
+        `/v1/orgs/${ORG_SLUG}/teams`,
+        `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}`,
+        `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/releases`,
+        `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/tags`,
+        `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/security-findings`,
+        '/v1/users/me/organizations',
+        `/v1/orgs/${ORG_SLUG}/teams`,
+      ]);
+    } finally {
+      unmount();
+    }
+  });
+
   test('manages package tags from the package sidebar', async () => {
     currentScenario = createScenario({
       packageDetail: {
@@ -538,6 +605,18 @@ async function handleApiRequest(
   }
 
   if (
+    method === 'DELETE' &&
+    path === `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}`
+  ) {
+    currentScenario.packageArchiveCalls.push(`${method} ${path}`);
+    currentScenario.packageDetail = {
+      ...currentScenario.packageDetail,
+      is_archived: true,
+    };
+    return apiResponse({ message: 'Package archived' });
+  }
+
+  if (
     method === 'GET' &&
     path === `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/releases`
   ) {
@@ -646,6 +725,7 @@ function createScenario(overrides: Partial<Scenario> = {}): Scenario {
     requests: [],
     gotoCalls: [],
     packageMutations: [],
+    packageArchiveCalls: [],
     packageDetail: {
       ecosystem: ECOSYSTEM,
       name: PACKAGE_NAME,

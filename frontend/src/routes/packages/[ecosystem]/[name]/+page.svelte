@@ -18,6 +18,7 @@
     TrustedPublisher,
   } from '../../../../api/packages';
   import {
+    deletePackage as archivePackage,
     createRelease,
     createTrustedPublisher as createTrustedPublisherForPackage,
     deleteTag as deletePackageTag,
@@ -147,6 +148,8 @@
   let teamAccessError: string | null = null;
   let packageSettingsNotice: string | null = null;
   let packageSettingsError: string | null = null;
+  let archiveNotice: string | null = null;
+  let archiveError: string | null = null;
   let trustedPublisherNotice: string | null = null;
   let trustedPublisherError: string | null = null;
   let includeResolvedFindings = false;
@@ -178,6 +181,8 @@
   let packageSettingsLicense = '';
   let packageSettingsKeywords = '';
   let updatingPackageSettings = false;
+  let archiveConfirmed = false;
+  let archivingPackage = false;
   let tagName = '';
   let tagVersion = '';
   let savingTag = false;
@@ -261,6 +266,8 @@
     teamAccessError = null;
     packageSettingsNotice = null;
     packageSettingsError = null;
+    archiveNotice = null;
+    archiveError = null;
     tagNotice = null;
     tagError = null;
     trustedPublisherNotice = null;
@@ -272,6 +279,7 @@
     resetReleaseForm();
     resetTransferForm();
     resetPackageSettingsForm();
+    resetArchiveForm();
     resetTagForm();
     resetTrustedPublisherForm();
 
@@ -395,6 +403,41 @@
           : 'Failed to update package settings.';
     } finally {
       updatingPackageSettings = false;
+    }
+  }
+
+  async function handleArchivePackage(event: SubmitEvent): Promise<void> {
+    event.preventDefault();
+
+    if (!pkg || pkg.can_manage_metadata !== true || archivingPackage) {
+      return;
+    }
+
+    if (pkg.is_archived) {
+      archiveError = null;
+      archiveNotice = 'This package is already archived.';
+      return;
+    }
+
+    if (!archiveConfirmed) {
+      archiveError =
+        'Please confirm that you understand archiving marks this package as archived.';
+      archiveNotice = null;
+      return;
+    }
+
+    archivingPackage = true;
+    archiveError = null;
+    archiveNotice = null;
+
+    try {
+      const result = await archivePackage(ecosystem, name);
+      await loadPackagePage();
+      archiveNotice = result.message || 'Package archived';
+    } catch (caughtError: unknown) {
+      archiveError = toErrorMessage(caughtError, 'Failed to archive package.');
+    } finally {
+      archivingPackage = false;
     }
   }
 
@@ -1085,6 +1128,11 @@
     packageSettingsLicense = values.license;
     packageSettingsKeywords = values.keywords;
     updatingPackageSettings = false;
+  }
+
+  function resetArchiveForm(): void {
+    archiveConfirmed = false;
+    archivingPackage = false;
   }
 
   function resetTagForm(preferredVersion?: string | null): void {
@@ -1911,6 +1959,72 @@
                   </button>
                 </div>
               </form>
+            </div>
+          </section>
+
+          <section class="surface-card settings-section">
+            <div class="surface-card__header">
+              <h2 class="surface-card__title">Archive package</h2>
+              <p class="surface-card__copy">
+                Archive keeps package history and audit records intact while
+                marking the package as archived in Publaryn.
+              </p>
+            </div>
+
+            <div class="surface-card__body">
+              {#if archiveNotice}
+                <div class="alert alert-success" style="margin-bottom:12px;">
+                  {archiveNotice}
+                </div>
+              {/if}
+              {#if archiveError}
+                <div class="alert alert-error" style="margin-bottom:12px;">
+                  {archiveError}
+                </div>
+              {/if}
+
+              <div class="alert alert-warning" style="margin-bottom:12px;">
+                Archiving hides this package from normal maintenance workflows,
+                but it does not remove stored releases, artifacts, or audit
+                history.
+              </div>
+
+              {#if pkg.is_archived}
+                <p class="settings-copy" style="margin-bottom:0;">
+                  This package is already archived. Authorized maintainers can
+                  still inspect package details and audit history.
+                </p>
+              {:else}
+                <form
+                  id="package-archive-form"
+                  on:submit={handleArchivePackage}
+                >
+                  <div class="form-group" style="margin-bottom:12px;">
+                    <label class="flex items-start gap-2">
+                      <input
+                        bind:checked={archiveConfirmed}
+                        type="checkbox"
+                        id="package-archive-confirm"
+                        name="confirm"
+                        required
+                        disabled={archivingPackage}
+                      />
+                      <span
+                        >I understand archiving marks this package as archived
+                        and keeps its existing releases and audit history.</span
+                      >
+                    </label>
+                  </div>
+
+                  <button
+                    type="submit"
+                    class="btn btn-danger"
+                    disabled={archivingPackage}
+                  >
+                    {archivingPackage ? 'Archiving…' : 'Archive package'}
+                  </button>
+                </form>
+              {/if}
             </div>
           </section>
         {/if}
