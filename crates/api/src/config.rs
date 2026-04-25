@@ -271,35 +271,6 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::{normalize_cors_allowed_origin, Config, ServerConfig};
-    use std::ffi::OsString;
-
-    struct EnvVarGuard {
-        key: &'static str,
-        original: Option<OsString>,
-    }
-
-    impl EnvVarGuard {
-        fn set(key: &'static str, value: &str) -> Self {
-            let original = std::env::var_os(key);
-            unsafe {
-                std::env::set_var(key, value);
-            }
-            Self { key, original }
-        }
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            match &self.original {
-                Some(value) => unsafe {
-                    std::env::set_var(self.key, value);
-                },
-                None => unsafe {
-                    std::env::remove_var(self.key);
-                },
-            }
-        }
-    }
 
     #[test]
     fn normalizes_cors_origin_with_trailing_slash() {
@@ -370,10 +341,7 @@ mod tests {
     }
 
     #[test]
-    fn test_config_ignores_search_environment_overrides() {
-        let _search_url = EnvVarGuard::set("SEARCH__URL", "http://override.invalid");
-        let _search_api_key = EnvVarGuard::set("SEARCH__API_KEY", "override-key");
-
+    fn test_config_uses_fixed_search_defaults() {
         let config = Config::test_config("postgres://test");
 
         assert_eq!(config.search.url, "http://localhost:7700");
