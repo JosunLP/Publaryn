@@ -49,7 +49,7 @@ describe('settings page controller harness', () => {
       },
     });
 
-    const { target, unmount, flush } = await renderSvelte(HarnessPath, {
+    const { unmount, flush } = await renderSvelte(HarnessPath, {
       authToken: null,
       loaders,
       tokenActions: createTokenActions(),
