@@ -1,9 +1,17 @@
-import type { BundleAnalysisSummary } from '../api/packages';
+import type { BundleAnalysisSummary, BundleRiskSummary } from '../api/packages';
 import { formatFileSize, formatNumber } from './format';
 
 export interface BundleAnalysisStat {
   label: string;
   value: string;
+}
+
+function titleCase(value: string): string {
+  return value
+    .split(/[_\s-]+/)
+    .filter(Boolean)
+    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+    .join(' ');
 }
 
 function metricValue(
@@ -113,5 +121,60 @@ export function bundleAnalysisNotes(
 ): string[] {
   return (summary?.notes || []).filter(
     (note): note is string => typeof note === 'string' && note.trim().length > 0
+  );
+}
+
+export function bundleAnalysisRisk(
+  summary: BundleAnalysisSummary | null | undefined
+): BundleRiskSummary | null {
+  return summary?.risk || null;
+}
+
+export function bundleAnalysisRiskBadgeSeverity(
+  summary: BundleAnalysisSummary | null | undefined
+): 'critical' | 'high' | 'medium' | 'low' | 'info' {
+  switch ((bundleAnalysisRisk(summary)?.level || '').toLowerCase()) {
+    case 'critical':
+      return 'critical';
+    case 'high':
+      return 'high';
+    case 'moderate':
+      return 'medium';
+    case 'low':
+      return 'low';
+    default:
+      return 'info';
+  }
+}
+
+export function bundleAnalysisRiskLabel(
+  summary: BundleAnalysisSummary | null | undefined
+): string {
+  const level = bundleAnalysisRisk(summary)?.level;
+  return level ? `${titleCase(level)} risk` : 'Risk pending';
+}
+
+export function bundleAnalysisRiskScoreLabel(
+  summary: BundleAnalysisSummary | null | undefined
+): string | null {
+  const score = bundleAnalysisRisk(summary)?.score;
+  return typeof score === 'number' && Number.isFinite(score)
+    ? `${formatNumber(score)} / 100`
+    : null;
+}
+
+export function bundleAnalysisRiskSeverityLabel(
+  summary: BundleAnalysisSummary | null | undefined
+): string | null {
+  const severity = bundleAnalysisRisk(summary)?.worst_unresolved_severity;
+  return severity ? titleCase(severity) : null;
+}
+
+export function bundleAnalysisRiskFactors(
+  summary: BundleAnalysisSummary | null | undefined
+): string[] {
+  return (bundleAnalysisRisk(summary)?.factors || []).filter(
+    (factor): factor is string =>
+      typeof factor === 'string' && factor.trim().length > 0
   );
 }

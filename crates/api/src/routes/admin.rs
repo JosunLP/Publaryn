@@ -1,6 +1,6 @@
 use axum::{
-    extract::{Query, State},
-    routing::get,
+    extract::{Path, Query, State},
+    routing::{get, post},
     Json, Router,
 };
 use chrono::{DateTime, Utc};
@@ -21,7 +21,13 @@ use crate::{
 };
 
 pub fn router() -> Router<AppState> {
-    Router::new().route("/v1/admin/jobs", get(list_background_jobs))
+    Router::new()
+        .route("/v1/admin/jobs", get(list_background_jobs))
+        .route(
+            "/v1/admin/jobs/recover-stale",
+            post(recover_stale_background_jobs),
+        )
+        .route("/v1/admin/jobs/{job_id}/retry", post(retry_background_job))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
@@ -117,10 +123,29 @@ struct BackgroundJobResponse {
     started_at: Option<DateTime<Utc>>,
     completed_at: Option<DateTime<Utc>>,
     created_at: DateTime<Utc>,
+    is_stale: bool,
+    can_retry: bool,
+    recovery_hint: Option<String>,
 }
 
 impl From<Job> for BackgroundJobResponse {
     fn from(value: Job) -> Self {
+        let is_stale = value.status == JobStatus::Running
+            && value
+                .locked_until
+                .is_some_and(|locked_until| locked_until < Utc::now());
+        let can_retry = matches!(value.status, JobStatus::Failed | JobStatus::Dead);
+        let recovery_hint = if is_stale {
+            Some("Use POST /v1/admin/jobs/recover-stale after confirming the worker lock is abandoned".to_owned())
+        } else if can_retry {
+            Some(format!(
+                "Use POST /v1/admin/jobs/{}/retry after correcting the underlying failure",
+                value.id
+            ))
+        } else {
+            None
+        };
+
         Self {
             id: value.id,
             kind: value.kind.into(),
@@ -135,6 +160,9 @@ impl From<Job> for BackgroundJobResponse {
             started_at: value.started_at,
             completed_at: value.completed_at,
             created_at: value.created_at,
+            is_stale,
+            can_retry,
+            recovery_hint,
         }
     }
 }
@@ -147,6 +175,18 @@ pub(crate) struct AdminJobsResponse {
     filters: AdminJobsFilters,
     summary: AdminJobsSummary,
     jobs: Vec<BackgroundJobResponse>,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+struct AdminJobRetryResponse {
+    message: String,
+    job: BackgroundJobResponse,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+struct AdminJobsRecoverStaleResponse {
+    message: String,
+    recovered_count: u64,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -183,8 +223,7 @@ async fn list_background_jobs(
     identity: AuthenticatedIdentity,
     Query(query): Query<AdminJobsQuery>,
 ) -> ApiResult<Json<AdminJobsResponse>> {
-    ensure_scope(&identity, SCOPE_AUDIT_READ)?;
-    ensure_platform_admin(&state.db, identity.user_id).await?;
+    ensure_admin_jobs_access(&state.db, &identity).await?;
 
     let state_filter = query.state.as_deref().map(parse_job_status).transpose()?;
     let kind_filter = query.kind.as_deref().map(parse_job_kind).transpose()?;
@@ -223,6 +262,166 @@ async fn list_background_jobs(
         },
         jobs: jobs.into_iter().map(Into::into).collect(),
     }))
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/admin/jobs/{job_id}/retry",
+    tag = "admin",
+    security(
+        ("bearer_auth" = [])
+    ),
+    params(
+        ("job_id" = Uuid, Path, description = "Background job id to retry. Only failed or dead jobs are eligible."),
+    ),
+    responses(
+        (status = 200, description = "Background job reset to pending for retry", body = AdminJobRetryResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Authenticated actor lacks platform-admin access or audit:read scope"),
+        (status = 404, description = "Background job not found"),
+        (status = 409, description = "Background job status is not retryable"),
+    )
+)]
+#[allow(dead_code)]
+pub async fn retry_background_job_doc() {}
+
+async fn retry_background_job(
+    State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
+    Path(job_id): Path<Uuid>,
+) -> ApiResult<Json<AdminJobRetryResponse>> {
+    ensure_admin_jobs_access(&state.db, &identity).await?;
+
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let current = sqlx::query(
+        "SELECT id, kind, status::text AS status, attempts, max_attempts, last_error \
+         FROM background_jobs \
+         WHERE id = $1 \
+         FOR UPDATE",
+    )
+    .bind(job_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?
+    .ok_or_else(|| {
+        ApiError(Error::NotFound(format!(
+            "Background job '{job_id}' not found"
+        )))
+    })?;
+
+    let previous_status = current
+        .try_get::<String, _>("status")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    if !matches!(previous_status.as_str(), "failed" | "dead") {
+        return Err(ApiError(Error::Conflict(format!(
+            "Background job '{job_id}' cannot be retried from status '{previous_status}'"
+        ))));
+    }
+
+    let job = sqlx::query_as::<_, Job>(
+        "UPDATE background_jobs \
+         SET status = 'pending'::job_status, \
+             attempts = 0, \
+             scheduled_at = NOW(), \
+             locked_until = NULL, \
+             locked_by = NULL, \
+             started_at = NULL, \
+             completed_at = NULL \
+         WHERE id = $1 \
+         RETURNING id, kind, payload, status, attempts, max_attempts, last_error, scheduled_at, \
+                   locked_until, locked_by, started_at, completed_at, created_at",
+    )
+    .bind(job_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    sqlx::query(
+        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, metadata, occurred_at) \
+         VALUES ($1, 'admin_job_retry', $2, $3, $4, NOW())",
+    )
+    .bind(Uuid::new_v4())
+    .bind(identity.user_id)
+    .bind(identity.audit_actor_token_id())
+    .bind(serde_json::json!({
+        "job_id": job_id,
+        "kind": current.try_get::<JobKind, _>("kind").ok().map(|kind| kind.as_str()),
+        "previous_status": previous_status,
+        "previous_attempts": current.try_get::<i32, _>("attempts").ok(),
+        "max_attempts": current.try_get::<i32, _>("max_attempts").ok(),
+        "last_error": current.try_get::<Option<String>, _>("last_error").ok().flatten(),
+    }))
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    Ok(Json(AdminJobRetryResponse {
+        message: "Background job scheduled for retry".to_owned(),
+        job: job.into(),
+    }))
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/admin/jobs/recover-stale",
+    tag = "admin",
+    security(
+        ("bearer_auth" = [])
+    ),
+    responses(
+        (status = 200, description = "Stale running jobs reset to pending", body = AdminJobsRecoverStaleResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Authenticated actor lacks platform-admin access or audit:read scope"),
+    )
+)]
+#[allow(dead_code)]
+pub async fn recover_stale_background_jobs_doc() {}
+
+async fn recover_stale_background_jobs(
+    State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
+) -> ApiResult<Json<AdminJobsRecoverStaleResponse>> {
+    ensure_admin_jobs_access(&state.db, &identity).await?;
+
+    let recovered_count = queue::recover_stale_jobs(&state.db)
+        .await
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+
+    sqlx::query(
+        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, metadata, occurred_at) \
+         VALUES ($1, 'admin_jobs_recover_stale', $2, $3, $4, NOW())",
+    )
+    .bind(Uuid::new_v4())
+    .bind(identity.user_id)
+    .bind(identity.audit_actor_token_id())
+    .bind(serde_json::json!({
+        "recovered_count": recovered_count,
+    }))
+    .execute(&state.db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    Ok(Json(AdminJobsRecoverStaleResponse {
+        message: "Stale background jobs recovered".to_owned(),
+        recovered_count,
+    }))
+}
+
+async fn ensure_admin_jobs_access(
+    db: &sqlx::PgPool,
+    identity: &AuthenticatedIdentity,
+) -> ApiResult<()> {
+    ensure_scope(identity, SCOPE_AUDIT_READ)?;
+    ensure_platform_admin(db, identity.user_id).await
 }
 
 fn parse_job_status(input: &str) -> ApiResult<JobStatus> {
@@ -374,8 +573,11 @@ async fn stale_jobs_count(db: &sqlx::PgPool) -> ApiResult<i64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_job_kind, parse_job_status};
+    use super::{parse_job_kind, parse_job_status, BackgroundJobResponse};
+    use chrono::{Duration, Utc};
     use publaryn_workers::queue::{JobKind, JobStatus};
+    use serde_json::json;
+    use uuid::Uuid;
 
     #[test]
     fn parses_known_job_status_values() {
@@ -402,5 +604,56 @@ mod tests {
             parse_job_kind("cleanup_oci_blobs").unwrap(),
             JobKind::CleanupOciBlobs
         );
+    }
+
+    #[test]
+    fn background_job_response_explains_recovery_actions() {
+        let stale_job = publaryn_workers::queue::Job {
+            id: Uuid::new_v4(),
+            kind: JobKind::ScanArtifact,
+            payload: json!({ "artifact_id": Uuid::new_v4() }),
+            status: JobStatus::Running,
+            attempts: 1,
+            max_attempts: 5,
+            last_error: None,
+            scheduled_at: Utc::now() - Duration::minutes(10),
+            locked_until: Some(Utc::now() - Duration::minutes(1)),
+            locked_by: Some("worker-a".to_owned()),
+            started_at: Some(Utc::now() - Duration::minutes(10)),
+            completed_at: None,
+            created_at: Utc::now() - Duration::minutes(10),
+        };
+        let stale_response = BackgroundJobResponse::from(stale_job);
+        assert!(stale_response.is_stale);
+        assert!(!stale_response.can_retry);
+        assert!(stale_response
+            .recovery_hint
+            .as_deref()
+            .unwrap_or_default()
+            .contains("recover-stale"));
+
+        let dead_job = publaryn_workers::queue::Job {
+            id: Uuid::new_v4(),
+            kind: JobKind::ReindexSearch,
+            payload: json!({ "package_id": Uuid::new_v4() }),
+            status: JobStatus::Dead,
+            attempts: 5,
+            max_attempts: 5,
+            last_error: Some("boom".to_owned()),
+            scheduled_at: Utc::now() - Duration::minutes(10),
+            locked_until: None,
+            locked_by: None,
+            started_at: Some(Utc::now() - Duration::minutes(10)),
+            completed_at: Some(Utc::now() - Duration::minutes(9)),
+            created_at: Utc::now() - Duration::minutes(10),
+        };
+        let dead_response = BackgroundJobResponse::from(dead_job);
+        assert!(!dead_response.is_stale);
+        assert!(dead_response.can_retry);
+        assert!(dead_response
+            .recovery_hint
+            .as_deref()
+            .unwrap_or_default()
+            .contains("/retry"));
     }
 }

@@ -74,6 +74,12 @@
     buildBundleAnalysisQuickFacts,
     buildBundleAnalysisStats,
     bundleAnalysisNotes,
+    bundleAnalysisRisk,
+    bundleAnalysisRiskBadgeSeverity,
+    bundleAnalysisRiskFactors,
+    bundleAnalysisRiskLabel,
+    bundleAnalysisRiskScoreLabel,
+    bundleAnalysisRiskSeverityLabel,
   } from '../../../../utils/package-analysis';
   import {
     buildPackageMetadataUpdateInput,
@@ -1265,6 +1271,16 @@
 
   $: packageMetadata = pkg?.ecosystem_metadata ?? null;
   $: packageBundleAnalysis = pkg?.bundle_analysis ?? null;
+  $: packageBundleRisk = bundleAnalysisRisk(packageBundleAnalysis);
+  $: packageBundleRiskFactors = bundleAnalysisRiskFactors(
+    packageBundleAnalysis
+  );
+  $: packageBundleRiskScore = bundleAnalysisRiskScoreLabel(
+    packageBundleAnalysis
+  );
+  $: packageBundleRiskWorstSeverity = bundleAnalysisRiskSeverityLabel(
+    packageBundleAnalysis
+  );
   $: canonicalPackageEcosystem = pkg?.ecosystem ?? ecosystem;
   $: normalizedFindingSearchQuery =
     normalizePackageSecuritySearchQuery(findingSearchQuery);
@@ -2221,6 +2237,68 @@
                     </div>
                   </div>
                 {/if}
+              {/if}
+            </div>
+          </div>
+        {/if}
+
+        {#if packageBundleRisk}
+          <div class="card">
+            <div class="sidebar-section">
+              <h3>Risk posture</h3>
+              <p class="settings-copy" style="margin-bottom:12px;">
+                Heuristic supply-chain signals derived from the latest visible
+                release{packageBundleAnalysis?.source_version
+                  ? ` (${packageBundleAnalysis.source_version})`
+                  : ''}. The score combines unresolved security findings with
+                install, native-code, and dependency-surface hints.
+              </p>
+              <div class="token-row__scopes" style="margin-bottom:12px;">
+                <span
+                  class={`badge badge-severity-${bundleAnalysisRiskBadgeSeverity(
+                    packageBundleAnalysis
+                  )}`}>{bundleAnalysisRiskLabel(packageBundleAnalysis)}</span
+                >
+                {#if packageBundleRiskScore}
+                  <span class="badge badge-ecosystem"
+                    >Score {packageBundleRiskScore}</span
+                  >
+                {/if}
+                {#if (packageBundleRisk.unresolved_finding_count || 0) > 0}
+                  <span class="badge badge-ecosystem"
+                    >{formatNumber(
+                      packageBundleRisk.unresolved_finding_count || 0
+                    )} unresolved finding{packageBundleRisk.unresolved_finding_count ===
+                    1
+                      ? ''
+                      : 's'}</span
+                  >
+                {/if}
+              </div>
+              {#if packageBundleRiskWorstSeverity}
+                <div class="sidebar-row">
+                  <span class="sidebar-row__label"
+                    >Worst unresolved finding</span
+                  >
+                  <span class="sidebar-row__value"
+                    >{packageBundleRiskWorstSeverity}</span
+                  >
+                </div>
+              {/if}
+              {#if packageBundleRiskFactors.length > 0}
+                <div
+                  class="settings-copy"
+                  style="display:grid; gap:6px; margin:0;"
+                >
+                  {#each packageBundleRiskFactors as factor}
+                    <span>{factor}</span>
+                  {/each}
+                </div>
+              {:else}
+                <p class="settings-copy" style="margin:0;">
+                  No elevated risk signals were detected in the latest analyzed
+                  release.
+                </p>
               {/if}
             </div>
           </div>

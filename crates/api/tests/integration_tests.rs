@@ -11247,7 +11247,7 @@ async fn test_package_visibility_update_rejects_broader_scope_than_repository(po
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert!(update_body["error"]
         .as_str()
         .expect("error should be present")
@@ -12314,11 +12314,9 @@ async fn test_search_surfaces_include_private_packages_visible_through_team_gran
     let expected_bob_names = std::collections::BTreeSet::from([
         "delegated-public-search-widget".to_owned(),
         "delegated-package-search-widget".to_owned(),
-    ]);
-    let expected_carol_names = std::collections::BTreeSet::from([
-        "delegated-public-search-widget".to_owned(),
         "delegated-repository-search-widget".to_owned(),
     ]);
+    let expected_carol_names = expected_bob_names.clone();
 
     let mut latest_management_bob = Value::Null;
     let mut latest_management_carol = Value::Null;
@@ -12453,6 +12451,12 @@ async fn test_search_surfaces_include_private_packages_visible_through_team_gran
             && npm_bob_names == expected_bob_names
             && npm_carol_names == expected_carol_names
             && npm_anonymous_names == expected_anonymous_names
+            && latest_management_bob["total"] == 3
+            && latest_management_carol["total"] == 3
+            && latest_management_anonymous["total"] == 1
+            && latest_npm_bob["total"] == 3
+            && latest_npm_carol["total"] == 3
+            && latest_npm_anonymous["total"] == 1
         {
             found = true;
             break;
@@ -13490,6 +13494,127 @@ async fn test_release_detail_surfaces_management_capability_and_visibility(pool:
         get_release_detail(&app, Some(&alice_jwt), "npm", "release-ui-widget", "1.2.3").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(owner_scanning_release["status"], "scanning");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_package_and_release_bundle_analysis_include_risk_posture(pool: PgPool) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, repository_body) = create_repository(
+        &app,
+        &alice_jwt,
+        "Alice Risk Packages",
+        "alice-risk-packages",
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "npm",
+        "risk-widget",
+        "alice-risk-packages",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let dependency_map = (0..12)
+        .map(|index| (format!("dep-{index}"), serde_json::json!("^1.0.0")))
+        .collect::<serde_json::Map<String, Value>>();
+
+    let (status, release_body) = create_release_for_package_with_payload(
+        &app,
+        &alice_jwt,
+        "npm",
+        "risk-widget",
+        json!({
+            "version": "1.2.3",
+            "provenance": {
+                "dependencies": dependency_map,
+                "scripts": {
+                    "postinstall": "node scripts/postinstall.js"
+                },
+                "gypfile": true
+            }
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected release response: {release_body}"
+    );
+
+    let release_id = get_release_id(&pool, "npm", "risk-widget", "1.2.3").await;
+    sqlx::query(
+        "INSERT INTO security_findings (release_id, kind, severity, title, description, advisory_id) \
+         VALUES ($1, $2::finding_kind, $3::security_severity, $4, $5, $6)",
+    )
+    .bind(release_id)
+    .bind("vulnerability")
+    .bind("high")
+    .bind("Prototype pollution")
+    .bind("User-controlled merge input can pollute object prototypes.")
+    .bind("CVE-2026-0001")
+    .execute(&pool)
+    .await
+    .expect("security finding should insert");
+
+    let expected_risk = json!({
+        "score": 54,
+        "level": "high",
+        "unresolved_finding_count": 1,
+        "worst_unresolved_severity": "high",
+        "factors": [
+            "1 unresolved security finding (worst severity: high)",
+            "1 install lifecycle script runs during install",
+            "Native build tooling is detected",
+            "12 direct dependencies increase the supply-chain surface"
+        ]
+    });
+
+    let (status, release_detail) =
+        get_release_detail(&app, Some(&alice_jwt), "npm", "risk-widget", "1.2.3").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected release detail: {release_detail}"
+    );
+    assert_eq!(
+        release_detail["bundle_analysis"]["direct_dependency_count"],
+        12
+    );
+    assert_eq!(release_detail["bundle_analysis"]["install_script_count"], 1);
+    assert_eq!(release_detail["bundle_analysis"]["has_native_code"], true);
+    assert_eq!(release_detail["bundle_analysis"]["risk"], expected_risk);
+
+    let (status, package_detail) =
+        get_package_detail(&app, Some(&alice_jwt), "npm", "risk-widget").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected package detail: {package_detail}"
+    );
+    assert_eq!(
+        package_detail["bundle_analysis"]["direct_dependency_count"],
+        12
+    );
+    assert_eq!(package_detail["bundle_analysis"]["install_script_count"], 1);
+    assert_eq!(package_detail["bundle_analysis"]["has_native_code"], true);
+    assert_eq!(package_detail["bundle_analysis"]["risk"], expected_risk);
 }
 
 #[sqlx::test(migrations = "../../migrations")]

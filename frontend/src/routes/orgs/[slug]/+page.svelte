@@ -4,8 +4,10 @@
 
   import { ApiError, getAuthToken } from '../../../api/client';
   import {
+    exportOrgAccessHistoryCsv,
     getOrgWorkspaceBootstrap,
     listMyOrganizations,
+    listOrgAccessHistory,
     listOrgAuditLogs,
     listOrgSecurityFindings,
     searchOrgMembers,
@@ -18,6 +20,16 @@
   import TeamPackageAccessEditor from '../../../lib/components/TeamPackageAccessEditor.svelte';
   import TeamRepositoryAccessEditor from '../../../lib/components/TeamRepositoryAccessEditor.svelte';
   import TeamSettingsEditor from '../../../lib/components/TeamSettingsEditor.svelte';
+  import {
+    accessHistorySummary,
+    buildOrgAccessHistoryExportFilename,
+    formatAccessHistoryActor,
+    formatAccessHistoryEvent,
+    formatAccessHistoryPermissionDelta,
+    formatAccessHistoryScope,
+    formatAccessHistoryTarget,
+    formatAccessHistoryTeam,
+  } from '../../../pages/org-access-history';
   import {
     buildAuditActorOptions,
     buildRemoteAuditActorOptions,
@@ -36,6 +48,8 @@
     normalizeAuditActorUserId,
     normalizeAuditActorUsername,
   } from '../../../pages/org-audit-query';
+  import { createOrgDestructiveActionsController } from '../../../pages/org-destructive-actions';
+  import { createOrgGovernanceController } from '../../../pages/org-governance';
   import {
     countOrgInvitationStatuses,
     describeOrgInvitationEvent,
@@ -47,9 +61,9 @@
     buildOrgMemberPickerOptions,
     resolveOrgMemberPickerInput,
   } from '../../../pages/org-member-picker';
-  import {
-    getOrgSecurityViewFromQuery,
-  } from '../../../pages/org-security-query';
+  import { createOrgNonDestructiveActionsController } from '../../../pages/org-non-destructive-actions';
+  import { createOrgObservabilityController } from '../../../pages/org-observability';
+  import { getOrgSecurityViewFromQuery } from '../../../pages/org-security-query';
   import { buildOrgSecurityPackageKey } from '../../../pages/org-security-triage';
   import {
     canManageOrgInvitations,
@@ -63,14 +77,6 @@
     canViewOrgPeopleWorkspace,
   } from '../../../pages/org-workspace-access';
   import { renderPackageSelectionValue } from '../../../pages/org-workspace-actions';
-  import { createOrgObservabilityController } from '../../../pages/org-observability';
-  import {
-    createOrgNonDestructiveActionsController,
-  } from '../../../pages/org-non-destructive-actions';
-  import {
-    createOrgDestructiveActionsController,
-  } from '../../../pages/org-destructive-actions';
-  import { createOrgGovernanceController } from '../../../pages/org-governance';
   import {
     buildPackageDetailsPath,
     buildPackageSecurityFindingPath,
@@ -123,6 +129,10 @@
   type NamespaceClaim = import('../../../api/namespaces').NamespaceClaim;
   type OrgAuditListResponse = import('../../../api/orgs').OrgAuditListResponse;
   type OrgAuditLog = import('../../../api/orgs').OrgAuditLog;
+  type OrgAccessHistoryEntry =
+    import('../../../api/orgs').OrgAccessHistoryEntry;
+  type OrgAccessHistoryListResponse =
+    import('../../../api/orgs').OrgAccessHistoryListResponse;
   type OrgInvitation = import('../../../api/orgs').OrgInvitation;
   type OrgMember = import('../../../api/orgs').OrgMember;
   type OrgPackageSummary = import('../../../api/orgs').OrgPackageSummary;
@@ -156,6 +166,7 @@
     import('../../../pages/team-management').TeamRepositoryAccessState;
 
   const ORG_AUDIT_PAGE_SIZE = 20;
+  const ORG_ACCESS_HISTORY_PAGE_SIZE = 8;
   const DEFAULT_NAMESPACE_ECOSYSTEM = 'npm';
   const DEFAULT_PACKAGE_ECOSYSTEM = 'npm';
   const REVIEW_TEAM_FALLBACK_LABEL = 'Team (no name)';
@@ -282,6 +293,9 @@
   let auditError: string | null = null;
   let auditHasNext = false;
   let exportingAudit = false;
+  let accessHistory: OrgAccessHistoryEntry[] = [];
+  let accessHistoryError: string | null = null;
+  let exportingAccessHistory = false;
   let auditActorOptions: OrgAuditActorOption[] = [];
   let auditActorRemoteOptions: OrgAuditActorOption[] = [];
   let auditActorInput = '';
@@ -663,7 +677,7 @@
         slug
       );
 
-      const [memberState, auditData] = await Promise.all([
+      const [memberState, auditData, accessHistoryData] = await Promise.all([
         loadOrgMembersState(slug, {
           include: canViewPeopleWorkspace,
           errorMessage: 'Failed to load members.',
@@ -696,6 +710,29 @@
               logs: [],
               load_error: null,
             }),
+        canViewAudit
+          ? listOrgAccessHistory(slug, {
+              page: 1,
+              perPage: ORG_ACCESS_HISTORY_PAGE_SIZE,
+            }).catch(
+              (caughtError: unknown): OrgAccessHistoryListResponse => ({
+                page: 1,
+                per_page: ORG_ACCESS_HISTORY_PAGE_SIZE,
+                has_next: false,
+                entries: [],
+                load_error: toErrorMessage(
+                  caughtError,
+                  'Failed to load delegated access history.'
+                ),
+              })
+            )
+          : Promise.resolve<OrgAccessHistoryListResponse>({
+              page: 1,
+              per_page: ORG_ACCESS_HISTORY_PAGE_SIZE,
+              has_next: false,
+              entries: [],
+              load_error: null,
+            }),
       ]);
 
       members = memberState.members;
@@ -712,6 +749,8 @@
       auditLogs = auditData.logs || [];
       auditError = auditData.load_error || null;
       auditHasNext = auditData.has_next === true;
+      accessHistory = accessHistoryData.entries || [];
+      accessHistoryError = accessHistoryData.load_error || null;
     } catch (caughtError: unknown) {
       if (caughtError instanceof ApiError && caughtError.status === 404) {
         notFound = true;
@@ -799,6 +838,26 @@
 
   async function handleExportAudit(): Promise<void> {
     await orgObservability.exportAudit();
+  }
+
+  async function handleExportAccessHistory(): Promise<void> {
+    exportingAccessHistory = true;
+
+    try {
+      const csv = await exportOrgAccessHistoryCsv(slug);
+      downloadTextFile(
+        buildOrgAccessHistoryExportFilename(slug, new Date()),
+        csv,
+        'text/csv;charset=utf-8'
+      );
+    } catch (caughtError: unknown) {
+      error = toErrorMessage(
+        caughtError,
+        'Failed to export delegated access history.'
+      );
+    } finally {
+      exportingAccessHistory = false;
+    }
   }
 
   async function handleSecurityFilterSubmit(event: SubmitEvent): Promise<void> {
@@ -919,7 +978,11 @@
     claimId: string | null | undefined,
     namespace: string
   ): Promise<void> {
-    await orgDestructiveActions.submitNamespaceDelete(event, claimId, namespace);
+    await orgDestructiveActions.submitNamespaceDelete(
+      event,
+      claimId,
+      namespace
+    );
   }
 
   async function handleNamespaceTransfer(event: SubmitEvent): Promise<void> {
@@ -946,7 +1009,10 @@
     event: SubmitEvent,
     repositorySlug: string
   ): Promise<void> {
-    await orgNonDestructiveActions.submitRepositoryUpdate(event, repositorySlug);
+    await orgNonDestructiveActions.submitRepositoryUpdate(
+      event,
+      repositorySlug
+    );
   }
 
   async function handleRepositoryTransfer(event: SubmitEvent): Promise<void> {
@@ -1423,6 +1489,67 @@
       <section class="card settings-section">
         <div class="org-section-header">
           <div>
+            <h2>Delegated access history</h2>
+            <p class="settings-copy">
+              Audit-backed timeline for package, repository, and namespace team
+              grants so administrators can answer who had access when.
+            </p>
+          </div>
+          <button
+            type="button"
+            class="btn btn-secondary btn-sm"
+            on:click={handleExportAccessHistory}
+            disabled={exportingAccessHistory}
+          >
+            {exportingAccessHistory ? 'Exporting…' : 'Export access CSV'}
+          </button>
+        </div>
+
+        {#if accessHistoryError}
+          <div class="alert alert-error">{accessHistoryError}</div>
+        {:else if accessHistory.length === 0}
+          <div class="empty-state">
+            <h3>No delegated access changes yet</h3>
+            <p>
+              Package, repository, and namespace team grant changes will appear
+              here as immutable audit-backed history.
+            </p>
+          </div>
+        {:else}
+          <div class="token-list">
+            {#each accessHistory as entry}
+              {@const actor = formatAccessHistoryActor(entry)}
+              <div class="token-row">
+                <div class="token-row__main">
+                  <div class="token-row__title">
+                    {formatAccessHistoryEvent(entry.event)} · {formatAccessHistoryTarget(
+                      entry
+                    )}
+                  </div>
+                  <div class="token-row__meta">
+                    <span>{formatAccessHistoryScope(entry.scope)}</span>
+                    <span>team {formatAccessHistoryTeam(entry)}</span>
+                    {#if actor}<span>by {actor}</span>{/if}
+                    {#if entry.occurred_at}<span
+                        >{formatDate(entry.occurred_at)}</span
+                      >{/if}
+                  </div>
+                  <p class="settings-copy">{accessHistorySummary(entry)}</p>
+                  <div class="token-row__scopes">
+                    <span class="badge badge-ecosystem"
+                      >{formatAccessHistoryPermissionDelta(entry)}</span
+                    >
+                  </div>
+                </div>
+              </div>
+            {/each}
+          </div>
+        {/if}
+      </section>
+
+      <section class="card settings-section">
+        <div class="org-section-header">
+          <div>
             <h2>Activity log</h2>
             <p class="settings-copy">
               Organization governance history with filters and CSV export.
@@ -1543,8 +1670,8 @@
                 disabled
               />
               <p class="settings-copy">
-                Organization slugs are part of workspace URLs and stay immutable after
-                creation.
+                Organization slugs are part of workspace URLs and stay immutable
+                after creation.
               </p>
             </div>
           </div>
@@ -1583,7 +1710,8 @@
                 placeholder="registry@example.com"
               />
               <p class="settings-copy">
-                Optional public contact email for registry and organization support.
+                Optional public contact email for registry and organization
+                support.
               </p>
             </div>
           </div>

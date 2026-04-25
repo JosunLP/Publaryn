@@ -150,7 +150,16 @@ export interface BundleAnalysisSummary {
   has_cli_entrypoints?: boolean | null;
   has_tree_shaking_hints?: boolean | null;
   has_native_code?: boolean | null;
+  risk?: BundleRiskSummary | null;
   notes?: string[] | null;
+}
+
+export interface BundleRiskSummary {
+  score?: number | null;
+  level?: NullableString;
+  unresolved_finding_count?: number | null;
+  worst_unresolved_severity?: NullableString;
+  factors?: string[] | null;
 }
 
 export interface SearchPackagesOptions {
@@ -175,6 +184,18 @@ export interface SearchPackage {
   download_count?: number | null;
   updated_at?: NullableString;
   description?: NullableString;
+  discovery?: SearchPackageDiscoverySummary | null;
+}
+
+export interface SearchPackageDiscoverySummary {
+  risk_level?: NullableString;
+  unresolved_security_finding_count?: number | null;
+  worst_unresolved_security_severity?: NullableString;
+  has_trusted_publisher?: boolean | null;
+  trusted_publisher_count?: number | null;
+  latest_release_status?: NullableString;
+  latest_release_published_at?: NullableString;
+  signals?: string[] | null;
 }
 
 export interface SearchPackagesResponse {

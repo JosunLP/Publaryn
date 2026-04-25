@@ -23,12 +23,20 @@
     copyToClipboard,
     formatDate,
     formatFileSize,
+    formatNumber,
   } from '../../../../../../utils/format';
   import {
     buildBundleAnalysisHighlights,
     buildBundleAnalysisStats,
     bundleAnalysisNotes,
+    bundleAnalysisRisk,
+    bundleAnalysisRiskBadgeSeverity,
+    bundleAnalysisRiskFactors,
+    bundleAnalysisRiskLabel,
+    bundleAnalysisRiskScoreLabel,
+    bundleAnalysisRiskSeverityLabel,
   } from '../../../../../../utils/package-analysis';
+  import { buildReleaseDependencyOverview } from '../../../../../../utils/release-metadata';
   import {
     ARTIFACT_KIND_OPTIONS,
     describeReleaseReadiness,
@@ -328,7 +336,14 @@
 
   $: artifactCount = artifacts.length;
   $: bundleAnalysis = release?.bundle_analysis ?? null;
+  $: releaseBundleRisk = bundleAnalysisRisk(bundleAnalysis);
+  $: releaseBundleRiskFactors = bundleAnalysisRiskFactors(bundleAnalysis);
+  $: releaseBundleRiskScore = bundleAnalysisRiskScoreLabel(bundleAnalysis);
+  $: releaseBundleRiskWorstSeverity =
+    bundleAnalysisRiskSeverityLabel(bundleAnalysis);
   $: releaseMetadata = release?.ecosystem_metadata ?? null;
+  $: releaseDependencyOverview =
+    buildReleaseDependencyOverview(releaseMetadata);
   $: cargoMetadata =
     releaseMetadata?.kind === 'cargo' ? releaseMetadata.details : null;
   $: nugetMetadata =
@@ -499,6 +514,42 @@
           <div class="card mb-4">
             <h3 class="metadata-block__title">Changelog</h3>
             <pre>{release.changelog}</pre>
+          </div>
+        {/if}
+
+        {#if releaseDependencyOverview}
+          <div class="card mb-4">
+            <h3 class="metadata-block__title">Dependency overview</h3>
+            <p class="settings-copy" style="margin-bottom:12px;">
+              Normalized dependency groups extracted from the stored
+              {ecosystemLabel(releaseDependencyOverview.ecosystem)} release metadata.
+            </p>
+            <div class="token-row__scopes" style="margin-bottom:12px;">
+              <span class="badge badge-ecosystem"
+                >{formatNumber(releaseDependencyOverview.total)} total</span
+              >
+              <span class="badge badge-ecosystem"
+                >{formatNumber(releaseDependencyOverview.groups.length)} group{releaseDependencyOverview
+                  .groups.length === 1
+                  ? ''
+                  : 's'}</span
+              >
+            </div>
+            {#each releaseDependencyOverview.groups as group}
+              <div class="sidebar-row">
+                <span class="sidebar-row__label">{group.label}</span>
+                <span class="sidebar-row__value"
+                  >{formatNumber(group.count)}</span
+                >
+              </div>
+              {#if group.names.length > 0}
+                <div class="token-row__scopes" style="margin:6px 0 12px;">
+                  {#each group.names as dependencyName}
+                    <span class="badge badge-ecosystem">{dependencyName}</span>
+                  {/each}
+                </div>
+              {/if}
+            {/each}
           </div>
         {/if}
 
@@ -1077,6 +1128,65 @@
             </div>
           </div>
         </div>
+
+        {#if releaseBundleRisk}
+          <div class="card">
+            <div class="sidebar-section">
+              <h3>Risk posture</h3>
+              <p class="settings-copy" style="margin-bottom:12px;">
+                Heuristic supply-chain signals for this release based on
+                unresolved security findings plus install, native-code, and
+                dependency-surface hints.
+              </p>
+              <div class="token-row__scopes" style="margin-bottom:12px;">
+                <span
+                  class={`badge badge-severity-${bundleAnalysisRiskBadgeSeverity(
+                    bundleAnalysis
+                  )}`}>{bundleAnalysisRiskLabel(bundleAnalysis)}</span
+                >
+                {#if releaseBundleRiskScore}
+                  <span class="badge badge-ecosystem"
+                    >Score {releaseBundleRiskScore}</span
+                  >
+                {/if}
+                {#if (releaseBundleRisk.unresolved_finding_count || 0) > 0}
+                  <span class="badge badge-ecosystem"
+                    >{formatNumber(
+                      releaseBundleRisk.unresolved_finding_count || 0
+                    )} unresolved finding{releaseBundleRisk.unresolved_finding_count ===
+                    1
+                      ? ''
+                      : 's'}</span
+                  >
+                {/if}
+              </div>
+              {#if releaseBundleRiskWorstSeverity}
+                <div class="sidebar-row">
+                  <span class="sidebar-row__label"
+                    >Worst unresolved finding</span
+                  >
+                  <span class="sidebar-row__value"
+                    >{releaseBundleRiskWorstSeverity}</span
+                  >
+                </div>
+              {/if}
+              {#if releaseBundleRiskFactors.length > 0}
+                <div
+                  class="settings-copy"
+                  style="display:grid; gap:6px; margin:0;"
+                >
+                  {#each releaseBundleRiskFactors as factor}
+                    <span>{factor}</span>
+                  {/each}
+                </div>
+              {:else}
+                <p class="settings-copy" style="margin:0;">
+                  No elevated risk signals were detected for this release.
+                </p>
+              {/if}
+            </div>
+          </div>
+        {/if}
 
         {#if bundleAnalysis}
           <div class="card">

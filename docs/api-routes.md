@@ -21,7 +21,7 @@ readiness, and protocol mounts.
 | `GET /v1/search`        | Visibility-aware package search                                                      |
 | `/v1/tokens*`           | Scoped API token issuance, listing, and revocation                                   |
 | `GET /v1/audit`         | Platform audit log for platform administrators                                       |
-| `GET /v1/admin/jobs`    | Filtered operator queue visibility for recovery and triage                           |
+| `/v1/admin/jobs*`       | Filtered operator queue visibility, stale-lock recovery, and safe failed-job retry   |
 | `GET /v1/stats`         | Public top-level platform statistics                                                 |
 | `GET /health`           | Liveness probe                                                                       |
 | `GET /readiness`        | Readiness probe backed by PostgreSQL and optional Redis connectivity                 |
@@ -35,6 +35,10 @@ The following endpoint groups define the main 1.0 user journeys:
   recovery codes, and scoped token management.
 - **Governance**: organizations, invitations, teams, delegated package access,
   repository access, namespace access, and ownership transfer flows.
+- **Delegated access history**: organization admins can inspect and export
+  audit-backed package, repository, and namespace access changes through
+  `GET /v1/orgs/{slug}/access-history` and
+  `GET /v1/orgs/{slug}/access-history/export`.
 - **Package lifecycle**: package creation, package metadata and visibility
   updates, release creation, artifact upload, publish, yank, unyank,
   deprecate, tags, security-finding triage, and trusted publisher
@@ -44,6 +48,17 @@ The following endpoint groups define the main 1.0 user journeys:
   ecosystem-specific dependency metadata where available.
 - **Operations**: platform statistics, operator queue visibility, audit export,
   security export, and health probes.
+
+### Organization governance additions in 1.1.0
+
+| Route                                       | Purpose                                                                                  |
+| ------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `GET /v1/orgs/{slug}/access-history`        | List delegated package, repository, and namespace access changes from organization audit |
+| `GET /v1/orgs/{slug}/access-history/export` | Export the same access-history view as CSV for compliance review                         |
+
+The access-history routes accept optional scope, team, target, date-range,
+page, and page-size filters. They reuse the organization audit authorization
+model and do not create a second access ledger.
 
 ## Native protocol adapter mounts
 

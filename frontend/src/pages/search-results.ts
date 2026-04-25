@@ -1,8 +1,6 @@
 import type { SearchPackage } from '../api/packages';
 
-function normalizeSearchResultValue(
-  value: string | null | undefined
-): string {
+function normalizeSearchResultValue(value: string | null | undefined): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
@@ -17,4 +15,45 @@ export function formatSearchResultRepository(
   }
 
   return repositoryName || repositorySlug;
+}
+
+function titleCase(value: string): string {
+  return value
+    .split(/[_\s-]+/)
+    .filter(Boolean)
+    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+    .join(' ');
+}
+
+export function searchResultRiskBadgeSeverity(
+  result: Pick<SearchPackage, 'discovery'>
+): 'critical' | 'high' | 'medium' | 'low' | 'info' {
+  switch ((result.discovery?.risk_level || '').toLowerCase()) {
+    case 'critical':
+      return 'critical';
+    case 'high':
+      return 'high';
+    case 'moderate':
+      return 'medium';
+    case 'low':
+      return 'low';
+    default:
+      return 'info';
+  }
+}
+
+export function searchResultRiskLabel(
+  result: Pick<SearchPackage, 'discovery'>
+): string {
+  const level = normalizeSearchResultValue(result.discovery?.risk_level);
+  return level ? `${titleCase(level)} risk` : 'Risk pending';
+}
+
+export function searchResultDiscoverySignals(
+  result: Pick<SearchPackage, 'discovery'>
+): string[] {
+  return (result.discovery?.signals || []).filter(
+    (signal): signal is string =>
+      typeof signal === 'string' && signal.trim().length > 0
+  );
 }

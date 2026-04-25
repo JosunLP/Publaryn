@@ -54,7 +54,17 @@ pub(crate) struct BundleAnalysisSummary {
     pub has_cli_entrypoints: Option<bool>,
     pub has_tree_shaking_hints: Option<bool>,
     pub has_native_code: Option<bool>,
+    pub risk: Option<BundleRiskSummary>,
     pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Default, PartialEq, Eq)]
+pub(crate) struct BundleRiskSummary {
+    pub score: u8,
+    pub level: String,
+    pub unresolved_finding_count: usize,
+    pub worst_unresolved_severity: Option<String>,
+    pub factors: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -69,6 +79,41 @@ struct ArtifactRecord {
 struct ArchiveProbeSummary {
     install_size_bytes: i64,
     file_count: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct SecurityFindingSeveritySummary {
+    critical_count: usize,
+    high_count: usize,
+    medium_count: usize,
+    low_count: usize,
+    info_count: usize,
+}
+
+impl SecurityFindingSeveritySummary {
+    fn unresolved_count(self) -> usize {
+        self.critical_count
+            .saturating_add(self.high_count)
+            .saturating_add(self.medium_count)
+            .saturating_add(self.low_count)
+            .saturating_add(self.info_count)
+    }
+
+    fn worst_severity(self) -> Option<&'static str> {
+        if self.critical_count > 0 {
+            Some("critical")
+        } else if self.high_count > 0 {
+            Some("high")
+        } else if self.medium_count > 0 {
+            Some("medium")
+        } else if self.low_count > 0 {
+            Some("low")
+        } else if self.info_count > 0 {
+            Some("info")
+        } else {
+            None
+        }
+    }
 }
 
 pub(crate) async fn load_release_bundle_analysis(
@@ -109,6 +154,7 @@ pub(crate) async fn load_release_bundle_analysis(
         has_cli_entrypoints: None,
         has_tree_shaking_hints: None,
         has_native_code: None,
+        risk: None,
         notes: Vec::new(),
     };
 
@@ -155,6 +201,9 @@ pub(crate) async fn load_release_bundle_analysis(
         }
     }
 
+    let security_findings = load_release_security_finding_severity_summary(db, release_id).await?;
+    summary.risk = Some(build_bundle_risk_summary(&summary, security_findings));
+
     summary.notes = notes.into_iter().collect();
     Ok(summary)
 }
@@ -185,6 +234,148 @@ async fn load_release_artifacts(
             .collect()
     })
     .map_err(|error| ApiError(Error::Database(error)))
+}
+
+async fn load_release_security_finding_severity_summary(
+    db: &sqlx::PgPool,
+    release_id: Uuid,
+) -> ApiResult<SecurityFindingSeveritySummary> {
+    let row = sqlx::query(
+        "SELECT COUNT(*) FILTER (WHERE severity = 'critical'::security_severity)::BIGINT AS critical_count, \
+                COUNT(*) FILTER (WHERE severity = 'high'::security_severity)::BIGINT AS high_count, \
+                COUNT(*) FILTER (WHERE severity = 'medium'::security_severity)::BIGINT AS medium_count, \
+                COUNT(*) FILTER (WHERE severity = 'low'::security_severity)::BIGINT AS low_count, \
+                COUNT(*) FILTER (WHERE severity = 'info'::security_severity)::BIGINT AS info_count \
+         FROM security_findings \
+         WHERE release_id = $1 AND is_resolved = FALSE",
+    )
+    .bind(release_id)
+    .fetch_one(db)
+    .await
+    .map_err(|error| ApiError(Error::Database(error)))?;
+
+    Ok(SecurityFindingSeveritySummary {
+        critical_count: row
+            .try_get::<i64, _>("critical_count")
+            .ok()
+            .and_then(|value| usize::try_from(value).ok())
+            .unwrap_or(0),
+        high_count: row
+            .try_get::<i64, _>("high_count")
+            .ok()
+            .and_then(|value| usize::try_from(value).ok())
+            .unwrap_or(0),
+        medium_count: row
+            .try_get::<i64, _>("medium_count")
+            .ok()
+            .and_then(|value| usize::try_from(value).ok())
+            .unwrap_or(0),
+        low_count: row
+            .try_get::<i64, _>("low_count")
+            .ok()
+            .and_then(|value| usize::try_from(value).ok())
+            .unwrap_or(0),
+        info_count: row
+            .try_get::<i64, _>("info_count")
+            .ok()
+            .and_then(|value| usize::try_from(value).ok())
+            .unwrap_or(0),
+    })
+}
+
+fn build_bundle_risk_summary(
+    summary: &BundleAnalysisSummary,
+    security_findings: SecurityFindingSeveritySummary,
+) -> BundleRiskSummary {
+    let unresolved_finding_count = security_findings.unresolved_count();
+    let worst_unresolved_severity = security_findings.worst_severity().map(str::to_owned);
+
+    let mut score = security_finding_risk_score(security_findings);
+    let mut factors = Vec::new();
+
+    if unresolved_finding_count > 0 {
+        factors.push(format!(
+            "{} unresolved security finding{} (worst severity: {})",
+            unresolved_finding_count,
+            plural_suffix(unresolved_finding_count),
+            security_findings.worst_severity().unwrap_or("unknown"),
+        ));
+    }
+
+    if let Some(install_script_count) = summary.install_script_count.filter(|count| *count > 0) {
+        score = score.saturating_add(if install_script_count >= 2 { 18 } else { 12 });
+        factors.push(format!(
+            "{} install lifecycle script{} {} during install",
+            install_script_count,
+            plural_suffix(install_script_count),
+            if install_script_count == 1 {
+                "runs"
+            } else {
+                "run"
+            },
+        ));
+    }
+
+    if summary.has_native_code == Some(true) {
+        score = score.saturating_add(8);
+        factors.push("Native build tooling is detected".to_owned());
+    }
+
+    if let Some(direct_dependency_count) =
+        summary.direct_dependency_count.filter(|count| *count >= 10)
+    {
+        score = score.saturating_add(dependency_surface_risk_score(direct_dependency_count));
+        factors.push(format!(
+            "{} direct dependencies increase the supply-chain surface",
+            direct_dependency_count,
+        ));
+    }
+
+    let score = score.min(100);
+    let level = derive_risk_level(score, security_findings).to_owned();
+
+    BundleRiskSummary {
+        score,
+        level,
+        unresolved_finding_count,
+        worst_unresolved_severity,
+        factors,
+    }
+}
+
+fn security_finding_risk_score(summary: SecurityFindingSeveritySummary) -> u8 {
+    let weighted_score = summary
+        .critical_count
+        .saturating_mul(50)
+        .saturating_add(summary.high_count.saturating_mul(30))
+        .saturating_add(summary.medium_count.saturating_mul(15))
+        .saturating_add(summary.low_count.saturating_mul(6))
+        .saturating_add(summary.info_count.saturating_mul(2))
+        .min(70);
+
+    u8::try_from(weighted_score).unwrap_or(70)
+}
+
+fn dependency_surface_risk_score(direct_dependency_count: usize) -> u8 {
+    match direct_dependency_count {
+        100.. => 20,
+        50..=99 => 12,
+        25..=49 => 8,
+        10..=24 => 4,
+        _ => 0,
+    }
+}
+
+fn derive_risk_level(score: u8, security_findings: SecurityFindingSeveritySummary) -> &'static str {
+    if security_findings.critical_count > 0 || score >= 70 {
+        "critical"
+    } else if security_findings.high_count > 0 || score >= 45 {
+        "high"
+    } else if security_findings.medium_count > 0 || score >= 15 {
+        "moderate"
+    } else {
+        "low"
+    }
 }
 
 fn sum_known_sizes(artifacts: &[ArtifactRecord]) -> Option<i64> {
@@ -878,8 +1069,9 @@ mod tests {
     use zip::write::SimpleFileOptions;
 
     use super::{
-        apply_npm_analysis_fields, inspect_gem_bytes, inspect_tar_gz_bytes, inspect_zip_bytes,
-        BundleAnalysisSummary,
+        apply_npm_analysis_fields, build_bundle_risk_summary, inspect_gem_bytes,
+        inspect_tar_gz_bytes, inspect_zip_bytes, BundleAnalysisSummary,
+        SecurityFindingSeveritySummary,
     };
 
     fn make_tgz(entries: &[(&str, &[u8])]) -> Vec<u8> {
@@ -1005,5 +1197,48 @@ mod tests {
             summary.install_size_bytes,
             i64::try_from("puts 'demo'".len()).expect("sizes should fit"),
         );
+    }
+
+    #[test]
+    fn risk_summary_prioritizes_findings_and_supply_chain_signals() {
+        let summary = BundleAnalysisSummary {
+            direct_dependency_count: Some(12),
+            install_script_count: Some(1),
+            has_native_code: Some(true),
+            ..Default::default()
+        };
+
+        let risk = build_bundle_risk_summary(
+            &summary,
+            SecurityFindingSeveritySummary {
+                high_count: 1,
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(risk.score, 54);
+        assert_eq!(risk.level, "high");
+        assert_eq!(risk.unresolved_finding_count, 1);
+        assert_eq!(risk.worst_unresolved_severity.as_deref(), Some("high"));
+        assert_eq!(
+            risk.factors,
+            vec![
+                "1 unresolved security finding (worst severity: high)".to_owned(),
+                "1 install lifecycle script runs during install".to_owned(),
+                "Native build tooling is detected".to_owned(),
+                "12 direct dependencies increase the supply-chain surface".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn risk_summary_stays_low_without_elevated_signals() {
+        let risk = build_bundle_risk_summary(&BundleAnalysisSummary::default(), Default::default());
+
+        assert_eq!(risk.score, 0);
+        assert_eq!(risk.level, "low");
+        assert_eq!(risk.unresolved_finding_count, 0);
+        assert_eq!(risk.worst_unresolved_severity, None);
+        assert!(risk.factors.is_empty());
     }
 }

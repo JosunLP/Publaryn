@@ -47,6 +47,14 @@ pub fn router() -> Router<AppState> {
             "/v1/orgs/{slug}/audit/export",
             get(export_org_audit_logs_csv),
         )
+        .route(
+            "/v1/orgs/{slug}/access-history",
+            get(list_org_access_history),
+        )
+        .route(
+            "/v1/orgs/{slug}/access-history/export",
+            get(export_org_access_history_csv),
+        )
         .route("/v1/orgs/{slug}/members", get(list_members))
         .route("/v1/orgs/{slug}/members/search", get(search_org_members))
         .route("/v1/orgs/{slug}/members", post(add_member))
@@ -307,6 +315,72 @@ struct ResolvedOrgAuditFilters {
     occurred_from: Option<chrono::NaiveDate>,
     occurred_until: Option<chrono::NaiveDate>,
 }
+
+#[derive(Debug, Deserialize)]
+struct OrgAccessHistoryQuery {
+    scope: Option<String>,
+    team_slug: Option<String>,
+    target: Option<String>,
+    occurred_from: Option<String>,
+    occurred_until: Option<String>,
+    page: Option<u32>,
+    per_page: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OrgAccessHistoryScopeFilter {
+    All,
+    Package,
+    Repository,
+    Namespace,
+}
+
+impl OrgAccessHistoryScopeFilter {
+    fn actions(self) -> &'static [&'static str] {
+        match self {
+            OrgAccessHistoryScopeFilter::All => &ORG_ACCESS_HISTORY_ACTIONS,
+            OrgAccessHistoryScopeFilter::Package => &["team_package_access_update"],
+            OrgAccessHistoryScopeFilter::Repository => &["team_repository_access_update"],
+            OrgAccessHistoryScopeFilter::Namespace => &["team_namespace_access_update"],
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedOrgAccessHistoryFilters {
+    scope: OrgAccessHistoryScopeFilter,
+    team_slug: Option<String>,
+    target: Option<String>,
+    occurred_from: Option<chrono::NaiveDate>,
+    occurred_until: Option<chrono::NaiveDate>,
+}
+
+#[derive(Debug, Clone)]
+struct OrgAccessHistoryEntry {
+    id: Uuid,
+    action: String,
+    scope: String,
+    event: String,
+    team_id: Option<String>,
+    team_slug: Option<String>,
+    team_name: Option<String>,
+    target_label: String,
+    target: serde_json::Value,
+    previous_permissions: Vec<String>,
+    permissions: Vec<String>,
+    actor_user_id: Option<Uuid>,
+    actor_username: Option<String>,
+    actor_display_name: Option<String>,
+    actor_token_id: Option<Uuid>,
+    occurred_at: chrono::DateTime<chrono::Utc>,
+    summary: String,
+}
+
+const ORG_ACCESS_HISTORY_ACTIONS: [&str; 3] = [
+    "team_package_access_update",
+    "team_repository_access_update",
+    "team_namespace_access_update",
+];
 
 #[derive(Debug, Deserialize)]
 struct OrgSecurityFindingsQuery {
@@ -665,6 +739,98 @@ async fn export_org_audit_logs_csv(
     Ok((headers, csv_body))
 }
 
+async fn list_org_access_history(
+    State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
+    Path(slug): Path<String>,
+    Query(query): Query<OrgAccessHistoryQuery>,
+) -> ApiResult<Json<serde_json::Value>> {
+    ensure_scope(&identity, SCOPE_ORGS_WRITE)?;
+
+    let org_id = ensure_org_audit_access_by_slug(&state.db, &slug, identity.user_id).await?;
+    let filters = resolve_org_access_history_filters(&query)?;
+    let page = query.page.unwrap_or(1).max(1);
+    let limit = query.per_page.unwrap_or(20).clamp(1, 100) as i64;
+    let offset = ((page.saturating_sub(1)) as i64) * limit;
+    let fetch_limit = limit + 1;
+
+    let mut builder = build_org_access_history_query(org_id);
+    apply_org_access_history_filters(&mut builder, &filters)?;
+    builder
+        .push(" ORDER BY al.occurred_at DESC LIMIT ")
+        .push_bind(fetch_limit)
+        .push(" OFFSET ")
+        .push_bind(offset);
+
+    let mut rows = builder
+        .build()
+        .fetch_all(&state.db)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let has_next = rows.len() > limit as usize;
+    if has_next {
+        rows.truncate(limit as usize);
+    }
+
+    let entries = rows
+        .iter()
+        .map(build_org_access_history_entry)
+        .collect::<ApiResult<Vec<_>>>()?
+        .into_iter()
+        .map(|entry| entry.as_json())
+        .collect::<Vec<_>>();
+
+    Ok(Json(serde_json::json!({
+        "page": page,
+        "per_page": limit,
+        "has_next": has_next,
+        "entries": entries,
+    })))
+}
+
+async fn export_org_access_history_csv(
+    State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
+    Path(slug): Path<String>,
+    Query(query): Query<OrgAccessHistoryQuery>,
+) -> ApiResult<impl IntoResponse> {
+    ensure_scope(&identity, SCOPE_ORGS_WRITE)?;
+
+    let org_id = ensure_org_audit_access_by_slug(&state.db, &slug, identity.user_id).await?;
+    let filters = resolve_org_access_history_filters(&query)?;
+
+    let mut builder = build_org_access_history_query(org_id);
+    apply_org_access_history_filters(&mut builder, &filters)?;
+    builder.push(" ORDER BY al.occurred_at DESC");
+
+    let rows = builder
+        .build()
+        .fetch_all(&state.db)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+    let entries = rows
+        .iter()
+        .map(build_org_access_history_entry)
+        .collect::<ApiResult<Vec<_>>>()?;
+    let csv_body = build_org_access_history_csv(&entries)?;
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/csv; charset=utf-8"),
+    );
+    headers.insert(
+        header::CONTENT_DISPOSITION,
+        HeaderValue::from_str(&format!(
+            "attachment; filename=\"org-access-history-{slug}.csv\""
+        ))
+        .map_err(|error| ApiError(Error::Internal(error.to_string())))?,
+    );
+
+    Ok((headers, csv_body))
+}
+
 fn build_org_audit_query(org_id: Uuid) -> QueryBuilder<'static, Postgres> {
     let mut builder = QueryBuilder::<Postgres>::new(
         "SELECT al.id, al.action::text AS action, al.actor_user_id, actor.username AS actor_username, \
@@ -675,6 +841,19 @@ fn build_org_audit_query(org_id: Uuid) -> QueryBuilder<'static, Postgres> {
          FROM audit_logs al \
          LEFT JOIN users actor ON actor.id = al.actor_user_id \
          LEFT JOIN users target_user ON target_user.id = al.target_user_id \
+         WHERE al.target_org_id = ",
+    );
+    builder.push_bind(org_id);
+
+    builder
+}
+
+fn build_org_access_history_query(org_id: Uuid) -> QueryBuilder<'static, Postgres> {
+    let mut builder = QueryBuilder::<Postgres>::new(
+        "SELECT al.id, al.action::text AS action, al.actor_user_id, actor.username AS actor_username, \
+                actor.display_name AS actor_display_name, al.actor_token_id, al.metadata, al.occurred_at \
+         FROM audit_logs al \
+         LEFT JOIN users actor ON actor.id = al.actor_user_id \
          WHERE al.target_org_id = ",
     );
     builder.push_bind(org_id);
@@ -733,6 +912,96 @@ fn resolve_org_audit_filters(query: &OrgAuditQuery) -> ApiResult<ResolvedOrgAudi
     })
 }
 
+fn apply_org_access_history_filters(
+    builder: &mut QueryBuilder<'_, Postgres>,
+    filters: &ResolvedOrgAccessHistoryFilters,
+) -> ApiResult<()> {
+    builder.push(" AND al.action::text IN (");
+    let mut is_first = true;
+    for action in filters.scope.actions() {
+        if !is_first {
+            builder.push(", ");
+        }
+        is_first = false;
+        builder.push_bind((*action).to_owned());
+    }
+    builder.push(")");
+
+    if let Some(team_slug) = &filters.team_slug {
+        builder
+            .push(" AND al.metadata->>'team_slug' = ")
+            .push_bind(team_slug.clone());
+    }
+    if let Some(target) = &filters.target {
+        let pattern = format!("%{target}%");
+        builder.push(" AND (al.metadata->>'package_name' ILIKE ");
+        builder.push_bind(pattern.clone());
+        builder.push(" OR al.metadata->>'package_normalized_name' ILIKE ");
+        builder.push_bind(pattern.clone());
+        builder.push(" OR al.metadata->>'repository_name' ILIKE ");
+        builder.push_bind(pattern.clone());
+        builder.push(" OR al.metadata->>'repository_slug' ILIKE ");
+        builder.push_bind(pattern.clone());
+        builder.push(" OR al.metadata->>'namespace' ILIKE ");
+        builder.push_bind(pattern.clone());
+        builder.push(" OR al.metadata->>'ecosystem' ILIKE ");
+        builder.push_bind(pattern);
+        builder.push(")");
+    }
+    if let Some(occurred_from) = filters.occurred_from {
+        builder
+            .push(" AND al.occurred_at >= ")
+            .push_bind(org_audit_filter_start(occurred_from)?);
+    }
+    if let Some(occurred_until) = filters.occurred_until {
+        builder
+            .push(" AND al.occurred_at < ")
+            .push_bind(org_audit_filter_end_exclusive(occurred_until)?);
+    }
+
+    Ok(())
+}
+
+fn resolve_org_access_history_filters(
+    query: &OrgAccessHistoryQuery,
+) -> ApiResult<ResolvedOrgAccessHistoryFilters> {
+    let occurred_from =
+        parse_org_audit_date_filter("occurred_from", query.occurred_from.as_deref())?;
+    let occurred_until =
+        parse_org_audit_date_filter("occurred_until", query.occurred_until.as_deref())?;
+
+    if let (Some(occurred_from), Some(occurred_until)) = (occurred_from, occurred_until) {
+        if occurred_from > occurred_until {
+            return Err(ApiError(Error::Validation(
+                "'occurred_from' must be on or before 'occurred_until'".into(),
+            )));
+        }
+    }
+
+    Ok(ResolvedOrgAccessHistoryFilters {
+        scope: parse_org_access_history_scope(query.scope.as_deref())?,
+        team_slug: normalize_optional_query_string(query.team_slug.as_deref()),
+        target: normalize_optional_query_string(query.target.as_deref()),
+        occurred_from,
+        occurred_until,
+    })
+}
+
+fn parse_org_access_history_scope(value: Option<&str>) -> ApiResult<OrgAccessHistoryScopeFilter> {
+    match normalize_optional_query_string(value)
+        .unwrap_or_else(|| "all".to_owned())
+        .as_str()
+    {
+        "all" => Ok(OrgAccessHistoryScopeFilter::All),
+        "package" => Ok(OrgAccessHistoryScopeFilter::Package),
+        "repository" => Ok(OrgAccessHistoryScopeFilter::Repository),
+        "namespace" => Ok(OrgAccessHistoryScopeFilter::Namespace),
+        scope => Err(ApiError(Error::Validation(format!(
+            "Unknown access history scope: {scope}"
+        )))),
+    }
+}
+
 fn normalize_optional_query_string(value: Option<&str>) -> Option<String> {
     let trimmed = value?.trim();
     if trimmed.is_empty() {
@@ -740,6 +1009,286 @@ fn normalize_optional_query_string(value: Option<&str>) -> Option<String> {
     } else {
         Some(trimmed.to_owned())
     }
+}
+
+fn build_org_access_history_entry(row: &sqlx::postgres::PgRow) -> ApiResult<OrgAccessHistoryEntry> {
+    let action: String = row
+        .try_get("action")
+        .map_err(|error| ApiError(Error::Internal(error.to_string())))?;
+    let scope = org_access_history_scope_for_action(&action)
+        .ok_or_else(|| {
+            ApiError(Error::Internal(format!(
+                "Unsupported access action: {action}"
+            )))
+        })?
+        .to_owned();
+    let metadata = row
+        .try_get::<Option<serde_json::Value>, _>("metadata")
+        .map_err(|error| ApiError(Error::Internal(error.to_string())))?
+        .unwrap_or_else(|| serde_json::json!({}));
+    let previous_permissions = string_array_field(&metadata, "previous_permissions");
+    let permissions = string_array_field(&metadata, "permissions");
+    let event = org_access_history_event(&previous_permissions, &permissions).to_owned();
+    let target_label = org_access_history_target_label(&scope, &metadata);
+    let summary = org_access_history_summary(
+        &scope,
+        &event,
+        &metadata,
+        &previous_permissions,
+        &permissions,
+    );
+
+    Ok(OrgAccessHistoryEntry {
+        id: row
+            .try_get("id")
+            .map_err(|error| ApiError(Error::Internal(error.to_string())))?,
+        action,
+        scope: scope.clone(),
+        event,
+        team_id: string_field(&metadata, "team_id"),
+        team_slug: string_field(&metadata, "team_slug"),
+        team_name: string_field(&metadata, "team_name"),
+        target_label,
+        target: org_access_history_target_payload(&scope, &metadata),
+        previous_permissions,
+        permissions,
+        actor_user_id: row
+            .try_get::<Option<Uuid>, _>("actor_user_id")
+            .map_err(|error| ApiError(Error::Internal(error.to_string())))?,
+        actor_username: row
+            .try_get::<Option<String>, _>("actor_username")
+            .map_err(|error| ApiError(Error::Internal(error.to_string())))?,
+        actor_display_name: row
+            .try_get::<Option<String>, _>("actor_display_name")
+            .map_err(|error| ApiError(Error::Internal(error.to_string())))?,
+        actor_token_id: row
+            .try_get::<Option<Uuid>, _>("actor_token_id")
+            .map_err(|error| ApiError(Error::Internal(error.to_string())))?,
+        occurred_at: row
+            .try_get("occurred_at")
+            .map_err(|error| ApiError(Error::Internal(error.to_string())))?,
+        summary,
+    })
+}
+
+impl OrgAccessHistoryEntry {
+    fn as_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "id": self.id,
+            "action": self.action,
+            "scope": self.scope,
+            "event": self.event,
+            "team_id": self.team_id,
+            "team_slug": self.team_slug,
+            "team_name": self.team_name,
+            "target_label": self.target_label,
+            "target": self.target,
+            "previous_permissions": self.previous_permissions,
+            "permissions": self.permissions,
+            "actor_user_id": self.actor_user_id,
+            "actor_username": self.actor_username,
+            "actor_display_name": self.actor_display_name,
+            "actor_token_id": self.actor_token_id,
+            "occurred_at": self.occurred_at,
+            "summary": self.summary,
+        })
+    }
+}
+
+fn org_access_history_scope_for_action(action: &str) -> Option<&'static str> {
+    match action {
+        "team_package_access_update" => Some("package"),
+        "team_repository_access_update" => Some("repository"),
+        "team_namespace_access_update" => Some("namespace"),
+        _ => None,
+    }
+}
+
+fn org_access_history_event(
+    previous_permissions: &[String],
+    permissions: &[String],
+) -> &'static str {
+    if previous_permissions.is_empty() && !permissions.is_empty() {
+        "granted"
+    } else if !previous_permissions.is_empty() && permissions.is_empty() {
+        "revoked"
+    } else {
+        "updated"
+    }
+}
+
+fn org_access_history_target_payload(
+    scope: &str,
+    metadata: &serde_json::Value,
+) -> serde_json::Value {
+    match scope {
+        "package" => serde_json::json!({
+            "ecosystem": string_field(metadata, "ecosystem"),
+            "name": string_field(metadata, "package_name"),
+            "normalized_name": string_field(metadata, "package_normalized_name"),
+        }),
+        "repository" => serde_json::json!({
+            "id": string_field(metadata, "repository_id"),
+            "slug": string_field(metadata, "repository_slug"),
+            "name": string_field(metadata, "repository_name"),
+            "kind": string_field(metadata, "repository_kind"),
+            "visibility": string_field(metadata, "repository_visibility"),
+        }),
+        "namespace" => serde_json::json!({
+            "id": string_field(metadata, "namespace_claim_id"),
+            "ecosystem": string_field(metadata, "ecosystem"),
+            "namespace": string_field(metadata, "namespace"),
+            "is_verified": metadata.get("is_verified").and_then(|value| value.as_bool()),
+        }),
+        _ => serde_json::json!({}),
+    }
+}
+
+fn org_access_history_target_label(scope: &str, metadata: &serde_json::Value) -> String {
+    match scope {
+        "package" => {
+            let ecosystem = string_field(metadata, "ecosystem");
+            let package_name = string_field(metadata, "package_name")
+                .or_else(|| string_field(metadata, "package_normalized_name"));
+            match (ecosystem, package_name) {
+                (Some(ecosystem), Some(package_name)) => format!("{ecosystem} · {package_name}"),
+                (_, Some(package_name)) => package_name,
+                _ => "selected package".to_owned(),
+            }
+        }
+        "repository" => string_field(metadata, "repository_name")
+            .or_else(|| string_field(metadata, "repository_slug"))
+            .unwrap_or_else(|| "selected repository".to_owned()),
+        "namespace" => {
+            let ecosystem = string_field(metadata, "ecosystem");
+            let namespace = string_field(metadata, "namespace");
+            match (ecosystem, namespace) {
+                (Some(ecosystem), Some(namespace)) => format!("{ecosystem} · {namespace}"),
+                (_, Some(namespace)) => namespace,
+                _ => "selected namespace".to_owned(),
+            }
+        }
+        _ => "selected access target".to_owned(),
+    }
+}
+
+fn org_access_history_summary(
+    scope: &str,
+    event: &str,
+    metadata: &serde_json::Value,
+    previous_permissions: &[String],
+    permissions: &[String],
+) -> String {
+    let team_name = string_field(metadata, "team_name")
+        .or_else(|| string_field(metadata, "team_slug"))
+        .unwrap_or_else(|| "selected team".to_owned());
+    let target_label = org_access_history_target_label(scope, metadata);
+    let previous_label = permission_list_label(previous_permissions);
+    let permissions_label = permission_list_label(permissions);
+
+    match event {
+        "granted" => format!(
+            "Granted {team_name} {permissions_label} access to {target_label}."
+        ),
+        "revoked" => format!(
+            "Revoked {previous_label} access from {team_name} for {target_label}."
+        ),
+        _ => format!(
+            "Changed {team_name} access for {target_label} from {previous_label} to {permissions_label}."
+        ),
+    }
+}
+
+fn string_field(metadata: &serde_json::Value, field: &str) -> Option<String> {
+    metadata
+        .get(field)
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn string_array_field(metadata: &serde_json::Value, field: &str) -> Vec<String> {
+    let mut values = metadata
+        .get(field)
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    values.sort();
+    values.dedup();
+    values
+}
+
+fn permission_list_label(permissions: &[String]) -> String {
+    if permissions.is_empty() {
+        return "no delegated".to_owned();
+    }
+
+    permissions
+        .iter()
+        .map(|permission| permission.replace('_', " "))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn build_org_access_history_csv(entries: &[OrgAccessHistoryEntry]) -> ApiResult<String> {
+    let mut writer = WriterBuilder::new().from_writer(Vec::new());
+    writer
+        .write_record([
+            "id",
+            "occurred_at",
+            "scope",
+            "event",
+            "team_slug",
+            "team_name",
+            "target_label",
+            "previous_permissions",
+            "permissions",
+            "actor_user_id",
+            "actor_username",
+            "actor_display_name",
+            "actor_token_id",
+            "summary",
+        ])
+        .map_err(csv_write_error)?;
+
+    for entry in entries {
+        writer
+            .write_record([
+                entry.id.to_string(),
+                entry.occurred_at.to_rfc3339(),
+                entry.scope.clone(),
+                entry.event.clone(),
+                entry.team_slug.clone().unwrap_or_default(),
+                entry.team_name.clone().unwrap_or_default(),
+                entry.target_label.clone(),
+                entry.previous_permissions.join(";"),
+                entry.permissions.join(";"),
+                entry
+                    .actor_user_id
+                    .map(|value| value.to_string())
+                    .unwrap_or_default(),
+                entry.actor_username.clone().unwrap_or_default(),
+                entry.actor_display_name.clone().unwrap_or_default(),
+                entry
+                    .actor_token_id
+                    .map(|value| value.to_string())
+                    .unwrap_or_default(),
+                entry.summary.clone(),
+            ])
+            .map_err(csv_write_error)?;
+    }
+
+    let bytes = writer
+        .into_inner()
+        .map_err(|error| ApiError(Error::Internal(error.to_string())))?;
+
+    String::from_utf8(bytes).map_err(|error| ApiError(Error::Internal(error.to_string())))
 }
 
 fn build_org_audit_csv(rows: &[sqlx::postgres::PgRow]) -> ApiResult<String> {
@@ -4106,8 +4655,12 @@ mod tests {
     use super::{
         collect_org_profile_changes, normalize_namespace_team_permissions,
         normalize_optional_org_field, normalize_required_org_name, normalize_team_permissions,
+        org_access_history_event, org_access_history_scope_for_action, org_access_history_summary,
+        org_access_history_target_label, org_access_history_target_payload,
+        parse_org_access_history_scope, permission_list_label, resolve_org_access_history_filters,
         resolve_org_profile_update, resolve_org_security_filters, validate_ownership_transfer,
-        OrgSecurityFindingsQuery, ResolvedOrgProfileUpdate, UpdateOrgRequest,
+        OrgAccessHistoryQuery, OrgAccessHistoryScopeFilter, OrgSecurityFindingsQuery,
+        ResolvedOrgProfileUpdate, UpdateOrgRequest,
     };
 
     #[test]
@@ -4370,6 +4923,87 @@ mod tests {
         assert_eq!(
             error.0.to_string(),
             "Validation error: Unknown security severity filter: catastrophic"
+        );
+    }
+
+    #[test]
+    fn access_history_scope_parses_supported_targets() {
+        assert_eq!(
+            parse_org_access_history_scope(None).expect("missing scope defaults to all"),
+            OrgAccessHistoryScopeFilter::All
+        );
+        assert_eq!(
+            parse_org_access_history_scope(Some("repository"))
+                .expect("repository scope should parse"),
+            OrgAccessHistoryScopeFilter::Repository
+        );
+
+        let error = parse_org_access_history_scope(Some("billing"))
+            .expect_err("unknown access scopes should fail");
+        assert_eq!(
+            error.0.to_string(),
+            "Validation error: Unknown access history scope: billing"
+        );
+    }
+
+    #[test]
+    fn access_history_filters_reject_inverted_date_ranges() {
+        let error = resolve_org_access_history_filters(&OrgAccessHistoryQuery {
+            scope: None,
+            team_slug: None,
+            target: None,
+            occurred_from: Some("2026-04-30".into()),
+            occurred_until: Some("2026-04-01".into()),
+            page: None,
+            per_page: None,
+        })
+        .expect_err("inverted date ranges should fail");
+
+        assert_eq!(
+            error.0.to_string(),
+            "Validation error: 'occurred_from' must be on or before 'occurred_until'"
+        );
+    }
+
+    #[test]
+    fn access_history_helpers_explain_permission_changes() {
+        let metadata = serde_json::json!({
+            "team_id": Uuid::new_v4(),
+            "team_slug": "release-engineering",
+            "team_name": "Release Engineering",
+            "repository_id": Uuid::new_v4(),
+            "repository_slug": "core-registry",
+            "repository_name": "Core Registry",
+        });
+        let previous_permissions = vec!["publish".to_owned()];
+        let permissions = vec!["admin".to_owned(), "publish".to_owned()];
+
+        assert_eq!(
+            org_access_history_scope_for_action("team_repository_access_update"),
+            Some("repository")
+        );
+        assert_eq!(
+            org_access_history_event(&previous_permissions, &permissions),
+            "updated"
+        );
+        assert_eq!(
+            org_access_history_target_label("repository", &metadata),
+            "Core Registry"
+        );
+        assert_eq!(permission_list_label(&permissions), "admin, publish");
+        assert_eq!(
+            org_access_history_summary(
+                "repository",
+                "updated",
+                &metadata,
+                &previous_permissions,
+                &permissions,
+            ),
+            "Changed Release Engineering access for Core Registry from publish to admin, publish."
+        );
+        assert_eq!(
+            org_access_history_target_payload("repository", &metadata)["slug"],
+            serde_json::json!("core-registry")
         );
     }
 }

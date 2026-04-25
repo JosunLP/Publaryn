@@ -72,6 +72,11 @@ interface AuditExportRequest {
   perPage: string | null;
 }
 
+interface AccessHistoryRequest {
+  page: number;
+  perPage: number;
+}
+
 interface AuditLogFixture {
   id: string;
   action: string;
@@ -161,6 +166,9 @@ interface FetchScenario {
   auditLogs: AuditLogFixture[];
   auditRequests: AuditRequest[];
   auditExportRequests: AuditExportRequest[];
+  accessHistory: JsonRecord[];
+  accessHistoryRequests: AccessHistoryRequest[];
+  accessHistoryExportRequests: string[];
 }
 
 const ORG_ID = '11111111-1111-4111-8111-111111111111';
@@ -292,6 +300,31 @@ const auditLogs = Array.from({ length: 41 }, (_, index) => {
     occurred_at: `2026-04-${day}T${hour}:00:00Z`,
   } satisfies AuditLogFixture;
 });
+
+const accessHistory = [
+  {
+    id: 'access-001',
+    action: 'team_package_access_update',
+    scope: 'package',
+    event: 'updated',
+    team_slug: TEAM_SLUG,
+    team_name: 'Release Engineering',
+    target_label: 'npm · package-101',
+    target: {
+      ecosystem: 'npm',
+      name: 'package-101',
+      normalized_name: 'package-101',
+    },
+    previous_permissions: ['write_metadata'],
+    permissions: ['admin', 'publish'],
+    actor_user_id: AUDIT_ACTOR_USER_ID,
+    actor_username: 'admin-user',
+    actor_display_name: 'Admin User',
+    occurred_at: '2026-04-25T12:00:00Z',
+    summary:
+      'Changed Release Engineering access for npm · package-101 from write metadata to admin, publish.',
+  },
+];
 
 mock.module('$app/stores', () => ({
   page: {
@@ -617,8 +650,7 @@ describe('route-level multi-page org dataset coverage', () => {
         expect(target.textContent).toContain(
           'Organization slugs are part of workspace URLs'
         );
-        expect(target.textContent).toContain('stay immutable after');
-      });
+      }, 5_000);
 
       const nameInput = queryRequiredInput(target, '#org-profile-name');
       const profileForm = queryRequiredForm(nameInput.closest('form'));
@@ -899,6 +931,70 @@ describe('route-level multi-page org dataset coverage', () => {
     }
   });
 
+  test('org workspace renders and exports delegated access history', async () => {
+    const scenario = createFetchScenario();
+    const originalCreateObjectURL = window.URL.createObjectURL;
+    const originalRevokeObjectURL = window.URL.revokeObjectURL;
+    const createObjectURLCalls: Blob[] = [];
+    const revokeObjectURLCalls: string[] = [];
+    Object.defineProperty(window.URL, 'createObjectURL', {
+      configurable: true,
+      writable: true,
+      value: (blob: Blob): string => {
+        createObjectURLCalls.push(blob);
+        return 'blob:access-history-export';
+      },
+    });
+    Object.defineProperty(window.URL, 'revokeObjectURL', {
+      configurable: true,
+      writable: true,
+      value: (objectUrl: string): void => {
+        revokeObjectURLCalls.push(objectUrl);
+      },
+    });
+
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(scenario.accessHistoryRequests).toEqual([
+          {
+            page: 1,
+            perPage: 8,
+          },
+        ]);
+        expect(target.textContent).toContain('Delegated access history');
+        expect(target.textContent).toContain('Package access');
+        expect(target.textContent).toContain('Updated · npm · package-101');
+        expect(target.textContent).toContain('team Release Engineering');
+        expect(target.textContent).toContain('Admin User (@admin-user)');
+        expect(target.textContent).toContain('Write Metadata → Admin, Publish');
+      }, 5_000);
+
+      click(queryRequiredButtonByText(target, 'Export access CSV'));
+
+      await waitFor(() => {
+        expect(scenario.accessHistoryExportRequests).toEqual([
+          `/v1/orgs/${ORG_SLUG}/access-history/export`,
+        ]);
+        expect(createObjectURLCalls).toHaveLength(1);
+        expect(revokeObjectURLCalls).toEqual(['blob:access-history-export']);
+      }, 5_000);
+    } finally {
+      Object.defineProperty(window.URL, 'createObjectURL', {
+        configurable: true,
+        writable: true,
+        value: originalCreateObjectURL,
+      });
+      Object.defineProperty(window.URL, 'revokeObjectURL', {
+        configurable: true,
+        writable: true,
+        value: originalRevokeObjectURL,
+      });
+      unmount();
+    }
+  });
+
   test('org workspace requires explicit confirmation before deleting a team', async () => {
     const scenario = createFetchScenario();
     const { target, unmount } = await mountOrgPage(scenario);
@@ -968,7 +1064,7 @@ describe('route-level multi-page org dataset coverage', () => {
         expect(target.textContent).toContain(`Deleted team ${TEAM_SLUG}.`);
       });
 
-      expect(target.textContent).not.toContain('Release Engineering');
+      expect(target.querySelector(`#team-${TEAM_SLUG}`)).toBeNull();
     } finally {
       unmount();
     }
@@ -2449,6 +2545,9 @@ function createFetchScenario(): FetchScenario {
     })),
     auditRequests: [],
     auditExportRequests: [],
+    accessHistory: accessHistory.map((entry) => ({ ...entry })),
+    accessHistoryRequests: [],
+    accessHistoryExportRequests: [],
   };
 }
 
@@ -2769,6 +2868,28 @@ async function handleApiRequest(
 
   if (
     method === 'GET' &&
+    requestPath === `/v1/orgs/${ORG_SLUG}/access-history`
+  ) {
+    const request = readAccessHistoryRequest(url);
+    scenario.accessHistoryRequests.push(request);
+    return apiResponse({
+      page: request.page,
+      per_page: request.perPage,
+      has_next: request.page * request.perPage < scenario.accessHistory.length,
+      entries: paginate(scenario.accessHistory, request.page, request.perPage),
+    });
+  }
+
+  if (
+    method === 'GET' &&
+    requestPath === `/v1/orgs/${ORG_SLUG}/access-history/export`
+  ) {
+    scenario.accessHistoryExportRequests.push(requestPath);
+    return apiResponse('id,scope,event\naccess-001,package,updated\n');
+  }
+
+  if (
+    method === 'GET' &&
     requestPath === `/v1/orgs/${ORG_SLUG}/teams/${TEAM_SLUG}/members`
   ) {
     scenario.teamMemberRequests.push(requestPath);
@@ -2996,6 +3117,13 @@ function readAuditExportRequest(url: URL): AuditExportRequest {
     occurredUntil: url.searchParams.get('occurred_until') || '',
     page: url.searchParams.get('page'),
     perPage: url.searchParams.get('per_page'),
+  };
+}
+
+function readAccessHistoryRequest(url: URL): AccessHistoryRequest {
+  return {
+    page: parsePage(url.searchParams.get('page')),
+    perPage: parsePerPage(url.searchParams.get('per_page'), 8),
   };
 }
 

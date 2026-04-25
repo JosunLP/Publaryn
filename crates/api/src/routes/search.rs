@@ -3,9 +3,10 @@ use axum::{
     routing::get,
     Json, Router,
 };
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use sqlx::Row;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 use publaryn_core::{error::Error, validation};
@@ -22,6 +23,7 @@ pub(crate) const DEFAULT_SEARCH_PER_PAGE: u32 = 20;
 pub(crate) const MAX_SEARCH_PER_PAGE: u32 = 100;
 pub(crate) const MIN_SEARCH_BATCH_SIZE: u32 = 50;
 pub(crate) const MAX_SEARCH_BATCH_SIZE: u32 = 100;
+const RELEASE_HISTORY_VISIBLE_STATUSES: &[&str] = &["published", "deprecated", "yanked"];
 
 pub fn router() -> Router<AppState> {
     Router::new().route("/v1/search", get(search_packages))
@@ -75,18 +77,31 @@ async fn search_packages(
         per_page,
     )
     .await?;
+    let packages = build_search_package_responses(&state.db, results.packages).await?;
 
     Ok(Json(serde_json::json!({
         "total": results.total,
         "page": page,
         "per_page": per_page,
-        "packages": results.packages,
+        "packages": packages,
     })))
 }
 
 pub(crate) struct VisibleSearchPage {
     pub(crate) total: u64,
     pub(crate) packages: Vec<PackageDocument>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, Default, PartialEq, Eq)]
+struct SearchPackageDiscoverySummary {
+    risk_level: String,
+    unresolved_security_finding_count: i64,
+    worst_unresolved_security_severity: Option<String>,
+    has_trusted_publisher: bool,
+    trusted_publisher_count: i64,
+    latest_release_status: Option<String>,
+    latest_release_published_at: Option<DateTime<Utc>>,
+    signals: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -205,6 +220,212 @@ async fn filter_visible_search_hits(
                 .is_some_and(|package_id| visible_package_ids.contains(&package_id))
         })
         .collect())
+}
+
+async fn build_search_package_responses(
+    db: &sqlx::PgPool,
+    packages: Vec<PackageDocument>,
+) -> ApiResult<Vec<serde_json::Value>> {
+    let discovery = load_search_discovery_summaries(db, &packages).await?;
+    packages
+        .into_iter()
+        .map(|package| {
+            let package_id = Uuid::parse_str(&package.id).ok();
+            let mut value = serde_json::to_value(package).map_err(|error| {
+                ApiError(Error::Internal(format!(
+                    "search package serialization failed: {error}"
+                )))
+            })?;
+
+            if let (serde_json::Value::Object(ref mut object), Some(package_id)) =
+                (&mut value, package_id)
+            {
+                let summary = discovery
+                    .get(&package_id)
+                    .cloned()
+                    .unwrap_or_else(|| build_search_discovery_summary(None, None, 0, None, 0));
+                object.insert(
+                    "discovery".to_owned(),
+                    serde_json::to_value(summary).map_err(|error| {
+                        ApiError(Error::Internal(format!(
+                            "search discovery serialization failed: {error}"
+                        )))
+                    })?,
+                );
+            }
+
+            Ok(value)
+        })
+        .collect()
+}
+
+async fn load_search_discovery_summaries(
+    db: &sqlx::PgPool,
+    packages: &[PackageDocument],
+) -> ApiResult<HashMap<Uuid, SearchPackageDiscoverySummary>> {
+    let package_ids = packages
+        .iter()
+        .filter_map(|package| Uuid::parse_str(&package.id).ok())
+        .collect::<Vec<_>>();
+
+    if package_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let rows = sqlx::query(
+        "WITH selected_packages AS ( \
+             SELECT UNNEST($1::uuid[]) AS package_id \
+         ), latest_release AS ( \
+             SELECT DISTINCT ON (r.package_id) \
+                    r.package_id, \
+                    r.id AS release_id, \
+                    r.status::text AS latest_release_status, \
+                    r.published_at AS latest_release_published_at \
+             FROM releases r \
+             JOIN selected_packages sp ON sp.package_id = r.package_id \
+             WHERE r.status::text = ANY($2) \
+             ORDER BY r.package_id, r.published_at DESC \
+         ), finding_summary AS ( \
+             SELECT lr.package_id, \
+                    COUNT(sf.id)::BIGINT AS unresolved_security_finding_count, \
+                    CASE \
+                        WHEN COUNT(sf.id) FILTER (WHERE sf.severity = 'critical'::security_severity) > 0 THEN 'critical' \
+                        WHEN COUNT(sf.id) FILTER (WHERE sf.severity = 'high'::security_severity) > 0 THEN 'high' \
+                        WHEN COUNT(sf.id) FILTER (WHERE sf.severity = 'medium'::security_severity) > 0 THEN 'medium' \
+                        WHEN COUNT(sf.id) FILTER (WHERE sf.severity = 'low'::security_severity) > 0 THEN 'low' \
+                        WHEN COUNT(sf.id) FILTER (WHERE sf.severity = 'info'::security_severity) > 0 THEN 'info' \
+                        ELSE NULL \
+                    END AS worst_unresolved_security_severity \
+             FROM latest_release lr \
+             LEFT JOIN security_findings sf ON sf.release_id = lr.release_id AND sf.is_resolved = FALSE \
+             GROUP BY lr.package_id \
+         ), trusted_summary AS ( \
+             SELECT package_id, COUNT(*)::BIGINT AS trusted_publisher_count \
+             FROM trusted_publishers \
+             WHERE package_id = ANY($1::uuid[]) \
+             GROUP BY package_id \
+         ) \
+         SELECT sp.package_id, \
+                lr.latest_release_status, \
+                lr.latest_release_published_at, \
+                COALESCE(fs.unresolved_security_finding_count, 0)::BIGINT AS unresolved_security_finding_count, \
+                fs.worst_unresolved_security_severity, \
+                COALESCE(ts.trusted_publisher_count, 0)::BIGINT AS trusted_publisher_count \
+         FROM selected_packages sp \
+         LEFT JOIN latest_release lr ON lr.package_id = sp.package_id \
+         LEFT JOIN finding_summary fs ON fs.package_id = sp.package_id \
+         LEFT JOIN trusted_summary ts ON ts.package_id = sp.package_id",
+    )
+    .bind(&package_ids)
+    .bind(RELEASE_HISTORY_VISIBLE_STATUSES)
+    .fetch_all(db)
+    .await
+    .map_err(|error| ApiError(Error::Database(error)))?;
+
+    let mut summaries = HashMap::with_capacity(rows.len());
+    for row in rows {
+        let package_id = row
+            .try_get::<Uuid, _>("package_id")
+            .map_err(|error| ApiError(Error::Internal(error.to_string())))?;
+        summaries.insert(
+            package_id,
+            build_search_discovery_summary(
+                row.try_get::<Option<String>, _>("latest_release_status")
+                    .ok()
+                    .flatten(),
+                row.try_get::<Option<DateTime<Utc>>, _>("latest_release_published_at")
+                    .ok()
+                    .flatten(),
+                row.try_get::<i64, _>("unresolved_security_finding_count")
+                    .unwrap_or(0),
+                row.try_get::<Option<String>, _>("worst_unresolved_security_severity")
+                    .ok()
+                    .flatten(),
+                row.try_get::<i64, _>("trusted_publisher_count")
+                    .unwrap_or(0),
+            ),
+        );
+    }
+
+    Ok(summaries)
+}
+
+fn build_search_discovery_summary(
+    latest_release_status: Option<String>,
+    latest_release_published_at: Option<DateTime<Utc>>,
+    unresolved_security_finding_count: i64,
+    worst_unresolved_security_severity: Option<String>,
+    trusted_publisher_count: i64,
+) -> SearchPackageDiscoverySummary {
+    let risk_level = search_discovery_risk_level(
+        unresolved_security_finding_count,
+        worst_unresolved_security_severity.as_deref(),
+    )
+    .to_owned();
+    let has_trusted_publisher = trusted_publisher_count > 0;
+    let mut signals = Vec::new();
+
+    if unresolved_security_finding_count > 0 {
+        signals.push(format!(
+            "{} unresolved security finding{}{}",
+            unresolved_security_finding_count,
+            plural_suffix(unresolved_security_finding_count),
+            worst_unresolved_security_severity
+                .as_deref()
+                .map(|severity| format!(" (worst severity: {severity})"))
+                .unwrap_or_default(),
+        ));
+    }
+
+    match latest_release_status.as_deref() {
+        Some("deprecated") => signals.push("Latest visible release is deprecated".to_owned()),
+        Some("yanked") => signals.push("Latest visible release is yanked".to_owned()),
+        None => signals.push("No published release is currently visible".to_owned()),
+        _ => {}
+    }
+
+    if has_trusted_publisher {
+        signals.push(format!(
+            "{} trusted publisher{} configured",
+            trusted_publisher_count,
+            plural_suffix(trusted_publisher_count),
+        ));
+    }
+
+    SearchPackageDiscoverySummary {
+        risk_level,
+        unresolved_security_finding_count,
+        worst_unresolved_security_severity,
+        has_trusted_publisher,
+        trusted_publisher_count,
+        latest_release_status,
+        latest_release_published_at,
+        signals,
+    }
+}
+
+fn search_discovery_risk_level(
+    unresolved_security_finding_count: i64,
+    worst_unresolved_security_severity: Option<&str>,
+) -> &'static str {
+    match worst_unresolved_security_severity
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("critical") => "critical",
+        Some("high") => "high",
+        Some("medium") => "moderate",
+        Some("low" | "info") if unresolved_security_finding_count > 0 => "low",
+        _ => "low",
+    }
+}
+
+fn plural_suffix(count: i64) -> &'static str {
+    if count == 1 {
+        ""
+    } else {
+        "s"
+    }
 }
 
 async fn load_visible_search_package_ids(
@@ -338,8 +559,8 @@ fn normalize_search_slug(slug: Option<String>) -> ApiResult<Option<String>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        load_visible_search_package_ids, load_visible_search_page, normalize_search_org_slug,
-        normalize_search_repository_slug, SearchScopeFilters,
+        build_search_discovery_summary, load_visible_search_package_ids, load_visible_search_page,
+        normalize_search_org_slug, normalize_search_repository_slug, SearchScopeFilters,
     };
     use crate::{config::Config, state::AppState};
     use publaryn_search::{
@@ -1137,5 +1358,33 @@ mod tests {
             None
         );
         assert!(normalize_search_repository_slug(Some("Release Packages".to_owned())).is_err());
+    }
+
+    #[test]
+    fn search_discovery_summary_explains_risk_and_verification_hints() {
+        let summary = build_search_discovery_summary(
+            Some("deprecated".to_owned()),
+            None,
+            2,
+            Some("high".to_owned()),
+            1,
+        );
+
+        assert_eq!(summary.risk_level, "high");
+        assert_eq!(summary.unresolved_security_finding_count, 2);
+        assert_eq!(
+            summary.worst_unresolved_security_severity.as_deref(),
+            Some("high")
+        );
+        assert!(summary.has_trusted_publisher);
+        assert_eq!(summary.trusted_publisher_count, 1);
+        assert_eq!(
+            summary.signals,
+            vec![
+                "2 unresolved security findings (worst severity: high)".to_owned(),
+                "Latest visible release is deprecated".to_owned(),
+                "1 trusted publisher configured".to_owned(),
+            ]
+        );
     }
 }

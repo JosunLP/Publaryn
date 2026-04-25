@@ -136,6 +136,56 @@ afterEach(() => {
 });
 
 describe('package detail security access route', () => {
+  test('renders risk posture from the latest visible release analysis', async () => {
+    currentScenario = createScenario({
+      packageDetail: {
+        bundle_analysis: {
+          source_version: '1.2.3',
+          direct_dependency_count: 12,
+          install_script_count: 1,
+          has_native_code: true,
+          risk: {
+            score: 54,
+            level: 'high',
+            unresolved_finding_count: 1,
+            worst_unresolved_severity: 'high',
+            factors: [
+              '1 unresolved security finding (worst severity: high)',
+              '1 install lifecycle script runs during install',
+              'Native build tooling is detected',
+              '12 direct dependencies increase the supply-chain surface',
+            ],
+          },
+        },
+      },
+    });
+
+    const { target, unmount } = await renderSvelte(PackagePage.default);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Risk posture');
+        expect(target.textContent).toContain('High risk');
+        expect(normalizeWhitespace(target.textContent)).toContain(
+          'Score 54 / 100'
+        );
+        expect(target.textContent).toContain('Worst unresolved finding');
+        expect(target.textContent).toContain(
+          '1 unresolved security finding (worst severity: high)'
+        );
+        expect(target.textContent).toContain(
+          'Native build tooling is detected'
+        );
+      });
+
+      const riskSection = querySectionByHeading(target, 'Risk posture');
+      expect(riskSection.textContent).toContain('1 unresolved finding');
+      expect(riskSection.textContent).toContain('High');
+    } finally {
+      unmount();
+    }
+  });
+
   test('surfaces delegated security review teams and filters large finding sets for triage', async () => {
     currentScenario = createScenario();
 

@@ -123,6 +123,82 @@ afterEach(() => {
 });
 
 describe('package version route', () => {
+  test('renders normalized dependency overview from ecosystem metadata', async () => {
+    currentScenario = createScenario({
+      release: {
+        ecosystem_metadata: {
+          kind: 'composer',
+          details: {
+            require: {
+              php: '^8.3',
+              'psr/log': '^3.0',
+            },
+            'require-dev': {
+              phpunit: '^11.0',
+            },
+          },
+        },
+      },
+    });
+
+    const { target, unmount } = await renderSvelte(VersionPage.default);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Dependency overview');
+        expect(target.textContent).toContain('3 total');
+        expect(target.textContent).toContain('Runtime require');
+        expect(target.textContent).toContain('Development require');
+        expect(target.textContent).toContain('psr/log');
+        expect(target.textContent).toContain('phpunit');
+      });
+    } finally {
+      unmount();
+    }
+  });
+
+  test('renders risk posture from bundle analysis signals', async () => {
+    currentScenario = createScenario({
+      release: {
+        bundle_analysis: {
+          direct_dependency_count: 12,
+          install_script_count: 1,
+          has_native_code: true,
+          risk: {
+            score: 54,
+            level: 'high',
+            unresolved_finding_count: 1,
+            worst_unresolved_severity: 'high',
+            factors: [
+              '1 unresolved security finding (worst severity: high)',
+              '1 install lifecycle script runs during install',
+              'Native build tooling is detected',
+              '12 direct dependencies increase the supply-chain surface',
+            ],
+          },
+        },
+      },
+    });
+
+    const { target, unmount } = await renderSvelte(VersionPage.default);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Risk posture');
+        expect(target.textContent).toContain('High risk');
+        expect(target.textContent).toContain('Worst unresolved finding');
+        expect(target.textContent).toContain(
+          '1 unresolved security finding (worst severity: high)'
+        );
+        expect(target.textContent).toContain(
+          'Native build tooling is detected'
+        );
+      });
+    } finally {
+      unmount();
+    }
+  });
+
   test('publishes a quarantine release and keeps the success notice visible', async () => {
     currentScenario = createScenario({
       release: {
