@@ -213,7 +213,7 @@ describe('settings page controller harness', () => {
         const copyButton = queryButtonByText(target, 'Copy prefix');
         expect(copyButton).toBeTruthy();
         expect(copyButton.disabled).toBe(true);
-        expect(copyButton.title).toBe('Prefix unavailable');
+        expect(copyButton.title).toBe('Token prefix unavailable');
       });
     } finally {
       unmount();
