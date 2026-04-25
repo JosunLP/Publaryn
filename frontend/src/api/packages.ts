@@ -203,6 +203,7 @@ export interface PackageDetail {
   can_manage_metadata?: boolean;
   can_manage_releases?: boolean;
   can_manage_trusted_publishers?: boolean;
+  can_manage_visibility?: boolean;
   can_manage_security?: boolean;
   can_transfer?: boolean;
   team_access?: Array<{
@@ -246,6 +247,7 @@ export interface UpdatePackageInput {
   license?: NullableString;
   keywords?: string[] | null;
   readme?: NullableString;
+  visibility?: NullableString;
 }
 
 interface ReleaseListResponse {
@@ -453,6 +455,12 @@ export async function updatePackage(
   }
   if (hasOwn(input, 'readme')) {
     body.readme = input.readme ?? null;
+  }
+  if (hasOwn(input, 'visibility')) {
+    const visibility = emptyToUndefined(input.visibility);
+    if (visibility !== undefined) {
+      body.visibility = visibility;
+    }
   }
 
   const { data } = await api.patch<PackageMutationResult>(

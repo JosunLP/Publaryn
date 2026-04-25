@@ -220,6 +220,7 @@ describe('org audit query helpers', () => {
       'package_create',
       'package_delete',
       'package_transfer',
+      'package_visibility_change',
     ] as const) {
       const path = buildOrgAuditPath(
         'acme-corp',

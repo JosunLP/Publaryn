@@ -287,6 +287,8 @@ describe('package detail security access route', () => {
     currentScenario = createScenario({
       packageDetail: {
         can_manage_metadata: true,
+        can_manage_visibility: true,
+        visibility: 'public',
         description: 'Original package summary.',
         readme: '# Demo Widget\n\nOriginal readme content.',
         homepage: 'https://example.test/demo-widget',
@@ -313,6 +315,9 @@ describe('package detail security access route', () => {
         expect(
           queryRequiredInput(target, '#package-settings-keywords').value
         ).toBe('widgets, cli');
+        expect(
+          queryRequiredSelect(target, '#package-settings-visibility').value
+        ).toBe('public');
       });
 
       changeValue(
@@ -327,6 +332,10 @@ describe('package detail security access route', () => {
         queryRequiredInput(target, '#package-settings-keywords'),
         'widgets, cli, release'
       );
+      changeValue(
+        queryRequiredSelect(target, '#package-settings-visibility'),
+        'unlisted'
+      );
       submitForm(queryRequiredForm(target, '#package-settings-form'));
 
       await waitFor(() => {
@@ -340,6 +349,9 @@ describe('package detail security access route', () => {
         expect(
           queryRequiredInput(target, '#package-settings-keywords').value
         ).toBe('widgets, cli, release');
+        expect(
+          queryRequiredSelect(target, '#package-settings-visibility').value
+        ).toBe('unlisted');
       });
 
       expect(currentScenario?.packageMutations).toEqual([
@@ -349,6 +361,7 @@ describe('package detail security access route', () => {
             description: 'Updated package summary for release automation.',
             homepage: 'https://example.test/demo-widget/v2',
             keywords: ['widgets', 'cli', 'release'],
+            visibility: 'unlisted',
           },
         },
       ]);
@@ -600,6 +613,12 @@ async function handleApiRequest(
       ...(Object.prototype.hasOwnProperty.call(options?.body || {}, 'keywords')
         ? { keywords: options?.body?.keywords ?? null }
         : {}),
+      ...(Object.prototype.hasOwnProperty.call(
+        options?.body || {},
+        'visibility'
+      )
+        ? { visibility: options?.body?.visibility ?? null }
+        : {}),
     };
     return apiResponse({ message: 'Package updated' });
   }
@@ -737,6 +756,7 @@ function createScenario(overrides: Partial<Scenario> = {}): Scenario {
       can_manage_metadata: false,
       can_manage_releases: false,
       can_manage_trusted_publishers: false,
+      can_manage_visibility: false,
       can_transfer: false,
       team_access: [
         {

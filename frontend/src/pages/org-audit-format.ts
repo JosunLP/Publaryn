@@ -4,6 +4,7 @@ const ORG_AUDIT_ACTION_LABELS: Record<string, string> = {
   org_create: 'Organization created',
   org_update: 'Organization updated',
   package_update: 'Package updated',
+  package_visibility_change: 'Package visibility changed',
   package_create: 'Package created',
   package_delete: 'Package archived',
   package_transfer: 'Package transferred',
@@ -105,6 +106,16 @@ export function formatAuditSummary(log: OrgAuditLog): string | null {
       return changedFields.length > 0
         ? `Updated package settings for ${packageName}: ${changedFields.map((field) => formatIdentifierLabel(field)).join(', ')}.`
         : `Updated package settings for ${packageName}.`;
+    }
+    case 'package_visibility_change': {
+      const packageName =
+        stringField(metadata.package_name) || 'selected package';
+      const previousVisibility = stringField(metadata.previous_visibility);
+      const nextVisibility = stringField(metadata.visibility);
+
+      return previousVisibility && nextVisibility
+        ? `Changed package visibility for ${packageName} from ${formatIdentifierLabel(previousVisibility)} to ${formatIdentifierLabel(nextVisibility)}.`
+        : `Changed package visibility for ${packageName}.`;
     }
     case 'release_publish':
     case 'release_yank':
@@ -383,7 +394,8 @@ export function formatAuditSummary(log: OrgAuditLog): string | null {
             (item): item is string => typeof item === 'string'
           )
         : [];
-      const namespace = stringField(metadata.namespace) || 'selected namespace claim';
+      const namespace =
+        stringField(metadata.namespace) || 'selected namespace claim';
       return permissions.length > 0
         ? `Updated namespace access for ${namespace}: ${permissions.map((permission) => formatPermission(permission)).join(', ')}.`
         : `Removed namespace access for ${namespace}.`;

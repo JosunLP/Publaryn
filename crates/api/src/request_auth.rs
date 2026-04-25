@@ -836,6 +836,30 @@ async fn actor_has_any_team_package_access(
     .map_err(|e| ApiError(Error::Database(e)))
 }
 
+async fn actor_has_any_team_repository_access(
+    db: &PgPool,
+    repository_id: Uuid,
+    actor_user_id: Uuid,
+) -> ApiResult<bool> {
+    sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (\
+             SELECT 1 \
+             FROM team_repository_access tra \
+             JOIN team_memberships tm ON tm.team_id = tra.team_id \
+             JOIN teams t ON t.id = tra.team_id \
+             JOIN repositories r ON r.id = tra.repository_id \
+             WHERE tra.repository_id = $1 \
+               AND tm.user_id = $2 \
+               AND t.org_id = r.owner_org_id\
+         )",
+    )
+    .bind(repository_id)
+    .bind(actor_user_id)
+    .fetch_one(db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))
+}
+
 async fn actor_has_team_package_permissions(
     db: &PgPool,
     package_id: Uuid,
@@ -1092,8 +1116,15 @@ pub async fn ensure_repository_read_access(
         .try_get::<Option<Uuid>, _>("owner_org_id")
         .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
 
-    let can_view_non_public_packages =
+    let owner_read_access =
         actor_can_read_owned_resource(db, owner_user_id, owner_org_id, actor_user_id).await?;
+    let team_repository_read_access = match actor_user_id {
+        Some(actor_user_id) if !owner_read_access => {
+            actor_has_any_team_repository_access(db, repository_id, actor_user_id).await?
+        }
+        _ => false,
+    };
+    let can_view_non_public_packages = owner_read_access || team_repository_read_access;
 
     if !visibility_allows_read(&visibility, can_view_non_public_packages) {
         return Err(ApiError(Error::NotFound(format!(
@@ -1114,7 +1145,7 @@ pub async fn ensure_package_read_access(
     actor_user_id: Option<Uuid>,
 ) -> ApiResult<Uuid> {
     let row = sqlx::query(
-        "SELECT p.id, p.visibility, p.owner_user_id, p.owner_org_id, \
+        "SELECT p.id, p.repository_id, p.visibility, p.owner_user_id, p.owner_org_id, \
                 r.visibility::text AS repository_visibility, \
                 r.owner_user_id AS repository_owner_user_id, \
                 r.owner_org_id AS repository_owner_org_id \
@@ -1135,6 +1166,9 @@ pub async fn ensure_package_read_access(
 
     let package_id: Uuid = row
         .try_get("id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let repository_id: Uuid = row
+        .try_get("repository_id")
         .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
     let package_visibility = row
         .try_get::<String, _>("visibility")
@@ -1162,13 +1196,7 @@ pub async fn ensure_package_read_access(
         actor_user_id,
     )
     .await?;
-    let team_package_read_access = match actor_user_id {
-        Some(actor_user_id) if !package_owner_read_access => {
-            actor_has_any_team_package_access(db, package_id, actor_user_id).await?
-        }
-        _ => false,
-    };
-    let can_read_repository_non_public = actor_can_read_owned_resource(
+    let repository_owner_read_access = actor_can_read_owned_resource(
         db,
         repository_owner_user_id,
         repository_owner_org_id,
@@ -1176,7 +1204,20 @@ pub async fn ensure_package_read_access(
     )
     .await?;
 
-    let can_read_package_non_public = package_owner_read_access || team_package_read_access;
+    let (team_package_read_access, team_repository_read_access) = match actor_user_id {
+        Some(actor_user_id) if !(package_owner_read_access && repository_owner_read_access) => {
+            let team_package_read_access =
+                actor_has_any_team_package_access(db, package_id, actor_user_id).await?;
+            let team_repository_read_access =
+                actor_has_any_team_repository_access(db, repository_id, actor_user_id).await?;
+            (team_package_read_access, team_repository_read_access)
+        }
+        _ => (false, false),
+    };
+    let delegated_read_access = team_package_read_access || team_repository_read_access;
+
+    let can_read_package_non_public = package_owner_read_access || delegated_read_access;
+    let can_read_repository_non_public = repository_owner_read_access || delegated_read_access;
 
     if !visibility_allows_read(&package_visibility, can_read_package_non_public)
         || !visibility_allows_read(&repository_visibility, can_read_repository_non_public)

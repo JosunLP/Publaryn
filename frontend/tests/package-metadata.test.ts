@@ -19,6 +19,7 @@ const BASE_PACKAGE: PackageDetail = {
   repository_url: 'https://github.com/acme/demo-widget',
   license: 'MIT',
   keywords: ['docs', 'API'],
+  visibility: 'public',
 };
 
 describe('package metadata helpers', () => {
@@ -30,6 +31,7 @@ describe('package metadata helpers', () => {
       repositoryUrl: 'https://github.com/acme/demo-widget',
       license: 'MIT',
       keywords: 'docs, API',
+      visibility: 'public',
     });
   });
 
@@ -42,6 +44,7 @@ describe('package metadata helpers', () => {
         repositoryUrl: ' https://github.com/acme/demo-widget ',
         license: ' Apache-2.0 ',
         keywords: ' docs, API, docs,\ncli ',
+        visibility: ' Unlisted ',
       })
     ).toEqual({
       description: 'Updated description',
@@ -50,6 +53,7 @@ describe('package metadata helpers', () => {
       repositoryUrl: 'https://github.com/acme/demo-widget',
       license: 'Apache-2.0',
       keywords: ['docs', 'API', 'cli'],
+      visibility: 'unlisted',
     });
   });
 
@@ -62,6 +66,7 @@ describe('package metadata helpers', () => {
         repositoryUrl: ' \t ',
         license: '',
         keywords: ' , \n ',
+        visibility: 'unknown',
       })
     ).toEqual({
       description: null,
@@ -70,6 +75,7 @@ describe('package metadata helpers', () => {
       repositoryUrl: null,
       license: null,
       keywords: null,
+      visibility: null,
     });
   });
 
@@ -97,6 +103,7 @@ describe('package metadata helpers', () => {
       repositoryUrl: ' https://github.com/acme/demo-widget-next ',
       license: 'MIT',
       keywords: 'docs, cli',
+      visibility: 'public',
     });
 
     expect(input).toEqual({
@@ -113,7 +120,19 @@ describe('package metadata helpers', () => {
         repositoryUrl: ' https://github.com/acme/demo-widget-next ',
         license: 'MIT',
         keywords: 'docs, cli',
+        visibility: 'public',
       })
     ).toBe(true);
+  });
+
+  test('includes visibility only when the package visibility changed', () => {
+    expect(
+      buildPackageMetadataUpdateInput(BASE_PACKAGE, {
+        ...createPackageMetadataFormValues(BASE_PACKAGE),
+        visibility: 'internal-org',
+      })
+    ).toEqual({
+      visibility: 'internal_org',
+    });
   });
 });

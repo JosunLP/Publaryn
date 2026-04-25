@@ -178,6 +178,10 @@ describe('repository detail route', () => {
         },
         {
           method: 'GET',
+          path: '/v1/users/me/organizations',
+        },
+        {
+          method: 'GET',
           path: `/v1/repositories/${REPOSITORY_SLUG}/packages`,
           query: {
             page: undefined,
@@ -233,6 +237,10 @@ describe('repository detail route', () => {
         },
         {
           method: 'GET',
+          path: '/v1/users/me/organizations',
+        },
+        {
+          method: 'GET',
           path: `/v1/repositories/${REPOSITORY_SLUG}/packages`,
           query: {
             page: undefined,
@@ -242,6 +250,10 @@ describe('repository detail route', () => {
         {
           method: 'GET',
           path: `/v1/repositories/${REPOSITORY_SLUG}`,
+        },
+        {
+          method: 'GET',
+          path: '/v1/users/me/organizations',
         },
         {
           method: 'GET',
@@ -334,6 +346,10 @@ describe('repository detail route', () => {
         },
         {
           method: 'GET',
+          path: '/v1/users/me/organizations',
+        },
+        {
+          method: 'GET',
           path: `/v1/repositories/${REPOSITORY_SLUG}/packages`,
           query: {
             page: undefined,
@@ -343,6 +359,10 @@ describe('repository detail route', () => {
         {
           method: 'GET',
           path: `/v1/repositories/${REPOSITORY_SLUG}`,
+        },
+        {
+          method: 'GET',
+          path: '/v1/users/me/organizations',
         },
         {
           method: 'GET',
@@ -392,11 +412,16 @@ async function handleApiRequest(
   }
 
   if (method === 'GET') {
-    currentScenario.requests.push({
+    const request: RequestCall = {
       method,
       path,
-      query: options?.query,
-    });
+    };
+
+    if (options?.query !== undefined) {
+      request.query = options.query;
+    }
+
+    currentScenario.requests.push(request);
   }
 
   if (method === 'GET' && path === `/v1/repositories/${REPOSITORY_SLUG}`) {
@@ -410,6 +435,12 @@ async function handleApiRequest(
     return apiResponse({
       packages: currentScenario.packages,
       load_error: currentScenario.packageLoadError,
+    });
+  }
+
+  if (method === 'GET' && path === '/v1/users/me/organizations') {
+    return apiResponse({
+      organizations: [],
     });
   }
 

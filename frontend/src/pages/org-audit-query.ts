@@ -2,6 +2,7 @@ export const ORG_AUDIT_ACTION_VALUES = [
   'org_create',
   'org_update',
   'package_update',
+  'package_visibility_change',
   'package_create',
   'package_delete',
   'package_transfer',

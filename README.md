@@ -393,6 +393,7 @@ Package and repository read endpoints enforce explicit visibility semantics.
 `public` resources are readable and discoverable by everyone.
 `unlisted` resources remain readable through direct URLs but are intentionally excluded from search and package listing surfaces.
 `private`, `internal_org`, and `quarantined` resources require authenticated visibility through ownership, organization membership, or delegated team access.
+Package administrators can update package visibility through the package settings API and web portal, but package visibility cannot be broader than the enclosing repository visibility.
 
 Control-plane package creation derives package ownership from the target repository instead of trusting caller-supplied owner fields.
 For the current slice, package names are also enforced as globally unique within an ecosystem so the existing `/v1/packages/:ecosystem/:name` control-plane paths remain unambiguous.

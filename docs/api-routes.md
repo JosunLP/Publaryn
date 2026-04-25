@@ -35,9 +35,10 @@ The following endpoint groups define the main 1.0 user journeys:
   recovery codes, and scoped token management.
 - **Governance**: organizations, invitations, teams, delegated package access,
   repository access, namespace access, and ownership transfer flows.
-- **Package lifecycle**: package creation, release creation, artifact upload,
-  publish, yank, unyank, deprecate, tags, security-finding triage, and trusted
-  publisher configuration.
+- **Package lifecycle**: package creation, package metadata and visibility
+  updates, release creation, artifact upload, publish, yank, unyank,
+  deprecate, tags, security-finding triage, and trusted publisher
+  configuration.
 - **Package detail analysis**: package and release detail reads now also return
   Bundlephobia-inspired analysis metadata derived from stored artifacts and
   ecosystem-specific dependency metadata where available.

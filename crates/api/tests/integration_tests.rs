@@ -3301,6 +3301,28 @@ async fn get_nuget_registration_index(
     (status, body)
 }
 
+async fn download_nuget_nupkg(
+    app: &axum::Router,
+    token: Option<&str>,
+    package_id: &str,
+    version: &str,
+) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+    let mut request = Request::builder().method(Method::GET).uri(format!(
+        "/nuget/v3-flatcontainer/{package_id}/{version}/{package_id}.{version}.nupkg"
+    ));
+
+    if let Some(token) = token {
+        request = request.header("x-nuget-apikey", token);
+    }
+
+    let req = request.body(Body::empty()).unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let headers = resp.headers().clone();
+    let body = body_bytes(resp).await;
+    (status, headers, body)
+}
+
 async fn set_nuget_listing_state(
     app: &axum::Router,
     token: &str,
@@ -11040,6 +11062,22 @@ async fn test_team_write_metadata_permission_allows_package_updates_but_not_rele
     );
     assert_eq!(detail_after["can_manage_releases"], false);
 
+    let (status, denied_visibility_body) = update_package_metadata(
+        &app,
+        &bob_jwt,
+        "npm",
+        "docs-widget",
+        json!({
+            "visibility": "unlisted",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(denied_visibility_body["error"]
+        .as_str()
+        .expect("error should be present")
+        .contains("package administration"));
+
     let (status, denied_release_body) =
         create_release_for_package(&app, &bob_jwt, "npm", "docs-widget", "2.0.0").await;
     assert_eq!(status, StatusCode::FORBIDDEN);
@@ -11160,6 +11198,65 @@ async fn test_package_metadata_update_allows_clearing_fields_and_keyword_normali
     assert_eq!(detail_after_clear["license"], Value::Null);
     assert_eq!(detail_after_clear["keywords"], json!([]));
     assert_eq!(detail_after_clear["readme"], Value::Null);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_package_visibility_update_rejects_broader_scope_than_repository(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Alice Private Packages",
+        "alice-private-packages",
+        None,
+        Some("private"),
+        Some("private"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "npm",
+        "private-visibility-widget",
+        "alice-private-packages",
+        Some("private"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let (status, update_body) = update_package_metadata(
+        &app,
+        &alice_jwt,
+        "npm",
+        "private-visibility-widget",
+        json!({
+            "visibility": "public",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(update_body["error"]
+        .as_str()
+        .expect("error should be present")
+        .contains("cannot be broader than the enclosing repository visibility"));
+
+    let (status, detail_after) =
+        get_package_detail(&app, Some(&alice_jwt), "npm", "private-visibility-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail_after["visibility"], "private");
 }
 
 #[sqlx::test(migrations = "../../migrations")]
@@ -11309,6 +11406,54 @@ async fn test_org_audit_includes_package_metadata_updates(pool: PgPool) {
         logs[0]["metadata"]["changes"]["homepage"]["after"],
         "https://packages.example.test/audit-widget"
     );
+
+    let (status, visibility_body) = update_package_metadata(
+        &app,
+        &alice_jwt,
+        "npm",
+        "audit-widget",
+        json!({
+            "visibility": "unlisted",
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected package visibility response: {visibility_body}"
+    );
+
+    let (status, visibility_audit_body) = list_org_audit(
+        &app,
+        &alice_jwt,
+        "docs-org",
+        Some("action=package_visibility_change&per_page=10"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let visibility_logs = visibility_audit_body["logs"]
+        .as_array()
+        .expect("logs response should be an array");
+    assert_eq!(
+        visibility_logs.len(),
+        1,
+        "response: {visibility_audit_body}"
+    );
+    assert_eq!(visibility_logs[0]["action"], "package_visibility_change");
+    assert_eq!(visibility_logs[0]["actor_username"], "alice");
+    assert_eq!(visibility_logs[0]["target_org_id"], org_id);
+    assert_eq!(visibility_logs[0]["target_package_id"], package_id);
+    assert_eq!(visibility_logs[0]["metadata"]["ecosystem"], "npm");
+    assert_eq!(
+        visibility_logs[0]["metadata"]["package_name"],
+        "audit-widget"
+    );
+    assert_eq!(
+        visibility_logs[0]["metadata"]["previous_visibility"],
+        "public"
+    );
+    assert_eq!(visibility_logs[0]["metadata"]["visibility"], "unlisted");
 
     let audit_row = sqlx::query(
         "SELECT metadata \
@@ -20868,6 +21013,328 @@ async fn test_native_nuget_push_unlist_and_relist_roundtrip(pool: PgPool) {
         registration_after_relist_body["items"][0]["items"][0]["catalogEntry"]["listed"],
         true
     );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_native_nuget_direct_reads_allow_delegated_package_and_repository_access(
+    pool: PgPool,
+) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    register_user(&app, "carol", "carol@test.dev", "super_secret_pw!").await;
+    register_user(&app, "dave", "dave@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+    let carol_jwt = login_user(&app, "carol", "super_secret_pw!").await;
+    let dave_jwt = login_user(&app, "dave", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(
+        &app,
+        &alice_jwt,
+        "Acme NuGet Direct Delegation",
+        "acme-nuget-direct-delegation",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{org_body}");
+    let org_id = org_body["id"]
+        .as_str()
+        .expect("organization id should be returned");
+
+    let (status, _) = add_org_member(
+        &app,
+        &alice_jwt,
+        "acme-nuget-direct-delegation",
+        "bob",
+        "viewer",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = add_org_member(
+        &app,
+        &alice_jwt,
+        "acme-nuget-direct-delegation",
+        "carol",
+        "viewer",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "acme-nuget-direct-delegation",
+        "NuGet Package Readers",
+        "nuget-package-readers",
+        Some("Reads private NuGet packages through package delegation."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "acme-nuget-direct-delegation",
+        "NuGet Repository Readers",
+        "nuget-repository-readers",
+        Some("Reads private NuGet packages through repository delegation."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = add_team_member_to_team(
+        &app,
+        &alice_jwt,
+        "acme-nuget-direct-delegation",
+        "nuget-package-readers",
+        "bob",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = add_team_member_to_team(
+        &app,
+        &alice_jwt,
+        "acme-nuget-direct-delegation",
+        "nuget-repository-readers",
+        "carol",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, token_body) = create_personal_access_token(
+        &app,
+        &alice_jwt,
+        "nuget-direct-delegated-read",
+        &["packages:write"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
+    let nuget_token = token_body["token"]
+        .as_str()
+        .expect("nuget token should be returned")
+        .to_owned();
+
+    #[derive(Clone, Copy)]
+    enum DelegatedGrantKind {
+        Package,
+        Repository,
+    }
+
+    struct DelegatedNuGetReadCase<'a> {
+        repository_name: &'a str,
+        repository_slug: &'a str,
+        repository_kind: &'a str,
+        repository_visibility: &'a str,
+        package_id: &'a str,
+        package_visibility: &'a str,
+        grant_kind: DelegatedGrantKind,
+    }
+
+    let cases = [
+        DelegatedNuGetReadCase {
+            repository_name: "NuGet Delegated Package Reads",
+            repository_slug: "nuget-delegated-package-reads",
+            repository_kind: "public",
+            repository_visibility: "public",
+            package_id: "Delegated.Package.Reads",
+            package_visibility: "private",
+            grant_kind: DelegatedGrantKind::Package,
+        },
+        DelegatedNuGetReadCase {
+            repository_name: "NuGet Delegated Repository Reads",
+            repository_slug: "nuget-delegated-repository-reads",
+            repository_kind: "private",
+            repository_visibility: "internal_org",
+            package_id: "Delegated.Repository.Reads",
+            package_visibility: "private",
+            grant_kind: DelegatedGrantKind::Repository,
+        },
+    ];
+
+    for case in cases {
+        let (status, repository_body) = create_repository_with_options(
+            &app,
+            &alice_jwt,
+            case.repository_name,
+            case.repository_slug,
+            Some(org_id),
+            Some(case.repository_kind),
+            Some(case.repository_visibility),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected repository response for {}: {repository_body}",
+            case.package_id
+        );
+
+        let (status, package_body) = create_package_with_options(
+            &app,
+            &alice_jwt,
+            "nuget",
+            case.package_id,
+            case.repository_slug,
+            Some(case.package_visibility),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected package response for {}: {package_body}",
+            case.package_id
+        );
+
+        match case.grant_kind {
+            DelegatedGrantKind::Package => {
+                let (status, grant_body) = grant_team_package_access(
+                    &app,
+                    &alice_jwt,
+                    "acme-nuget-direct-delegation",
+                    "nuget-package-readers",
+                    "nuget",
+                    case.package_id,
+                    &["read_private"],
+                )
+                .await;
+                assert_eq!(
+                    status,
+                    StatusCode::OK,
+                    "unexpected team package access response for {}: {grant_body}",
+                    case.package_id
+                );
+            }
+            DelegatedGrantKind::Repository => {
+                let (status, grant_body) = grant_team_repository_access(
+                    &app,
+                    &alice_jwt,
+                    "acme-nuget-direct-delegation",
+                    "nuget-repository-readers",
+                    case.repository_slug,
+                    &["read_private"],
+                )
+                .await;
+                assert_eq!(
+                    status,
+                    StatusCode::OK,
+                    "unexpected team repository access response for {}: {grant_body}",
+                    case.package_id
+                );
+            }
+        }
+
+        let nupkg_bytes = build_nuget_package(case.package_id, "1.0.0");
+        let (status, push_body) =
+            push_nuget_package(&app, &nuget_token, case.package_id, "1.0.0", &nupkg_bytes).await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected NuGet push response for {}: {push_body}",
+            case.package_id
+        );
+
+        let normalized_id = case.package_id.to_ascii_lowercase();
+        let granted_reader = match case.grant_kind {
+            DelegatedGrantKind::Package => bob_jwt.as_str(),
+            DelegatedGrantKind::Repository => carol_jwt.as_str(),
+        };
+
+        let (anonymous_listing_status, _) =
+            get_nuget_version_listing(&app, None, &normalized_id).await;
+        assert_eq!(
+            anonymous_listing_status,
+            StatusCode::NOT_FOUND,
+            "anonymous version listing should stay hidden for {}",
+            case.package_id
+        );
+
+        let (outsider_listing_status, _) =
+            get_nuget_version_listing(&app, Some(&dave_jwt), &normalized_id).await;
+        assert_eq!(
+            outsider_listing_status,
+            StatusCode::NOT_FOUND,
+            "outsider version listing should stay hidden for {}",
+            case.package_id
+        );
+
+        let (delegated_listing_status, delegated_listing_body) =
+            get_nuget_version_listing(&app, Some(granted_reader), &normalized_id).await;
+        assert_eq!(
+            delegated_listing_status,
+            StatusCode::OK,
+            "delegated version listing should be readable for {}: {delegated_listing_body}",
+            case.package_id
+        );
+        assert_eq!(delegated_listing_body["versions"], json!(["1.0.0"]));
+
+        let (anonymous_registration_status, _) =
+            get_nuget_registration_index(&app, None, &normalized_id).await;
+        assert_eq!(
+            anonymous_registration_status,
+            StatusCode::NOT_FOUND,
+            "anonymous registration should stay hidden for {}",
+            case.package_id
+        );
+
+        let (outsider_registration_status, _) =
+            get_nuget_registration_index(&app, Some(&dave_jwt), &normalized_id).await;
+        assert_eq!(
+            outsider_registration_status,
+            StatusCode::NOT_FOUND,
+            "outsider registration should stay hidden for {}",
+            case.package_id
+        );
+
+        let (delegated_registration_status, delegated_registration_body) =
+            get_nuget_registration_index(&app, Some(granted_reader), &normalized_id).await;
+        assert_eq!(
+            delegated_registration_status,
+            StatusCode::OK,
+            "delegated registration should be readable for {}: {delegated_registration_body}",
+            case.package_id
+        );
+        assert_eq!(
+            delegated_registration_body["items"][0]["items"][0]["catalogEntry"]["id"],
+            case.package_id
+        );
+
+        let (anonymous_download_status, _, _) =
+            download_nuget_nupkg(&app, None, &normalized_id, "1.0.0").await;
+        assert_eq!(
+            anonymous_download_status,
+            StatusCode::NOT_FOUND,
+            "anonymous download should stay hidden for {}",
+            case.package_id
+        );
+
+        let (outsider_download_status, _, _) =
+            download_nuget_nupkg(&app, Some(&dave_jwt), &normalized_id, "1.0.0").await;
+        assert_eq!(
+            outsider_download_status,
+            StatusCode::NOT_FOUND,
+            "outsider download should stay hidden for {}",
+            case.package_id
+        );
+
+        let (delegated_download_status, delegated_download_headers, delegated_download_body) =
+            download_nuget_nupkg(&app, Some(granted_reader), &normalized_id, "1.0.0").await;
+        assert_eq!(
+            delegated_download_status,
+            StatusCode::OK,
+            "delegated download should be readable for {}",
+            case.package_id
+        );
+        assert_eq!(
+            delegated_download_headers
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("application/octet-stream")
+        );
+        assert_eq!(delegated_download_body, nupkg_bytes);
+    }
 }
 
 #[sqlx::test(migrations = "../../migrations")]

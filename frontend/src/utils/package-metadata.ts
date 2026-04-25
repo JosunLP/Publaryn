@@ -7,6 +7,7 @@ export interface PackageMetadataFormValues {
   repositoryUrl: string;
   license: string;
   keywords: string;
+  visibility: string;
 }
 
 interface NormalizedPackageMetadataValues {
@@ -16,7 +17,16 @@ interface NormalizedPackageMetadataValues {
   repositoryUrl: string | null;
   license: string | null;
   keywords: string[] | null;
+  visibility: string | null;
 }
+
+const PACKAGE_VISIBILITY_VALUES = new Set([
+  'public',
+  'private',
+  'internal_org',
+  'unlisted',
+  'quarantined',
+]);
 
 export function createPackageMetadataFormValues(
   pkg: PackageDetail | null | undefined
@@ -28,6 +38,7 @@ export function createPackageMetadataFormValues(
     repositoryUrl: pkg?.repository_url ?? '',
     license: pkg?.license ?? '',
     keywords: Array.isArray(pkg?.keywords) ? pkg.keywords.join(', ') : '',
+    visibility: normalizePackageVisibility(pkg?.visibility) ?? '',
   };
 }
 
@@ -41,6 +52,7 @@ export function normalizePackageMetadataInput(
     repositoryUrl: normalizePackageMetadataText(values.repositoryUrl),
     license: normalizePackageMetadataText(values.license),
     keywords: normalizePackageMetadataKeywords(values.keywords),
+    visibility: normalizePackageVisibility(values.visibility),
   };
 }
 
@@ -74,6 +86,10 @@ export function buildPackageMetadataUpdateInput(
 
   if (!sameKeywords(current.keywords, next.keywords)) {
     input.keywords = next.keywords;
+  }
+
+  if (current.visibility !== next.visibility && next.visibility) {
+    input.visibility = next.visibility;
   }
 
   return input;
@@ -128,7 +144,19 @@ function normalizeCurrentPackageMetadata(
     repositoryUrl: normalizePackageMetadataText(pkg?.repository_url),
     license: normalizePackageMetadataText(pkg?.license),
     keywords: normalizeKeywordList(pkg?.keywords),
+    visibility: normalizePackageVisibility(pkg?.visibility),
   };
+}
+
+function normalizePackageVisibility(
+  value: string | null | undefined
+): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const normalized = value.trim().toLowerCase().replace(/-/g, '_');
+  return PACKAGE_VISIBILITY_VALUES.has(normalized) ? normalized : null;
 }
 
 function normalizePackageMetadataText(

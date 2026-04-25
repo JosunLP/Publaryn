@@ -119,7 +119,7 @@ Many platforms lack strong support for:
 - CI-based trusted publishing
 - security dashboards and audit workflows
 
-Publaryn already closes much of this gap at the domain, API, and frontend layers: organizations, invitations, teams, ownership transfer, delegated package access, and dedicated organization workspaces are present in the current stack.
+Publaryn already closes much of this gap at the domain, API, and frontend layers: organizations, invitations, teams, ownership transfer, delegated package, repository, and namespace access, and dedicated organization workspaces are present in the current stack.
 
 ---
 
@@ -291,7 +291,7 @@ Responsible for:
 - policies
 - delegated access and ownership transfer
 
-The backend API already implements organization CRUD, memberships, invitations, teams, ownership transfer, and delegated package access. The current frontend exposes org discovery, join/decline, and creation flows in settings and is expanding into dedicated organization workspaces.
+The backend API already implements organization CRUD, memberships, invitations, teams, ownership transfer, and delegated package, repository, and namespace access. The current frontend exposes org discovery, join/decline, and creation flows in settings and dedicated organization workspaces.
 
 ## 7.3 Package Core
 
@@ -605,7 +605,7 @@ The platform should model real teams and companies, not just individual maintain
 
 ## 10.3 Teams
 
-Teams should be assignable to:
+Teams are assignable to:
 
 - entire repositories
 - individual packages
@@ -953,7 +953,7 @@ Current implemented baseline:
 - organization invitation acceptance and decline
 - organization creation
 - dedicated organization workspaces
-- team and delegated package access management
+- team and delegated package, repository, and namespace access management
 - repository and namespace management
 - organization audit and security views
 - package transfer flows
@@ -988,12 +988,11 @@ Contents:
 
 These workflows sit on top of the current public/search/settings baseline and the organization workspace.
 
-The current implementation already exposes package settings, release management, tags and channels, delegated team access, security findings, trusted publishers, and transfer/archive actions directly from the package detail experience.
+The current implementation already exposes package settings, visibility controls, release management, tags and channels, delegated team access, security findings, trusted publishers, and transfer/archive actions directly from the package detail experience.
 
 Remaining follow-on areas for maintainers include:
 
 - broader maintainer management
-- visibility controls
 - webhooks
 - access policies
 - richer delete or takedown workflows beyond archive controls

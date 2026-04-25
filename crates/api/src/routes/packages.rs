@@ -186,6 +186,24 @@ async fn can_manage_trusted_publishers_for_package(
     }
 }
 
+async fn can_manage_visibility_for_package(
+    db: &sqlx::PgPool,
+    package_id: Uuid,
+    identity: &OptionalAuthenticatedIdentity,
+) -> ApiResult<bool> {
+    match identity.0.as_ref() {
+        Some(identity)
+            if identity
+                .scopes()
+                .iter()
+                .any(|scope| scope == SCOPE_PACKAGES_WRITE) =>
+        {
+            actor_can_admin_package_by_id(db, package_id, Some(identity.user_id)).await
+        }
+        _ => Ok(false),
+    }
+}
+
 async fn can_manage_security_for_package(
     db: &sqlx::PgPool,
     package_id: Uuid,
@@ -475,6 +493,8 @@ async fn get_package(
         can_manage_releases_for_package(&state.db, package_id, &identity).await?;
     let can_manage_trusted_publishers =
         can_manage_trusted_publishers_for_package(&state.db, package_id, &identity).await?;
+    let can_manage_visibility =
+        can_manage_visibility_for_package(&state.db, package_id, &identity).await?;
     let can_manage_security =
         can_manage_security_for_package(&state.db, package_id, &identity).await?;
     let can_transfer = match identity.0.as_ref() {
@@ -491,7 +511,7 @@ async fn get_package(
 
     let row = sqlx::query(
         "SELECT p.id, p.name, p.display_name, p.ecosystem, p.description, p.readme, \
-         p.homepage, p.repository_url, p.license, p.keywords, p.visibility, p.is_deprecated, \
+         p.homepage, p.repository_url, p.license, p.keywords, p.visibility::text AS visibility, p.is_deprecated, \
          p.deprecation_message, p.is_archived, p.download_count, p.owner_org_id, p.created_at, \
          p.updated_at, u.username AS owner_username, o.slug AS owner_org_slug \
          FROM packages p \
@@ -640,6 +660,7 @@ async fn get_package(
         "can_manage_metadata": can_manage_metadata,
         "can_manage_releases": can_manage_releases,
         "can_manage_trusted_publishers": can_manage_trusted_publishers,
+        "can_manage_visibility": can_manage_visibility,
         "can_manage_security": can_manage_security,
         "can_transfer": can_transfer,
         "team_access": team_access,
@@ -664,6 +685,7 @@ struct UpdatePackageRequest {
     keywords: Option<Option<Vec<String>>>,
     #[serde(default, deserialize_with = "deserialize_explicit_nullable_field")]
     readme: Option<Option<String>>,
+    visibility: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -907,13 +929,12 @@ async fn update_package(
     let eco = parse_ecosystem(&ecosystem_str)?;
     let normalized = normalize_package_name(&name, &eco);
 
-    let package_id = ensure_package_metadata_write_access(
-        &state.db,
-        eco.as_str(),
-        &normalized,
-        identity.user_id,
-    )
-    .await?;
+    let package_id = if body.visibility.is_some() {
+        ensure_package_admin_access(&state.db, eco.as_str(), &normalized, identity.user_id).await?
+    } else {
+        ensure_package_metadata_write_access(&state.db, eco.as_str(), &normalized, identity.user_id)
+            .await?
+    };
 
     let mut tx = state
         .db
@@ -922,10 +943,13 @@ async fn update_package(
         .map_err(|e| ApiError(Error::Database(e)))?;
 
     let current_package = sqlx::query(
-        "SELECT id, name, owner_org_id, description, homepage, repository_url, license, keywords, readme \
-         FROM packages \
-         WHERE id = $1 \
-         FOR UPDATE",
+        "SELECT p.id, p.name, p.owner_org_id, p.description, p.homepage, p.repository_url, \
+                p.license, p.keywords, p.readme, p.visibility::text AS visibility, \
+                r.visibility::text AS repository_visibility \
+         FROM packages p \
+         JOIN repositories r ON r.id = p.repository_id \
+         WHERE p.id = $1 \
+         FOR UPDATE OF p",
     )
     .bind(package_id)
     .fetch_optional(&mut *tx)
@@ -961,6 +985,12 @@ async fn update_package(
     let current_readme = current_package
         .try_get::<Option<String>, _>("readme")
         .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let current_visibility = current_package
+        .try_get::<String, _>("visibility")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let repository_visibility = current_package
+        .try_get::<String, _>("repository_visibility")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
 
     let updated_description = body
         .description
@@ -986,6 +1016,22 @@ async fn update_package(
         .readme
         .map(normalize_optional_package_readme)
         .unwrap_or_else(|| current_readme.clone());
+    let current_visibility_value = parse_package_visibility(&current_visibility)?;
+    let repository_visibility_value = parse_package_visibility(&repository_visibility)?;
+    let updated_visibility = body
+        .visibility
+        .as_deref()
+        .map(parse_package_visibility)
+        .transpose()?
+        .map(|requested_visibility| {
+            derive_package_visibility(
+                Some(requested_visibility),
+                repository_visibility_value.clone(),
+                owner_org_id.is_some(),
+            )
+        })
+        .transpose()?
+        .unwrap_or_else(|| current_visibility_value.clone());
 
     let mut changed_fields = Vec::new();
     let mut changes = serde_json::Map::new();
@@ -1056,7 +1102,9 @@ async fn update_package(
         );
     }
 
-    if changes.is_empty() {
+    let visibility_changed = current_visibility_value != updated_visibility;
+
+    if changes.is_empty() && !visibility_changed {
         return Ok(Json(serde_json::json!({ "message": "Package updated" })));
     }
 
@@ -1068,8 +1116,9 @@ async fn update_package(
              license        = $4, \
              keywords       = $5, \
              readme         = $6, \
+             visibility     = $7::visibility, \
              updated_at     = NOW() \
-         WHERE id = $7",
+         WHERE id = $8",
     )
     .bind(&updated_description)
     .bind(&updated_homepage)
@@ -1077,31 +1126,57 @@ async fn update_package(
     .bind(&updated_license)
     .bind(&updated_keywords)
     .bind(&updated_readme)
+    .bind(visibility_as_str(&updated_visibility))
     .bind(package_id)
     .execute(&mut *tx)
     .await
     .map_err(|e| ApiError(Error::Database(e)))?;
 
-    sqlx::query(
-        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_org_id, target_package_id, metadata, occurred_at) \
-         VALUES ($1, 'package_update', $2, $3, $4, $5, $6, NOW())",
-    )
-    .bind(Uuid::new_v4())
-    .bind(identity.user_id)
-    .bind(identity.audit_actor_token_id())
-    .bind(owner_org_id)
-    .bind(package_id)
-    .bind(serde_json::json!({
-        "ecosystem": eco.as_str(),
-        "package_name": package_name,
-        "name": package_name,
-        "normalized_name": normalized,
-        "changed_fields": changed_fields,
-        "changes": changes,
-    }))
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| ApiError(Error::Database(e)))?;
+    if !changes.is_empty() {
+        sqlx::query(
+            "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_org_id, target_package_id, metadata, occurred_at) \
+             VALUES ($1, 'package_update', $2, $3, $4, $5, $6, NOW())",
+        )
+        .bind(Uuid::new_v4())
+        .bind(identity.user_id)
+        .bind(identity.audit_actor_token_id())
+        .bind(owner_org_id)
+        .bind(package_id)
+        .bind(serde_json::json!({
+            "ecosystem": eco.as_str(),
+            "package_name": package_name,
+            "name": package_name,
+            "normalized_name": normalized,
+            "changed_fields": changed_fields,
+            "changes": changes,
+        }))
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+    }
+
+    if visibility_changed {
+        sqlx::query(
+            "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_org_id, target_package_id, metadata, occurred_at) \
+             VALUES ($1, 'package_visibility_change', $2, $3, $4, $5, $6, NOW())",
+        )
+        .bind(Uuid::new_v4())
+        .bind(identity.user_id)
+        .bind(identity.audit_actor_token_id())
+        .bind(owner_org_id)
+        .bind(package_id)
+        .bind(serde_json::json!({
+            "ecosystem": eco.as_str(),
+            "package_name": package_name,
+            "name": package_name,
+            "normalized_name": normalized,
+            "previous_visibility": visibility_as_str(&current_visibility_value),
+            "visibility": visibility_as_str(&updated_visibility),
+        }))
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+    }
 
     tx.commit()
         .await

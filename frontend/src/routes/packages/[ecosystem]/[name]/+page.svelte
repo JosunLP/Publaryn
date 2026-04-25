@@ -85,6 +85,10 @@
     getReleaseActionAvailability,
     getRestoreReleaseLabel,
   } from '../../../../utils/releases';
+  import {
+    REPOSITORY_VISIBILITY_OPTIONS,
+    formatRepositoryVisibilityLabel,
+  } from '../../../../utils/repositories';
   import { SECURITY_SEVERITIES } from '../../../../utils/security';
   import {
     normalizeTrustedPublisherInput,
@@ -180,6 +184,7 @@
   let packageSettingsRepositoryUrl = '';
   let packageSettingsLicense = '';
   let packageSettingsKeywords = '';
+  let packageSettingsVisibility = '';
   let updatingPackageSettings = false;
   let archiveConfirmed = false;
   let archivingPackage = false;
@@ -373,6 +378,15 @@
       return;
     }
 
+    const form = event.currentTarget as HTMLFormElement;
+    if (pkg.can_manage_visibility) {
+      const submittedVisibility = form
+        ? new FormData(form).get('visibility')?.toString()
+        : null;
+      packageSettingsVisibility =
+        submittedVisibility || packageSettingsVisibility;
+    }
+
     const input = buildPackageMetadataUpdateInput(pkg, {
       description: packageSettingsDescription,
       readme: packageSettingsReadme,
@@ -380,6 +394,7 @@
       repositoryUrl: packageSettingsRepositoryUrl,
       license: packageSettingsLicense,
       keywords: packageSettingsKeywords,
+      visibility: packageSettingsVisibility,
     });
 
     if (Object.keys(input).length === 0) {
@@ -1127,6 +1142,7 @@
     packageSettingsRepositoryUrl = values.repositoryUrl;
     packageSettingsLicense = values.license;
     packageSettingsKeywords = values.keywords;
+    packageSettingsVisibility = values.visibility;
     updatingPackageSettings = false;
   }
 
@@ -1318,6 +1334,7 @@
         repositoryUrl: packageSettingsRepositoryUrl,
         license: packageSettingsLicense,
         keywords: packageSettingsKeywords,
+        visibility: packageSettingsVisibility,
       })
     : false;
   $: readmeHtml = renderMarkdown(pkg?.readme);
@@ -1877,6 +1894,49 @@
                   ></textarea>
                 </div>
 
+                {#if pkg.can_manage_visibility}
+                  <div class="form-group" style="margin-bottom:12px;">
+                    <label for="package-settings-visibility">Visibility</label>
+                    <select
+                      bind:value={packageSettingsVisibility}
+                      id="package-settings-visibility"
+                      name="visibility"
+                      class="form-input"
+                    >
+                      <option value="" disabled>Select visibility</option>
+                      {#each REPOSITORY_VISIBILITY_OPTIONS as option}
+                        <option value={option.value}>{option.label}</option>
+                      {/each}
+                    </select>
+                    <p
+                      class="settings-copy"
+                      style="margin-top:6px; margin-bottom:0;"
+                    >
+                      Package visibility cannot be broader than the enclosing
+                      repository visibility. Publaryn validates that boundary
+                      when settings are saved.
+                    </p>
+                  </div>
+                {:else if pkg.visibility}
+                  <div class="form-group" style="margin-bottom:12px;">
+                    <label for="package-settings-visibility-readonly"
+                      >Visibility</label
+                    >
+                    <input
+                      id="package-settings-visibility-readonly"
+                      class="form-input"
+                      value={formatRepositoryVisibilityLabel(pkg.visibility)}
+                      disabled
+                    />
+                    <p
+                      class="settings-copy"
+                      style="margin-top:6px; margin-bottom:0;"
+                    >
+                      Package administrators can change package visibility.
+                    </p>
+                  </div>
+                {/if}
+
                 <div class="grid gap-4 xl:grid-cols-2">
                   <div class="form-group" style="margin-bottom:12px;">
                     <label for="package-settings-homepage">Homepage</label>
@@ -2216,7 +2276,8 @@
               </div>{/if}
             {#if pkg.visibility}<div class="sidebar-row">
                 <span class="sidebar-row__label">Visibility</span><span
-                  class="sidebar-row__value">{pkg.visibility}</span
+                  class="sidebar-row__value"
+                  >{formatRepositoryVisibilityLabel(pkg.visibility)}</span
                 >
               </div>{/if}
             {#if pkg.download_count != null}<div class="sidebar-row">
