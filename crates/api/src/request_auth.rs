@@ -1205,14 +1205,20 @@ pub async fn ensure_package_read_access(
     .await?;
 
     let (team_package_read_access, team_repository_read_access) = match actor_user_id {
-        Some(actor_user_id) if !(package_owner_read_access && repository_owner_read_access) => {
-            let team_package_read_access =
-                actor_has_any_team_package_access(db, package_id, actor_user_id).await?;
-            let team_repository_read_access =
-                actor_has_any_team_repository_access(db, repository_id, actor_user_id).await?;
+        Some(actor_user_id) => {
+            let team_package_read_access = if package_owner_read_access {
+                false
+            } else {
+                actor_has_any_team_package_access(db, package_id, actor_user_id).await?
+            };
+            let team_repository_read_access = if repository_owner_read_access {
+                false
+            } else {
+                actor_has_any_team_repository_access(db, repository_id, actor_user_id).await?
+            };
             (team_package_read_access, team_repository_read_access)
         }
-        _ => (false, false),
+        None => (false, false),
     };
     let delegated_read_access = team_package_read_access || team_repository_read_access;
 

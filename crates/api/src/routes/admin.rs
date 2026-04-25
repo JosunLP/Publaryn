@@ -183,6 +183,15 @@ struct AdminJobRetryResponse {
     job: BackgroundJobResponse,
 }
 
+#[derive(Debug, sqlx::FromRow)]
+struct RetryableJobSnapshot {
+    kind: JobKind,
+    status: JobStatus,
+    attempts: i32,
+    max_attempts: i32,
+    last_error: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, ToSchema)]
 struct AdminJobsRecoverStaleResponse {
     message: String,
@@ -298,8 +307,8 @@ async fn retry_background_job(
         .await
         .map_err(|e| ApiError(Error::Database(e)))?;
 
-    let current = sqlx::query(
-        "SELECT id, kind, status::text AS status, attempts, max_attempts, last_error \
+    let current = sqlx::query_as::<_, RetryableJobSnapshot>(
+        "SELECT kind, status, attempts, max_attempts, last_error \
          FROM background_jobs \
          WHERE id = $1 \
          FOR UPDATE",
@@ -313,13 +322,12 @@ async fn retry_background_job(
             "Background job '{job_id}' not found"
         )))
     })?;
+    let previous_status = current.status;
 
-    let previous_status = current
-        .try_get::<String, _>("status")
-        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
-    if !matches!(previous_status.as_str(), "failed" | "dead") {
+    if !matches!(previous_status, JobStatus::Failed | JobStatus::Dead) {
         return Err(ApiError(Error::Conflict(format!(
-            "Background job '{job_id}' cannot be retried from status '{previous_status}'"
+            "Background job '{job_id}' cannot be retried from status '{}'",
+            previous_status.as_str()
         ))));
     }
 
@@ -350,11 +358,11 @@ async fn retry_background_job(
     .bind(identity.audit_actor_token_id())
     .bind(serde_json::json!({
         "job_id": job_id,
-        "kind": current.try_get::<JobKind, _>("kind").ok().map(|kind| kind.as_str()),
-        "previous_status": previous_status,
-        "previous_attempts": current.try_get::<i32, _>("attempts").ok(),
-        "max_attempts": current.try_get::<i32, _>("max_attempts").ok(),
-        "last_error": current.try_get::<Option<String>, _>("last_error").ok().flatten(),
+        "kind": current.kind.as_str(),
+        "previous_status": previous_status.as_str(),
+        "previous_attempts": current.attempts,
+        "max_attempts": current.max_attempts,
+        "last_error": current.last_error,
     }))
     .execute(&mut *tx)
     .await

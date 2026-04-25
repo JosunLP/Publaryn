@@ -425,6 +425,52 @@ describe('org governance controller harness', () => {
     }
   });
 
+  test('requires selecting a transfer target before submitting ownership transfer', async () => {
+    const scenario = createScenario();
+    const { target, unmount, flush } = await renderSvelte(HarnessPath, {
+      loadState: createLoadState(scenario),
+      mutations: createMutations({
+        async transferOwnership(_slug, input) {
+          scenario.transferOwnershipCalls.push({ ...input });
+          return {
+            new_owner: {
+              username: input.username,
+            },
+          };
+        },
+      }),
+    });
+
+    try {
+      await waitFor(() => {
+        flush();
+        expect(queryRequiredButton(target, '#org-ownership-transfer-toggle')).toBeDefined();
+      });
+
+      click(queryRequiredButton(target, '#org-ownership-transfer-toggle'));
+      await waitFor(() => {
+        flush();
+        expect(queryRequiredForm(target, '#org-ownership-transfer-form')).toBeDefined();
+      });
+      setChecked(
+        queryRequiredInput(target, '#org-ownership-transfer-confirm'),
+        true
+      );
+      submitForm(queryRequiredForm(target, '#org-ownership-transfer-form'));
+
+      await waitFor(() => {
+        flush();
+        expect(target.textContent).toContain(
+          'Select a user to transfer ownership to.'
+        );
+      });
+
+      expect(scenario.transferOwnershipCalls).toEqual([]);
+    } finally {
+      unmount();
+    }
+  });
+
   test('revokes invitations and removes members after explicit confirmation', async () => {
     const scenario = createScenario();
     const { target, unmount, flush } = await renderSvelte(HarnessPath, {

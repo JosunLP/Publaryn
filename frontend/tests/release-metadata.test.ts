@@ -177,6 +177,27 @@ describe('release dependency overview helpers', () => {
     });
   });
 
+  test('defaults Maven dependencies without a scope to compile', () => {
+    expect(
+      buildReleaseDependencyOverview({
+        kind: 'maven',
+        details: {
+          dependencies: [{ group_id: 'org.example', artifact_id: 'core' }],
+        },
+      })
+    ).toEqual({
+      ecosystem: 'maven',
+      total: 1,
+      groups: [
+        {
+          label: 'Compile dependencies',
+          count: 1,
+          names: ['org.example:core'],
+        },
+      ],
+    });
+  });
+
   test('returns no overview for empty, malformed, or unsupported metadata', () => {
     expect(
       buildReleaseDependencyOverview({

@@ -190,11 +190,9 @@ function mavenDependencyOverview(
   const grouped = new Map<string, unknown[]>();
 
   for (const dependency of dependencies) {
-    const scope =
-      isRecord(dependency) && stringValue(dependency.scope)
-        ? stringValue(dependency.scope)
-        : 'compile';
-    const label = `${scope?.charAt(0).toUpperCase()}${scope?.slice(1)} dependencies`;
+    const rawScope = isRecord(dependency) ? stringValue(dependency.scope) : null;
+    const scope = rawScope ?? 'compile';
+    const label = `${scope.charAt(0).toUpperCase()}${scope.slice(1)} dependencies`;
     grouped.set(label, [...(grouped.get(label) || []), dependency]);
   }
 

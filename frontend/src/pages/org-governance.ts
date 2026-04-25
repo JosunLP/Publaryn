@@ -10,6 +10,8 @@ import {
 
 export const ORG_OWNERSHIP_TRANSFER_CONFIRMATION_MESSAGE =
   'Please confirm the ownership transfer.';
+export const ORG_OWNERSHIP_TRANSFER_TARGET_MESSAGE =
+  'Select a user to transfer ownership to.';
 export const ORG_INVITATION_REVOKE_CONFIRMATION_MESSAGE =
   'Please confirm that you want to revoke this invitation immediately.';
 export const ORG_MEMBER_REMOVE_CONFIRMATION_MESSAGE =
@@ -199,6 +201,12 @@ export function createOrgGovernanceController(options: OrgGovernanceControllerOp
       const username = options.resolveOwnerUsername(
         formData.get('username')?.toString() || ''
       );
+
+      if (!username) {
+        options.clearFlash();
+        options.setError(ORG_OWNERSHIP_TRANSFER_TARGET_MESSAGE);
+        return;
+      }
 
       if (!options.getOwnershipTransferConfirmed()) {
         options.clearFlash();
