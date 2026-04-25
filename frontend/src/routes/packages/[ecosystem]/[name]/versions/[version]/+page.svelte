@@ -336,6 +336,9 @@
 
   $: artifactCount = artifacts.length;
   $: bundleAnalysis = release?.bundle_analysis ?? null;
+  $: bundleAnalysisStats = buildBundleAnalysisStats(bundleAnalysis);
+  $: bundleAnalysisHighlights = buildBundleAnalysisHighlights(bundleAnalysis);
+  $: bundleAnalysisDetailNotes = bundleAnalysisNotes(bundleAnalysis);
   $: releaseBundleRisk = bundleAnalysisRisk(bundleAnalysis);
   $: releaseBundleRiskFactors = bundleAnalysisRiskFactors(bundleAnalysis);
   $: releaseBundleRiskScore = bundleAnalysisRiskScoreLabel(bundleAnalysis);
@@ -1196,28 +1199,28 @@
                 Bundlephobia-inspired metadata derived from stored artifacts and
                 ecosystem-specific release metadata.
               </p>
-              {#each buildBundleAnalysisStats(bundleAnalysis) as stat}
+              {#each bundleAnalysisStats as stat}
                 <div class="sidebar-row">
                   <span class="sidebar-row__label">{stat.label}</span>
                   <span class="sidebar-row__value">{stat.value}</span>
                 </div>
               {/each}
-              {#if buildBundleAnalysisHighlights(bundleAnalysis).length > 0}
+              {#if bundleAnalysisHighlights.length > 0}
                 <div
                   class="token-row__scopes"
                   style="margin-top:12px; margin-bottom:12px;"
                 >
-                  {#each buildBundleAnalysisHighlights(bundleAnalysis) as highlight}
+                  {#each bundleAnalysisHighlights as highlight}
                     <span class="badge badge-ecosystem">{highlight}</span>
                   {/each}
                 </div>
               {/if}
-              {#if bundleAnalysisNotes(bundleAnalysis).length > 0}
+              {#if bundleAnalysisDetailNotes.length > 0}
                 <div
                   class="settings-copy"
                   style="display:grid; gap:6px; margin:0;"
                 >
-                  {#each bundleAnalysisNotes(bundleAnalysis) as note}
+                  {#each bundleAnalysisDetailNotes as note}
                     <span>{note}</span>
                   {/each}
                 </div>

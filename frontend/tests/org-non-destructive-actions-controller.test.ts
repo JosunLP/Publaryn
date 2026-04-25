@@ -335,10 +335,15 @@ describe('org non-destructive actions controller harness', () => {
         queryRequiredInput(target, '#package-create-display-name'),
         'Acme Tools'
       );
-      changeValue(
-        queryRequiredSelect(target, '#package-create-visibility'),
-        'private'
+      const visibilitySelect = queryRequiredSelect(
+        target,
+        '#package-create-visibility'
       );
+      const spacedVisibilityOption = document.createElement('option');
+      spacedVisibilityOption.value = ' private ';
+      spacedVisibilityOption.textContent = 'Private (spaced)';
+      visibilitySelect.append(spacedVisibilityOption);
+      changeValue(visibilitySelect, ' private ');
       changeValue(
         queryRequiredTextArea(target, '#package-create-description'),
         'Private cargo package'

@@ -66,4 +66,12 @@ describe('search result discovery formatting', () => {
     expect(searchResultRiskBadgeSeverity({ discovery: null })).toBe('info');
     expect(searchResultDiscoverySignals({ discovery: null })).toEqual([]);
   });
+
+  test('treats blank discovery risk values as pending', () => {
+    expect(
+      searchResultRiskLabel({
+        discovery: { risk_level: '   ', signals: [] },
+      })
+    ).toBe('Risk pending');
+  });
 });

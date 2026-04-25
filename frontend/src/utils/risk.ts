@@ -20,5 +20,6 @@ export function riskBadgeSeverity(
 }
 
 export function riskLabel(level: string | null | undefined): string {
-  return level ? `${titleCase(level)} risk` : 'Risk pending';
+  const normalizedLevel = (level || '').trim();
+  return normalizedLevel ? `${titleCase(normalizedLevel)} risk` : 'Risk pending';
 }
