@@ -348,6 +348,7 @@ describe('org non-destructive actions controller harness', () => {
       spacedVisibilityOption.textContent = 'Private (spaced)';
       visibilitySelect.append(spacedVisibilityOption);
       changeValue(visibilitySelect, ' private ');
+      expect(visibilitySelect.value).toBe(' private ');
       changeValue(
         queryRequiredTextArea(target, '#package-create-description'),
         'Private cargo package'
@@ -449,7 +450,7 @@ describe('org non-destructive actions controller harness', () => {
     }
   });
 
-  test('normalizes blank package visibility to null before create requests', async () => {
+  test('normalizes blank and whitespace-only package visibility to null before create requests', async () => {
     const scenario = createScenario();
     const { target, unmount, flush } = await renderSvelte(HarnessPath, {
       loadState: createLoadState(scenario),
@@ -488,6 +489,16 @@ describe('org non-destructive actions controller harness', () => {
 
       changeValue(queryRequiredSelect(target, '#package-create-ecosystem'), 'cargo');
       changeValue(queryRequiredInput(target, '#package-create-name'), 'defaulted_pkg');
+      const visibilitySelect = queryRequiredSelect(
+        target,
+        '#package-create-visibility'
+      );
+      const whitespaceOnlyVisibilityOption = document.createElement('option');
+      whitespaceOnlyVisibilityOption.value = '   ';
+      whitespaceOnlyVisibilityOption.textContent = 'Whitespace only';
+      visibilitySelect.append(whitespaceOnlyVisibilityOption);
+      changeValue(visibilitySelect, '   ');
+      expect(visibilitySelect.value).toBe('   ');
       submitForm(queryRequiredForm(target, '#package-create-form'));
 
       await waitFor(() => {
