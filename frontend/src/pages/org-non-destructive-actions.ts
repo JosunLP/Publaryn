@@ -201,8 +201,7 @@ export function createOrgNonDestructiveActionsController(
           ecosystem,
           name: packageName,
           repositorySlug,
-          visibility:
-            normalizeOptionalFormText(formData.get('visibility')) ?? undefined,
+          visibility: normalizeOptionalFormText(formData.get('visibility')),
           displayName: formData.get('display_name')?.toString() || '',
           description: formData.get('description')?.toString() || '',
         });
