@@ -88,8 +88,8 @@ export function buildPackageMetadataUpdateInput(
     input.keywords = next.keywords;
   }
 
-  if (current.visibility !== next.visibility && next.visibility) {
-    input.visibility = next.visibility;
+  if (current.visibility !== next.visibility) {
+    input.visibility = next.visibility ?? null;
   }
 
   return input;

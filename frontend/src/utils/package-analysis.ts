@@ -1,5 +1,6 @@
 import type { BundleAnalysisSummary, BundleRiskSummary } from '../api/packages';
 import { formatFileSize, formatNumber } from './format';
+import { riskBadgeSeverity, riskLabel } from './risk';
 import { titleCase } from './strings';
 
 export interface BundleAnalysisStat {
@@ -128,25 +129,13 @@ export function bundleAnalysisRisk(
 export function bundleAnalysisRiskBadgeSeverity(
   summary: BundleAnalysisSummary | null | undefined
 ): 'critical' | 'high' | 'medium' | 'low' | 'info' {
-  switch ((bundleAnalysisRisk(summary)?.level || '').toLowerCase()) {
-    case 'critical':
-      return 'critical';
-    case 'high':
-      return 'high';
-    case 'moderate':
-      return 'medium';
-    case 'low':
-      return 'low';
-    default:
-      return 'info';
-  }
+  return riskBadgeSeverity(bundleAnalysisRisk(summary)?.level);
 }
 
 export function bundleAnalysisRiskLabel(
   summary: BundleAnalysisSummary | null | undefined
 ): string {
-  const level = bundleAnalysisRisk(summary)?.level;
-  return level ? `${titleCase(level)} risk` : 'Risk pending';
+  return riskLabel(bundleAnalysisRisk(summary)?.level);
 }
 
 export function bundleAnalysisRiskScoreLabel(

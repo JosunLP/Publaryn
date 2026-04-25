@@ -1,5 +1,5 @@
 import type { SearchPackage } from '../api/packages';
-import { titleCase } from '../utils/strings';
+import { riskBadgeSeverity, riskLabel } from '../utils/risk';
 
 function normalizeSearchResultValue(value: string | null | undefined): string {
   return typeof value === 'string' ? value.trim() : '';
@@ -21,25 +21,13 @@ export function formatSearchResultRepository(
 export function searchResultRiskBadgeSeverity(
   result: Pick<SearchPackage, 'discovery'>
 ): 'critical' | 'high' | 'medium' | 'low' | 'info' {
-  switch ((result.discovery?.risk_level || '').toLowerCase()) {
-    case 'critical':
-      return 'critical';
-    case 'high':
-      return 'high';
-    case 'moderate':
-      return 'medium';
-    case 'low':
-      return 'low';
-    default:
-      return 'info';
-  }
+  return riskBadgeSeverity(result.discovery?.risk_level);
 }
 
 export function searchResultRiskLabel(
   result: Pick<SearchPackage, 'discovery'>
 ): string {
-  const level = normalizeSearchResultValue(result.discovery?.risk_level);
-  return level ? `${titleCase(level)} risk` : 'Risk pending';
+  return riskLabel(normalizeSearchResultValue(result.discovery?.risk_level));
 }
 
 export function searchResultDiscoverySignals(

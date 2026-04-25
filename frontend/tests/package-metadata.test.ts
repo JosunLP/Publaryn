@@ -135,4 +135,26 @@ describe('package metadata helpers', () => {
       visibility: 'internal_org',
     });
   });
+
+  test('allows visibility to be cleared back to the default state', () => {
+    const privatePackage = {
+      ...BASE_PACKAGE,
+      visibility: 'private',
+    };
+
+    expect(
+      buildPackageMetadataUpdateInput(privatePackage, {
+        ...createPackageMetadataFormValues(privatePackage),
+        visibility: '',
+      })
+    ).toEqual({
+      visibility: null,
+    });
+    expect(
+      packageMetadataHasChanges(privatePackage, {
+        ...createPackageMetadataFormValues(privatePackage),
+        visibility: '',
+      })
+    ).toBe(true);
+  });
 });

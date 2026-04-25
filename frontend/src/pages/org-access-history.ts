@@ -99,14 +99,16 @@ export function accessHistorySummary(entry: OrgAccessHistoryEntry): string {
 
   const team = formatAccessHistoryTeam(entry);
   const target = formatAccessHistoryTarget(entry);
-  const currentPermissions = formatPermissionList(
-    entry.permissions
-  ).toLowerCase();
+  const normalizedPermissions = normalizePermissionList(entry.permissions);
+  const grantedPermissions =
+    normalizedPermissions.length > 0
+      ? `${normalizedPermissions.map(formatPermissionPhrase).join(', ')} access`
+      : 'delegated access';
   const event = normalizeIdentifier(entry.event);
 
   switch (event) {
     case 'granted':
-      return `Granted ${team} ${currentPermissions} access to ${target}.`;
+      return `Granted ${team} ${grantedPermissions} to ${target}.`;
     case 'revoked':
       return `Revoked delegated access from ${team} for ${target}.`;
     default:
@@ -140,6 +142,10 @@ function normalizePermissionList(permissions?: string[] | null): string[] {
       (permissions || []).map((permission) => permission.trim()).filter(Boolean)
     )
   ).sort((left, right) => left.localeCompare(right));
+}
+
+function formatPermissionPhrase(permission: string): string {
+  return normalizeIdentifier(permission).replace(/_/g, ' ');
 }
 
 function normalizeIdentifier(value?: string | null): string {

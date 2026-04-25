@@ -1,6 +1,10 @@
 import { describe, expect, test } from 'bun:test';
 
-import { buildBundleAnalysisStats } from '../src/utils/package-analysis';
+import {
+  buildBundleAnalysisStats,
+  bundleAnalysisRiskBadgeSeverity,
+  bundleAnalysisRiskLabel,
+} from '../src/utils/package-analysis';
 
 describe('package analysis helpers', () => {
   test('labels artifact size separately from artifact count', () => {
@@ -21,5 +25,24 @@ describe('package analysis helpers', () => {
         total_artifact_size_bytes: 2048,
       })
     ).toEqual([{ label: 'Total artifact size', value: '2.0 KiB' }]);
+  });
+
+  test('reuses shared risk formatting for bundle analysis summaries', () => {
+    expect(
+      bundleAnalysisRiskLabel({
+        risk: {
+          level: 'moderate',
+        },
+      })
+    ).toBe('Moderate risk');
+    expect(
+      bundleAnalysisRiskBadgeSeverity({
+        risk: {
+          level: 'moderate',
+        },
+      })
+    ).toBe('medium');
+    expect(bundleAnalysisRiskLabel({ risk: null })).toBe('Risk pending');
+    expect(bundleAnalysisRiskBadgeSeverity({ risk: null })).toBe('info');
   });
 });

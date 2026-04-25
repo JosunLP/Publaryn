@@ -100,4 +100,21 @@ describe('org access history helpers', () => {
       'Granted Publishers publish access to npm · demo-widget.'
     );
   });
+
+  test('uses a neutral granted summary when delegated permissions are missing', () => {
+    const entry: OrgAccessHistoryEntry = {
+      scope: 'package',
+      event: 'granted',
+      team_name: 'Publishers',
+      target: {
+        ecosystem: 'npm',
+        normalized_name: 'demo-widget',
+      },
+      permissions: [],
+    };
+
+    expect(accessHistorySummary(entry)).toBe(
+      'Granted Publishers delegated access to npm · demo-widget.'
+    );
+  });
 });
