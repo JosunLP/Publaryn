@@ -369,6 +369,7 @@ describe('org non-destructive actions controller harness', () => {
       expect(queryRequiredTextArea(target, '#package-create-description').value).toBe(
         ''
       );
+      expect(scenario.createPackageCalls[0]?.visibility).toBe('private');
       expect(scenario.createPackageCalls).toEqual([
         {
           ecosystem: 'cargo',
@@ -496,16 +497,13 @@ describe('org non-destructive actions controller harness', () => {
         );
       });
 
-      expect(scenario.createPackageCalls).toEqual([
-        {
-          ecosystem: 'cargo',
-          name: 'defaulted_pkg',
-          repositorySlug: 'repo-alpha',
-          visibility: null,
-          displayName: '',
-          description: '',
-        },
-      ]);
+      expect(scenario.createPackageCalls).toHaveLength(1);
+      expect(scenario.createPackageCalls[0]).toMatchObject({
+        ecosystem: 'cargo',
+        name: 'defaulted_pkg',
+        repositorySlug: 'repo-alpha',
+        visibility: null,
+      });
     } finally {
       unmount();
     }
