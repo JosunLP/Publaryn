@@ -11,5 +11,9 @@ describe('risk helpers', () => {
 
   test('preserves trimmed labels for display', () => {
     expect(riskLabel(' moderate ')).toBe('Moderate risk');
+    expect(riskLabel(' high ')).toBe('High risk');
+    expect(riskLabel(' critical ')).toBe('Critical risk');
+    expect(riskLabel(' unknown ')).toBe('Unknown risk');
+    expect(riskLabel('   ')).toBe('Risk pending');
   });
 });

@@ -179,7 +179,7 @@ mod tests {
 
         sqlx::query(
             "INSERT INTO repositories (id, name, slug, kind, visibility, owner_org_id, created_at, updated_at) \
-             VALUES ($1, $2, $3, 'public', 'private', $4, NOW(), NOW())",
+             VALUES ($1, $2, $3, 'private', 'private', $4, NOW(), NOW())",
         )
         .bind(repository_id)
         .bind(slug)
