@@ -340,7 +340,7 @@ describe('org non-destructive actions controller harness', () => {
       changeValue(queryRequiredInput(target, '#package-create-name'), 'acme_tools');
       changeValue(
         queryRequiredInput(target, '#package-create-display-name'),
-        'Acme Tools'
+        '  Acme Tools  '
       );
       changeValue(
         queryRequiredSelect(target, '#package-create-visibility'),
@@ -348,7 +348,7 @@ describe('org non-destructive actions controller harness', () => {
       );
       changeValue(
         queryRequiredTextArea(target, '#package-create-description'),
-        'Private cargo package'
+        '  Private cargo package  '
       );
       submitForm(queryRequiredForm(target, '#package-create-form'));
 
@@ -502,6 +502,8 @@ describe('org non-destructive actions controller harness', () => {
         name: 'defaulted_pkg',
         repositorySlug: 'repo-alpha',
         visibility: null,
+        displayName: null,
+        description: null,
       });
     } finally {
       unmount();

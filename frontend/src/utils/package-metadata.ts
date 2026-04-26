@@ -177,7 +177,7 @@ function normalizePackageVisibilityInput(
   value: string | null | undefined
 ): string | null | undefined {
   if (typeof value !== 'string') {
-    return null;
+    return undefined;
   }
 
   const normalized = value.trim().toLowerCase().replace(/-/g, '_');

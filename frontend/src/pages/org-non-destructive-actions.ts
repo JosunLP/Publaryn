@@ -209,8 +209,8 @@ export function createOrgNonDestructiveActionsController(
           name: packageName,
           repositorySlug,
           visibility: normalizeOptionalFormText(formData.get('visibility')),
-          displayName: formData.get('display_name')?.toString() || '',
-          description: formData.get('description')?.toString() || '',
+          displayName: normalizeOptionalFormText(formData.get('display_name')),
+          description: normalizeOptionalFormText(formData.get('description')),
         });
 
         options.resetPackageDraft();

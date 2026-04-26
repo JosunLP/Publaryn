@@ -104,6 +104,79 @@ describe('release dependency overview helpers', () => {
     });
   });
 
+  test('handles NuGet framework key variants and empty ecosystem dependency shapes', () => {
+    expect(
+      buildReleaseDependencyOverview({
+        kind: 'nuget',
+        details: {
+          authors: 'Alice',
+          dependency_groups: [
+            {
+              targetFramework: 'net9.0',
+              dependencies: [{ id: 'Polly', version_range: '[8.4.0, )' }],
+            },
+            {
+              target_framework: 'netstandard2.1',
+              dependencies: [],
+            },
+          ],
+          is_listed: true,
+          package_types: [],
+          tags: [],
+        },
+      })
+    ).toEqual({
+      ecosystem: 'nuget',
+      total: 1,
+      groups: [
+        {
+          label: 'net9.0',
+          count: 1,
+          names: ['Polly'],
+        },
+      ],
+    });
+
+    expect(
+      buildReleaseDependencyOverview({
+        kind: 'cargo',
+        details: {
+          dependencies: [],
+          features: {},
+        },
+      })
+    ).toBeNull();
+    expect(
+      buildReleaseDependencyOverview({
+        kind: 'rubygems',
+        details: {
+          platform: 'ruby',
+          authors: [],
+          licenses: [],
+          runtime_dependencies: [],
+          development_dependencies: [],
+        },
+      })
+    ).toBeNull();
+    expect(
+      buildReleaseDependencyOverview({
+        kind: 'composer',
+        details: {
+          require: {},
+          'require-dev': {},
+        },
+      })
+    ).toBeNull();
+    expect(
+      buildReleaseDependencyOverview({
+        kind: 'maven',
+        details: {
+          dependencies: [],
+        },
+      })
+    ).toBeNull();
+  });
+
   test('summarizes RubyGems runtime and development dependencies', () => {
     expect(
       buildReleaseDependencyOverview({

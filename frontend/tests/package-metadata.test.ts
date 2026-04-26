@@ -177,4 +177,24 @@ describe('package metadata helpers', () => {
       })
     ).toBe(false);
   });
+
+  test('treats omitted visibility input as no change instead of clearing', () => {
+    const privatePackage = {
+      ...BASE_PACKAGE,
+      visibility: 'private',
+    };
+
+    expect(
+      buildPackageMetadataUpdateInput(privatePackage, {
+        ...createPackageMetadataFormValues(privatePackage),
+        visibility: undefined as unknown as string,
+      })
+    ).toEqual({});
+    expect(
+      packageMetadataHasChanges(privatePackage, {
+        ...createPackageMetadataFormValues(privatePackage),
+        visibility: undefined as unknown as string,
+      })
+    ).toBe(false);
+  });
 });
