@@ -1520,10 +1520,15 @@ async fn search<S: NuGetAppState>(
     let query = params.q.unwrap_or_default();
     let skip = params.skip.unwrap_or(0);
     let take = params.take.unwrap_or(20).min(1000);
-    let actor_user_id = authenticate(&state, &headers)
-        .await
-        .ok()
-        .map(|id| id.user_id);
+    let actor_user_id =
+        if headers.contains_key(&X_NUGET_APIKEY) || headers.contains_key(AUTHORIZATION) {
+            match authenticate(&state, &headers).await {
+                Ok(identity) => Some(identity.user_id),
+                Err(_) => return nuget_error_response(StatusCode::UNAUTHORIZED, "Unauthorized"),
+            }
+        } else {
+            None
+        };
 
     let search_results = match state
         .search_packages(&query, take, skip, actor_user_id)

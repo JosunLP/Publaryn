@@ -45,11 +45,25 @@ function dependencyName(value: unknown): string | null {
 }
 
 function uniqueNames(values: unknown[], limit = 6): string[] {
-  const names = values
-    .map(dependencyName)
-    .filter((name): name is string => Boolean(name));
+  const names: string[] = [];
+  const seen = new Set<string>();
 
-  return [...new Set(names)].slice(0, limit);
+  for (const value of values) {
+    const name = dependencyName(value);
+
+    if (!name || seen.has(name)) {
+      continue;
+    }
+
+    seen.add(name);
+    names.push(name);
+
+    if (names.length >= limit) {
+      break;
+    }
+  }
+
+  return names;
 }
 
 function groupSummary(

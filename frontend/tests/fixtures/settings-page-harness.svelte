@@ -126,70 +126,68 @@
     selectedScopes = new Set(selectedScopes);
   }
 
-  function buildController() {
-    return createSettingsPageController({
-      getAuthToken: () => authToken,
-      gotoLogin: () => goto('/login', { replaceState: true }),
-      loadSettings,
-      toErrorMessage,
-      getMfaSetupState: () => mfaSetupState,
-      getDisplayName: () => displayName,
-      getAvatarUrl: () => avatarUrl,
-      getWebsite: () => website,
-      getBio: () => bio,
-      setProfileSubmitting: (value) => {
-        profileSubmitting = value;
-      },
-      getTokenName: () => tokenName,
-      setTokenName: (value) => {
-        tokenName = value;
-      },
-      getTokenExpiryDays: () => tokenExpiryDays,
-      setTokenExpiryDays: (value) => {
-        tokenExpiryDays = value;
-      },
-      getSelectedScopes: () => selectedScopes,
-      setSelectedScopes: (value) => {
-        selectedScopes = value;
-      },
-      setCreatingToken: (value) => {
-        creatingToken = value;
-      },
-      getOrgName: () => orgName,
-      setOrgName: (value) => {
-        orgName = value;
-      },
-      getOrgSlug: () => orgSlug,
-      setOrgSlug: (value) => {
-        orgSlug = value;
-      },
-      getOrgDescription: () => orgDescription,
-      setOrgDescription: (value) => {
-        orgDescription = value;
-      },
-      getOrgWebsite: () => orgWebsite,
-      setOrgWebsite: (value) => {
-        orgWebsite = value;
-      },
-      getOrgEmail: () => orgEmail,
-      setOrgEmail: (value) => {
-        orgEmail = value;
-      },
-      getOrgSlugTouched: () => orgSlugTouched,
-      setOrgSlugTouched: (value) => {
-        orgSlugTouched = value;
-      },
-      setCreatingOrganization: (value) => {
-        creatingOrganization = value;
-      },
-      tokenActions,
-      profileActions,
-      organizationActions,
-    });
-  }
+  const settingsPageController = createSettingsPageController({
+    getAuthToken: () => authToken,
+    gotoLogin: () => goto('/login', { replaceState: true }),
+    loadSettings,
+    toErrorMessage,
+    getMfaSetupState: () => mfaSetupState,
+    getDisplayName: () => displayName,
+    getAvatarUrl: () => avatarUrl,
+    getWebsite: () => website,
+    getBio: () => bio,
+    setProfileSubmitting: (value) => {
+      profileSubmitting = value;
+    },
+    getTokenName: () => tokenName,
+    setTokenName: (value) => {
+      tokenName = value;
+    },
+    getTokenExpiryDays: () => tokenExpiryDays,
+    setTokenExpiryDays: (value) => {
+      tokenExpiryDays = value;
+    },
+    getSelectedScopes: () => selectedScopes,
+    setSelectedScopes: (value) => {
+      selectedScopes = value;
+    },
+    setCreatingToken: (value) => {
+      creatingToken = value;
+    },
+    getOrgName: () => orgName,
+    setOrgName: (value) => {
+      orgName = value;
+    },
+    getOrgSlug: () => orgSlug,
+    setOrgSlug: (value) => {
+      orgSlug = value;
+    },
+    getOrgDescription: () => orgDescription,
+    setOrgDescription: (value) => {
+      orgDescription = value;
+    },
+    getOrgWebsite: () => orgWebsite,
+    setOrgWebsite: (value) => {
+      orgWebsite = value;
+    },
+    getOrgEmail: () => orgEmail,
+    setOrgEmail: (value) => {
+      orgEmail = value;
+    },
+    getOrgSlugTouched: () => orgSlugTouched,
+    setOrgSlugTouched: (value) => {
+      orgSlugTouched = value;
+    },
+    setCreatingOrganization: (value) => {
+      creatingOrganization = value;
+    },
+    tokenActions,
+    profileActions,
+    organizationActions,
+  });
 
   queueMicrotask(() => {
-    void buildController().initialize();
+    void settingsPageController.initialize();
   });
 </script>
 
@@ -206,7 +204,7 @@
   {namespaceClaimsError} {invitations.length} {invitationsError}
 </div>
 
-<form id="profile-form" on:submit={(event) => buildController().submitProfile(event)}>
+<form id="profile-form" on:submit={(event) => settingsPageController.submitProfile(event)}>
   <input id="settings-display-name" bind:value={displayName} />
   <input id="settings-avatar-url" bind:value={avatarUrl} />
   <input id="settings-website" bind:value={website} />
@@ -226,13 +224,13 @@
         {#if invitation.actionable !== false && invitation.id}
           <button
             type="button"
-            on:click={() => buildController().acceptInvitation(invitation.id || '')}
+            on:click={() => settingsPageController.acceptInvitation(invitation.id || '')}
           >
             Accept
           </button>
           <button
             type="button"
-            on:click={() => buildController().declineInvitation(invitation.id || '')}
+            on:click={() => settingsPageController.declineInvitation(invitation.id || '')}
           >
             Decline
           </button>
@@ -244,13 +242,13 @@
 
 <form
   id="org-create-form"
-  on:submit={(event) => buildController().createOrganization(event)}
+  on:submit={(event) => settingsPageController.createOrganization(event)}
 >
   <input
     id="org-name"
     value={orgName}
     on:input={(event) =>
-      buildController().handleOrgNameInput(
+      settingsPageController.handleOrgNameInput(
         (event.currentTarget as HTMLInputElement).value
       )}
   />
@@ -258,7 +256,7 @@
     id="org-slug"
     value={orgSlug}
     on:input={(event) =>
-      buildController().handleOrgSlugInput(
+      settingsPageController.handleOrgSlugInput(
         (event.currentTarget as HTMLInputElement).value
       )}
   />
@@ -281,6 +279,6 @@
   {creatingToken}
   {tokens}
   {handleScopeToggle}
-  handleTokenSubmit={(event) => buildController().submitToken(event)}
-  handleRevokeToken={(tokenId) => buildController().revokeToken(tokenId)}
+  handleTokenSubmit={(event) => settingsPageController.submitToken(event)}
+  handleRevokeToken={(tokenId) => settingsPageController.revokeToken(tokenId)}
 />

@@ -22310,6 +22310,17 @@ async fn test_native_nuget_search_follows_mixed_visibility_rules(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = "../../migrations")]
+async fn test_native_nuget_search_rejects_invalid_credentials(pool: PgPool) {
+    let app = app(pool);
+
+    let (status, body) =
+        search_nuget_packages(&app, Some("definitely-not-a-valid-token"), "pkg", 10, 0).await;
+
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["error"], "Unauthorized");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
 async fn test_publish_release_enters_scanning_and_scan_completion_enqueues_reindex_search_job(
     pool: PgPool,
 ) {
