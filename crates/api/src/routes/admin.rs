@@ -364,25 +364,20 @@ async fn retry_background_job(
     .await
     .map_err(|e| ApiError(Error::Database(e)))?;
 
-    sqlx::query(
-        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, metadata, occurred_at) \
-         VALUES ($1, $2::audit_action, $3, $4, $5, NOW())",
+    insert_admin_audit_log(
+        &mut tx,
+        &identity,
+        AuditAction::AdminJobRetry,
+        serde_json::json!({
+            "job_id": job_id,
+            "kind": current.kind.as_str(),
+            "previous_status": previous_status.as_str(),
+            "previous_attempts": current.attempts,
+            "max_attempts": current.max_attempts,
+            "last_error": current.last_error,
+        }),
     )
-    .bind(Uuid::new_v4())
-    .bind(AuditAction::AdminJobRetry)
-    .bind(identity.user_id)
-    .bind(identity.audit_actor_token_id())
-    .bind(serde_json::json!({
-        "job_id": job_id,
-        "kind": current.kind.as_str(),
-        "previous_status": previous_status.as_str(),
-        "previous_attempts": current.attempts,
-        "max_attempts": current.max_attempts,
-        "last_error": current.last_error,
-    }))
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| ApiError(Error::Database(e)))?;
+    .await?;
 
     tx.commit()
         .await
@@ -426,20 +421,15 @@ async fn recover_stale_background_jobs(
         .await
         .map_err(|e| ApiError(Error::Database(e)))?;
 
-    sqlx::query(
-        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, metadata, occurred_at) \
-         VALUES ($1, $2::audit_action, $3, $4, $5, NOW())",
+    insert_admin_audit_log(
+        &mut tx,
+        &identity,
+        AuditAction::AdminJobsRecoverStale,
+        serde_json::json!({
+            "recovered_count": recovered_count,
+        }),
     )
-    .bind(Uuid::new_v4())
-    .bind(AuditAction::AdminJobsRecoverStale)
-    .bind(identity.user_id)
-    .bind(identity.audit_actor_token_id())
-    .bind(serde_json::json!({
-        "recovered_count": recovered_count,
-    }))
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| ApiError(Error::Database(e)))?;
+    .await?;
 
     tx.commit()
         .await
@@ -449,6 +439,28 @@ async fn recover_stale_background_jobs(
         message: "Stale background jobs recovered".to_owned(),
         recovered_count,
     }))
+}
+
+async fn insert_admin_audit_log(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    identity: &AuthenticatedIdentity,
+    action: AuditAction,
+    metadata: serde_json::Value,
+) -> ApiResult<()> {
+    sqlx::query(
+        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, metadata, occurred_at) \
+         VALUES ($1, $2::audit_action, $3, $4, $5, NOW())",
+    )
+    .bind(Uuid::new_v4())
+    .bind(action)
+    .bind(identity.user_id)
+    .bind(identity.audit_actor_token_id())
+    .bind(metadata)
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    Ok(())
 }
 
 async fn ensure_admin_jobs_access(

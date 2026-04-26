@@ -190,6 +190,12 @@ export function createOrgNonDestructiveActionsController(
 
       const ecosystem =
         formData.get('ecosystem')?.toString().trim().toLowerCase() || '';
+      if (!ecosystem) {
+        options.clearFlash();
+        options.setError('Select a package ecosystem.');
+        return;
+      }
+
       const repositoryName =
         selectedRepository.name || selectedRepository.slug;
 

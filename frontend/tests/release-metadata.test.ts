@@ -221,6 +221,38 @@ describe('release dependency overview helpers', () => {
     ).toBeNull();
     expect(
       buildReleaseDependencyOverview({
+        kind: 'rubygems',
+        details: {
+          platform: 'ruby',
+          authors: [],
+          licenses: [],
+          runtime_dependencies: { name: 'rack' },
+          development_dependencies: 'rspec',
+        },
+      })
+    ).toBeNull();
+    expect(
+      buildReleaseDependencyOverview({
+        kind: 'composer',
+        details: {
+          require: ['php'],
+          'require-dev': 'phpunit',
+        },
+      })
+    ).toBeNull();
+    expect(
+      buildReleaseDependencyOverview({
+        kind: 'maven',
+        details: {
+          dependencies: {
+            group_id: 'org.example',
+            artifact_id: 'core',
+          },
+        },
+      })
+    ).toBeNull();
+    expect(
+      buildReleaseDependencyOverview({
         kind: 'oci',
         details: {
           references: [],

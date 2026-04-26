@@ -431,16 +431,18 @@ describe('org non-destructive actions controller harness', () => {
       });
 
       changeValue(queryRequiredInput(target, '#package-create-name'), 'source-package');
+      changeValue(queryRequiredSelect(target, '#package-create-ecosystem'), '');
       submitForm(queryRequiredForm(target, '#package-create-form'));
 
       await waitFor(() => {
         flush();
-        expect(target.textContent).toContain('Failed to create package.');
+        expect(target.textContent).toContain('Select a package ecosystem.');
       });
 
       expect(queryRequiredInput(target, '#package-create-name').value).toBe(
         'source-package'
       );
+      expect(scenario.createPackageCalls).toEqual([]);
     } finally {
       unmount();
     }
