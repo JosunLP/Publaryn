@@ -22313,6 +22313,9 @@ async fn test_native_nuget_search_follows_mixed_visibility_rules(pool: PgPool) {
 async fn test_native_nuget_search_ignores_invalid_authorization_and_falls_back_to_anonymous(
     pool: PgPool,
 ) {
+    const MAX_SEARCH_CONVERGENCE_RETRIES: usize = 30;
+    const SEARCH_CONVERGENCE_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
     if !is_search_backend_available() {
         eprintln!(
             "Skipping NuGet invalid-auth search verification because the search backend is unavailable."
@@ -22388,7 +22391,7 @@ async fn test_native_nuget_search_ignores_invalid_authorization_and_falls_back_t
     let mut latest_anonymous_body = Value::Null;
     let mut latest_invalid_auth_body = Value::Null;
 
-    for _ in 0..30 {
+    for _ in 0..MAX_SEARCH_CONVERGENCE_RETRIES {
         let (anonymous_status, anonymous_body) =
             search_nuget_packages(&app, None, search_token, 10, 0).await;
         let (invalid_auth_status, invalid_auth_body) = search_nuget_packages(
@@ -22410,7 +22413,7 @@ async fn test_native_nuget_search_ignores_invalid_authorization_and_falls_back_t
             return;
         }
 
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(SEARCH_CONVERGENCE_POLL_INTERVAL).await;
     }
 
     panic!(
