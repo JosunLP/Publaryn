@@ -392,7 +392,7 @@ async fn can_read_package(
     } else {
         actor_has_any_team_package_access(db, package_id, actor).await?
     };
-    let team_repository_access = if repo_access {
+    let team_repository_access = if repo_access || team_package_access {
         false
     } else {
         actor_has_any_team_repository_access(db, repository_id, actor).await?

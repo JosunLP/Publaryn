@@ -7,6 +7,10 @@ import {
   transferOwnership,
   updateOrg,
 } from '../api/orgs';
+import {
+  normalizeOptionalFormText,
+  normalizeRequiredFormText,
+} from '../utils/forms';
 
 export const ORG_OWNERSHIP_TRANSFER_CONFIRMATION_MESSAGE =
   'Please confirm the ownership transfer.';
@@ -318,31 +322,6 @@ export function createOrgGovernanceController(options: OrgGovernanceControllerOp
       }
     },
   };
-}
-
-/**
- * Normalize optional form text values by trimming strings and collapsing
- * empty or non-string entries to null before sending them to the API.
- */
-function normalizeOptionalFormText(
-  value: FormDataEntryValue | null | undefined
-): string | null {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
-
-function normalizeRequiredFormText(
-  value: FormDataEntryValue | null | undefined
-): string {
-  if (typeof value !== 'string') {
-    return '';
-  }
-
-  return value.trim();
 }
 
 function isValidWebsiteUrl(value: string): boolean {

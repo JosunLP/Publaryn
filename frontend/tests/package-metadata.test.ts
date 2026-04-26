@@ -75,7 +75,7 @@ describe('package metadata helpers', () => {
       repositoryUrl: null,
       license: null,
       keywords: null,
-      visibility: null,
+      visibility: undefined,
     });
   });
 
@@ -156,5 +156,25 @@ describe('package metadata helpers', () => {
         visibility: '',
       })
     ).toBe(true);
+  });
+
+  test('ignores invalid visibility values instead of clearing an existing visibility', () => {
+    const privatePackage = {
+      ...BASE_PACKAGE,
+      visibility: 'private',
+    };
+
+    expect(
+      buildPackageMetadataUpdateInput(privatePackage, {
+        ...createPackageMetadataFormValues(privatePackage),
+        visibility: 'definitely-not-valid',
+      })
+    ).toEqual({});
+    expect(
+      packageMetadataHasChanges(privatePackage, {
+        ...createPackageMetadataFormValues(privatePackage),
+        visibility: 'definitely-not-valid',
+      })
+    ).toBe(false);
   });
 });

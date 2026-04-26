@@ -775,22 +775,22 @@
           <div class="card">
             <div class="sidebar-section">
               <h3>Transfer ownership</h3>
-              <div class="alert alert-warning" style="margin-bottom:12px;">
+              <div class="alert alert-warning mb-3">
                 This transfer is immediate.
               </div>
-              <p class="settings-copy" style="margin-bottom:12px;">
+              <p class="settings-copy mb-3">
                 Move this repository away from {repository.owner_org_slug ||
                   repository.owner_username ||
                   'the current owner'} into an organization you already
                 administer.
               </p>
               {#if transferState.loadError}
-                <div class="alert alert-error" style="margin-bottom:12px;">
+                <div class="alert alert-error mb-3">
                   {transferState.loadError}
                 </div>
               {/if}
               {#if transferState.organizations.length === 0}
-                <p class="settings-copy" style="margin-bottom:0;">
+                <p class="settings-copy mb-0">
                   You can transfer this repository, but you do not currently
                   administer another organization that can receive it.
                 </p>
@@ -799,7 +799,7 @@
                   id="repository-transfer-form"
                   on:submit={handleTransferRepository}
                 >
-                  <div class="form-group" style="margin-bottom:12px;">
+                  <div class="form-group mb-3">
                     <label for="repository-transfer-target"
                       >Target organization</label
                     >
@@ -820,7 +820,7 @@
                       {/each}
                     </select>
                   </div>
-                  <div class="form-group" style="margin-bottom:12px;">
+                  <div class="form-group mb-3">
                     <label class="flex items-start gap-2">
                       <input
                         bind:checked={transferConfirmed}
@@ -834,8 +834,7 @@
                   </div>
                   <button
                     type="submit"
-                    class="btn btn-danger"
-                    style="width:100%; justify-content:center;"
+                    class="btn btn-danger w-full justify-center"
                     disabled={transferringRepository}
                   >
                     {transferringRepository

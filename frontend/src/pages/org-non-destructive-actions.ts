@@ -2,6 +2,7 @@ import { createNamespaceClaim } from '../api/namespaces';
 import { createTeam } from '../api/orgs';
 import { createPackage } from '../api/packages';
 import { createRepository, updateRepository } from '../api/repositories';
+import { normalizeOptionalFormText } from '../utils/forms';
 
 export interface OrgNonDestructiveActionsReloadOptions {
   notice?: string | null;
@@ -253,13 +254,4 @@ export function createOrgNonDestructiveActionsController(
   };
 }
 
-export function normalizeOptionalFormText(
-  value: FormDataEntryValue | null | undefined
-): string | null {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
+export { normalizeOptionalFormText } from '../utils/forms';

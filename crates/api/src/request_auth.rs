@@ -1183,11 +1183,12 @@ pub async fn ensure_package_read_access(
             } else {
                 actor_has_any_team_package_access(db, package_id, actor_user_id).await?
             };
-            let team_repository_read_access = if repository_owner_read_access {
-                false
-            } else {
-                actor_has_any_team_repository_access(db, repository_id, actor_user_id).await?
-            };
+            let team_repository_read_access =
+                if repository_owner_read_access || team_package_read_access {
+                    false
+                } else {
+                    actor_has_any_team_repository_access(db, repository_id, actor_user_id).await?
+                };
             (team_package_read_access, team_repository_read_access)
         }
         None => (false, false),
