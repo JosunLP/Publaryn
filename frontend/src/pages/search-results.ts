@@ -21,7 +21,7 @@ export function formatSearchResultRepository(
 export function searchResultRiskBadgeSeverity(
   result: Pick<SearchPackage, 'discovery'>
 ): RiskBadgeSeverity {
-  return riskBadgeSeverity(result.discovery?.risk_level);
+  return riskBadgeSeverity(normalizeSearchResultValue(result.discovery?.risk_level));
 }
 
 export function searchResultRiskLabel(

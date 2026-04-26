@@ -74,4 +74,12 @@ describe('search result discovery formatting', () => {
       })
     ).toBe('Risk pending');
   });
+
+  test('normalizes whitespace-padded discovery risk values for badge severity', () => {
+    expect(
+      searchResultRiskBadgeSeverity({
+        discovery: { risk_level: ' moderate ', signals: [] },
+      })
+    ).toBe('medium');
+  });
 });
