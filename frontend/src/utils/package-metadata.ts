@@ -33,7 +33,12 @@ const PACKAGE_VISIBILITY_VALUES = new Set([
   'quarantined',
 ]);
 
-class PackageMetadataValidationError extends Error {}
+class PackageMetadataValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PackageMetadataValidationError';
+  }
+}
 
 export function createPackageMetadataFormValues(
   pkg: PackageDetail | null | undefined
