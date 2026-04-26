@@ -142,6 +142,7 @@ function getAuthApi(): Promise<typeof import('../src/api/auth')> {
 afterEach(() => {
   currentScenario = null;
   storedAuthToken = null;
+  authApiPromise = null;
 });
 
 describe('auth MFA API helpers', () => {

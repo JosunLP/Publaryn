@@ -32,7 +32,7 @@ export interface OrgGovernanceMutations {
   addMember: typeof addMember;
   transferOwnership: typeof transferOwnership;
   revokeInvitation: typeof revokeInvitation;
-  removeMember: (slug: string, username: string) => Promise<void>;
+  removeMember: typeof removeMember;
 }
 
 export interface OrgGovernanceControllerOptions {
