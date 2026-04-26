@@ -76,7 +76,7 @@ export function getReleaseActionAvailability(
     canYank: !release.is_yanked && isFinalized,
     canRestore: release.is_yanked === true,
     canDeprecate: !release.is_deprecated && isFinalized,
-    canUndeprecate: release.is_deprecated === true,
+    canUndeprecate: release.is_deprecated === true && isFinalized,
   };
 }
 

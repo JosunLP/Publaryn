@@ -20,6 +20,14 @@ use crate::{
     state::AppState,
 };
 
+const RECOVER_STALE_RECOVERY_HINT: &str =
+    "Use POST /v1/admin/jobs/recover-stale after confirming the worker lock is abandoned";
+
+/// Builds the operator-facing retry hint for jobs that are currently retryable.
+fn retry_recovery_hint(job_id: Uuid) -> String {
+    format!("Use POST /v1/admin/jobs/{job_id}/retry after correcting the underlying failure")
+}
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/admin/jobs", get(list_background_jobs))
@@ -136,12 +144,9 @@ impl BackgroundJobResponse {
                 .is_some_and(|locked_until| locked_until < now);
         let can_retry = matches!(value.status, JobStatus::Failed | JobStatus::Dead);
         let recovery_hint = if is_stale {
-            Some("Use POST /v1/admin/jobs/recover-stale after confirming the worker lock is abandoned".to_owned())
+            Some(RECOVER_STALE_RECOVERY_HINT.to_owned())
         } else if can_retry {
-            Some(format!(
-                "Use POST /v1/admin/jobs/{}/retry after correcting the underlying failure",
-                value.id
-            ))
+            Some(retry_recovery_hint(value.id))
         } else {
             None
         };
@@ -603,7 +608,10 @@ async fn stale_jobs_count(db: &sqlx::PgPool) -> ApiResult<i64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_job_kind, parse_job_status, BackgroundJobResponse};
+    use super::{
+        parse_job_kind, parse_job_status, retry_recovery_hint, BackgroundJobResponse,
+        RECOVER_STALE_RECOVERY_HINT,
+    };
     use chrono::{Duration, Utc};
     use publaryn_workers::queue::{JobKind, JobStatus};
     use serde_json::json;
@@ -660,8 +668,7 @@ mod tests {
         assert!(stale_response
             .recovery_hint
             .as_deref()
-            .unwrap_or_default()
-            .contains("recover-stale"));
+            .is_some_and(|hint| hint == RECOVER_STALE_RECOVERY_HINT));
 
         let dead_job = publaryn_workers::queue::Job {
             id: Uuid::new_v4(),
@@ -681,10 +688,9 @@ mod tests {
         let dead_response = BackgroundJobResponse::from_job_at(dead_job, now);
         assert!(!dead_response.is_stale);
         assert!(dead_response.can_retry);
-        assert!(dead_response
-            .recovery_hint
-            .as_deref()
-            .unwrap_or_default()
-            .contains("/retry"));
+        assert_eq!(
+            dead_response.recovery_hint,
+            Some(retry_recovery_hint(dead_response.id))
+        );
     }
 }

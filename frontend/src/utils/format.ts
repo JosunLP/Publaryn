@@ -32,7 +32,7 @@ export function formatFileSize(
   }
 
   if (bytes < KB) {
-    return `${bytes.toFixed(0)} B`;
+    return `${Math.floor(bytes)} B`;
   }
   if (bytes < MB) {
     return formatBinaryUnit(bytes, KB, 'KiB');

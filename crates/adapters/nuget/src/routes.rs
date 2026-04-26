@@ -1526,6 +1526,9 @@ async fn search<S: NuGetAppState>(
             Err(_) => return nuget_error_response(StatusCode::UNAUTHORIZED, "Unauthorized"),
         }
     } else if headers.contains_key(AUTHORIZATION) {
+        // Search remains anonymously readable, and some proxies attach ambient Authorization
+        // headers. Invalid generic bearer credentials therefore fall back to anonymous search,
+        // while explicit x-nuget-apikey auth remains authoritative and returns 401.
         authenticate(&state, &headers)
             .await
             .ok()
