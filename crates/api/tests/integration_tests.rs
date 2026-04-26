@@ -22310,14 +22310,112 @@ async fn test_native_nuget_search_follows_mixed_visibility_rules(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = "../../migrations")]
-async fn test_native_nuget_search_rejects_invalid_credentials(pool: PgPool) {
+async fn test_native_nuget_search_ignores_invalid_authorization_and_falls_back_to_anonymous(
+    pool: PgPool,
+) {
+    if !is_search_backend_available() {
+        eprintln!(
+            "Skipping NuGet invalid-auth search verification because the search backend is unavailable."
+        );
+        return;
+    }
+
     let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
 
-    let (status, body) =
-        search_nuget_packages(&app, Some("definitely-not-a-valid-token"), "pkg", 10, 0).await;
+    let (status, repository_body) = create_repository(
+        &app,
+        &alice_jwt,
+        "NuGet Public Search Fallback",
+        "nuget-public-search-fallback",
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
 
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
-    assert_eq!(body["error"], "Unauthorized");
+    let (status, package_body) = create_package(
+        &app,
+        &alice_jwt,
+        "nuget",
+        "Fallback.Search.Package",
+        "nuget-public-search-fallback",
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let (status, token_body) = create_personal_access_token(
+        &app,
+        &alice_jwt,
+        "alice-nuget-fallback",
+        &["packages:write"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
+    let nuget_token = token_body["token"]
+        .as_str()
+        .expect("nuget token should be returned")
+        .to_owned();
+
+    let nupkg_bytes = build_nuget_package("Fallback.Search.Package", "1.0.0");
+    let (status, push_body) = push_nuget_package(
+        &app,
+        &nuget_token,
+        "Fallback.Search.Package",
+        "1.0.0",
+        &nupkg_bytes,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected NuGet push response: {push_body}"
+    );
+
+    let search_token = "Fallback.Search";
+    let mut latest_anonymous_body = Value::Null;
+    let mut latest_invalid_auth_body = Value::Null;
+
+    for _ in 0..30 {
+        let (anonymous_status, anonymous_body) =
+            search_nuget_packages(&app, None, search_token, 10, 0).await;
+        let (invalid_auth_status, invalid_auth_body) = search_nuget_packages(
+            &app,
+            Some("definitely-not-a-valid-token"),
+            search_token,
+            10,
+            0,
+        )
+        .await;
+
+        latest_anonymous_body = anonymous_body.clone();
+        latest_invalid_auth_body = invalid_auth_body.clone();
+
+        if anonymous_status == StatusCode::OK
+            && invalid_auth_status == StatusCode::OK
+            && anonymous_body == invalid_auth_body
+        {
+            return;
+        }
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    panic!(
+        "NuGet invalid-auth fallback did not converge.\nanonymous={latest_anonymous_body}\ninvalid_auth={latest_invalid_auth_body}"
+    );
 }
 
 #[sqlx::test(migrations = "../../migrations")]

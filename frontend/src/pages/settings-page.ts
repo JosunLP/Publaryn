@@ -272,10 +272,25 @@ export function createSettingsPageController(options: SettingsPageControllerOpti
 
       try {
         const tokenExpiryDays = String(options.getTokenExpiryDays() ?? '').trim();
+        const parsedTokenExpiryDays = tokenExpiryDays ? Number(tokenExpiryDays) : null;
+
+        if (
+          parsedTokenExpiryDays !== null &&
+          (!Number.isFinite(parsedTokenExpiryDays) ||
+            !Number.isInteger(parsedTokenExpiryDays) ||
+            parsedTokenExpiryDays <= 0)
+        ) {
+          await options.loadSettings({
+            error: 'Token expiry days must be a whole number greater than 0.',
+            mfaSetupState: options.getMfaSetupState(),
+          });
+          return;
+        }
+
         const result: CreateTokenResponse = await tokenActions.createToken({
           name: tokenName,
           scopes: [...options.getSelectedScopes()],
-          expires_in_days: tokenExpiryDays ? Number(tokenExpiryDays) : null,
+          expires_in_days: parsedTokenExpiryDays,
         });
 
         options.setTokenName('');

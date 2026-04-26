@@ -141,6 +141,53 @@ describe('settings page controller harness', () => {
     }
   });
 
+  test('rejects invalid token expiry day input before submitting', async () => {
+    const scenario = createTokenScenario();
+    const { target, unmount, flush } = await renderSvelte(HarnessPath, {
+      loaders: createLoaders({
+        async listTokens() {
+          return {
+            tokens: scenario.tokens.map((token) => ({ ...token })),
+          };
+        },
+      }),
+      tokenActions: createTokenActions({
+        async createToken(input) {
+          scenario.createCalls.push({
+            name: input.name,
+            scopes: [...input.scopes],
+            expires_in_days: input.expires_in_days ?? null,
+          });
+          return { token: 'unexpected-token' };
+        },
+      }),
+      profileActions: createProfileActions(),
+      organizationActions: createOrganizationActions(),
+    });
+
+    try {
+      await waitFor(() => {
+        flush();
+        expect(target.textContent).toContain('bootstrap-token');
+      });
+
+      changeValue(queryRequiredInput(target, '#token-name'), 'CI deploy token');
+      changeValue(queryRequiredInput(target, '#token-expiry'), '7.5');
+      submitForm(queryRequiredForm(target, '#token-form'));
+
+      await waitFor(() => {
+        flush();
+        expect(target.textContent).toContain(
+          'Token expiry days must be a whole number greater than 0.'
+        );
+      });
+
+      expect(scenario.createCalls).toEqual([]);
+    } finally {
+      unmount();
+    }
+  });
+
   test('revokes an existing token and reloads the active token list', async () => {
     const scenario = createTokenScenario();
     const { target, unmount, flush } = await renderSvelte(HarnessPath, {

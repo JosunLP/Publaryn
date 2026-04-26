@@ -2,6 +2,11 @@ const KB = 1024;
 const MB = KB * 1024;
 const GB = MB * 1024;
 
+function formatBinaryUnit(bytes: number, unitSize: number, suffix: string): string {
+  const truncated = Math.floor((bytes / unitSize) * 10) / 10;
+  return `${truncated.toFixed(1)} ${suffix}`;
+}
+
 /**
  * Format a number with locale-aware separators.
  */
@@ -30,13 +35,13 @@ export function formatFileSize(
     return `${bytes.toFixed(0)} B`;
   }
   if (bytes < MB) {
-    return `${(bytes / KB).toFixed(1)} KiB`;
+    return formatBinaryUnit(bytes, KB, 'KiB');
   }
   if (bytes < GB) {
-    return `${(bytes / MB).toFixed(1)} MiB`;
+    return formatBinaryUnit(bytes, MB, 'MiB');
   }
 
-  return `${(bytes / GB).toFixed(1)} GiB`;
+  return formatBinaryUnit(bytes, GB, 'GiB');
 }
 
 /**
