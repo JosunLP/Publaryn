@@ -1194,6 +1194,8 @@ pub async fn ensure_package_read_access(
     };
     let can_read_package_non_public =
         package_owner_read_access || team_package_read_access || team_repository_read_access;
+    // Package-scoped grants can unlock a specific private package without also widening
+    // repository-level listing or detail visibility; repository-scoped grants unlock both.
     let can_read_repository_non_public =
         repository_owner_read_access || team_repository_read_access;
 
