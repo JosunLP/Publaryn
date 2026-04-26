@@ -40,6 +40,8 @@ impl Modify for SecurityAddon {
         crate::routes::health::readiness_handler_doc,
         crate::routes::stats::platform_stats_doc,
         crate::routes::admin::list_background_jobs_doc,
+        crate::routes::admin::retry_background_job_doc,
+        crate::routes::admin::recover_stale_background_jobs_doc,
     ),
     tags(
         (name = "health", description = "Service health and readiness"),
@@ -86,6 +88,8 @@ mod tests {
         assert!(paths.contains_key("/readiness"));
         assert!(paths.contains_key("/v1/stats"));
         assert!(paths.contains_key("/v1/admin/jobs"));
+        assert!(paths.contains_key("/v1/admin/jobs/{job_id}/retry"));
+        assert!(paths.contains_key("/v1/admin/jobs/recover-stale"));
     }
 
     #[test]

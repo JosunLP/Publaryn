@@ -3,45 +3,27 @@
   import { onMount } from 'svelte';
 
   import type { MfaSetupState, UserProfile } from '../../api/auth';
-  import {
-    disableMfa,
-    getCurrentUser,
-    setupMfa,
-    updateCurrentUser,
-    verifyMfaSetup,
-  } from '../../api/auth';
   import { getAuthToken } from '../../api/client';
-  import type {
-    MyInvitation,
-    MyInvitationListResponse,
-    OrganizationListResponse,
-    OrganizationMembership,
-  } from '../../api/orgs';
-  import {
-    acceptInvitation,
-    createOrg,
-    declineInvitation,
-    listMyInvitations,
-    listMyOrganizations,
-  } from '../../api/orgs';
-  import type {
-    NamespaceClaim,
-    NamespaceListResponse,
-    NamespaceTransferOwnershipResult,
-  } from '../../api/namespaces';
+  import type { MyInvitation, OrganizationMembership } from '../../api/orgs';
+  import type { NamespaceClaim, NamespaceTransferOwnershipResult } from '../../api/namespaces';
   import {
     deleteNamespaceClaim,
-    listUserNamespaces,
     transferNamespaceClaim,
   } from '../../api/namespaces';
   import {
     formatNamespaceClaimStatusLabel,
-    selectNamespaceTransferTargets,
     sortNamespaceClaims,
   } from '../../pages/personal-namespaces';
   import type { TokenRecord } from '../../api/tokens';
-  import { createToken, listTokens, revokeToken } from '../../api/tokens';
-  import { copyToClipboard, formatDate } from '../../utils/format';
+  import SettingsTokenSection from '../../lib/components/SettingsTokenSection.svelte';
+  import SettingsMfaSection from '../../lib/components/SettingsMfaSection.svelte';
+  import { createSettingsMfaController } from '../../pages/settings-mfa';
+  import {
+    createSettingsPageController,
+    DEFAULT_TOKEN_SCOPES,
+    loadSettingsPageState,
+  } from '../../pages/settings-page';
+  import { formatDate } from '../../utils/format';
   import { ecosystemLabel } from '../../utils/ecosystem';
 
   const TOKEN_SCOPE_OPTIONS = [
@@ -84,7 +66,7 @@
 
   let tokenName = '';
   let tokenExpiryDays = '';
-  let selectedScopes = new Set<string>(['tokens:read', 'tokens:write']);
+  let selectedScopes = new Set<string>(DEFAULT_TOKEN_SCOPES);
   let creatingToken = false;
 
   let mfaDisableCode = '';
@@ -102,12 +84,7 @@
   let creatingOrganization = false;
 
   onMount(async () => {
-    if (!getAuthToken()) {
-      await goto('/login', { replaceState: true });
-      return;
-    }
-
-    await loadSettings();
+    await settingsPageController.initialize();
   });
 
   async function loadSettings(
@@ -125,96 +102,27 @@
     mfaSetupState = options.mfaSetupState ?? null;
 
     try {
-      const loadedUser = await getCurrentUser();
-      const currentUserId =
-        typeof loadedUser.id === 'string' && loadedUser.id.trim()
-          ? loadedUser.id
-          : '';
-      const [tokenData, organizationData, invitationData, namespaceData] =
-        await Promise.all([
-          listTokens(),
-          listMyOrganizations().catch(
-            (caughtError: unknown): OrganizationListResponse => ({
-              organizations: [],
-              load_error: toErrorMessage(
-                caughtError,
-                'Failed to load organizations.'
-              ),
-            })
-          ),
-          listMyInvitations().catch(
-            (caughtError: unknown): MyInvitationListResponse => ({
-              invitations: [],
-              load_error: toErrorMessage(
-                caughtError,
-                'Failed to load invitations.'
-              ),
-            })
-          ),
-          currentUserId
-            ? listUserNamespaces(currentUserId).catch(
-                (caughtError: unknown): NamespaceListResponse => ({
-                  namespaces: [],
-                  load_error: toErrorMessage(
-                    caughtError,
-                    'Failed to load namespace claims.'
-                  ),
-                })
-              )
-            : Promise.resolve<NamespaceListResponse>({
-                namespaces: [],
-                load_error:
-                  'Failed to load namespace claims because the user id is unavailable.',
-              }),
-        ]);
+      const loadedState = await loadSettingsPageState({
+        toErrorMessage,
+      });
 
-      user = loadedUser;
-      tokens = tokenData.tokens || [];
-      organizations = organizationData.organizations || [];
-      namespaceTransferTargets = selectNamespaceTransferTargets(
-        organizations,
-        undefined
-      );
-      organizationsError = organizationData.load_error || null;
-      namespaceClaims = namespaceData.namespaces || [];
-      namespaceClaimsError = namespaceData.load_error || null;
-      invitations = invitationData.invitations || [];
-      invitationsError = invitationData.load_error || null;
-
-      displayName = loadedUser.display_name || '';
-      avatarUrl = loadedUser.avatar_url || '';
-      website = loadedUser.website || '';
-      bio = loadedUser.bio || '';
+      user = loadedState.user;
+      tokens = loadedState.tokens;
+      organizations = loadedState.organizations;
+      namespaceTransferTargets = loadedState.namespaceTransferTargets;
+      organizationsError = loadedState.organizationsError;
+      namespaceClaims = loadedState.namespaceClaims;
+      namespaceClaimsError = loadedState.namespaceClaimsError;
+      invitations = loadedState.invitations;
+      invitationsError = loadedState.invitationsError;
+      displayName = loadedState.displayName;
+      avatarUrl = loadedState.avatarUrl;
+      website = loadedState.website;
+      bio = loadedState.bio;
     } catch (caughtError: unknown) {
       error = toErrorMessage(caughtError, 'Failed to load settings.');
     } finally {
       loading = false;
-    }
-  }
-
-  async function handleProfileSubmit(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
-    profileSubmitting = true;
-
-    try {
-      await updateCurrentUser({
-        display_name: optional(displayName),
-        avatar_url: optional(avatarUrl),
-        website: optional(website),
-        bio: optional(bio),
-      });
-
-      await loadSettings({
-        notice: 'Profile updated successfully.',
-        mfaSetupState,
-      });
-    } catch (caughtError: unknown) {
-      await loadSettings({
-        error: toErrorMessage(caughtError, 'Failed to update profile.'),
-        mfaSetupState,
-      });
-    } finally {
-      profileSubmitting = false;
     }
   }
 
@@ -227,53 +135,73 @@
     selectedScopes = new Set(selectedScopes);
   }
 
+  const settingsPageController = createSettingsPageController({
+    getAuthToken,
+    gotoLogin: () => goto('/login', { replaceState: true }),
+    loadSettings,
+    toErrorMessage,
+    getMfaSetupState: () => mfaSetupState,
+    getDisplayName: () => displayName,
+    getAvatarUrl: () => avatarUrl,
+    getWebsite: () => website,
+    getBio: () => bio,
+    setProfileSubmitting: (value) => {
+      profileSubmitting = value;
+    },
+    getTokenName: () => tokenName,
+    setTokenName: (value) => {
+      tokenName = value;
+    },
+    getTokenExpiryDays: () => tokenExpiryDays,
+    setTokenExpiryDays: (value) => {
+      tokenExpiryDays = value;
+    },
+    getSelectedScopes: () => selectedScopes,
+    setSelectedScopes: (value) => {
+      selectedScopes = value;
+    },
+    setCreatingToken: (value) => {
+      creatingToken = value;
+    },
+    getOrgName: () => orgName,
+    setOrgName: (value) => {
+      orgName = value;
+    },
+    getOrgSlug: () => orgSlug,
+    setOrgSlug: (value) => {
+      orgSlug = value;
+    },
+    getOrgDescription: () => orgDescription,
+    setOrgDescription: (value) => {
+      orgDescription = value;
+    },
+    getOrgWebsite: () => orgWebsite,
+    setOrgWebsite: (value) => {
+      orgWebsite = value;
+    },
+    getOrgEmail: () => orgEmail,
+    setOrgEmail: (value) => {
+      orgEmail = value;
+    },
+    getOrgSlugTouched: () => orgSlugTouched,
+    setOrgSlugTouched: (value) => {
+      orgSlugTouched = value;
+    },
+    setCreatingOrganization: (value) => {
+      creatingOrganization = value;
+    },
+  });
+
+  async function handleProfileSubmit(event: SubmitEvent): Promise<void> {
+    await settingsPageController.submitProfile(event);
+  }
+
   async function handleTokenSubmit(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
-
-    if (!tokenName.trim()) {
-      await loadSettings({ error: 'Token name is required.', mfaSetupState });
-      return;
-    }
-
-    creatingToken = true;
-
-    try {
-      const result = await createToken({
-        name: tokenName.trim(),
-        scopes: [...selectedScopes],
-        expires_in_days: tokenExpiryDays.trim()
-          ? Number(tokenExpiryDays.trim())
-          : null,
-      });
-
-      tokenName = '';
-      tokenExpiryDays = '';
-      selectedScopes = new Set(['tokens:read', 'tokens:write']);
-      await loadSettings({
-        notice: 'Token created successfully.',
-        createdToken: result.token,
-        mfaSetupState,
-      });
-    } catch (caughtError: unknown) {
-      await loadSettings({
-        error: toErrorMessage(caughtError, 'Failed to create token.'),
-        mfaSetupState,
-      });
-    } finally {
-      creatingToken = false;
-    }
+    await settingsPageController.submitToken(event);
   }
 
   async function handleRevokeToken(tokenId: string): Promise<void> {
-    try {
-      await revokeToken(tokenId);
-      await loadSettings({ notice: 'Token revoked.', mfaSetupState });
-    } catch (caughtError: unknown) {
-      await loadSettings({
-        error: toErrorMessage(caughtError, 'Failed to revoke token.'),
-        mfaSetupState,
-      });
-    }
+    await settingsPageController.revokeToken(tokenId);
   }
 
   async function handleDeleteNamespaceClaim(
@@ -359,95 +287,47 @@
     }
   }
 
-  async function handleStartMfaSetup(): Promise<void> {
-    startingMfaSetup = true;
+  const mfaController = createSettingsMfaController({
+    loadSettings,
+    toErrorMessage,
+    getMfaSetupState: () => mfaSetupState,
+    getMfaVerifyCode: () => mfaVerifyCode,
+    setMfaVerifyCode: (value) => {
+      mfaVerifyCode = value;
+    },
+    getMfaDisableCode: () => mfaDisableCode,
+    setMfaDisableCode: (value) => {
+      mfaDisableCode = value;
+    },
+    setStartingMfaSetup: (value) => {
+      startingMfaSetup = value;
+    },
+    setVerifyingMfa: (value) => {
+      verifyingMfa = value;
+    },
+    setDisablingMfa: (value) => {
+      disablingMfa = value;
+    },
+  });
 
-    try {
-      const setup = await setupMfa();
-      await loadSettings({
-        notice: 'MFA setup initialized. Verify one code to enable it.',
-        mfaSetupState: setup,
-      });
-    } catch (caughtError: unknown) {
-      await loadSettings({
-        error: toErrorMessage(caughtError, 'Failed to initialize MFA setup.'),
-      });
-    } finally {
-      startingMfaSetup = false;
-    }
+  async function handleStartMfaSetup(): Promise<void> {
+    await mfaController.startSetup();
   }
 
   async function handleVerifyMfa(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
-
-    if (!mfaVerifyCode.trim()) {
-      await loadSettings({
-        error: 'A verification code is required.',
-        mfaSetupState,
-      });
-      return;
-    }
-
-    verifyingMfa = true;
-
-    try {
-      await verifyMfaSetup(mfaVerifyCode.trim());
-      mfaVerifyCode = '';
-      await loadSettings({ notice: 'MFA enabled successfully.' });
-    } catch (caughtError: unknown) {
-      await loadSettings({
-        error: toErrorMessage(caughtError, 'Failed to verify MFA setup.'),
-        mfaSetupState,
-      });
-    } finally {
-      verifyingMfa = false;
-    }
+    await mfaController.verify(event);
   }
 
   async function handleDisableMfa(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
-
-    if (!mfaDisableCode.trim()) {
-      await loadSettings({ error: 'A code is required to disable MFA.' });
-      return;
-    }
-
-    disablingMfa = true;
-
-    try {
-      await disableMfa(mfaDisableCode.trim());
-      mfaDisableCode = '';
-      await loadSettings({ notice: 'MFA disabled.' });
-    } catch (caughtError: unknown) {
-      await loadSettings({
-        error: toErrorMessage(caughtError, 'Failed to disable MFA.'),
-      });
-    } finally {
-      disablingMfa = false;
-    }
-  }
-
-  function normalizeOrgSlug(value: string): string {
-    return value
-      .toLowerCase()
-      .trim()
-      .replace(/[^a-z0-9-\s]/g, '')
-      .replace(/\s+/g, '-')
-      .replace(/-+/g, '-')
-      .replace(/^-+/, '')
-      .slice(0, 64);
+    await mfaController.disable(event);
   }
 
   function handleOrgNameInput(value: string): void {
-    orgName = value;
-    if (!orgSlugTouched) {
-      orgSlug = normalizeOrgSlug(value);
-    }
+    settingsPageController.handleOrgNameInput(value);
   }
 
   function handleOrgSlugInput(value: string): void {
-    orgSlugTouched = true;
-    orgSlug = normalizeOrgSlug(value);
+    settingsPageController.handleOrgSlugInput(value);
   }
 
   function handleOrgNameInputEvent(event: Event): void {
@@ -459,80 +339,15 @@
   }
 
   async function handleCreateOrganization(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
-
-    const normalizedSlug = normalizeOrgSlug(orgSlug);
-    if (!orgName.trim() || !normalizedSlug) {
-      await loadSettings({
-        error: 'Organization name and a valid slug are required.',
-        mfaSetupState,
-      });
-      return;
-    }
-
-    creatingOrganization = true;
-
-    try {
-      const result = await createOrg({
-        name: orgName.trim(),
-        slug: normalizedSlug,
-        description: optional(orgDescription),
-        website: optional(orgWebsite),
-        email: optional(orgEmail),
-      });
-
-      orgName = '';
-      orgSlug = '';
-      orgDescription = '';
-      orgWebsite = '';
-      orgEmail = '';
-      orgSlugTouched = false;
-      await loadSettings({
-        notice: `Organization created successfully. Slug: ${result.slug}.`,
-        mfaSetupState,
-      });
-    } catch (caughtError: unknown) {
-      await loadSettings({
-        error: toErrorMessage(caughtError, 'Failed to create organization.'),
-        mfaSetupState,
-      });
-    } finally {
-      creatingOrganization = false;
-    }
+    await settingsPageController.createOrganization(event);
   }
 
   async function handleAcceptInvitation(invitationId: string): Promise<void> {
-    try {
-      const result = await acceptInvitation(invitationId);
-      await loadSettings({
-        notice: `Invitation accepted. You are now ${result.role || 'a member'} in ${
-          result.org?.name || result.org?.slug || 'the organization'
-        }.`,
-        mfaSetupState,
-      });
-    } catch (caughtError: unknown) {
-      await loadSettings({
-        error: toErrorMessage(caughtError, 'Failed to accept invitation.'),
-        mfaSetupState,
-      });
-    }
+    await settingsPageController.acceptInvitation(invitationId);
   }
 
   async function handleDeclineInvitation(invitationId: string): Promise<void> {
-    try {
-      await declineInvitation(invitationId);
-      await loadSettings({ notice: 'Invitation declined.', mfaSetupState });
-    } catch (caughtError: unknown) {
-      await loadSettings({
-        error: toErrorMessage(caughtError, 'Failed to decline invitation.'),
-        mfaSetupState,
-      });
-    }
-  }
-
-  function optional(value: string): string | null {
-    const trimmed = value.trim();
-    return trimmed.length > 0 ? trimmed : null;
+    await settingsPageController.declineInvitation(invitationId);
   }
 
   function toErrorMessage(caughtError: unknown, fallback: string): string {
@@ -635,114 +450,18 @@
         </form>
       </section>
 
-      <section class="card settings-section">
-        <h2>Multi-factor authentication</h2>
-        <p class="text-muted settings-copy">
-          Status: <strong>{user.mfa_enabled ? 'Enabled' : 'Disabled'}</strong>
-        </p>
-
-        {#if user.mfa_enabled}
-          <form id="mfa-disable-form" on:submit={handleDisableMfa}>
-            <div class="form-group">
-              <label for="mfa-disable-code"
-                >Authenticator or recovery code</label
-              >
-              <input
-                id="mfa-disable-code"
-                bind:value={mfaDisableCode}
-                class="form-input"
-                placeholder="123456 or xxxx-yyyy"
-                required
-              />
-            </div>
-            <button
-              type="submit"
-              class="btn btn-danger"
-              disabled={disablingMfa}
-            >
-              {disablingMfa ? 'Disabling…' : 'Disable MFA'}
-            </button>
-          </form>
-        {:else}
-          <button
-            id="mfa-setup-btn"
-            class="btn btn-primary"
-            type="button"
-            on:click={handleStartMfaSetup}
-            disabled={startingMfaSetup}
-          >
-            {startingMfaSetup ? 'Preparing…' : 'Start MFA setup'}
-          </button>
-          <p class="text-muted mt-4">
-            Use an authenticator app like 1Password, Bitwarden, Authy, or Google
-            Authenticator.
-          </p>
-        {/if}
-
-        {#if mfaSetupState}
-          <div class="settings-subsection">
-            <h3>Step 1: Add the secret to your authenticator app</h3>
-            <div class="code-block">
-              <button
-                class="copy-btn"
-                type="button"
-                on:click={() => copyToClipboard(mfaSetupState?.secret || '')}
-                >Copy</button
-              ><code>{mfaSetupState.secret}</code>
-            </div>
-            <div class="mt-4">
-              <div class="text-muted" style="display:block; margin-bottom:6px;">
-                Provisioning URI
-              </div>
-              <div class="code-block">
-                <button
-                  class="copy-btn"
-                  type="button"
-                  on:click={() =>
-                    copyToClipboard(mfaSetupState?.provisioning_uri || '')}
-                  >Copy</button
-                ><code>{mfaSetupState.provisioning_uri}</code>
-              </div>
-            </div>
-            <div class="mt-4">
-              <div class="text-muted" style="display:block; margin-bottom:6px;">
-                Recovery codes (store these somewhere safe)
-              </div>
-              <div class="code-block">
-                <button
-                  class="copy-btn"
-                  type="button"
-                  on:click={() =>
-                    copyToClipboard(
-                      mfaSetupState?.recovery_codes.join('\n') || ''
-                    )}>Copy</button
-                ><code>{mfaSetupState.recovery_codes.join('\n')}</code>
-              </div>
-            </div>
-            <form id="mfa-verify-form" class="mt-4" on:submit={handleVerifyMfa}>
-              <div class="form-group">
-                <label for="mfa-verify-code"
-                  >Step 2: Enter a code from your authenticator app</label
-                >
-                <input
-                  id="mfa-verify-code"
-                  bind:value={mfaVerifyCode}
-                  class="form-input"
-                  placeholder="123456"
-                  required
-                />
-              </div>
-              <button
-                type="submit"
-                class="btn btn-primary"
-                disabled={verifyingMfa}
-              >
-                {verifyingMfa ? 'Enabling…' : 'Enable MFA'}
-              </button>
-            </form>
-          </div>
-        {/if}
-      </section>
+      <SettingsMfaSection
+        {user}
+        {mfaSetupState}
+        bind:mfaDisableCode
+        {disablingMfa}
+        {startingMfaSetup}
+        bind:mfaVerifyCode
+        {verifyingMfa}
+        {handleStartMfaSetup}
+        {handleVerifyMfa}
+        {handleDisableMfa}
+      />
     </div>
 
     <div class="settings-grid mt-6">
@@ -1094,132 +813,17 @@
       </section>
     </div>
 
-    <section class="card settings-section mt-6">
-      <div class="settings-token-header">
-        <div>
-          <h2>API tokens</h2>
-          <p class="text-muted settings-copy">
-            Create personal automation tokens and revoke old ones.
-          </p>
-        </div>
-      </div>
-
-      {#if createdToken}
-        <div class="alert alert-success">
-          <div style="margin-bottom:8px;">
-            <strong>New token created.</strong> Copy it now — it will not be shown
-            again.
-          </div>
-          <div class="code-block">
-            <button
-              class="copy-btn"
-              type="button"
-              on:click={() => copyToClipboard(createdToken || '')}>Copy</button
-            ><code>{createdToken}</code>
-          </div>
-        </div>
-      {/if}
-
-      <form
-        id="token-form"
-        class="settings-subsection"
-        on:submit={handleTokenSubmit}
-      >
-        <div class="form-group">
-          <label for="token-name">Token name</label>
-          <input
-            id="token-name"
-            bind:value={tokenName}
-            class="form-input"
-            placeholder="CI / local development / deploy"
-            required
-          />
-        </div>
-        <div class="form-group">
-          <label for="token-expiry">Expires in days (optional)</label>
-          <input
-            id="token-expiry"
-            bind:value={tokenExpiryDays}
-            type="number"
-            min="1"
-            class="form-input"
-            placeholder="30"
-          />
-        </div>
-        <div class="form-group">
-          <div class="text-sm font-medium">Scopes</div>
-          <div class="settings-scope-grid">
-            {#each TOKEN_SCOPE_OPTIONS as scope}
-              <label class="settings-checkbox">
-                <input
-                  type="checkbox"
-                  checked={selectedScopes.has(scope)}
-                  on:change={(event) =>
-                    handleScopeToggle(
-                      scope,
-                      (event.currentTarget as HTMLInputElement).checked
-                    )}
-                />
-                <span>{scope}</span>
-              </label>
-            {/each}
-          </div>
-        </div>
-        <button type="submit" class="btn btn-primary" disabled={creatingToken}>
-          {creatingToken ? 'Creating…' : 'Create token'}
-        </button>
-      </form>
-
-      <div class="settings-subsection">
-        <h3>Active tokens</h3>
-        {#if tokens.length === 0}
-          <div class="empty-state">
-            <h3>No tokens yet</h3>
-            <p>Create one above for CI, publishing, or local automation.</p>
-          </div>
-        {:else}
-          <div class="token-list">
-            {#each tokens as token}
-              <div class="token-row">
-                <div class="token-row__main">
-                  <div class="token-row__title">
-                    {token.name || 'Unnamed token'}
-                  </div>
-                  <div class="token-row__meta">
-                    <span>{token.kind || 'personal'}</span>
-                    <span>created {formatDate(token.created_at)}</span>
-                    {#if token.last_used_at}<span
-                        >last used {formatDate(token.last_used_at)}</span
-                      >{:else}<span>never used</span>{/if}
-                    {#if token.expires_at}<span
-                        >expires {formatDate(token.expires_at)}</span
-                      >{:else}<span>no expiry</span>{/if}
-                  </div>
-                  <div class="token-row__scopes">
-                    {#each token.scopes || [] as scope}
-                      <span class="badge badge-ecosystem">{scope}</span>
-                    {/each}
-                  </div>
-                </div>
-                <div class="token-row__actions">
-                  <button
-                    class="btn btn-secondary btn-sm"
-                    type="button"
-                    on:click={() => copyToClipboard(token.prefix || 'pub_')}
-                    >Copy prefix</button
-                  >
-                  {#if token.id}<button
-                      class="btn btn-danger btn-sm"
-                      type="button"
-                      on:click={() => handleRevokeToken(token.id || '')}
-                      >Revoke</button
-                    >{/if}
-                </div>
-              </div>
-            {/each}
-          </div>
-        {/if}
-      </div>
-    </section>
+    <SettingsTokenSection
+      {createdToken}
+      bind:tokenName
+      bind:tokenExpiryDays
+      {selectedScopes}
+      tokenScopeOptions={TOKEN_SCOPE_OPTIONS}
+      {creatingToken}
+      {tokens}
+      {handleScopeToggle}
+      {handleTokenSubmit}
+      {handleRevokeToken}
+    />
   </div>
 {/if}

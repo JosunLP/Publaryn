@@ -270,7 +270,7 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_cors_allowed_origin, ServerConfig};
+    use super::{normalize_cors_allowed_origin, Config, ServerConfig};
 
     #[test]
     fn normalizes_cors_origin_with_trailing_slash() {
@@ -338,5 +338,13 @@ mod tests {
                 "https://packages.example.com".to_owned(),
             ]
         );
+    }
+
+    #[test]
+    fn test_config_uses_fixed_search_defaults() {
+        let config = Config::test_config("postgres://test");
+
+        assert_eq!(config.search.url, "http://localhost:7700");
+        assert_eq!(config.search.api_key, None);
     }
 }

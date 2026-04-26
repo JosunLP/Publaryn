@@ -12,18 +12,23 @@
   import type { SearchPackagesResponse } from '../../api/packages';
   import { searchPackages } from '../../api/packages';
   import {
+    buildPackageDetailsPath,
+    buildPackageSecurityPath,
+  } from '../../pages/package-security-links';
+  import {
     buildSearchPath,
     getSearchViewFromQuery,
   } from '../../pages/search-query';
   import {
-    buildPackageDetailsPath,
-    buildPackageSecurityPath,
-  } from '../../pages/package-security-links';
-  import { formatSearchResultRepository } from '../../pages/search-results';
+    formatSearchResultRepository,
+    searchResultDiscoverySignals,
+    searchResultRiskBadgeSeverity,
+    searchResultRiskLabel,
+  } from '../../pages/search-results';
   import {
-    ECOSYSTEMS,
     ecosystemIcon,
     ecosystemLabel,
+    ECOSYSTEMS,
     formatVersionLabel,
   } from '../../utils/ecosystem';
   import { formatDate, formatNumber } from '../../utils/format';
@@ -93,7 +98,9 @@
       organizations = [...(data.organizations || [])]
         .filter((membership) => Boolean(membership.slug?.trim()))
         .sort((left, right) =>
-          `${left.name || left.slug || ''}`.localeCompare(`${right.name || right.slug || ''}`)
+          `${left.name || left.slug || ''}`.localeCompare(
+            `${right.name || right.slug || ''}`
+          )
         );
     } catch (caughtError: unknown) {
       organizationLoadError =
@@ -211,12 +218,15 @@
   }
 
   $: totalPages = Math.max(1, Math.ceil((results.total || 0) / PER_PAGE));
-  $: currentOrgInOptions = organizations.some((membership) => membership.slug === org);
+  $: currentOrgInOptions = organizations.some(
+    (membership) => membership.slug === org
+  );
   $: hasOrganizationOptions = organizations.length > 0 || Boolean(org);
   $: currentRepositoryInOptions = repositories.some(
     (repositoryOption) => repositoryOption.slug === repository
   );
-  $: hasRepositoryOptions = repositories.length > 0 || Boolean(repository) || Boolean(org);
+  $: hasRepositoryOptions =
+    repositories.length > 0 || Boolean(repository) || Boolean(org);
 </script>
 
 <svelte:head>
@@ -233,8 +243,8 @@
         </span>
         <h1 class="page-hero__title">Search every package surface</h1>
         <p class="page-hero__subtitle">
-          Explore packages across ecosystems, then narrow results by organization
-          and repository when you have access.
+          Explore packages across ecosystems, then narrow results by
+          organization and repository when you have access.
         </p>
         <div class="page-hero__meta">
           {#if results.total > 0}
@@ -243,7 +253,9 @@
             >
           {/if}
           {#if ecosystem}
-            <span class="badge badge-ecosystem">{ecosystemLabel(ecosystem)}</span>
+            <span class="badge badge-ecosystem"
+              >{ecosystemLabel(ecosystem)}</span
+            >
           {/if}
           {#if org}
             <span class="badge badge-ecosystem">Owner · {org}</span>
@@ -256,7 +268,11 @@
     </div>
   </section>
 
-  <form id="search-form" class="toolbar search-toolbar" on:submit={handleSearchSubmit}>
+  <form
+    id="search-form"
+    class="toolbar search-toolbar"
+    on:submit={handleSearchSubmit}
+  >
     <div class="filter-grid filter-grid--search">
       <input
         bind:value={q}
@@ -304,7 +320,9 @@
           {/if}
           {#each repositories as repositoryOption}
             <option value={repositoryOption.slug || ''}>
-              {repositoryOption.name || repositoryOption.slug || 'Unnamed repository'}
+              {repositoryOption.name ||
+                repositoryOption.slug ||
+                'Unnamed repository'}
             </option>
           {/each}
         </select>
@@ -340,7 +358,8 @@
           {results.total} result{results.total === 1 ? '' : 's'} found
         </div>
         <p class="surface-card__copy">
-          Native package metadata, repository ownership, and visibility-aware search.
+          Native package metadata, repository ownership, and visibility-aware
+          search.
         </p>
       </div>
 
@@ -350,11 +369,15 @@
         {:else if results.packages.length === 0}
           <div class="empty-state">
             <h3>No packages found</h3>
-            <p>Try a different query, clear a filter, or browse by ecosystem.</p>
+            <p>
+              Try a different query, clear a filter, or browse by ecosystem.
+            </p>
             <div class="empty-actions">
               <a href="/search" class="btn btn-primary">Clear filters</a>
-              <a href="/" class="btn btn-secondary" data-sveltekit-preload-data="hover"
-                >Back home</a
+              <a
+                href="/"
+                class="btn btn-secondary"
+                data-sveltekit-preload-data="hover">Back home</a
               >
             </div>
           </div>
@@ -368,6 +391,7 @@
               pkg.ecosystem || 'unknown',
               pkg.name
             )}
+            {@const discoverySignals = searchResultDiscoverySignals(pkg)}
             <article class="package-card">
               <div class="package-card__header">
                 <a
@@ -377,11 +401,15 @@
                   >{pkg.display_name || pkg.name}</a
                 >
                 <span class="badge badge-ecosystem"
-                  >{ecosystemIcon(pkg.ecosystem)} {ecosystemLabel(pkg.ecosystem)}</span
+                  >{ecosystemIcon(pkg.ecosystem)}
+                  {ecosystemLabel(pkg.ecosystem)}</span
                 >
                 {#if pkg.latest_version}
                   <span class="package-card__version"
-                    >{formatVersionLabel(pkg.ecosystem, pkg.latest_version)}</span
+                    >{formatVersionLabel(
+                      pkg.ecosystem,
+                      pkg.latest_version
+                    )}</span
                   >
                 {/if}
                 {#if pkg.is_deprecated}
@@ -392,24 +420,57 @@
                     >{formatRepositoryVisibilityLabel(pkg.visibility)}</span
                   >
                 {/if}
+                {#if pkg.discovery}
+                  <span
+                    class={`badge badge-severity-${searchResultRiskBadgeSeverity(
+                      pkg
+                    )}`}>{searchResultRiskLabel(pkg)}</span
+                  >
+                  {#if pkg.discovery.has_trusted_publisher}
+                    <span class="badge badge-ecosystem">trusted publisher</span>
+                  {/if}
+                  {#if (pkg.discovery.unresolved_security_finding_count || 0) > 0}
+                    <span class="badge badge-ecosystem"
+                      >{formatNumber(
+                        pkg.discovery.unresolved_security_finding_count || 0
+                      )} unresolved finding{pkg.discovery
+                        .unresolved_security_finding_count === 1
+                        ? ''
+                        : 's'}</span
+                    >
+                  {/if}
+                {/if}
               </div>
-              <div class="package-card__description">{pkg.description || ''}</div>
+              <div class="package-card__description">
+                {pkg.description || ''}
+              </div>
               <div class="package-card__meta">
                 {#if pkg.owner_name}<span>by {pkg.owner_name}</span>{/if}
                 {#if repositoryLabel(pkg.repository_name, pkg.repository_slug)}<span
-                    >in {repositoryLabel(pkg.repository_name, pkg.repository_slug)}</span
+                    >in {repositoryLabel(
+                      pkg.repository_name,
+                      pkg.repository_slug
+                    )}</span
                   >{/if}
                 {#if pkg.download_count != null}<span
                     >{formatNumber(pkg.download_count)} downloads</span
                   >{/if}
-                {#if pkg.updated_at}<span>updated {formatDate(pkg.updated_at)}</span>{/if}
+                {#if pkg.updated_at}<span
+                    >updated {formatDate(pkg.updated_at)}</span
+                  >{/if}
               </div>
+              {#if discoverySignals.length > 0}
+                <div class="package-card__meta">
+                  {#each discoverySignals.slice(0, 3) as signal}
+                    <span>{signal}</span>
+                  {/each}
+                </div>
+              {/if}
               <div class="package-card__actions">
                 <a
                   href={packageDetailsPath}
                   class="btn btn-secondary btn-sm"
-                  data-sveltekit-preload-data="hover"
-                  >Open package details</a
+                  data-sveltekit-preload-data="hover">Open package details</a
                 >
               </div>
             </article>

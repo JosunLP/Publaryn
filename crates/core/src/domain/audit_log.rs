@@ -17,6 +17,10 @@ pub enum AuditAction {
     ReleaseYank,
     ReleaseUnyank,
     ReleaseDeprecate,
+    ReleaseUndeprecate,
+    // Admin
+    AdminJobRetry,
+    AdminJobsRecoverStale,
     // Auth
     UserLogin,
     UserLogout,

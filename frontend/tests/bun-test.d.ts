@@ -13,6 +13,10 @@ declare module 'bun:test' {
     callback: () => void | Promise<void>
   ): void;
 
+  export function afterAll(
+    callback: () => void | Promise<void>
+  ): void;
+
   export const mock: {
     module(
       specifier: string,

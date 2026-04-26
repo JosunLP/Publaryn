@@ -165,6 +165,23 @@ describe('org audit formatting helpers', () => {
     ).toBe('Transferred package acme-widget to organization Acme Platform.');
   });
 
+  test('formats package visibility change summaries', () => {
+    const log = makeLog('package_visibility_change', {
+      ecosystem: 'npm',
+      package_name: 'acme-widget',
+      previous_visibility: 'private',
+      visibility: 'unlisted',
+    });
+
+    expect(formatAuditActionLabel('package_visibility_change')).toBe(
+      'Package visibility changed'
+    );
+    expect(formatAuditTarget(log)).toBe('package npm · acme-widget');
+    expect(formatAuditSummary(log)).toBe(
+      'Changed package visibility for acme-widget from Private to Unlisted.'
+    );
+  });
+
   test('formats namespace deletion summaries and targets', () => {
     const log = makeLog('namespace_claim_delete', {
       ecosystem: 'npm',

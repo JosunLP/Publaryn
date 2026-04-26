@@ -21,7 +21,8 @@ use publaryn_workers::{
     scanners::{PolicyScanner, ScanArtifactHandler, SecretsScanner},
 };
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers
 
 const TEST_RESPONSE_BODY_LIMIT: usize = 8 * 1024 * 1024;
 
@@ -70,6 +71,15 @@ async fn body_bytes(resp: axum::response::Response) -> Vec<u8> {
 
 fn enc_path_segment(value: &str) -> String {
     url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
+}
+
+/// Extract the first `detail` field from Cargo's standard error response body.
+fn cargo_error_detail(body: &Value) -> &str {
+    body["errors"]
+        .as_array()
+        .and_then(|errors| errors.first())
+        .and_then(|error| error["detail"].as_str())
+        .expect("cargo error response should contain one detail message")
 }
 
 /// Register a user via POST /v1/auth/register and return the JSON response.
@@ -185,6 +195,175 @@ async fn publish_cargo_crate(
         .header(header::CONTENT_TYPE, "application/octet-stream")
         .header(header::CONTENT_LENGTH, content_length.to_string())
         .body(Body::from(payload))
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+fn cargo_sparse_index_path(crate_name: &str) -> String {
+    let normalized = crate_name.to_ascii_lowercase().replace('-', "_");
+    match normalized.len() {
+        1 => format!("/cargo/index/1/{normalized}"),
+        2 => format!("/cargo/index/2/{normalized}"),
+        3 => format!("/cargo/index/3/{}/{normalized}", &normalized[..1]),
+        _ => format!(
+            "/cargo/index/{}/{}/{normalized}",
+            &normalized[..2],
+            &normalized[2..4]
+        ),
+    }
+}
+
+async fn get_cargo_sparse_index(
+    app: &axum::Router,
+    auth: Option<&str>,
+    crate_name: &str,
+) -> axum::response::Response {
+    let mut req = Request::builder()
+        .method(Method::GET)
+        .uri(cargo_sparse_index_path(crate_name));
+    if let Some(token) = auth {
+        req = req.header(header::AUTHORIZATION, token);
+    }
+    app.clone()
+        .oneshot(req.body(Body::empty()).unwrap())
+        .await
+        .unwrap()
+}
+
+async fn download_cargo_crate(
+    app: &axum::Router,
+    auth: Option<&str>,
+    crate_name: &str,
+    version: &str,
+) -> axum::response::Response {
+    let mut req = Request::builder().method(Method::GET).uri(format!(
+        "/cargo/api/v1/crates/{}/{}/download",
+        enc_path_segment(crate_name),
+        enc_path_segment(version)
+    ));
+    if let Some(token) = auth {
+        req = req.header(header::AUTHORIZATION, token);
+    }
+    app.clone()
+        .oneshot(req.body(Body::empty()).unwrap())
+        .await
+        .unwrap()
+}
+
+/// Yank a Cargo crate version through the native adapter.
+async fn yank_cargo_crate_version(
+    app: &axum::Router,
+    token: &str,
+    name: &str,
+    version: &str,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::DELETE)
+        .uri(format!(
+            "/cargo/api/v1/crates/{}/{}/yank",
+            enc_path_segment(name),
+            enc_path_segment(version)
+        ))
+        .header(header::AUTHORIZATION, token)
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// Restore a yanked Cargo crate version through the native adapter.
+async fn unyank_cargo_crate_version(
+    app: &axum::Router,
+    token: &str,
+    name: &str,
+    version: &str,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::PUT)
+        .uri(format!(
+            "/cargo/api/v1/crates/{}/{}/unyank",
+            enc_path_segment(name),
+            enc_path_segment(version)
+        ))
+        .header(header::AUTHORIZATION, token)
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// List Cargo crate owners through the native compatibility endpoint.
+async fn list_cargo_crate_owners(
+    app: &axum::Router,
+    token: &str,
+    name: &str,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri(format!(
+            "/cargo/api/v1/crates/{}/owners",
+            enc_path_segment(name)
+        ))
+        .header(header::AUTHORIZATION, token)
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// Request Cargo crate owner additions through the native compatibility endpoint.
+async fn add_cargo_crate_owners(
+    app: &axum::Router,
+    token: &str,
+    name: &str,
+    users: &[&str],
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::PUT)
+        .uri(format!(
+            "/cargo/api/v1/crates/{}/owners",
+            enc_path_segment(name)
+        ))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, token)
+        .body(Body::from(json!({ "users": users }).to_string()))
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// Request Cargo crate owner removals through the native compatibility endpoint.
+async fn remove_cargo_crate_owners(
+    app: &axum::Router,
+    token: &str,
+    name: &str,
+    users: &[&str],
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::DELETE)
+        .uri(format!(
+            "/cargo/api/v1/crates/{}/owners",
+            enc_path_segment(name)
+        ))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, token)
+        .body(Body::from(json!({ "users": users }).to_string()))
         .unwrap();
 
     let resp = app.clone().oneshot(req).await.unwrap();
@@ -536,6 +715,41 @@ async fn list_platform_admin_jobs(
         .method(Method::GET)
         .uri(uri)
         .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+async fn retry_platform_admin_job(
+    app: &axum::Router,
+    bearer_token: &str,
+    job_id: Uuid,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri(format!("/v1/admin/jobs/{job_id}/retry"))
+        .header(header::AUTHORIZATION, format!("Bearer {bearer_token}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+async fn recover_stale_platform_admin_jobs(
+    app: &axum::Router,
+    bearer_token: &str,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/v1/admin/jobs/recover-stale")
+        .header(header::AUTHORIZATION, format!("Bearer {bearer_token}"))
         .body(Body::empty())
         .unwrap();
 
@@ -1501,6 +1715,59 @@ async fn search_npm_packages(
     (status, body)
 }
 
+/// Search Cargo crates through the native adapter and return the response.
+async fn search_cargo_crates(
+    app: &axum::Router,
+    auth_token: Option<&str>,
+    query: &str,
+    per_page: u32,
+) -> (StatusCode, Value) {
+    let req = Request::builder().method(Method::GET).uri(format!(
+        "/cargo/api/v1/crates?q={}&per_page={per_page}",
+        url::form_urlencoded::byte_serialize(query.as_bytes()).collect::<String>()
+    ));
+    let req = if let Some(token) = auth_token {
+        req.header(header::AUTHORIZATION, format!("Bearer {token}"))
+    } else {
+        req
+    };
+    let req = req.body(Body::empty()).unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// Search NuGet packages through the native adapter and return the response.
+async fn search_nuget_packages(
+    app: &axum::Router,
+    auth_token: Option<&str>,
+    query: &str,
+    take: u32,
+    skip: u32,
+) -> (StatusCode, Value) {
+    let encoded_query = url::form_urlencoded::byte_serialize(query.as_bytes()).collect::<String>();
+    let req = Request::builder().method(Method::GET).uri(format!(
+        "/nuget/v3/search?q={encoded_query}&take={take}&skip={skip}"
+    ));
+    let req = if let Some(token) = auth_token {
+        if token.starts_with("pub_") {
+            req.header("x-nuget-apikey", token)
+        } else {
+            req.header(header::AUTHORIZATION, format!("Bearer {token}"))
+        }
+    } else {
+        req
+    };
+    let req = req.body(Body::empty()).unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
 fn is_search_backend_available() -> bool {
     let search_url = std::env::var("SEARCH__URL")
         .ok()
@@ -1733,6 +2000,49 @@ async fn fetch_background_jobs(
     .collect()
 }
 
+async fn fetch_background_job_state(
+    pool: &PgPool,
+    job_id: Uuid,
+) -> (
+    String,
+    i32,
+    Option<String>,
+    Option<DateTime<Utc>>,
+    Option<String>,
+    Option<DateTime<Utc>>,
+    Option<DateTime<Utc>>,
+    DateTime<Utc>,
+) {
+    let row = sqlx::query(
+        "SELECT status::text AS status, attempts, last_error, locked_until, locked_by, \
+                started_at, completed_at, scheduled_at \
+         FROM background_jobs \
+         WHERE id = $1",
+    )
+    .bind(job_id)
+    .fetch_one(pool)
+    .await
+    .expect("background job should be queryable");
+
+    (
+        row.try_get("status").expect("job status should be present"),
+        row.try_get("attempts")
+            .expect("job attempts should be present"),
+        row.try_get("last_error")
+            .expect("job last_error should be readable"),
+        row.try_get("locked_until")
+            .expect("job locked_until should be readable"),
+        row.try_get("locked_by")
+            .expect("job locked_by should be readable"),
+        row.try_get("started_at")
+            .expect("job started_at should be readable"),
+        row.try_get("completed_at")
+            .expect("job completed_at should be readable"),
+        row.try_get("scheduled_at")
+            .expect("job scheduled_at should be readable"),
+    )
+}
+
 async fn fetch_oci_cleanup_jobs(pool: &PgPool) -> Vec<(serde_json::Value, String, DateTime<Utc>)> {
     sqlx::query(
         "SELECT payload, status::text AS status, scheduled_at \
@@ -1838,6 +2148,95 @@ async fn deprecate_release_for_package(
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
         .body(Body::from(payload.to_string()))
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// Remove deprecation from a release and return the response.
+async fn undeprecate_release_for_package(
+    app: &axum::Router,
+    jwt: &str,
+    ecosystem: &str,
+    name: &str,
+    version: &str,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::PUT)
+        .uri(format!(
+            "/v1/packages/{ecosystem}/{name}/releases/{version}/undeprecate"
+        ))
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// List package channel tags and return the response.
+async fn list_package_tags(
+    app: &axum::Router,
+    jwt: Option<&str>,
+    ecosystem: &str,
+    name: &str,
+) -> (StatusCode, Value) {
+    let mut request = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/v1/packages/{ecosystem}/{name}/tags"));
+
+    if let Some(jwt) = jwt {
+        request = request.header(header::AUTHORIZATION, format!("Bearer {jwt}"));
+    }
+
+    let req = request.body(Body::empty()).unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// Upsert a package channel tag and return the response.
+async fn upsert_package_tag(
+    app: &axum::Router,
+    jwt: &str,
+    ecosystem: &str,
+    name: &str,
+    tag: &str,
+    version: &str,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::PUT)
+        .uri(format!("/v1/packages/{ecosystem}/{name}/tags/{tag}"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::from(json!({ "version": version }).to_string()))
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+/// Delete a package channel tag and return the response.
+async fn delete_package_tag(
+    app: &axum::Router,
+    jwt: &str,
+    ecosystem: &str,
+    name: &str,
+    tag: &str,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::DELETE)
+        .uri(format!("/v1/packages/{ecosystem}/{name}/tags/{tag}"))
+        .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+        .body(Body::empty())
         .unwrap();
 
     let resp = app.clone().oneshot(req).await.unwrap();
@@ -2194,6 +2593,90 @@ async fn get_pypi_simple_project_html(
     let status = resp.status();
     let body = body_text(resp).await;
     (status, body)
+}
+
+#[derive(Debug, Clone)]
+struct PypiDistributionFixture {
+    artifact_id: Uuid,
+    package_id: Uuid,
+    filename: String,
+    sha256: String,
+    content_type: String,
+}
+
+fn pypi_basic_token_auth(token: &str) -> String {
+    format!("Basic {}", BASE64.encode(format!("__token__:{token}")))
+}
+
+async fn download_pypi_distribution(
+    app: &axum::Router,
+    authorization: Option<&str>,
+    artifact_id: Uuid,
+    filename: &str,
+) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+    let mut request = Request::builder().method(Method::GET).uri(format!(
+        "/pypi/files/{artifact_id}/{}",
+        enc_path_segment(filename)
+    ));
+
+    if let Some(authorization) = authorization {
+        request = request.header(header::AUTHORIZATION, authorization);
+    }
+
+    let req = request.body(Body::empty()).unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let headers = resp.headers().clone();
+    let body = body_bytes(resp).await;
+    (status, headers, body)
+}
+
+async fn load_pypi_distribution_fixture(
+    pool: &PgPool,
+    package_name: &str,
+    version: &str,
+) -> PypiDistributionFixture {
+    let row = sqlx::query(
+        "SELECT a.id, a.filename, a.sha256, a.content_type, p.id AS package_id \
+         FROM artifacts a \
+         JOIN releases rel ON rel.id = a.release_id \
+         JOIN packages p ON p.id = rel.package_id \
+         WHERE p.ecosystem = 'pypi' AND p.name = $1 AND rel.version = $2 \
+           AND a.kind IN ('wheel', 'sdist') \
+         ORDER BY a.uploaded_at DESC, a.filename ASC \
+         LIMIT 1",
+    )
+    .bind(package_name)
+    .bind(version)
+    .fetch_one(pool)
+    .await
+    .expect("pypi distribution fixture should be queryable");
+
+    PypiDistributionFixture {
+        artifact_id: row
+            .try_get::<Uuid, _>("id")
+            .expect("artifact id should be readable"),
+        package_id: row
+            .try_get::<Uuid, _>("package_id")
+            .expect("package id should be readable"),
+        filename: row
+            .try_get::<String, _>("filename")
+            .expect("filename should be readable"),
+        sha256: row
+            .try_get::<String, _>("sha256")
+            .expect("sha256 should be readable"),
+        content_type: row
+            .try_get::<String, _>("content_type")
+            .expect("content type should be readable"),
+    }
+}
+
+async fn get_package_download_count(pool: &PgPool, package_id: Uuid) -> i64 {
+    sqlx::query_scalar("SELECT download_count FROM packages WHERE id = $1")
+        .bind(package_id)
+        .fetch_one(pool)
+        .await
+        .expect("package download count should be queryable")
 }
 
 /// Build a minimal Composer publish multipart body and return `(content_type, body)`.
@@ -2896,6 +3379,28 @@ async fn get_nuget_registration_index(
     (status, body)
 }
 
+async fn download_nuget_nupkg(
+    app: &axum::Router,
+    token: Option<&str>,
+    package_id: &str,
+    version: &str,
+) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+    let mut request = Request::builder().method(Method::GET).uri(format!(
+        "/nuget/v3-flatcontainer/{package_id}/{version}/{package_id}.{version}.nupkg"
+    ));
+
+    if let Some(token) = token {
+        request = request.header("x-nuget-apikey", token);
+    }
+
+    let req = request.body(Body::empty()).unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let headers = resp.headers().clone();
+    let body = body_bytes(resp).await;
+    (status, headers, body)
+}
+
 async fn set_nuget_listing_state(
     app: &axum::Router,
     token: &str,
@@ -3117,6 +3622,266 @@ async fn test_platform_admin_jobs_expose_summary_and_filterable_results(pool: Pg
     assert_eq!(jobs[0]["kind"], "scan_artifact");
     assert_eq!(jobs[0]["status"], "pending");
     assert_eq!(jobs[0]["payload"]["artifact_id"], "artifact-123");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_platform_admin_job_retry_resets_failed_and_dead_jobs_and_audits(pool: PgPool) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    promote_user_to_platform_admin(&pool, "alice").await;
+    let admin_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    sqlx::query("DELETE FROM background_jobs")
+        .execute(&pool)
+        .await
+        .expect("background jobs should be clear before retry tests");
+
+    let failed_job_id = Uuid::new_v4();
+    let dead_job_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO background_jobs \
+         (id, kind, payload, status, attempts, max_attempts, last_error, scheduled_at, locked_until, locked_by, started_at, completed_at, created_at) \
+         VALUES \
+         ($1, 'scan_artifact'::job_kind, $2, 'failed'::job_status, 3, 5, 'artifact scan failed', NOW() - INTERVAL '30 minutes', NOW() - INTERVAL '10 minutes', 'worker-a', NOW() - INTERVAL '31 minutes', NOW() - INTERVAL '30 minutes', NOW() - INTERVAL '31 minutes'), \
+         ($3, 'reindex_search'::job_kind, $4, 'dead'::job_status, 5, 5, 'queue exhausted', NOW() - INTERVAL '45 minutes', NOW() - INTERVAL '20 minutes', 'worker-b', NOW() - INTERVAL '46 minutes', NOW() - INTERVAL '45 minutes', NOW() - INTERVAL '46 minutes')",
+    )
+    .bind(failed_job_id)
+    .bind(json!({ "artifact_id": "artifact-123" }))
+    .bind(dead_job_id)
+    .bind(json!({ "package_id": Uuid::new_v4() }))
+    .execute(&pool)
+    .await
+    .expect("retryable jobs should seed successfully");
+
+    let retry_started_at = Utc::now();
+    let (status, failed_body) = retry_platform_admin_job(&app, &admin_jwt, failed_job_id).await;
+    assert_eq!(status, StatusCode::OK, "response: {failed_body}");
+    assert_eq!(failed_body["message"], "Background job scheduled for retry");
+    assert_eq!(failed_body["job"]["status"], "pending");
+    assert_eq!(failed_body["job"]["attempts"], 0);
+
+    let (status, dead_body) = retry_platform_admin_job(&app, &admin_jwt, dead_job_id).await;
+    assert_eq!(status, StatusCode::OK, "response: {dead_body}");
+    assert_eq!(dead_body["job"]["status"], "pending");
+    assert_eq!(dead_body["job"]["attempts"], 0);
+
+    let failed_state = fetch_background_job_state(&pool, failed_job_id).await;
+    assert_eq!(failed_state.0, "pending");
+    assert_eq!(failed_state.1, 0);
+    assert_eq!(failed_state.2.as_deref(), Some("artifact scan failed"));
+    assert!(failed_state.3.is_none());
+    assert!(failed_state.4.is_none());
+    assert!(failed_state.5.is_none());
+    assert!(failed_state.6.is_none());
+    assert!(failed_state.7 >= retry_started_at);
+
+    let dead_state = fetch_background_job_state(&pool, dead_job_id).await;
+    assert_eq!(dead_state.0, "pending");
+    assert_eq!(dead_state.1, 0);
+    assert_eq!(dead_state.2.as_deref(), Some("queue exhausted"));
+    assert!(dead_state.3.is_none());
+    assert!(dead_state.4.is_none());
+    assert!(dead_state.5.is_none());
+    assert!(dead_state.6.is_none());
+    assert!(dead_state.7 >= retry_started_at);
+
+    let retry_audit_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::BIGINT FROM audit_logs WHERE action = 'admin_job_retry'::audit_action",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("retry audit log count should be queryable");
+    assert_eq!(retry_audit_count, 2);
+
+    let latest_retry_metadata: Value = sqlx::query_scalar(
+        "SELECT metadata \
+         FROM audit_logs \
+         WHERE action = 'admin_job_retry'::audit_action \
+         ORDER BY occurred_at DESC \
+         LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("latest retry audit metadata should be queryable");
+    assert_eq!(latest_retry_metadata["previous_status"], "dead");
+    assert_eq!(latest_retry_metadata["previous_attempts"], 5);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_platform_admin_job_mutations_reject_non_retryable_states_and_enforce_access(
+    pool: PgPool,
+) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    promote_user_to_platform_admin(&pool, "alice").await;
+    let admin_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, no_audit_scope_body) =
+        create_personal_access_token(&app, &admin_jwt, "admin-no-audit", &["packages:write"]).await;
+    assert_eq!(status, StatusCode::CREATED, "{no_audit_scope_body}");
+    let admin_no_audit_token = no_audit_scope_body["token"]
+        .as_str()
+        .expect("admin token without audit scope should be returned")
+        .to_owned();
+
+    let (status, audit_scope_body) =
+        create_personal_access_token(&app, &admin_jwt, "admin-audit", &["audit:read"]).await;
+    assert_eq!(status, StatusCode::CREATED, "{audit_scope_body}");
+    let admin_audit_token = audit_scope_body["token"]
+        .as_str()
+        .expect("admin token with audit scope should be returned")
+        .to_owned();
+
+    sqlx::query("DELETE FROM background_jobs")
+        .execute(&pool)
+        .await
+        .expect("background jobs should be clear before admin mutation auth tests");
+
+    let pending_job_id = Uuid::new_v4();
+    let stale_job_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO background_jobs \
+         (id, kind, payload, status, attempts, max_attempts, last_error, scheduled_at, locked_until, locked_by, started_at, completed_at, created_at) \
+         VALUES \
+         ($1, 'scan_artifact'::job_kind, $2, 'pending'::job_status, 0, 5, NULL, NOW(), NULL, NULL, NULL, NULL, NOW()), \
+         ($3, 'cleanup_oci_blobs'::job_kind, $4, 'running'::job_status, 1, 5, NULL, NOW() - INTERVAL '1 hour', NOW() - INTERVAL '5 minutes', 'worker-stale', NOW() - INTERVAL '1 hour', NULL, NOW() - INTERVAL '1 hour')",
+    )
+    .bind(pending_job_id)
+    .bind(json!({ "artifact_id": "artifact-123" }))
+    .bind(stale_job_id)
+    .bind(json!({ "digests": ["sha256:abc"] }))
+    .execute(&pool)
+    .await
+    .expect("admin mutation jobs should seed successfully");
+
+    let (status, conflict_body) = retry_platform_admin_job(&app, &admin_jwt, pending_job_id).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(
+        conflict_body["error"]
+            .as_str()
+            .expect("conflict error should be present")
+            .contains("cannot be retried from status 'pending'"),
+        "unexpected conflict response: {conflict_body}"
+    );
+
+    let (status, missing_scope_body) =
+        retry_platform_admin_job(&app, &admin_no_audit_token, pending_job_id).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(
+        missing_scope_body["error"]
+            .as_str()
+            .expect("scope error should be present")
+            .contains("audit:read"),
+        "unexpected missing-scope response: {missing_scope_body}"
+    );
+
+    let missing_job_id = Uuid::new_v4();
+    let (status, missing_job_body) =
+        retry_platform_admin_job(&app, &admin_jwt, missing_job_id).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(
+        missing_job_body["error"]
+            .as_str()
+            .expect("missing job error should be present")
+            .contains("not found"),
+        "unexpected missing-job response: {missing_job_body}"
+    );
+
+    sqlx::query("UPDATE users SET is_admin = FALSE, updated_at = NOW() WHERE username = 'alice'")
+        .execute(&pool)
+        .await
+        .expect("admin user should be demotable for access tests");
+
+    let (status, missing_admin_body) =
+        recover_stale_platform_admin_jobs(&app, &admin_audit_token).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(
+        missing_admin_body["error"]
+            .as_str()
+            .expect("platform-admin error should be present")
+            .contains("platform administrator"),
+        "unexpected missing-admin response: {missing_admin_body}"
+    );
+
+    let stale_state = fetch_background_job_state(&pool, stale_job_id).await;
+    assert_eq!(stale_state.0, "running");
+    assert_eq!(stale_state.4.as_deref(), Some("worker-stale"));
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_platform_admin_recover_stale_jobs_only_resets_expired_running_jobs_and_audits(
+    pool: PgPool,
+) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    promote_user_to_platform_admin(&pool, "alice").await;
+    let admin_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    sqlx::query("DELETE FROM background_jobs")
+        .execute(&pool)
+        .await
+        .expect("background jobs should be clear before stale recovery tests");
+
+    let recoverable_job_id = Uuid::new_v4();
+    let active_job_id = Uuid::new_v4();
+    let pending_job_id = Uuid::new_v4();
+    let dead_job_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO background_jobs \
+         (id, kind, payload, status, attempts, max_attempts, last_error, scheduled_at, locked_until, locked_by, started_at, completed_at, created_at) \
+         VALUES \
+         ($1, 'cleanup_oci_blobs'::job_kind, $2, 'running'::job_status, 1, 5, NULL, NOW() - INTERVAL '2 hours', NOW() - INTERVAL '10 minutes', 'worker-old', NOW() - INTERVAL '2 hours', NULL, NOW() - INTERVAL '2 hours'), \
+         ($3, 'scan_artifact'::job_kind, $4, 'running'::job_status, 1, 5, NULL, NOW() - INTERVAL '20 minutes', NOW() + INTERVAL '10 minutes', 'worker-live', NOW() - INTERVAL '20 minutes', NULL, NOW() - INTERVAL '20 minutes'), \
+         ($5, 'reindex_search'::job_kind, $6, 'pending'::job_status, 0, 5, NULL, NOW() - INTERVAL '15 minutes', NOW() - INTERVAL '5 minutes', 'worker-pending', NULL, NULL, NOW() - INTERVAL '15 minutes'), \
+         ($7, 'index_package'::job_kind, $8, 'dead'::job_status, 5, 5, 'boom', NOW() - INTERVAL '30 minutes', NOW() - INTERVAL '15 minutes', 'worker-dead', NOW() - INTERVAL '30 minutes', NOW() - INTERVAL '25 minutes', NOW() - INTERVAL '30 minutes')",
+    )
+    .bind(recoverable_job_id)
+    .bind(json!({ "digests": ["sha256:abc"] }))
+    .bind(active_job_id)
+    .bind(json!({ "artifact_id": "artifact-456" }))
+    .bind(pending_job_id)
+    .bind(json!({ "package_id": Uuid::new_v4() }))
+    .bind(dead_job_id)
+    .bind(json!({ "package_id": Uuid::new_v4() }))
+    .execute(&pool)
+    .await
+    .expect("stale recovery jobs should seed successfully");
+
+    let (status, body) = recover_stale_platform_admin_jobs(&app, &admin_jwt).await;
+    assert_eq!(status, StatusCode::OK, "response: {body}");
+    assert_eq!(body["message"], "Stale background jobs recovered");
+    assert_eq!(body["recovered_count"], 1);
+
+    let recoverable_state = fetch_background_job_state(&pool, recoverable_job_id).await;
+    assert_eq!(recoverable_state.0, "pending");
+    assert!(recoverable_state.3.is_none());
+    assert!(recoverable_state.4.is_none());
+    assert!(recoverable_state.5.is_none());
+    assert!(recoverable_state.6.is_none());
+
+    let active_state = fetch_background_job_state(&pool, active_job_id).await;
+    assert_eq!(active_state.0, "running");
+    assert_eq!(active_state.4.as_deref(), Some("worker-live"));
+
+    let pending_state = fetch_background_job_state(&pool, pending_job_id).await;
+    assert_eq!(pending_state.0, "pending");
+    assert_eq!(pending_state.4.as_deref(), Some("worker-pending"));
+
+    let dead_state = fetch_background_job_state(&pool, dead_job_id).await;
+    assert_eq!(dead_state.0, "dead");
+    assert_eq!(dead_state.4.as_deref(), Some("worker-dead"));
+
+    let recover_audit_metadata: Value = sqlx::query_scalar(
+        "SELECT metadata \
+         FROM audit_logs \
+         WHERE action = 'admin_jobs_recover_stale'::audit_action \
+         ORDER BY occurred_at DESC \
+         LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("recover-stale audit metadata should be queryable");
+    assert_eq!(recover_audit_metadata["recovered_count"], 1);
 }
 
 #[sqlx::test(migrations = "../../migrations")]
@@ -10089,6 +10854,220 @@ async fn test_package_ownership_transfer_requires_target_org_admin_membership(po
 }
 
 #[sqlx::test(migrations = "../../migrations")]
+async fn test_private_package_reads_allow_delegated_package_or_repository_access_without_broadening_repository_reads(
+    pool: PgPool,
+) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    register_user(&app, "carol", "carol@test.dev", "super_secret_pw!").await;
+    register_user(&app, "dave", "dave@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+    let carol_jwt = login_user(&app, "carol", "super_secret_pw!").await;
+    let dave_jwt = login_user(&app, "dave", "super_secret_pw!").await;
+
+    let (status, org_body) =
+        create_org(&app, &alice_jwt, "Acme Restricted", "acme-restricted").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id = org_body["id"].as_str().expect("org id should be present");
+
+    let (status, package_repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Package Delegated Repository",
+        "package-delegated-repository",
+        Some(org_id),
+        Some("private"),
+        Some("private"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{package_repository_body}");
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Restricted Packages",
+        "restricted-packages",
+        Some(org_id),
+        Some("private"),
+        Some("private"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{repository_body}");
+
+    let (status, package_only_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "npm",
+        "delegated-package-widget",
+        "package-delegated-repository",
+        Some("private"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{package_only_body}");
+
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "npm",
+        "delegated-read-widget",
+        "restricted-packages",
+        Some("private"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{package_body}");
+
+    let (status, _) = add_org_member(&app, &alice_jwt, "acme-restricted", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = add_org_member(&app, &alice_jwt, "acme-restricted", "carol", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "acme-restricted",
+        "Package Reviewers",
+        "package-reviewers",
+        Some("Can read only explicitly granted private packages."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "acme-restricted",
+        "Repository Reviewers",
+        "repository-reviewers",
+        Some("Can read private repositories and their packages."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = add_team_member_to_team(
+        &app,
+        &alice_jwt,
+        "acme-restricted",
+        "package-reviewers",
+        "bob",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = add_team_member_to_team(
+        &app,
+        &alice_jwt,
+        "acme-restricted",
+        "repository-reviewers",
+        "carol",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, package_grant_body) = grant_team_package_access(
+        &app,
+        &alice_jwt,
+        "acme-restricted",
+        "package-reviewers",
+        "npm",
+        "delegated-package-widget",
+        &["security_review"],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{package_grant_body}");
+
+    let (status, repository_grant_body) = grant_team_repository_access(
+        &app,
+        &alice_jwt,
+        "acme-restricted",
+        "repository-reviewers",
+        "restricted-packages",
+        &["write_metadata"],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{repository_grant_body}");
+
+    sqlx::query(
+        "DELETE FROM org_memberships \
+         WHERE org_id = $1 \
+           AND user_id IN (SELECT id FROM users WHERE username IN ('bob', 'carol'))",
+    )
+    .bind(Uuid::parse_str(org_id).expect("org id should parse"))
+    .execute(&pool)
+    .await
+    .expect("delegated readers should be removable from direct org membership");
+
+    let (status, anonymous_detail) =
+        get_package_detail(&app, None, "npm", "delegated-read-widget").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(
+        anonymous_detail["error"]
+            .as_str()
+            .expect("anonymous error should be present")
+            .contains("not found"),
+        "unexpected anonymous package response: {anonymous_detail}"
+    );
+
+    let (status, unrelated_detail) =
+        get_package_detail(&app, Some(&dave_jwt), "npm", "delegated-read-widget").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(
+        unrelated_detail["error"]
+            .as_str()
+            .expect("outsider error should be present")
+            .contains("not found"),
+        "unexpected outsider package response: {unrelated_detail}"
+    );
+
+    let (status, package_delegate_detail) =
+        get_package_detail(&app, Some(&bob_jwt), "npm", "delegated-package-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(package_delegate_detail["name"], "delegated-package-widget");
+
+    let (status, package_delegate_repository) =
+        get_repository_detail(&app, Some(&bob_jwt), "package-delegated-repository").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(
+        package_delegate_repository["error"]
+            .as_str()
+            .expect("package-scoped repository detail error should be present")
+            .contains("not found"),
+        "unexpected package-scoped repository detail response: {package_delegate_repository}"
+    );
+
+    let (status, package_delegate_packages) =
+        list_repository_packages(&app, Some(&bob_jwt), "package-delegated-repository").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(
+        package_delegate_packages["error"]
+            .as_str()
+            .expect("package-scoped repository packages error should be present")
+            .contains("not found"),
+        "unexpected package-scoped repository packages response: {package_delegate_packages}"
+    );
+
+    let (status, repository_delegate_detail) =
+        get_package_detail(&app, Some(&carol_jwt), "npm", "delegated-read-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        repository_delegate_detail["repository_slug"],
+        "restricted-packages"
+    );
+
+    let (status, repository_detail) =
+        get_repository_detail(&app, Some(&carol_jwt), "restricted-packages").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(repository_detail["slug"], "restricted-packages");
+
+    let (status, repository_packages) =
+        list_repository_packages(&app, Some(&carol_jwt), "restricted-packages").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        repository_packages["packages"][0]["name"],
+        "delegated-read-widget"
+    );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
 async fn test_team_publish_permission_allows_release_creation_but_not_metadata_updates(
     pool: PgPool,
 ) {
@@ -10635,6 +11614,22 @@ async fn test_team_write_metadata_permission_allows_package_updates_but_not_rele
     );
     assert_eq!(detail_after["can_manage_releases"], false);
 
+    let (status, denied_visibility_body) = update_package_metadata(
+        &app,
+        &bob_jwt,
+        "npm",
+        "docs-widget",
+        json!({
+            "visibility": "unlisted",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(denied_visibility_body["error"]
+        .as_str()
+        .expect("error should be present")
+        .contains("package administration"));
+
     let (status, denied_release_body) =
         create_release_for_package(&app, &bob_jwt, "npm", "docs-widget", "2.0.0").await;
     assert_eq!(status, StatusCode::FORBIDDEN);
@@ -10755,6 +11750,65 @@ async fn test_package_metadata_update_allows_clearing_fields_and_keyword_normali
     assert_eq!(detail_after_clear["license"], Value::Null);
     assert_eq!(detail_after_clear["keywords"], json!([]));
     assert_eq!(detail_after_clear["readme"], Value::Null);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_package_visibility_update_rejects_broader_scope_than_repository(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Alice Private Packages",
+        "alice-private-packages",
+        None,
+        Some("private"),
+        Some("private"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "npm",
+        "private-visibility-widget",
+        "alice-private-packages",
+        Some("private"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let (status, update_body) = update_package_metadata(
+        &app,
+        &alice_jwt,
+        "npm",
+        "private-visibility-widget",
+        json!({
+            "visibility": "public",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(update_body["error"]
+        .as_str()
+        .expect("error should be present")
+        .contains("cannot be broader than the enclosing repository visibility"));
+
+    let (status, detail_after) =
+        get_package_detail(&app, Some(&alice_jwt), "npm", "private-visibility-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail_after["visibility"], "private");
 }
 
 #[sqlx::test(migrations = "../../migrations")]
@@ -10904,6 +11958,54 @@ async fn test_org_audit_includes_package_metadata_updates(pool: PgPool) {
         logs[0]["metadata"]["changes"]["homepage"]["after"],
         "https://packages.example.test/audit-widget"
     );
+
+    let (status, visibility_body) = update_package_metadata(
+        &app,
+        &alice_jwt,
+        "npm",
+        "audit-widget",
+        json!({
+            "visibility": "unlisted",
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected package visibility response: {visibility_body}"
+    );
+
+    let (status, visibility_audit_body) = list_org_audit(
+        &app,
+        &alice_jwt,
+        "docs-org",
+        Some("action=package_visibility_change&per_page=10"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let visibility_logs = visibility_audit_body["logs"]
+        .as_array()
+        .expect("logs response should be an array");
+    assert_eq!(
+        visibility_logs.len(),
+        1,
+        "response: {visibility_audit_body}"
+    );
+    assert_eq!(visibility_logs[0]["action"], "package_visibility_change");
+    assert_eq!(visibility_logs[0]["actor_username"], "alice");
+    assert_eq!(visibility_logs[0]["target_org_id"], org_id);
+    assert_eq!(visibility_logs[0]["target_package_id"], package_id);
+    assert_eq!(visibility_logs[0]["metadata"]["ecosystem"], "npm");
+    assert_eq!(
+        visibility_logs[0]["metadata"]["package_name"],
+        "audit-widget"
+    );
+    assert_eq!(
+        visibility_logs[0]["metadata"]["previous_visibility"],
+        "public"
+    );
+    assert_eq!(visibility_logs[0]["metadata"]["visibility"], "unlisted");
 
     let audit_row = sqlx::query(
         "SELECT metadata \
@@ -11220,6 +12322,347 @@ async fn test_npm_search_respects_authenticated_visibility_and_filtered_offsets(
 }
 
 #[sqlx::test(migrations = "../../migrations")]
+async fn test_cargo_search_respects_authenticated_visibility_and_mixed_repository_combinations(
+    pool: PgPool,
+) {
+    if !is_search_backend_available() {
+        eprintln!(
+            "Skipping Cargo search visibility verification because the search backend is unavailable."
+        );
+        return;
+    }
+
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    register_user(&app, "carol", "carol@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+    let carol_jwt = login_user(&app, "carol", "super_secret_pw!").await;
+    let (status, org_body) =
+        create_org(&app, &alice_jwt, "Acme Cargo Search", "acme-cargo-search").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id = org_body["id"].as_str().expect("org id");
+
+    let (status, _) = add_org_member(&app, &alice_jwt, "acme-cargo-search", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    for (name, slug, kind, visibility) in [
+        (
+            "Cargo Public Search",
+            "cargo-public-search",
+            "public",
+            "public",
+        ),
+        (
+            "Cargo Internal Search",
+            "cargo-internal-search",
+            "private",
+            "internal_org",
+        ),
+        (
+            "Cargo Private Search",
+            "cargo-private-search",
+            "private",
+            "private",
+        ),
+    ] {
+        let (status, body) = create_repository_with_options(
+            &app,
+            &alice_jwt,
+            name,
+            slug,
+            Some(org_id),
+            Some(kind),
+            Some(visibility),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected repository response: {body}"
+        );
+    }
+
+    let (status, token_body) =
+        create_personal_access_token(&app, &alice_jwt, "cargo-search", &["packages:write"]).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
+    let cargo_token = token_body["token"]
+        .as_str()
+        .expect("cargo token should be returned")
+        .to_owned();
+
+    let search_token = "cargosearchvisalpha";
+    for (name, repository_slug, visibility, descriptor) in [
+        (
+            "cargo-public-search-widget",
+            "cargo-public-search",
+            Some("public"),
+            "public",
+        ),
+        (
+            "cargo-private-public-search-widget",
+            "cargo-public-search",
+            Some("private"),
+            "private in public repository",
+        ),
+        (
+            "cargo-internal-search-widget",
+            "cargo-internal-search",
+            Some("internal_org"),
+            "internal_org",
+        ),
+        (
+            "cargo-private-internal-search-widget",
+            "cargo-internal-search",
+            Some("private"),
+            "private in internal repository",
+        ),
+        (
+            "cargo-private-repository-search-widget",
+            "cargo-private-search",
+            Some("private"),
+            "private in private repository",
+        ),
+        (
+            "cargo-unlisted-search-widget",
+            "cargo-public-search",
+            Some("unlisted"),
+            "unlisted",
+        ),
+        (
+            "cargo-quarantined-search-widget",
+            "cargo-public-search",
+            Some("quarantined"),
+            "quarantined",
+        ),
+    ] {
+        let (status, body) = create_package_with_options(
+            &app,
+            &alice_jwt,
+            "cargo",
+            name,
+            repository_slug,
+            visibility,
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected package response: {body}"
+        );
+
+        let crate_bytes = format!("{name}-crate");
+        let payload = build_cargo_publish_payload(
+            json!({
+                "name": name,
+                "vers": "0.1.0",
+                "deps": [],
+                "features": {},
+                "authors": ["Alice <alice@test.dev>"],
+                "description": format!("{search_token} cargo visibility {descriptor}"),
+                "license": "MIT"
+            }),
+            crate_bytes.as_bytes(),
+        );
+
+        let (status, publish_body) = publish_cargo_crate(&app, &cargo_token, payload).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "unexpected cargo publish response: {publish_body}"
+        );
+    }
+
+    let expected_member_names = std::collections::BTreeSet::from([
+        "cargo-public-search-widget".to_owned(),
+        "cargo-private-public-search-widget".to_owned(),
+        "cargo-internal-search-widget".to_owned(),
+        "cargo-private-internal-search-widget".to_owned(),
+        "cargo-private-repository-search-widget".to_owned(),
+    ]);
+    let expected_anonymous_names =
+        std::collections::BTreeSet::from(["cargo-public-search-widget".to_owned()]);
+
+    let mut latest_management_member = Value::Null;
+    let mut latest_management_anonymous = Value::Null;
+    let mut latest_management_outsider = Value::Null;
+    let mut latest_cargo_member = Value::Null;
+    let mut latest_cargo_anonymous = Value::Null;
+    let mut latest_cargo_outsider = Value::Null;
+    let mut found = false;
+
+    for _ in 0..30 {
+        let (management_member_status, management_member_body) = search_packages_with_options(
+            &app,
+            Some(&bob_jwt),
+            search_token,
+            SearchPackagesRequestOptions {
+                ecosystem: Some("cargo"),
+                ..SearchPackagesRequestOptions::default()
+            },
+        )
+        .await;
+        assert_eq!(
+            management_member_status,
+            StatusCode::OK,
+            "unexpected member management search response: {management_member_body}"
+        );
+
+        let (management_anonymous_status, management_anonymous_body) =
+            search_packages_with_options(
+                &app,
+                None,
+                search_token,
+                SearchPackagesRequestOptions {
+                    ecosystem: Some("cargo"),
+                    ..SearchPackagesRequestOptions::default()
+                },
+            )
+            .await;
+        assert_eq!(
+            management_anonymous_status,
+            StatusCode::OK,
+            "unexpected anonymous management search response: {management_anonymous_body}"
+        );
+
+        let (management_outsider_status, management_outsider_body) = search_packages_with_options(
+            &app,
+            Some(&carol_jwt),
+            search_token,
+            SearchPackagesRequestOptions {
+                ecosystem: Some("cargo"),
+                ..SearchPackagesRequestOptions::default()
+            },
+        )
+        .await;
+        assert_eq!(
+            management_outsider_status,
+            StatusCode::OK,
+            "unexpected outsider management search response: {management_outsider_body}"
+        );
+
+        let (cargo_member_status, cargo_member_body) =
+            search_cargo_crates(&app, Some(&bob_jwt), search_token, 10).await;
+        assert_eq!(
+            cargo_member_status,
+            StatusCode::OK,
+            "unexpected member cargo search response: {cargo_member_body}"
+        );
+
+        let (cargo_anonymous_status, cargo_anonymous_body) =
+            search_cargo_crates(&app, None, search_token, 10).await;
+        assert_eq!(
+            cargo_anonymous_status,
+            StatusCode::OK,
+            "unexpected anonymous cargo search response: {cargo_anonymous_body}"
+        );
+
+        let (cargo_outsider_status, cargo_outsider_body) =
+            search_cargo_crates(&app, Some(&carol_jwt), search_token, 10).await;
+        assert_eq!(
+            cargo_outsider_status,
+            StatusCode::OK,
+            "unexpected outsider cargo search response: {cargo_outsider_body}"
+        );
+
+        let management_member_names = management_member_body["packages"]
+            .as_array()
+            .expect("member management packages should be an array")
+            .iter()
+            .filter_map(|item| item["name"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+        let management_anonymous_names = management_anonymous_body["packages"]
+            .as_array()
+            .expect("anonymous management packages should be an array")
+            .iter()
+            .filter_map(|item| item["name"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+        let management_outsider_names = management_outsider_body["packages"]
+            .as_array()
+            .expect("outsider management packages should be an array")
+            .iter()
+            .filter_map(|item| item["name"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+
+        let cargo_member_names = cargo_member_body["crates"]
+            .as_array()
+            .expect("member cargo crates should be an array")
+            .iter()
+            .filter_map(|item| item["name"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+        let cargo_anonymous_names = cargo_anonymous_body["crates"]
+            .as_array()
+            .expect("anonymous cargo crates should be an array")
+            .iter()
+            .filter_map(|item| item["name"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+        let cargo_outsider_names = cargo_outsider_body["crates"]
+            .as_array()
+            .expect("outsider cargo crates should be an array")
+            .iter()
+            .filter_map(|item| item["name"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+
+        latest_management_member = management_member_body;
+        latest_management_anonymous = management_anonymous_body;
+        latest_management_outsider = management_outsider_body;
+        latest_cargo_member = cargo_member_body;
+        latest_cargo_anonymous = cargo_anonymous_body;
+        latest_cargo_outsider = cargo_outsider_body;
+
+        if management_member_names == expected_member_names
+            && management_anonymous_names == expected_anonymous_names
+            && management_outsider_names == expected_anonymous_names
+            && cargo_member_names == expected_member_names
+            && cargo_anonymous_names == expected_anonymous_names
+            && cargo_outsider_names == expected_anonymous_names
+            && latest_management_member["total"] == 5
+            && latest_management_anonymous["total"] == 1
+            && latest_management_outsider["total"] == 1
+            && latest_cargo_member["meta"]["total"] == 5
+            && latest_cargo_anonymous["meta"]["total"] == 1
+            && latest_cargo_outsider["meta"]["total"] == 1
+        {
+            found = true;
+            break;
+        }
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    assert!(
+        found,
+        "Cargo search did not converge to expected visibility results.\nmanagement member={latest_management_member}\nmanagement anonymous={latest_management_anonymous}\nmanagement outsider={latest_management_outsider}\ncargo member={latest_cargo_member}\ncargo anonymous={latest_cargo_anonymous}\ncargo outsider={latest_cargo_outsider}"
+    );
+
+    let (status, body) = search_cargo_crates(&app, Some(&bob_jwt), search_token, 2).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected paged Cargo search response: {body}"
+    );
+    assert_eq!(body["meta"]["total"], 5);
+    assert_eq!(
+        body["crates"]
+            .as_array()
+            .expect("paged cargo crates should be an array")
+            .len(),
+        2
+    );
+    for item in body["crates"]
+        .as_array()
+        .expect("paged cargo crates should be an array")
+    {
+        assert_eq!(item["max_version"], "0.1.0");
+    }
+}
+
+#[sqlx::test(migrations = "../../migrations")]
 async fn test_search_surfaces_include_private_packages_visible_through_team_grants(pool: PgPool) {
     if !is_search_backend_available() {
         eprintln!(
@@ -11423,11 +12866,9 @@ async fn test_search_surfaces_include_private_packages_visible_through_team_gran
     let expected_bob_names = std::collections::BTreeSet::from([
         "delegated-public-search-widget".to_owned(),
         "delegated-package-search-widget".to_owned(),
-    ]);
-    let expected_carol_names = std::collections::BTreeSet::from([
-        "delegated-public-search-widget".to_owned(),
         "delegated-repository-search-widget".to_owned(),
     ]);
+    let expected_carol_names = expected_bob_names.clone();
 
     let mut latest_management_bob = Value::Null;
     let mut latest_management_carol = Value::Null;
@@ -11562,6 +13003,12 @@ async fn test_search_surfaces_include_private_packages_visible_through_team_gran
             && npm_bob_names == expected_bob_names
             && npm_carol_names == expected_carol_names
             && npm_anonymous_names == expected_anonymous_names
+            && latest_management_bob["total"] == 3
+            && latest_management_carol["total"] == 3
+            && latest_management_anonymous["total"] == 1
+            && latest_npm_bob["total"] == 3
+            && latest_npm_carol["total"] == 3
+            && latest_npm_anonymous["total"] == 1
         {
             found = true;
             break;
@@ -11573,6 +13020,411 @@ async fn test_search_surfaces_include_private_packages_visible_through_team_gran
     assert!(
         found,
         "delegated search visibility did not converge.\nmanagement bob: {latest_management_bob}\nmanagement carol: {latest_management_carol}\nmanagement anonymous: {latest_management_anonymous}\nnpm bob: {latest_npm_bob}\nnpm carol: {latest_npm_carol}\nnpm anonymous: {latest_npm_anonymous}"
+    );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_cargo_search_surfaces_private_crates_visible_through_team_grants(pool: PgPool) {
+    if !is_search_backend_available() {
+        eprintln!(
+            "Skipping delegated Cargo search visibility verification because the search backend is unavailable."
+        );
+        return;
+    }
+
+    let app = app(pool);
+    register_user(
+        &app,
+        "alice",
+        "alice-delegated-cargo-search@test.dev",
+        "super_secret_pw!",
+    )
+    .await;
+    register_user(
+        &app,
+        "bob",
+        "bob-delegated-cargo-search@test.dev",
+        "super_secret_pw!",
+    )
+    .await;
+    register_user(
+        &app,
+        "carol",
+        "carol-delegated-cargo-search@test.dev",
+        "super_secret_pw!",
+    )
+    .await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+    let carol_jwt = login_user(&app, "carol", "super_secret_pw!").await;
+    let (status, org_body) = create_org(
+        &app,
+        &alice_jwt,
+        "Delegated Cargo Search Org",
+        "delegated-cargo-search-org",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id = org_body["id"].as_str().expect("org id should be present");
+
+    let (status, _) = add_org_member(
+        &app,
+        &alice_jwt,
+        "delegated-cargo-search-org",
+        "bob",
+        "viewer",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = add_org_member(
+        &app,
+        &alice_jwt,
+        "delegated-cargo-search-org",
+        "carol",
+        "viewer",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    for (name, slug, visibility) in [
+        (
+            "Delegated Cargo Public",
+            "delegated-cargo-public-search",
+            "public",
+        ),
+        (
+            "Delegated Cargo Package Private",
+            "delegated-cargo-package-private",
+            "private",
+        ),
+        (
+            "Delegated Cargo Repository Private",
+            "delegated-cargo-repository-private",
+            "private",
+        ),
+    ] {
+        let (status, body) = create_repository_with_options(
+            &app,
+            &alice_jwt,
+            name,
+            slug,
+            Some(org_id),
+            Some("public"),
+            Some(visibility),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected repository response: {body}"
+        );
+    }
+
+    let (status, token_body) = create_personal_access_token(
+        &app,
+        &alice_jwt,
+        "delegated-cargo-search",
+        &["packages:write"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
+    let cargo_token = token_body["token"]
+        .as_str()
+        .expect("cargo token should be returned")
+        .to_owned();
+
+    let search_token = "delegatedcargosearchomega";
+    for (name, repository_slug, visibility, descriptor) in [
+        (
+            "delegated-cargo-public-search-widget",
+            "delegated-cargo-public-search",
+            Some("public"),
+            "public",
+        ),
+        (
+            "delegated-cargo-package-search-widget",
+            "delegated-cargo-package-private",
+            Some("private"),
+            "package-granted",
+        ),
+        (
+            "delegated-cargo-repository-search-widget",
+            "delegated-cargo-repository-private",
+            Some("private"),
+            "repository-granted",
+        ),
+    ] {
+        let (status, body) = create_package_with_options(
+            &app,
+            &alice_jwt,
+            "cargo",
+            name,
+            repository_slug,
+            visibility,
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected package response: {body}"
+        );
+
+        let crate_bytes = format!("{name}-crate");
+        let payload = build_cargo_publish_payload(
+            json!({
+                "name": name,
+                "vers": "0.1.0",
+                "deps": [],
+                "features": {},
+                "authors": ["Alice <alice@test.dev>"],
+                "description": format!("{search_token} {descriptor}"),
+                "license": "MIT"
+            }),
+            crate_bytes.as_bytes(),
+        );
+
+        let (status, publish_body) = publish_cargo_crate(&app, &cargo_token, payload).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "unexpected cargo publish response: {publish_body}"
+        );
+    }
+
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "delegated-cargo-search-org",
+        "Cargo Package Readers",
+        "cargo-package-readers",
+        Some("Can search private crates granted directly."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "delegated-cargo-search-org",
+        "Cargo Repository Readers",
+        "cargo-repository-readers",
+        Some("Can search private crates granted via repository access."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = add_team_member_to_team(
+        &app,
+        &alice_jwt,
+        "delegated-cargo-search-org",
+        "cargo-package-readers",
+        "bob",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = add_team_member_to_team(
+        &app,
+        &alice_jwt,
+        "delegated-cargo-search-org",
+        "cargo-repository-readers",
+        "carol",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, grant_body) = grant_team_package_access(
+        &app,
+        &alice_jwt,
+        "delegated-cargo-search-org",
+        "cargo-package-readers",
+        "cargo",
+        "delegated-cargo-package-search-widget",
+        &["read_private"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team package access response: {grant_body}"
+    );
+
+    let (status, grant_body) = grant_team_repository_access(
+        &app,
+        &alice_jwt,
+        "delegated-cargo-search-org",
+        "cargo-repository-readers",
+        "delegated-cargo-repository-private",
+        &["read_private"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team repository access response: {grant_body}"
+    );
+
+    let expected_anonymous_names =
+        std::collections::BTreeSet::from(["delegated-cargo-public-search-widget".to_owned()]);
+    let expected_bob_names = std::collections::BTreeSet::from([
+        "delegated-cargo-public-search-widget".to_owned(),
+        "delegated-cargo-package-search-widget".to_owned(),
+        "delegated-cargo-repository-search-widget".to_owned(),
+    ]);
+    let expected_carol_names = expected_bob_names.clone();
+
+    let mut latest_management_bob = Value::Null;
+    let mut latest_management_carol = Value::Null;
+    let mut latest_management_anonymous = Value::Null;
+    let mut latest_cargo_bob = Value::Null;
+    let mut latest_cargo_carol = Value::Null;
+    let mut latest_cargo_anonymous = Value::Null;
+    let mut found = false;
+
+    for _ in 0..30 {
+        let (management_bob_status, management_bob_body) = search_packages_with_options(
+            &app,
+            Some(&bob_jwt),
+            search_token,
+            SearchPackagesRequestOptions {
+                ecosystem: Some("cargo"),
+                ..SearchPackagesRequestOptions::default()
+            },
+        )
+        .await;
+        assert_eq!(
+            management_bob_status,
+            StatusCode::OK,
+            "unexpected bob management search response: {management_bob_body}"
+        );
+
+        let (management_carol_status, management_carol_body) = search_packages_with_options(
+            &app,
+            Some(&carol_jwt),
+            search_token,
+            SearchPackagesRequestOptions {
+                ecosystem: Some("cargo"),
+                ..SearchPackagesRequestOptions::default()
+            },
+        )
+        .await;
+        assert_eq!(
+            management_carol_status,
+            StatusCode::OK,
+            "unexpected carol management search response: {management_carol_body}"
+        );
+
+        let (management_anonymous_status, management_anonymous_body) =
+            search_packages_with_options(
+                &app,
+                None,
+                search_token,
+                SearchPackagesRequestOptions {
+                    ecosystem: Some("cargo"),
+                    ..SearchPackagesRequestOptions::default()
+                },
+            )
+            .await;
+        assert_eq!(
+            management_anonymous_status,
+            StatusCode::OK,
+            "unexpected anonymous management search response: {management_anonymous_body}"
+        );
+
+        let (cargo_bob_status, cargo_bob_body) =
+            search_cargo_crates(&app, Some(&bob_jwt), search_token, 10).await;
+        assert_eq!(
+            cargo_bob_status,
+            StatusCode::OK,
+            "unexpected bob cargo search response: {cargo_bob_body}"
+        );
+
+        let (cargo_carol_status, cargo_carol_body) =
+            search_cargo_crates(&app, Some(&carol_jwt), search_token, 10).await;
+        assert_eq!(
+            cargo_carol_status,
+            StatusCode::OK,
+            "unexpected carol cargo search response: {cargo_carol_body}"
+        );
+
+        let (cargo_anonymous_status, cargo_anonymous_body) =
+            search_cargo_crates(&app, None, search_token, 10).await;
+        assert_eq!(
+            cargo_anonymous_status,
+            StatusCode::OK,
+            "unexpected anonymous cargo search response: {cargo_anonymous_body}"
+        );
+
+        let management_bob_names = management_bob_body["packages"]
+            .as_array()
+            .expect("bob management packages should be an array")
+            .iter()
+            .filter_map(|item| item["name"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+        let management_carol_names = management_carol_body["packages"]
+            .as_array()
+            .expect("carol management packages should be an array")
+            .iter()
+            .filter_map(|item| item["name"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+        let management_anonymous_names = management_anonymous_body["packages"]
+            .as_array()
+            .expect("anonymous management packages should be an array")
+            .iter()
+            .filter_map(|item| item["name"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+
+        let cargo_bob_names = cargo_bob_body["crates"]
+            .as_array()
+            .expect("bob cargo crates should be an array")
+            .iter()
+            .filter_map(|item| item["name"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+        let cargo_carol_names = cargo_carol_body["crates"]
+            .as_array()
+            .expect("carol cargo crates should be an array")
+            .iter()
+            .filter_map(|item| item["name"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+        let cargo_anonymous_names = cargo_anonymous_body["crates"]
+            .as_array()
+            .expect("anonymous cargo crates should be an array")
+            .iter()
+            .filter_map(|item| item["name"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+
+        latest_management_bob = management_bob_body;
+        latest_management_carol = management_carol_body;
+        latest_management_anonymous = management_anonymous_body;
+        latest_cargo_bob = cargo_bob_body;
+        latest_cargo_carol = cargo_carol_body;
+        latest_cargo_anonymous = cargo_anonymous_body;
+
+        if management_bob_names == expected_bob_names
+            && management_carol_names == expected_carol_names
+            && management_anonymous_names == expected_anonymous_names
+            && cargo_bob_names == expected_bob_names
+            && cargo_carol_names == expected_carol_names
+            && cargo_anonymous_names == expected_anonymous_names
+            && latest_management_bob["total"] == 3
+            && latest_management_carol["total"] == 3
+            && latest_management_anonymous["total"] == 1
+            && latest_cargo_bob["meta"]["total"] == 3
+            && latest_cargo_carol["meta"]["total"] == 3
+            && latest_cargo_anonymous["meta"]["total"] == 1
+        {
+            found = true;
+            break;
+        }
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    assert!(
+        found,
+        "Delegated Cargo search did not converge.\nmanagement bob={latest_management_bob}\nmanagement carol={latest_management_carol}\nmanagement anonymous={latest_management_anonymous}\ncargo bob={latest_cargo_bob}\ncargo carol={latest_cargo_carol}\ncargo anonymous={latest_cargo_anonymous}"
     );
 }
 
@@ -11664,21 +13516,21 @@ async fn test_management_search_can_scope_results_to_one_org(pool: PgPool) {
     for (jwt, package_name, repository_slug, visibility, descriptor) in [
         (
             &alice_jwt,
-            "acme-public-org-search-widget",
+            "acme-coral-search-finder",
             "acme-public-org-search",
             Some("public"),
             "acme public",
         ),
         (
             &alice_jwt,
-            "acme-private-org-search-widget",
+            "acme-onyx-package-indexer",
             "acme-private-org-search",
             Some("private"),
             "acme private",
         ),
         (
             &carol_jwt,
-            "beta-public-org-search-widget",
+            "beta-plum-discovery-catalog",
             "beta-public-org-search",
             Some("public"),
             "beta public",
@@ -11717,11 +13569,11 @@ async fn test_management_search_can_scope_results_to_one_org(pool: PgPool) {
     }
 
     let expected_member_names = std::collections::BTreeSet::from([
-        "acme-public-org-search-widget".to_owned(),
-        "acme-private-org-search-widget".to_owned(),
+        "acme-coral-search-finder".to_owned(),
+        "acme-onyx-package-indexer".to_owned(),
     ]);
     let expected_anonymous_names =
-        std::collections::BTreeSet::from(["acme-public-org-search-widget".to_owned()]);
+        std::collections::BTreeSet::from(["acme-coral-search-finder".to_owned()]);
 
     let mut latest_member_body = Value::Null;
     let mut latest_anonymous_body = Value::Null;
@@ -12194,6 +14046,127 @@ async fn test_release_detail_surfaces_management_capability_and_visibility(pool:
         get_release_detail(&app, Some(&alice_jwt), "npm", "release-ui-widget", "1.2.3").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(owner_scanning_release["status"], "scanning");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_package_and_release_bundle_analysis_include_risk_posture(pool: PgPool) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, repository_body) = create_repository(
+        &app,
+        &alice_jwt,
+        "Alice Risk Packages",
+        "alice-risk-packages",
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "npm",
+        "risk-widget",
+        "alice-risk-packages",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let dependency_map = (0..12)
+        .map(|index| (format!("dep-{index}"), serde_json::json!("^1.0.0")))
+        .collect::<serde_json::Map<String, Value>>();
+
+    let (status, release_body) = create_release_for_package_with_payload(
+        &app,
+        &alice_jwt,
+        "npm",
+        "risk-widget",
+        json!({
+            "version": "1.2.3",
+            "provenance": {
+                "dependencies": dependency_map,
+                "scripts": {
+                    "postinstall": "node scripts/postinstall.js"
+                },
+                "gypfile": true
+            }
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected release response: {release_body}"
+    );
+
+    let release_id = get_release_id(&pool, "npm", "risk-widget", "1.2.3").await;
+    sqlx::query(
+        "INSERT INTO security_findings (release_id, kind, severity, title, description, advisory_id) \
+         VALUES ($1, $2::finding_kind, $3::security_severity, $4, $5, $6)",
+    )
+    .bind(release_id)
+    .bind("vulnerability")
+    .bind("high")
+    .bind("Prototype pollution")
+    .bind("User-controlled merge input can pollute object prototypes.")
+    .bind("CVE-2026-0001")
+    .execute(&pool)
+    .await
+    .expect("security finding should insert");
+
+    let expected_risk = json!({
+        "score": 54,
+        "level": "high",
+        "unresolved_finding_count": 1,
+        "worst_unresolved_severity": "high",
+        "factors": [
+            "1 unresolved security finding (worst severity: high)",
+            "1 install lifecycle script runs during install",
+            "Native build tooling is detected",
+            "12 direct dependencies increase the supply-chain surface"
+        ]
+    });
+
+    let (status, release_detail) =
+        get_release_detail(&app, Some(&alice_jwt), "npm", "risk-widget", "1.2.3").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected release detail: {release_detail}"
+    );
+    assert_eq!(
+        release_detail["bundle_analysis"]["direct_dependency_count"],
+        12
+    );
+    assert_eq!(release_detail["bundle_analysis"]["install_script_count"], 1);
+    assert_eq!(release_detail["bundle_analysis"]["has_native_code"], true);
+    assert_eq!(release_detail["bundle_analysis"]["risk"], expected_risk);
+
+    let (status, package_detail) =
+        get_package_detail(&app, Some(&alice_jwt), "npm", "risk-widget").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected package detail: {package_detail}"
+    );
+    assert_eq!(
+        package_detail["bundle_analysis"]["direct_dependency_count"],
+        12
+    );
+    assert_eq!(package_detail["bundle_analysis"]["install_script_count"], 1);
+    assert_eq!(package_detail["bundle_analysis"]["has_native_code"], true);
+    assert_eq!(package_detail["bundle_analysis"]["risk"], expected_risk);
 }
 
 #[sqlx::test(migrations = "../../migrations")]
@@ -13148,6 +15121,1660 @@ async fn test_cargo_private_sparse_index_and_download_require_authentication(poo
     assert_eq!(
         body_bytes(authenticated_download_resp).await,
         b"private-cargo-crate"
+    );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_cargo_private_sparse_index_and_download_allow_delegated_team_access(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    register_user(&app, "carol", "carol@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+    let carol_jwt = login_user(&app, "carol", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &alice_jwt, "Acme Cargo", "acme-cargo").await;
+    assert_eq!(status, StatusCode::CREATED, "{org_body}");
+    let org_id = org_body["id"]
+        .as_str()
+        .expect("organization id should be returned");
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Acme Private Cargo Packages",
+        "acme-private-cargo-packages",
+        Some(org_id),
+        Some("private"),
+        Some("private"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "cargo",
+        "secret_widget",
+        "acme-private-cargo-packages",
+        Some("private"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let (status, _) = add_org_member(&app, &alice_jwt, "acme-cargo", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = add_org_member(&app, &alice_jwt, "acme-cargo", "carol", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "acme-cargo",
+        "Crate Security",
+        "crate-security",
+        Some("Reads specific private cargo crates through package delegation."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "acme-cargo",
+        "Registry Publishers",
+        "registry-publishers",
+        Some("Reads private cargo crates through repository delegation."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) =
+        add_team_member_to_team(&app, &alice_jwt, "acme-cargo", "crate-security", "bob").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = add_team_member_to_team(
+        &app,
+        &alice_jwt,
+        "acme-cargo",
+        "registry-publishers",
+        "carol",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, grant_body) = grant_team_package_access(
+        &app,
+        &alice_jwt,
+        "acme-cargo",
+        "crate-security",
+        "cargo",
+        "secret_widget",
+        &["security_review"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team package access response: {grant_body}"
+    );
+
+    let (status, grant_body) = grant_team_repository_access(
+        &app,
+        &alice_jwt,
+        "acme-cargo",
+        "registry-publishers",
+        "acme-private-cargo-packages",
+        &["publish"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team repository access response: {grant_body}"
+    );
+
+    let (status, token_body) =
+        create_personal_access_token(&app, &alice_jwt, "cargo-private", &["packages:write"]).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
+    let cargo_token = token_body["token"]
+        .as_str()
+        .expect("cargo token should be returned")
+        .to_owned();
+
+    let payload = build_cargo_publish_payload(
+        json!({
+            "name": "secret_widget",
+            "vers": "0.1.0",
+            "deps": [],
+            "features": {},
+            "authors": ["Alice <alice@test.dev>"],
+            "description": "Private Cargo delegated-read coverage",
+            "license": "MIT"
+        }),
+        b"private-cargo-crate",
+    );
+
+    let (status, publish_body) = publish_cargo_crate(&app, &cargo_token, payload).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected cargo publish response: {publish_body}"
+    );
+
+    let anonymous_index_req = Request::builder()
+        .method(Method::GET)
+        .uri("/cargo/index/se/cr/secret_widget")
+        .body(Body::empty())
+        .unwrap();
+    let anonymous_index_resp = app.clone().oneshot(anonymous_index_req).await.unwrap();
+    assert_eq!(anonymous_index_resp.status(), StatusCode::NOT_FOUND);
+
+    let bob_index_req = Request::builder()
+        .method(Method::GET)
+        .uri("/cargo/index/se/cr/secret_widget")
+        .header(header::AUTHORIZATION, bob_jwt.as_str())
+        .body(Body::empty())
+        .unwrap();
+    let bob_index_resp = app.clone().oneshot(bob_index_req).await.unwrap();
+    assert_eq!(bob_index_resp.status(), StatusCode::OK);
+    let bob_index_body = body_text(bob_index_resp).await;
+    let bob_index_entry: Value = serde_json::from_str(
+        bob_index_body
+            .lines()
+            .next()
+            .expect("package-delegated sparse index entry should exist"),
+    )
+    .expect("package-delegated sparse index entry should be valid JSON");
+    assert_eq!(bob_index_entry["vers"], "0.1.0");
+
+    let carol_index_req = Request::builder()
+        .method(Method::GET)
+        .uri("/cargo/index/se/cr/secret_widget")
+        .header(header::AUTHORIZATION, carol_jwt.as_str())
+        .body(Body::empty())
+        .unwrap();
+    let carol_index_resp = app.clone().oneshot(carol_index_req).await.unwrap();
+    assert_eq!(carol_index_resp.status(), StatusCode::OK);
+    let carol_index_body = body_text(carol_index_resp).await;
+    let carol_index_entry: Value = serde_json::from_str(
+        carol_index_body
+            .lines()
+            .next()
+            .expect("repository-delegated sparse index entry should exist"),
+    )
+    .expect("repository-delegated sparse index entry should be valid JSON");
+    assert_eq!(carol_index_entry["vers"], "0.1.0");
+
+    let anonymous_download_req = Request::builder()
+        .method(Method::GET)
+        .uri("/cargo/api/v1/crates/secret_widget/0.1.0/download")
+        .body(Body::empty())
+        .unwrap();
+    let anonymous_download_resp = app.clone().oneshot(anonymous_download_req).await.unwrap();
+    assert_eq!(anonymous_download_resp.status(), StatusCode::NOT_FOUND);
+
+    let bob_download_req = Request::builder()
+        .method(Method::GET)
+        .uri("/cargo/api/v1/crates/secret_widget/0.1.0/download")
+        .header(header::AUTHORIZATION, bob_jwt.as_str())
+        .body(Body::empty())
+        .unwrap();
+    let bob_download_resp = app.clone().oneshot(bob_download_req).await.unwrap();
+    assert_eq!(bob_download_resp.status(), StatusCode::OK);
+    assert_eq!(body_bytes(bob_download_resp).await, b"private-cargo-crate");
+
+    let carol_download_req = Request::builder()
+        .method(Method::GET)
+        .uri("/cargo/api/v1/crates/secret_widget/0.1.0/download")
+        .header(header::AUTHORIZATION, carol_jwt.as_str())
+        .body(Body::empty())
+        .unwrap();
+    let carol_download_resp = app.clone().oneshot(carol_download_req).await.unwrap();
+    assert_eq!(carol_download_resp.status(), StatusCode::OK);
+    assert_eq!(
+        body_bytes(carol_download_resp).await,
+        b"private-cargo-crate"
+    );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_cargo_sparse_index_and_download_follow_internal_org_and_mixed_visibility_rules(
+    pool: PgPool,
+) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    register_user(&app, "carol", "carol@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+    let carol_jwt = login_user(&app, "carol", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(
+        &app,
+        &alice_jwt,
+        "Acme Cargo Visibility",
+        "acme-cargo-visibility",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id = org_body["id"]
+        .as_str()
+        .expect("organization id should be returned");
+
+    let (status, _) =
+        add_org_member(&app, &alice_jwt, "acme-cargo-visibility", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, token_body) = create_personal_access_token(
+        &app,
+        &alice_jwt,
+        "cargo-visibility-matrix",
+        &["packages:write"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
+    let cargo_token = token_body["token"]
+        .as_str()
+        .expect("cargo token should be returned")
+        .to_owned();
+
+    struct VisibilityCase<'a> {
+        repository_name: &'a str,
+        repository_slug: &'a str,
+        repository_kind: &'a str,
+        repository_visibility: &'a str,
+        package_name: &'a str,
+        package_visibility: &'a str,
+        crate_bytes: &'a [u8],
+        anonymous_can_read: bool,
+        outsider_can_read: bool,
+    }
+
+    let cases = [
+        VisibilityCase {
+            repository_name: "Cargo Internal Org Packages",
+            repository_slug: "cargo-internal-org-packages",
+            repository_kind: "private",
+            repository_visibility: "internal_org",
+            package_name: "secret_internal_org_widget",
+            package_visibility: "internal_org",
+            crate_bytes: b"cargo-internal-org-widget",
+            anonymous_can_read: false,
+            outsider_can_read: false,
+        },
+        VisibilityCase {
+            repository_name: "Cargo Public Repository",
+            repository_slug: "cargo-public-packages",
+            repository_kind: "public",
+            repository_visibility: "public",
+            package_name: "secret_private_public_widget",
+            package_visibility: "private",
+            crate_bytes: b"cargo-private-package-public-repo",
+            anonymous_can_read: false,
+            outsider_can_read: false,
+        },
+        VisibilityCase {
+            repository_name: "Cargo Internal Private Packages",
+            repository_slug: "cargo-internal-private-packages",
+            repository_kind: "private",
+            repository_visibility: "internal_org",
+            package_name: "secret_private_internal_widget",
+            package_visibility: "private",
+            crate_bytes: b"cargo-private-package-internal-repo",
+            anonymous_can_read: false,
+            outsider_can_read: false,
+        },
+    ];
+
+    for case in cases {
+        let (status, repository_body) = create_repository_with_options(
+            &app,
+            &alice_jwt,
+            case.repository_name,
+            case.repository_slug,
+            Some(org_id),
+            Some(case.repository_kind),
+            Some(case.repository_visibility),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected repository response for {}: {repository_body}",
+            case.package_name
+        );
+
+        let (status, package_body) = create_package_with_options(
+            &app,
+            &alice_jwt,
+            "cargo",
+            case.package_name,
+            case.repository_slug,
+            Some(case.package_visibility),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected package response for {}: {package_body}",
+            case.package_name
+        );
+
+        let payload = build_cargo_publish_payload(
+            json!({
+                "name": case.package_name,
+                "vers": "0.1.0",
+                "deps": [],
+                "features": {},
+                "authors": ["Alice <alice@test.dev>"],
+                "description": format!("Cargo visibility matrix coverage for {}", case.package_name),
+                "license": "MIT"
+            }),
+            case.crate_bytes,
+        );
+
+        let (status, publish_body) = publish_cargo_crate(&app, &cargo_token, payload).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "unexpected cargo publish response for {}: {publish_body}",
+            case.package_name
+        );
+
+        let anonymous_index_resp = get_cargo_sparse_index(&app, None, case.package_name).await;
+        if case.anonymous_can_read {
+            assert_eq!(
+                anonymous_index_resp.status(),
+                StatusCode::OK,
+                "anonymous sparse index response should be readable for {}",
+                case.package_name
+            );
+            let anonymous_index_body = body_text(anonymous_index_resp).await;
+            let anonymous_index_entry: Value = serde_json::from_str(
+                anonymous_index_body
+                    .lines()
+                    .next()
+                    .expect("sparse index entry should exist"),
+            )
+            .expect("sparse index entry should be valid JSON");
+            assert_eq!(anonymous_index_entry["name"], case.package_name);
+        } else {
+            assert_eq!(
+                anonymous_index_resp.status(),
+                StatusCode::NOT_FOUND,
+                "anonymous sparse index response should be hidden for {}",
+                case.package_name
+            );
+        }
+
+        let member_index_resp =
+            get_cargo_sparse_index(&app, Some(&bob_jwt), case.package_name).await;
+        assert_eq!(
+            member_index_resp.status(),
+            StatusCode::OK,
+            "organization member should read sparse index for {}",
+            case.package_name
+        );
+        assert_eq!(
+            member_index_resp
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("text/plain")
+        );
+        let member_index_body = body_text(member_index_resp).await;
+        let member_index_entry: Value = serde_json::from_str(
+            member_index_body
+                .lines()
+                .next()
+                .expect("sparse index entry should exist"),
+        )
+        .expect("sparse index entry should be valid JSON");
+        assert_eq!(member_index_entry["name"], case.package_name);
+        assert_eq!(member_index_entry["vers"], "0.1.0");
+
+        let outsider_index_resp =
+            get_cargo_sparse_index(&app, Some(&carol_jwt), case.package_name).await;
+        if case.outsider_can_read {
+            assert_eq!(
+                outsider_index_resp.status(),
+                StatusCode::OK,
+                "non-member sparse index response should be readable for {}",
+                case.package_name
+            );
+        } else {
+            assert_eq!(
+                outsider_index_resp.status(),
+                StatusCode::NOT_FOUND,
+                "non-member sparse index response should be hidden for {}",
+                case.package_name
+            );
+        }
+
+        let anonymous_download_resp =
+            download_cargo_crate(&app, None, case.package_name, "0.1.0").await;
+        if case.anonymous_can_read {
+            assert_eq!(
+                anonymous_download_resp.status(),
+                StatusCode::OK,
+                "anonymous download response should be readable for {}",
+                case.package_name
+            );
+            assert_eq!(body_bytes(anonymous_download_resp).await, case.crate_bytes);
+        } else {
+            assert_eq!(
+                anonymous_download_resp.status(),
+                StatusCode::NOT_FOUND,
+                "anonymous download response should be hidden for {}",
+                case.package_name
+            );
+            let anonymous_download_body = body_json(anonymous_download_resp).await;
+            assert_eq!(
+                cargo_error_detail(&anonymous_download_body),
+                "Crate not found"
+            );
+        }
+
+        let member_download_resp =
+            download_cargo_crate(&app, Some(&bob_jwt), case.package_name, "0.1.0").await;
+        assert_eq!(
+            member_download_resp.status(),
+            StatusCode::OK,
+            "organization member should download crate bytes for {}",
+            case.package_name
+        );
+        assert_eq!(
+            member_download_resp
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("application/gzip")
+        );
+        assert_eq!(body_bytes(member_download_resp).await, case.crate_bytes);
+
+        let outsider_download_resp =
+            download_cargo_crate(&app, Some(&carol_jwt), case.package_name, "0.1.0").await;
+        if case.outsider_can_read {
+            assert_eq!(
+                outsider_download_resp.status(),
+                StatusCode::OK,
+                "non-member download response should be readable for {}",
+                case.package_name
+            );
+            assert_eq!(body_bytes(outsider_download_resp).await, case.crate_bytes);
+        } else {
+            assert_eq!(
+                outsider_download_resp.status(),
+                StatusCode::NOT_FOUND,
+                "non-member download response should be hidden for {}",
+                case.package_name
+            );
+            let outsider_download_body = body_json(outsider_download_resp).await;
+            assert_eq!(
+                cargo_error_detail(&outsider_download_body),
+                "Crate not found"
+            );
+        }
+    }
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_cargo_sparse_index_and_download_allow_delegated_reads_for_mixed_visibility_crates(
+    pool: PgPool,
+) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    register_user(&app, "carol", "carol@test.dev", "super_secret_pw!").await;
+    register_user(&app, "dave", "dave@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+    let carol_jwt = login_user(&app, "carol", "super_secret_pw!").await;
+    let dave_jwt = login_user(&app, "dave", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(
+        &app,
+        &alice_jwt,
+        "Acme Cargo Mixed Delegation",
+        "acme-cargo-mixed-delegation",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{org_body}");
+    let org_id = org_body["id"]
+        .as_str()
+        .expect("organization id should be returned");
+
+    let (status, _) = add_org_member(
+        &app,
+        &alice_jwt,
+        "acme-cargo-mixed-delegation",
+        "bob",
+        "viewer",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = add_org_member(
+        &app,
+        &alice_jwt,
+        "acme-cargo-mixed-delegation",
+        "carol",
+        "viewer",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "acme-cargo-mixed-delegation",
+        "Cargo Package Readers",
+        "cargo-package-readers",
+        Some("Reads mixed-visibility cargo crates through package delegation."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "acme-cargo-mixed-delegation",
+        "Cargo Repository Readers",
+        "cargo-repository-readers",
+        Some("Reads mixed-visibility cargo crates through repository delegation."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = add_team_member_to_team(
+        &app,
+        &alice_jwt,
+        "acme-cargo-mixed-delegation",
+        "cargo-package-readers",
+        "bob",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = add_team_member_to_team(
+        &app,
+        &alice_jwt,
+        "acme-cargo-mixed-delegation",
+        "cargo-repository-readers",
+        "carol",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, token_body) = create_personal_access_token(
+        &app,
+        &alice_jwt,
+        "cargo-mixed-delegated-read",
+        &["packages:write"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
+    let cargo_token = token_body["token"]
+        .as_str()
+        .expect("cargo token should be returned")
+        .to_owned();
+
+    #[derive(Clone, Copy)]
+    enum DelegatedGrantKind {
+        Package,
+        Repository,
+    }
+
+    struct DelegatedReadCase<'a> {
+        repository_name: &'a str,
+        repository_slug: &'a str,
+        repository_kind: &'a str,
+        repository_visibility: &'a str,
+        package_name: &'a str,
+        package_visibility: &'a str,
+        crate_bytes: &'a [u8],
+        grant_kind: DelegatedGrantKind,
+    }
+
+    let cases = [
+        DelegatedReadCase {
+            repository_name: "Cargo Public Delegated Package Read",
+            repository_slug: "cargo-public-delegated-package-read",
+            repository_kind: "public",
+            repository_visibility: "public",
+            package_name: "quartz_lockbox",
+            package_visibility: "private",
+            crate_bytes: b"quartz-lockbox-crate",
+            grant_kind: DelegatedGrantKind::Package,
+        },
+        DelegatedReadCase {
+            repository_name: "Cargo Public Delegated Repository Read",
+            repository_slug: "cargo-public-delegated-repository-read",
+            repository_kind: "public",
+            repository_visibility: "public",
+            package_name: "nebula_cipher",
+            package_visibility: "private",
+            crate_bytes: b"nebula-cipher-crate",
+            grant_kind: DelegatedGrantKind::Repository,
+        },
+        DelegatedReadCase {
+            repository_name: "Cargo Public Delegated Internal Package Read",
+            repository_slug: "cargo-public-delegated-internal-package-read",
+            repository_kind: "public",
+            repository_visibility: "public",
+            package_name: "lighthouse_archive",
+            package_visibility: "internal_org",
+            crate_bytes: b"lighthouse-archive-crate",
+            grant_kind: DelegatedGrantKind::Package,
+        },
+        DelegatedReadCase {
+            repository_name: "Cargo Internal Delegated Repository Read",
+            repository_slug: "cargo-internal-delegated-repository-read",
+            repository_kind: "private",
+            repository_visibility: "internal_org",
+            package_name: "winter_atlas",
+            package_visibility: "private",
+            crate_bytes: b"winter-atlas-crate",
+            grant_kind: DelegatedGrantKind::Repository,
+        },
+    ];
+
+    for case in cases {
+        let (status, repository_body) = create_repository_with_options(
+            &app,
+            &alice_jwt,
+            case.repository_name,
+            case.repository_slug,
+            Some(org_id),
+            Some(case.repository_kind),
+            Some(case.repository_visibility),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected repository response for {}: {repository_body}",
+            case.package_name
+        );
+
+        let (status, package_body) = create_package_with_options(
+            &app,
+            &alice_jwt,
+            "cargo",
+            case.package_name,
+            case.repository_slug,
+            Some(case.package_visibility),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected package response for {}: {package_body}",
+            case.package_name
+        );
+
+        match case.grant_kind {
+            DelegatedGrantKind::Package => {
+                let (status, grant_body) = grant_team_package_access(
+                    &app,
+                    &alice_jwt,
+                    "acme-cargo-mixed-delegation",
+                    "cargo-package-readers",
+                    "cargo",
+                    case.package_name,
+                    &["read_private"],
+                )
+                .await;
+                assert_eq!(
+                    status,
+                    StatusCode::OK,
+                    "unexpected team package access response for {}: {grant_body}",
+                    case.package_name
+                );
+            }
+            DelegatedGrantKind::Repository => {
+                let (status, grant_body) = grant_team_repository_access(
+                    &app,
+                    &alice_jwt,
+                    "acme-cargo-mixed-delegation",
+                    "cargo-repository-readers",
+                    case.repository_slug,
+                    &["read_private"],
+                )
+                .await;
+                assert_eq!(
+                    status,
+                    StatusCode::OK,
+                    "unexpected team repository access response for {}: {grant_body}",
+                    case.package_name
+                );
+            }
+        }
+
+        let payload = build_cargo_publish_payload(
+            json!({
+                "name": case.package_name,
+                "vers": "0.1.0",
+                "deps": [],
+                "features": {},
+                "authors": ["Alice <alice@test.dev>"],
+                "description": format!("Cargo mixed delegated read coverage for {}", case.package_name),
+                "license": "MIT"
+            }),
+            case.crate_bytes,
+        );
+
+        let (status, publish_body) = publish_cargo_crate(&app, &cargo_token, payload).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "unexpected cargo publish response for {}: {publish_body}",
+            case.package_name
+        );
+
+        let anonymous_index_resp = get_cargo_sparse_index(&app, None, case.package_name).await;
+        assert_eq!(
+            anonymous_index_resp.status(),
+            StatusCode::NOT_FOUND,
+            "anonymous sparse index response should stay hidden for {}",
+            case.package_name
+        );
+
+        let outsider_index_resp =
+            get_cargo_sparse_index(&app, Some(&dave_jwt), case.package_name).await;
+        assert_eq!(
+            outsider_index_resp.status(),
+            StatusCode::NOT_FOUND,
+            "authenticated outsider sparse index response should stay hidden for {}",
+            case.package_name
+        );
+
+        let granted_reader = match case.grant_kind {
+            DelegatedGrantKind::Package => bob_jwt.as_str(),
+            DelegatedGrantKind::Repository => carol_jwt.as_str(),
+        };
+
+        let delegated_index_resp =
+            get_cargo_sparse_index(&app, Some(granted_reader), case.package_name).await;
+        assert_eq!(
+            delegated_index_resp.status(),
+            StatusCode::OK,
+            "delegated sparse index response should be readable for {}",
+            case.package_name
+        );
+        assert_eq!(
+            delegated_index_resp
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("text/plain")
+        );
+        let delegated_index_body = body_text(delegated_index_resp).await;
+        let delegated_index_entry: Value = serde_json::from_str(
+            delegated_index_body
+                .lines()
+                .next()
+                .expect("delegated sparse index entry should exist"),
+        )
+        .expect("delegated sparse index entry should be valid JSON");
+        assert_eq!(delegated_index_entry["name"], case.package_name);
+        assert_eq!(delegated_index_entry["vers"], "0.1.0");
+
+        let anonymous_download_resp =
+            download_cargo_crate(&app, None, case.package_name, "0.1.0").await;
+        assert_eq!(
+            anonymous_download_resp.status(),
+            StatusCode::NOT_FOUND,
+            "anonymous download response should stay hidden for {}",
+            case.package_name
+        );
+        let anonymous_download_body = body_json(anonymous_download_resp).await;
+        assert_eq!(
+            cargo_error_detail(&anonymous_download_body),
+            "Crate not found"
+        );
+
+        let outsider_download_resp =
+            download_cargo_crate(&app, Some(&dave_jwt), case.package_name, "0.1.0").await;
+        assert_eq!(
+            outsider_download_resp.status(),
+            StatusCode::NOT_FOUND,
+            "authenticated outsider download response should stay hidden for {}",
+            case.package_name
+        );
+        let outsider_download_body = body_json(outsider_download_resp).await;
+        assert_eq!(
+            cargo_error_detail(&outsider_download_body),
+            "Crate not found"
+        );
+
+        let delegated_download_resp =
+            download_cargo_crate(&app, Some(granted_reader), case.package_name, "0.1.0").await;
+        assert_eq!(
+            delegated_download_resp.status(),
+            StatusCode::OK,
+            "delegated download response should be readable for {}",
+            case.package_name
+        );
+        assert_eq!(
+            delegated_download_resp
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("application/gzip")
+        );
+        assert_eq!(body_bytes(delegated_download_resp).await, case.crate_bytes);
+    }
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_cargo_yank_and_unyank_update_sparse_index_and_audit_log(pool: PgPool) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, repository_body) = create_repository(
+        &app,
+        &alice_jwt,
+        "Alice Cargo Packages",
+        "alice-cargo-packages",
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, token_body) =
+        create_personal_access_token(&app, &alice_jwt, "cargo-yank", &["packages:write"]).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
+    let cargo_token = token_body["token"]
+        .as_str()
+        .expect("cargo token should be returned")
+        .to_owned();
+
+    let crate_bytes = b"cargo-yankable-crate";
+    let payload = build_cargo_publish_payload(
+        json!({
+            "name": "toggle_widget",
+            "vers": "0.1.0",
+            "deps": [],
+            "features": {},
+            "authors": ["Alice <alice@test.dev>"],
+            "description": "Cargo yank and unyank coverage",
+            "license": "MIT"
+        }),
+        crate_bytes,
+    );
+
+    let (status, publish_body) = publish_cargo_crate(&app, &cargo_token, payload).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected cargo publish response: {publish_body}"
+    );
+
+    let release_id = get_release_id(&pool, "cargo", "toggle_widget", "0.1.0").await;
+
+    let (status, yank_body) =
+        yank_cargo_crate_version(&app, &cargo_token, "toggle_widget", "0.1.0").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected yank response: {yank_body}"
+    );
+    assert_eq!(yank_body, json!({ "ok": true }));
+
+    let release_state_after_yank: (String, bool) =
+        sqlx::query_as("SELECT status::text, is_yanked FROM releases WHERE id = $1")
+            .bind(release_id)
+            .fetch_one(&pool)
+            .await
+            .expect("cargo release should be queryable after yank");
+    assert_eq!(release_state_after_yank, ("yanked".to_owned(), true));
+
+    let yanked_index_req = Request::builder()
+        .method(Method::GET)
+        .uri("/cargo/index/to/gg/toggle_widget")
+        .header(header::AUTHORIZATION, cargo_token.as_str())
+        .body(Body::empty())
+        .unwrap();
+    let yanked_index_resp = app.clone().oneshot(yanked_index_req).await.unwrap();
+    assert_eq!(yanked_index_resp.status(), StatusCode::OK);
+    let yanked_index_body = body_text(yanked_index_resp).await;
+    let yanked_index_entry: Value = serde_json::from_str(
+        yanked_index_body
+            .lines()
+            .next()
+            .expect("yanked sparse index entry should exist"),
+    )
+    .expect("yanked sparse index entry should be valid JSON");
+    assert_eq!(yanked_index_entry["yanked"], true);
+
+    let yanked_download_req = Request::builder()
+        .method(Method::GET)
+        .uri("/cargo/api/v1/crates/toggle_widget/0.1.0/download")
+        .header(header::AUTHORIZATION, cargo_token.as_str())
+        .body(Body::empty())
+        .unwrap();
+    let yanked_download_resp = app.clone().oneshot(yanked_download_req).await.unwrap();
+    assert_eq!(yanked_download_resp.status(), StatusCode::OK);
+    assert_eq!(body_bytes(yanked_download_resp).await, crate_bytes);
+
+    let (status, unyank_body) =
+        unyank_cargo_crate_version(&app, &cargo_token, "toggle_widget", "0.1.0").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected unyank response: {unyank_body}"
+    );
+    assert_eq!(unyank_body, json!({ "ok": true }));
+
+    let release_state_after_unyank: (String, bool) =
+        sqlx::query_as("SELECT status::text, is_yanked FROM releases WHERE id = $1")
+            .bind(release_id)
+            .fetch_one(&pool)
+            .await
+            .expect("cargo release should be queryable after unyank");
+    assert_eq!(release_state_after_unyank, ("published".to_owned(), false));
+
+    let restored_index_req = Request::builder()
+        .method(Method::GET)
+        .uri("/cargo/index/to/gg/toggle_widget")
+        .header(header::AUTHORIZATION, cargo_token.as_str())
+        .body(Body::empty())
+        .unwrap();
+    let restored_index_resp = app.clone().oneshot(restored_index_req).await.unwrap();
+    assert_eq!(restored_index_resp.status(), StatusCode::OK);
+    let restored_index_body = body_text(restored_index_resp).await;
+    let restored_index_entry: Value = serde_json::from_str(
+        restored_index_body
+            .lines()
+            .next()
+            .expect("restored sparse index entry should exist"),
+    )
+    .expect("restored sparse index entry should be valid JSON");
+    assert_eq!(restored_index_entry["yanked"], false);
+
+    let audit_actions: Vec<String> = sqlx::query_scalar(
+        "SELECT action::text \
+         FROM audit_logs \
+         WHERE target_release_id = $1 AND action IN ('release_yank', 'release_unyank') \
+         ORDER BY occurred_at ASC",
+    )
+    .bind(release_id)
+    .fetch_all(&pool)
+    .await
+    .expect("cargo yank audit actions should be queryable");
+    assert_eq!(
+        audit_actions,
+        vec!["release_yank".to_owned(), "release_unyank".to_owned()]
+    );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_cargo_owner_endpoints_list_org_admins_and_acknowledge_mutations(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &alice_jwt, "Acme Cargo", "acme-cargo").await;
+    assert_eq!(status, StatusCode::CREATED, "{org_body}");
+    let org_id = org_body["id"]
+        .as_str()
+        .expect("organization id should be returned")
+        .to_owned();
+
+    let (status, add_member_body) =
+        add_org_member(&app, &alice_jwt, "acme-cargo", "bob", "admin").await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected member add response: {add_member_body}"
+    );
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Acme Cargo Packages",
+        "acme-cargo-packages",
+        Some(&org_id),
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "cargo",
+        "org_widget",
+        "acme-cargo-packages",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let (status, token_body) =
+        create_personal_access_token(&app, &alice_jwt, "cargo-owners", &["packages:write"]).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
+    let cargo_token = token_body["token"]
+        .as_str()
+        .expect("cargo token should be returned")
+        .to_owned();
+
+    let (status, owners_body) = list_cargo_crate_owners(&app, &cargo_token, "org_widget").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected cargo owners response: {owners_body}"
+    );
+    let owners = owners_body["users"]
+        .as_array()
+        .expect("cargo owners response should include a users array");
+    let owner_logins = owners
+        .iter()
+        .filter_map(|entry| entry["login"].as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(owner_logins, vec!["alice", "bob"]);
+
+    let (status, add_owners_body) =
+        add_cargo_crate_owners(&app, &cargo_token, "org_widget", &["carol", "dave"]).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected cargo add owners response: {add_owners_body}"
+    );
+    assert_eq!(add_owners_body["ok"], true);
+    assert!(add_owners_body["msg"]
+        .as_str()
+        .expect("cargo add owners response should include a message")
+        .contains("Requested users: [\"carol\", \"dave\"]"));
+
+    let (status, remove_owners_body) =
+        remove_cargo_crate_owners(&app, &cargo_token, "org_widget", &["alice"]).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected cargo remove owners response: {remove_owners_body}"
+    );
+    assert_eq!(remove_owners_body["ok"], true);
+    assert!(remove_owners_body["msg"]
+        .as_str()
+        .expect("cargo remove owners response should include a message")
+        .contains("Requested removal: [\"alice\"]"));
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_cargo_owner_endpoints_list_user_owner_and_acknowledge_personal_mutations(
+    pool: PgPool,
+) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, repository_body) = create_repository(
+        &app,
+        &alice_jwt,
+        "Alice Cargo Packages",
+        "alice-cargo-packages",
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "cargo",
+        "personal_widget",
+        "alice-cargo-packages",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let (status, token_body) = create_personal_access_token(
+        &app,
+        &alice_jwt,
+        "cargo-personal-owners",
+        &["packages:write"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
+    let cargo_token = token_body["token"]
+        .as_str()
+        .expect("cargo token should be returned")
+        .to_owned();
+
+    let (status, owners_body) =
+        list_cargo_crate_owners(&app, &cargo_token, "personal_widget").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected cargo owners response: {owners_body}"
+    );
+    let owner_logins = owners_body["users"]
+        .as_array()
+        .expect("cargo owners response should include a users array")
+        .iter()
+        .filter_map(|entry| entry["login"].as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(owner_logins, vec!["alice"]);
+
+    let (status, add_owners_body) =
+        add_cargo_crate_owners(&app, &cargo_token, "personal_widget", &["bob"]).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected cargo add owners response: {add_owners_body}"
+    );
+    assert_eq!(add_owners_body["ok"], true);
+    assert!(add_owners_body["msg"]
+        .as_str()
+        .expect("cargo add owners response should include a message")
+        .contains("Requested users: [\"bob\"]"));
+
+    let (status, remove_owners_body) =
+        remove_cargo_crate_owners(&app, &cargo_token, "personal_widget", &["alice"]).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected cargo remove owners response: {remove_owners_body}"
+    );
+    assert_eq!(remove_owners_body["ok"], true);
+    assert!(remove_owners_body["msg"]
+        .as_str()
+        .expect("cargo remove owners response should include a message")
+        .contains("Requested removal: [\"alice\"]"));
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_cargo_owner_endpoints_allow_org_admin_and_team_admin_writers(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    register_user(&app, "carol", "carol@test.dev", "super_secret_pw!").await;
+    register_user(&app, "dave", "dave@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+    let carol_jwt = login_user(&app, "carol", "super_secret_pw!").await;
+    let dave_jwt = login_user(&app, "dave", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &alice_jwt, "Acme Cargo", "acme-cargo").await;
+    assert_eq!(status, StatusCode::CREATED, "{org_body}");
+    let org_id = org_body["id"]
+        .as_str()
+        .expect("organization id should be returned")
+        .to_owned();
+
+    for username in ["bob", "carol", "dave"] {
+        let role = if username == "bob" { "admin" } else { "viewer" };
+        let (status, add_member_body) =
+            add_org_member(&app, &alice_jwt, "acme-cargo", username, role).await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected member add response for {username}: {add_member_body}"
+        );
+    }
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Acme Cargo Packages",
+        "acme-cargo-packages",
+        Some(&org_id),
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "cargo",
+        "delegated_owner_widget",
+        "acme-cargo-packages",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "acme-cargo",
+        "Cargo Package Admins",
+        "cargo-package-admins",
+        Some("Can manage Cargo owner compatibility requests via package grants."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "acme-cargo",
+        "Cargo Repository Admins",
+        "cargo-repository-admins",
+        Some("Can manage Cargo owner compatibility requests via repository grants."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = add_team_member_to_team(
+        &app,
+        &alice_jwt,
+        "acme-cargo",
+        "cargo-package-admins",
+        "carol",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = add_team_member_to_team(
+        &app,
+        &alice_jwt,
+        "acme-cargo",
+        "cargo-repository-admins",
+        "dave",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, grant_body) = grant_team_package_access(
+        &app,
+        &alice_jwt,
+        "acme-cargo",
+        "cargo-package-admins",
+        "cargo",
+        "delegated_owner_widget",
+        &["admin"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team package access response: {grant_body}"
+    );
+
+    let (status, grant_body) = grant_team_repository_access(
+        &app,
+        &alice_jwt,
+        "acme-cargo",
+        "cargo-repository-admins",
+        "acme-cargo-packages",
+        &["admin"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected team repository access response: {grant_body}"
+    );
+
+    let mut writer_tokens = Vec::new();
+    for (jwt, label) in [
+        (&bob_jwt, "cargo-org-admin-owners"),
+        (&carol_jwt, "cargo-team-package-admin-owners"),
+        (&dave_jwt, "cargo-team-repository-admin-owners"),
+    ] {
+        let (status, token_body) =
+            create_personal_access_token(&app, jwt, label, &["packages:write"]).await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected token response for {label}: {token_body}"
+        );
+        writer_tokens.push(
+            token_body["token"]
+                .as_str()
+                .expect("cargo token should be returned")
+                .to_owned(),
+        );
+    }
+
+    let (status, owners_body) =
+        list_cargo_crate_owners(&app, &writer_tokens[0], "delegated_owner_widget").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected cargo owners response: {owners_body}"
+    );
+    let owner_logins = owners_body["users"]
+        .as_array()
+        .expect("cargo owners response should include a users array")
+        .iter()
+        .filter_map(|entry| entry["login"].as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(owner_logins, vec!["alice", "bob"]);
+
+    for (token, label, requested_add, requested_remove) in [
+        (&writer_tokens[0], "org admin", "carol", "alice"),
+        (&writer_tokens[1], "team package admin", "dave", "bob"),
+        (&writer_tokens[2], "team repository admin", "erin", "carol"),
+    ] {
+        let (status, add_owners_body) =
+            add_cargo_crate_owners(&app, token, "delegated_owner_widget", &[requested_add]).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "unexpected cargo add owners response for {label}: {add_owners_body}"
+        );
+        assert_eq!(add_owners_body["ok"], true);
+        assert!(add_owners_body["msg"]
+            .as_str()
+            .expect("cargo add owners response should include a message")
+            .contains(&format!("Requested users: [\"{requested_add}\"]")));
+
+        let (status, remove_owners_body) =
+            remove_cargo_crate_owners(&app, token, "delegated_owner_widget", &[requested_remove])
+                .await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "unexpected cargo remove owners response for {label}: {remove_owners_body}"
+        );
+        assert_eq!(remove_owners_body["ok"], true);
+        assert!(remove_owners_body["msg"]
+            .as_str()
+            .expect("cargo remove owners response should include a message")
+            .contains(&format!("Requested removal: [\"{requested_remove}\"]")));
+    }
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_cargo_yank_and_unyank_negative_auth_scope_and_ownership_paths(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+
+    let (status, repository_body) = create_repository(
+        &app,
+        &alice_jwt,
+        "Alice Cargo Packages",
+        "alice-cargo-packages",
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, write_token_body) =
+        create_personal_access_token(&app, &alice_jwt, "cargo-write", &["packages:write"]).await;
+    assert_eq!(status, StatusCode::CREATED, "{write_token_body}");
+    let alice_cargo_token = write_token_body["token"]
+        .as_str()
+        .expect("write-scoped cargo token should be returned")
+        .to_owned();
+
+    let (status, read_only_token_body) =
+        create_personal_access_token(&app, &alice_jwt, "cargo-read-only", &["tokens:read"]).await;
+    assert_eq!(status, StatusCode::CREATED, "{read_only_token_body}");
+    let alice_read_only_token = read_only_token_body["token"]
+        .as_str()
+        .expect("read-only cargo token should be returned")
+        .to_owned();
+
+    let (status, bob_token_body) =
+        create_personal_access_token(&app, &bob_jwt, "bob-cargo-write", &["packages:write"]).await;
+    assert_eq!(status, StatusCode::CREATED, "{bob_token_body}");
+    let bob_cargo_token = bob_token_body["token"]
+        .as_str()
+        .expect("bob cargo token should be returned")
+        .to_owned();
+
+    let payload = build_cargo_publish_payload(
+        json!({
+            "name": "locked_widget",
+            "vers": "0.1.0",
+            "deps": [],
+            "features": {},
+            "authors": ["Alice <alice@test.dev>"],
+            "description": "Cargo negative-path yank coverage",
+            "license": "MIT"
+        }),
+        b"locked-cargo-crate",
+    );
+    let (status, publish_body) = publish_cargo_crate(&app, &alice_cargo_token, payload).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected cargo publish response: {publish_body}"
+    );
+
+    let missing_auth_yank_req = Request::builder()
+        .method(Method::DELETE)
+        .uri("/cargo/api/v1/crates/locked_widget/0.1.0/yank")
+        .body(Body::empty())
+        .unwrap();
+    let missing_auth_yank_resp = app.clone().oneshot(missing_auth_yank_req).await.unwrap();
+    assert_eq!(missing_auth_yank_resp.status(), StatusCode::UNAUTHORIZED);
+    let missing_auth_yank_body = body_json(missing_auth_yank_resp).await;
+    assert_eq!(
+        cargo_error_detail(&missing_auth_yank_body),
+        "Authentication required. Run `cargo login --registry <name>` to authenticate."
+    );
+
+    let (status, insufficient_scope_yank_body) =
+        yank_cargo_crate_version(&app, &alice_read_only_token, "locked_widget", "0.1.0").await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        cargo_error_detail(&insufficient_scope_yank_body),
+        "Token does not have the packages:write scope"
+    );
+
+    let (status, missing_crate_yank_body) =
+        yank_cargo_crate_version(&app, &alice_cargo_token, "missing_widget", "0.1.0").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        cargo_error_detail(&missing_crate_yank_body),
+        "Crate not found"
+    );
+
+    let (status, missing_version_unyank_body) =
+        unyank_cargo_crate_version(&app, &alice_cargo_token, "locked_widget", "9.9.9").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        cargo_error_detail(&missing_version_unyank_body),
+        "Version not found"
+    );
+
+    let (status, unauthorized_unyank_body) =
+        unyank_cargo_crate_version(&app, &bob_cargo_token, "locked_widget", "0.1.0").await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        cargo_error_detail(&unauthorized_unyank_body),
+        "You do not have permission to modify this crate"
+    );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_cargo_owner_negative_auth_scope_and_ownership_paths(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+
+    let (status, repository_body) = create_repository(
+        &app,
+        &alice_jwt,
+        "Alice Cargo Packages",
+        "alice-cargo-packages",
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "cargo",
+        "owner_locked_widget",
+        "alice-cargo-packages",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let (status, write_token_body) =
+        create_personal_access_token(&app, &alice_jwt, "cargo-owners-write", &["packages:write"])
+            .await;
+    assert_eq!(status, StatusCode::CREATED, "{write_token_body}");
+    let alice_cargo_token = write_token_body["token"]
+        .as_str()
+        .expect("write-scoped cargo token should be returned")
+        .to_owned();
+
+    let (status, read_only_token_body) =
+        create_personal_access_token(&app, &alice_jwt, "cargo-owners-read-only", &["tokens:read"])
+            .await;
+    assert_eq!(status, StatusCode::CREATED, "{read_only_token_body}");
+    let alice_read_only_token = read_only_token_body["token"]
+        .as_str()
+        .expect("read-only cargo token should be returned")
+        .to_owned();
+
+    let (status, bob_token_body) =
+        create_personal_access_token(&app, &bob_jwt, "bob-cargo-owners", &["packages:write"]).await;
+    assert_eq!(status, StatusCode::CREATED, "{bob_token_body}");
+    let bob_cargo_token = bob_token_body["token"]
+        .as_str()
+        .expect("bob cargo token should be returned")
+        .to_owned();
+
+    let missing_auth_list_req = Request::builder()
+        .method(Method::GET)
+        .uri("/cargo/api/v1/crates/owner_locked_widget/owners")
+        .body(Body::empty())
+        .unwrap();
+    let missing_auth_list_resp = app.clone().oneshot(missing_auth_list_req).await.unwrap();
+    assert_eq!(missing_auth_list_resp.status(), StatusCode::UNAUTHORIZED);
+    let missing_auth_list_body = body_json(missing_auth_list_resp).await;
+    assert_eq!(
+        cargo_error_detail(&missing_auth_list_body),
+        "Authentication required. Run `cargo login --registry <name>` to authenticate."
+    );
+
+    let (status, missing_crate_list_body) =
+        list_cargo_crate_owners(&app, &alice_cargo_token, "missing_widget").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        cargo_error_detail(&missing_crate_list_body),
+        "Crate not found"
+    );
+
+    let (status, insufficient_scope_add_body) = add_cargo_crate_owners(
+        &app,
+        &alice_read_only_token,
+        "owner_locked_widget",
+        &["carol"],
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        cargo_error_detail(&insufficient_scope_add_body),
+        "Token does not have the packages:write scope"
+    );
+
+    let (status, insufficient_scope_remove_body) = remove_cargo_crate_owners(
+        &app,
+        &alice_read_only_token,
+        "owner_locked_widget",
+        &["carol"],
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        cargo_error_detail(&insufficient_scope_remove_body),
+        "Token does not have the packages:write scope"
+    );
+
+    let (status, unauthorized_add_body) =
+        add_cargo_crate_owners(&app, &bob_cargo_token, "owner_locked_widget", &["carol"]).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        cargo_error_detail(&unauthorized_add_body),
+        "You do not have permission to modify this crate"
+    );
+
+    let (status, unauthorized_remove_body) =
+        remove_cargo_crate_owners(&app, &bob_cargo_token, "owner_locked_widget", &["alice"]).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        cargo_error_detail(&unauthorized_remove_body),
+        "You do not have permission to modify this crate"
     );
 }
 
@@ -14531,6 +18158,335 @@ async fn test_native_pypi_simple_api_omits_missing_resolver_metadata(pool: PgPoo
         "unexpected simple html response: {simple_html}"
     );
     assert!(!simple_html.contains("data-requires-python"));
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_native_pypi_public_distribution_download_returns_exact_bytes_headers_and_updates_download_count(
+    pool: PgPool,
+) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Alice PyPI Packages",
+        "alice-pypi-packages",
+        None,
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, token_body) =
+        create_personal_access_token(&app, &alice_jwt, "alice-pypi-publish", &["packages:write"])
+            .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
+    let pypi_token = token_body["token"]
+        .as_str()
+        .expect("pypi token should be returned")
+        .to_owned();
+
+    let package_name = "native-download-widget";
+    let artifact_bytes = b"fake-sdist-bytes-for-public-download";
+    let (status, upload_body) = upload_pypi_distribution(
+        &app,
+        &pypi_token,
+        Some("alice-pypi-packages"),
+        package_name,
+        "1.0.0",
+        artifact_bytes,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected pypi upload response: {upload_body}"
+    );
+
+    let artifact = load_pypi_distribution_fixture(&pool, package_name, "1.0.0").await;
+    let baseline_download_count = get_package_download_count(&pool, artifact.package_id).await;
+
+    let (status, headers, body) =
+        download_pypi_distribution(&app, None, artifact.artifact_id, &artifact.filename).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, artifact_bytes);
+    assert_eq!(
+        headers
+            .get(header::CONTENT_TYPE)
+            .expect("pypi download should include a content type"),
+        artifact.content_type.as_str()
+    );
+    assert_eq!(
+        headers
+            .get(header::CONTENT_LENGTH)
+            .expect("pypi download should include a content length"),
+        artifact_bytes.len().to_string().as_str()
+    );
+    assert_eq!(
+        headers
+            .get(header::CONTENT_DISPOSITION)
+            .expect("pypi download should include a content disposition"),
+        format!("attachment; filename=\"{}\"", artifact.filename).as_str()
+    );
+    assert_eq!(
+        headers
+            .get("x-checksum-sha256")
+            .expect("pypi download should include a checksum header"),
+        artifact.sha256.as_str()
+    );
+
+    let updated_download_count = get_package_download_count(&pool, artifact.package_id).await;
+    assert_eq!(updated_download_count, baseline_download_count + 1);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_native_pypi_private_distribution_download_requires_visibility_and_accepts_bearer_and_basic_auth(
+    pool: PgPool,
+) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    register_user(&app, "carol", "carol@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+    let carol_jwt = login_user(&app, "carol", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(&app, &alice_jwt, "Source Org", "source-org").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let source_org_id = org_body["id"].as_str().expect("source org id");
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Source Python Packages",
+        "source-py-packages",
+        Some(source_org_id),
+        Some("private"),
+        Some("private"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, _) = add_org_member(&app, &alice_jwt, "source-org", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, alice_token_body) =
+        create_personal_access_token(&app, &alice_jwt, "alice-pypi-publish", &["packages:write"])
+            .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected alice token response: {alice_token_body}"
+    );
+    let alice_pypi_token = alice_token_body["token"]
+        .as_str()
+        .expect("alice pypi token should be returned")
+        .to_owned();
+
+    let (status, bob_token_body) =
+        create_personal_access_token(&app, &bob_jwt, "bob-pypi-download", &["packages:write"])
+            .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected bob token response: {bob_token_body}"
+    );
+    let bob_pypi_token = bob_token_body["token"]
+        .as_str()
+        .expect("bob pypi token should be returned")
+        .to_owned();
+
+    let (status, carol_token_body) =
+        create_personal_access_token(&app, &carol_jwt, "carol-pypi-download", &["packages:write"])
+            .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected carol token response: {carol_token_body}"
+    );
+    let carol_pypi_token = carol_token_body["token"]
+        .as_str()
+        .expect("carol pypi token should be returned")
+        .to_owned();
+
+    let package_name = "native-private-download-widget";
+    let artifact_bytes = b"fake-sdist-bytes-for-private-download";
+    let (status, upload_body) = upload_pypi_distribution(
+        &app,
+        &alice_pypi_token,
+        Some("source-py-packages"),
+        package_name,
+        "1.0.0",
+        artifact_bytes,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected pypi upload response: {upload_body}"
+    );
+
+    let artifact = load_pypi_distribution_fixture(&pool, package_name, "1.0.0").await;
+
+    let (status, _, _) =
+        download_pypi_distribution(&app, None, artifact.artifact_id, &artifact.filename).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let carol_bearer_auth = format!("Bearer {carol_pypi_token}");
+    let (status, _, _) = download_pypi_distribution(
+        &app,
+        Some(&carol_bearer_auth),
+        artifact.artifact_id,
+        &artifact.filename,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let bob_bearer_auth = format!("Bearer {bob_pypi_token}");
+    let (status, headers, body) = download_pypi_distribution(
+        &app,
+        Some(&bob_bearer_auth),
+        artifact.artifact_id,
+        &artifact.filename,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, artifact_bytes);
+    assert_eq!(
+        headers
+            .get(header::CONTENT_TYPE)
+            .expect("private pypi download should include a content type"),
+        artifact.content_type.as_str()
+    );
+
+    let bob_basic_auth = pypi_basic_token_auth(&bob_pypi_token);
+    let (status, basic_headers, basic_body) = download_pypi_distribution(
+        &app,
+        Some(&bob_basic_auth),
+        artifact.artifact_id,
+        &artifact.filename,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(basic_body, artifact_bytes);
+    assert_eq!(
+        basic_headers
+            .get("x-checksum-sha256")
+            .expect("basic-auth pypi download should include a checksum header"),
+        artifact.sha256.as_str()
+    );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_native_pypi_distribution_download_hides_quarantine_files_until_release_is_published(
+    pool: PgPool,
+) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Alice PyPI Packages",
+        "alice-pypi-packages",
+        None,
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let package_name = "native-quarantine-download-widget";
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "pypi",
+        package_name,
+        "alice-pypi-packages",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let (status, release_body) =
+        create_release_for_package(&app, &alice_jwt, "pypi", package_name, "1.0.0").await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected release response: {release_body}"
+    );
+
+    let artifact_bytes = b"fake-sdist-bytes-hidden-until-published";
+    let (status, upload_body) = upload_release_artifact(
+        &app,
+        &alice_jwt,
+        "pypi",
+        package_name,
+        "1.0.0",
+        "native-quarantine-download-widget-1.0.0.tar.gz",
+        "sdist",
+        "application/gzip",
+        artifact_bytes,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected upload response: {upload_body}"
+    );
+
+    let artifact = load_pypi_distribution_fixture(&pool, package_name, "1.0.0").await;
+
+    let (status, _, _) =
+        download_pypi_distribution(&app, None, artifact.artifact_id, &artifact.filename).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let owner_bearer_auth = format!("Bearer {alice_jwt}");
+    let (status, _, _) = download_pypi_distribution(
+        &app,
+        Some(&owner_bearer_auth),
+        artifact.artifact_id,
+        &artifact.filename,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    promote_release_to_published(&pool, "pypi", package_name, "1.0.0").await;
+
+    let (status, headers, body) =
+        download_pypi_distribution(&app, None, artifact.artifact_id, &artifact.filename).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, artifact_bytes);
+    assert_eq!(
+        headers
+            .get("x-checksum-sha256")
+            .expect("published pypi download should include a checksum header"),
+        artifact.sha256.as_str()
+    );
 }
 
 #[sqlx::test(migrations = "../../migrations")]
@@ -17737,6 +21693,735 @@ async fn test_native_nuget_push_unlist_and_relist_roundtrip(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = "../../migrations")]
+async fn test_native_nuget_direct_reads_allow_delegated_package_and_repository_access(
+    pool: PgPool,
+) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    register_user(&app, "carol", "carol@test.dev", "super_secret_pw!").await;
+    register_user(&app, "dave", "dave@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+    let carol_jwt = login_user(&app, "carol", "super_secret_pw!").await;
+    let dave_jwt = login_user(&app, "dave", "super_secret_pw!").await;
+
+    let (status, org_body) = create_org(
+        &app,
+        &alice_jwt,
+        "Acme NuGet Direct Delegation",
+        "acme-nuget-direct-delegation",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{org_body}");
+    let org_id = org_body["id"]
+        .as_str()
+        .expect("organization id should be returned");
+
+    let (status, _) = add_org_member(
+        &app,
+        &alice_jwt,
+        "acme-nuget-direct-delegation",
+        "bob",
+        "viewer",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = add_org_member(
+        &app,
+        &alice_jwt,
+        "acme-nuget-direct-delegation",
+        "carol",
+        "viewer",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "acme-nuget-direct-delegation",
+        "NuGet Package Readers",
+        "nuget-package-readers",
+        Some("Reads private NuGet packages through package delegation."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "acme-nuget-direct-delegation",
+        "NuGet Repository Readers",
+        "nuget-repository-readers",
+        Some("Reads private NuGet packages through repository delegation."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = add_team_member_to_team(
+        &app,
+        &alice_jwt,
+        "acme-nuget-direct-delegation",
+        "nuget-package-readers",
+        "bob",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = add_team_member_to_team(
+        &app,
+        &alice_jwt,
+        "acme-nuget-direct-delegation",
+        "nuget-repository-readers",
+        "carol",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, token_body) = create_personal_access_token(
+        &app,
+        &alice_jwt,
+        "nuget-direct-delegated-read",
+        &["packages:write"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
+    let nuget_token = token_body["token"]
+        .as_str()
+        .expect("nuget token should be returned")
+        .to_owned();
+
+    #[derive(Clone, Copy)]
+    enum DelegatedGrantKind {
+        Package,
+        Repository,
+    }
+
+    struct DelegatedNuGetReadCase<'a> {
+        repository_name: &'a str,
+        repository_slug: &'a str,
+        repository_kind: &'a str,
+        repository_visibility: &'a str,
+        package_id: &'a str,
+        package_visibility: &'a str,
+        grant_kind: DelegatedGrantKind,
+    }
+
+    let cases = [
+        DelegatedNuGetReadCase {
+            repository_name: "NuGet Delegated Package Reads",
+            repository_slug: "nuget-delegated-package-reads",
+            repository_kind: "public",
+            repository_visibility: "public",
+            package_id: "Delegated.Package.Reads",
+            package_visibility: "private",
+            grant_kind: DelegatedGrantKind::Package,
+        },
+        DelegatedNuGetReadCase {
+            repository_name: "NuGet Delegated Repository Reads",
+            repository_slug: "nuget-delegated-repository-reads",
+            repository_kind: "private",
+            repository_visibility: "internal_org",
+            package_id: "Delegated.Repository.Reads",
+            package_visibility: "private",
+            grant_kind: DelegatedGrantKind::Repository,
+        },
+    ];
+
+    for case in cases {
+        let (status, repository_body) = create_repository_with_options(
+            &app,
+            &alice_jwt,
+            case.repository_name,
+            case.repository_slug,
+            Some(org_id),
+            Some(case.repository_kind),
+            Some(case.repository_visibility),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected repository response for {}: {repository_body}",
+            case.package_id
+        );
+
+        let (status, package_body) = create_package_with_options(
+            &app,
+            &alice_jwt,
+            "nuget",
+            case.package_id,
+            case.repository_slug,
+            Some(case.package_visibility),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected package response for {}: {package_body}",
+            case.package_id
+        );
+
+        match case.grant_kind {
+            DelegatedGrantKind::Package => {
+                let (status, grant_body) = grant_team_package_access(
+                    &app,
+                    &alice_jwt,
+                    "acme-nuget-direct-delegation",
+                    "nuget-package-readers",
+                    "nuget",
+                    case.package_id,
+                    &["read_private"],
+                )
+                .await;
+                assert_eq!(
+                    status,
+                    StatusCode::OK,
+                    "unexpected team package access response for {}: {grant_body}",
+                    case.package_id
+                );
+            }
+            DelegatedGrantKind::Repository => {
+                let (status, grant_body) = grant_team_repository_access(
+                    &app,
+                    &alice_jwt,
+                    "acme-nuget-direct-delegation",
+                    "nuget-repository-readers",
+                    case.repository_slug,
+                    &["read_private"],
+                )
+                .await;
+                assert_eq!(
+                    status,
+                    StatusCode::OK,
+                    "unexpected team repository access response for {}: {grant_body}",
+                    case.package_id
+                );
+            }
+        }
+
+        let nupkg_bytes = build_nuget_package(case.package_id, "1.0.0");
+        let (status, push_body) =
+            push_nuget_package(&app, &nuget_token, case.package_id, "1.0.0", &nupkg_bytes).await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected NuGet push response for {}: {push_body}",
+            case.package_id
+        );
+
+        let normalized_id = case.package_id.to_ascii_lowercase();
+        let granted_reader = match case.grant_kind {
+            DelegatedGrantKind::Package => bob_jwt.as_str(),
+            DelegatedGrantKind::Repository => carol_jwt.as_str(),
+        };
+
+        let (anonymous_listing_status, _) =
+            get_nuget_version_listing(&app, None, &normalized_id).await;
+        assert_eq!(
+            anonymous_listing_status,
+            StatusCode::NOT_FOUND,
+            "anonymous version listing should stay hidden for {}",
+            case.package_id
+        );
+
+        let (outsider_listing_status, _) =
+            get_nuget_version_listing(&app, Some(&dave_jwt), &normalized_id).await;
+        assert_eq!(
+            outsider_listing_status,
+            StatusCode::NOT_FOUND,
+            "outsider version listing should stay hidden for {}",
+            case.package_id
+        );
+
+        let (delegated_listing_status, delegated_listing_body) =
+            get_nuget_version_listing(&app, Some(granted_reader), &normalized_id).await;
+        assert_eq!(
+            delegated_listing_status,
+            StatusCode::OK,
+            "delegated version listing should be readable for {}: {delegated_listing_body}",
+            case.package_id
+        );
+        assert_eq!(delegated_listing_body["versions"], json!(["1.0.0"]));
+
+        let (anonymous_registration_status, _) =
+            get_nuget_registration_index(&app, None, &normalized_id).await;
+        assert_eq!(
+            anonymous_registration_status,
+            StatusCode::NOT_FOUND,
+            "anonymous registration should stay hidden for {}",
+            case.package_id
+        );
+
+        let (outsider_registration_status, _) =
+            get_nuget_registration_index(&app, Some(&dave_jwt), &normalized_id).await;
+        assert_eq!(
+            outsider_registration_status,
+            StatusCode::NOT_FOUND,
+            "outsider registration should stay hidden for {}",
+            case.package_id
+        );
+
+        let (delegated_registration_status, delegated_registration_body) =
+            get_nuget_registration_index(&app, Some(granted_reader), &normalized_id).await;
+        assert_eq!(
+            delegated_registration_status,
+            StatusCode::OK,
+            "delegated registration should be readable for {}: {delegated_registration_body}",
+            case.package_id
+        );
+        assert_eq!(
+            delegated_registration_body["items"][0]["items"][0]["catalogEntry"]["id"],
+            case.package_id
+        );
+
+        let (anonymous_download_status, _, _) =
+            download_nuget_nupkg(&app, None, &normalized_id, "1.0.0").await;
+        assert_eq!(
+            anonymous_download_status,
+            StatusCode::NOT_FOUND,
+            "anonymous download should stay hidden for {}",
+            case.package_id
+        );
+
+        let (outsider_download_status, _, _) =
+            download_nuget_nupkg(&app, Some(&dave_jwt), &normalized_id, "1.0.0").await;
+        assert_eq!(
+            outsider_download_status,
+            StatusCode::NOT_FOUND,
+            "outsider download should stay hidden for {}",
+            case.package_id
+        );
+
+        let (delegated_download_status, delegated_download_headers, delegated_download_body) =
+            download_nuget_nupkg(&app, Some(granted_reader), &normalized_id, "1.0.0").await;
+        assert_eq!(
+            delegated_download_status,
+            StatusCode::OK,
+            "delegated download should be readable for {}",
+            case.package_id
+        );
+        assert_eq!(
+            delegated_download_headers
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("application/octet-stream")
+        );
+        assert_eq!(delegated_download_body, nupkg_bytes);
+    }
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_native_nuget_search_follows_mixed_visibility_rules(pool: PgPool) {
+    if !is_search_backend_available() {
+        eprintln!(
+            "Skipping NuGet search visibility verification because the search backend is unavailable."
+        );
+        return;
+    }
+
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    register_user(&app, "carol", "carol@test.dev", "super_secret_pw!").await;
+
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+    let carol_jwt = login_user(&app, "carol", "super_secret_pw!").await;
+
+    let (status, org_body) =
+        create_org(&app, &alice_jwt, "Acme NuGet Search", "acme-nuget-search").await;
+    assert_eq!(status, StatusCode::CREATED, "{org_body}");
+    let org_id = org_body["id"]
+        .as_str()
+        .expect("organization id should be returned");
+
+    let (status, _) = add_org_member(&app, &alice_jwt, "acme-nuget-search", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, token_body) =
+        create_personal_access_token(&app, &alice_jwt, "alice-nuget-search", &["packages:write"])
+            .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
+    let nuget_token = token_body["token"]
+        .as_str()
+        .expect("nuget token should be returned")
+        .to_owned();
+
+    let search_token = "integration";
+    let cases = [
+        (
+            "NuGet Public Search Packages",
+            "nuget-public-search-packages",
+            "public",
+            "public",
+            "Orchid.Atlas",
+            "public",
+        ),
+        (
+            "NuGet Private Package Search",
+            "nuget-private-package-search",
+            "public",
+            "public",
+            "Harbor.Switch",
+            "private",
+        ),
+        (
+            "NuGet Internal Package Search",
+            "nuget-internal-package-search",
+            "public",
+            "public",
+            "Nimbus.Forge",
+            "internal_org",
+        ),
+        (
+            "NuGet Internal Repository Search",
+            "nuget-internal-repository-search",
+            "private",
+            "internal_org",
+            "Quartz.Relay",
+            "internal_org",
+        ),
+        (
+            "NuGet Unlisted Package Search",
+            "nuget-unlisted-package-search",
+            "public",
+            "public",
+            "Velvet.Ledger",
+            "unlisted",
+        ),
+    ];
+
+    for (
+        repository_name,
+        repository_slug,
+        repository_kind,
+        repository_visibility,
+        package_name,
+        package_visibility,
+    ) in cases
+    {
+        let (status, repository_body) = create_repository_with_options(
+            &app,
+            &alice_jwt,
+            repository_name,
+            repository_slug,
+            Some(org_id),
+            Some(repository_kind),
+            Some(repository_visibility),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected repository response for {package_name}: {repository_body}"
+        );
+
+        let (status, package_body) = create_package_with_options(
+            &app,
+            &alice_jwt,
+            "nuget",
+            package_name,
+            repository_slug,
+            Some(package_visibility),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected package response for {package_name}: {package_body}"
+        );
+
+        let nupkg_bytes = build_nuget_package(package_name, "1.0.0");
+        let (status, push_body) =
+            push_nuget_package(&app, &nuget_token, package_name, "1.0.0", &nupkg_bytes).await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unexpected NuGet push response for {package_name}: {push_body}"
+        );
+    }
+
+    let expected_member_names = std::collections::BTreeSet::from([
+        "Orchid.Atlas".to_owned(),
+        "Harbor.Switch".to_owned(),
+        "Nimbus.Forge".to_owned(),
+        "Quartz.Relay".to_owned(),
+    ]);
+    let expected_anonymous_names = std::collections::BTreeSet::from(["Orchid.Atlas".to_owned()]);
+
+    let mut latest_management_member = Value::Null;
+    let mut latest_management_anonymous = Value::Null;
+    let mut latest_management_outsider = Value::Null;
+    let mut latest_nuget_member = Value::Null;
+    let mut latest_nuget_anonymous = Value::Null;
+    let mut latest_nuget_outsider = Value::Null;
+    let mut found = false;
+
+    for _ in 0..30 {
+        let (management_member_status, management_member_body) = search_packages_with_options(
+            &app,
+            Some(&bob_jwt),
+            search_token,
+            SearchPackagesRequestOptions {
+                ecosystem: Some("nuget"),
+                ..SearchPackagesRequestOptions::default()
+            },
+        )
+        .await;
+        let (management_anonymous_status, management_anonymous_body) =
+            search_packages_with_options(
+                &app,
+                None,
+                search_token,
+                SearchPackagesRequestOptions {
+                    ecosystem: Some("nuget"),
+                    ..SearchPackagesRequestOptions::default()
+                },
+            )
+            .await;
+        let (management_outsider_status, management_outsider_body) = search_packages_with_options(
+            &app,
+            Some(&carol_jwt),
+            search_token,
+            SearchPackagesRequestOptions {
+                ecosystem: Some("nuget"),
+                ..SearchPackagesRequestOptions::default()
+            },
+        )
+        .await;
+
+        let (nuget_member_status, nuget_member_body) =
+            search_nuget_packages(&app, Some(&bob_jwt), search_token, 10, 0).await;
+        let (nuget_anonymous_status, nuget_anonymous_body) =
+            search_nuget_packages(&app, None, search_token, 10, 0).await;
+        let (nuget_outsider_status, nuget_outsider_body) =
+            search_nuget_packages(&app, Some(&carol_jwt), search_token, 10, 0).await;
+
+        latest_management_member = management_member_body.clone();
+        latest_management_anonymous = management_anonymous_body.clone();
+        latest_management_outsider = management_outsider_body.clone();
+        latest_nuget_member = nuget_member_body.clone();
+        latest_nuget_anonymous = nuget_anonymous_body.clone();
+        latest_nuget_outsider = nuget_outsider_body.clone();
+
+        if management_member_status != StatusCode::OK
+            || management_anonymous_status != StatusCode::OK
+            || management_outsider_status != StatusCode::OK
+            || nuget_member_status != StatusCode::OK
+            || nuget_anonymous_status != StatusCode::OK
+            || nuget_outsider_status != StatusCode::OK
+        {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            continue;
+        }
+
+        let management_member_names = management_member_body["packages"]
+            .as_array()
+            .expect("member management packages should be an array")
+            .iter()
+            .filter_map(|item| item["name"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+        let management_anonymous_names = management_anonymous_body["packages"]
+            .as_array()
+            .expect("anonymous management packages should be an array")
+            .iter()
+            .filter_map(|item| item["name"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+        let management_outsider_names = management_outsider_body["packages"]
+            .as_array()
+            .expect("outsider management packages should be an array")
+            .iter()
+            .filter_map(|item| item["name"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+
+        let nuget_member_names = nuget_member_body["data"]
+            .as_array()
+            .expect("member NuGet data should be an array")
+            .iter()
+            .filter_map(|item| item["id"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+        let nuget_anonymous_names = nuget_anonymous_body["data"]
+            .as_array()
+            .expect("anonymous NuGet data should be an array")
+            .iter()
+            .filter_map(|item| item["id"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+        let nuget_outsider_names = nuget_outsider_body["data"]
+            .as_array()
+            .expect("outsider NuGet data should be an array")
+            .iter()
+            .filter_map(|item| item["id"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+
+        if management_member_names == expected_member_names
+            && management_anonymous_names == expected_anonymous_names
+            && management_outsider_names == expected_anonymous_names
+            && nuget_member_names == expected_member_names
+            && nuget_anonymous_names == expected_anonymous_names
+            && nuget_outsider_names == expected_anonymous_names
+            && latest_management_member["total"] == 4
+            && latest_management_anonymous["total"] == 1
+            && latest_management_outsider["total"] == 1
+            && latest_nuget_member["totalHits"] == 4
+            && latest_nuget_anonymous["totalHits"] == 1
+            && latest_nuget_outsider["totalHits"] == 1
+        {
+            found = true;
+            break;
+        }
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    assert!(
+        found,
+        "NuGet search did not converge to expected visibility results.\nmanagement member={latest_management_member}\nmanagement anonymous={latest_management_anonymous}\nmanagement outsider={latest_management_outsider}\nnuget member={latest_nuget_member}\nnuget anonymous={latest_nuget_anonymous}\nnuget outsider={latest_nuget_outsider}"
+    );
+
+    let (status, paged_nuget_body) =
+        search_nuget_packages(&app, Some(&bob_jwt), search_token, 2, 1).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected paged NuGet search response: {paged_nuget_body}"
+    );
+    assert_eq!(paged_nuget_body["totalHits"], 4);
+    assert_eq!(
+        paged_nuget_body["data"]
+            .as_array()
+            .expect("paged NuGet data should be an array")
+            .len(),
+        2
+    );
+    for item in paged_nuget_body["data"]
+        .as_array()
+        .expect("paged NuGet data should be an array")
+    {
+        assert_eq!(item["version"], "1.0.0");
+    }
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_native_nuget_search_ignores_invalid_authorization_and_falls_back_to_anonymous(
+    pool: PgPool,
+) {
+    const MAX_SEARCH_CONVERGENCE_RETRIES: usize = 30;
+    const SEARCH_CONVERGENCE_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+    if !is_search_backend_available() {
+        eprintln!(
+            "Skipping NuGet invalid-auth search verification because the search backend is unavailable."
+        );
+        return;
+    }
+
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, repository_body) = create_repository(
+        &app,
+        &alice_jwt,
+        "NuGet Public Search Fallback",
+        "nuget-public-search-fallback",
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected repository response: {repository_body}"
+    );
+
+    let (status, package_body) = create_package(
+        &app,
+        &alice_jwt,
+        "nuget",
+        "Fallback.Search.Package",
+        "nuget-public-search-fallback",
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected package response: {package_body}"
+    );
+
+    let (status, token_body) = create_personal_access_token(
+        &app,
+        &alice_jwt,
+        "alice-nuget-fallback",
+        &["packages:write"],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected token response: {token_body}"
+    );
+    let nuget_token = token_body["token"]
+        .as_str()
+        .expect("nuget token should be returned")
+        .to_owned();
+
+    let nupkg_bytes = build_nuget_package("Fallback.Search.Package", "1.0.0");
+    let (status, push_body) = push_nuget_package(
+        &app,
+        &nuget_token,
+        "Fallback.Search.Package",
+        "1.0.0",
+        &nupkg_bytes,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected NuGet push response: {push_body}"
+    );
+
+    let search_token = "Fallback.Search";
+    let mut latest_anonymous_body = Value::Null;
+    let mut latest_invalid_auth_body = Value::Null;
+
+    for _ in 0..MAX_SEARCH_CONVERGENCE_RETRIES {
+        let (anonymous_status, anonymous_body) =
+            search_nuget_packages(&app, None, search_token, 10, 0).await;
+        let (invalid_auth_status, invalid_auth_body) = search_nuget_packages(
+            &app,
+            Some("definitely-not-a-valid-token"),
+            search_token,
+            10,
+            0,
+        )
+        .await;
+
+        latest_anonymous_body = anonymous_body.clone();
+        latest_invalid_auth_body = invalid_auth_body.clone();
+
+        if anonymous_status == StatusCode::OK
+            && invalid_auth_status == StatusCode::OK
+            && anonymous_body == invalid_auth_body
+        {
+            return;
+        }
+
+        tokio::time::sleep(SEARCH_CONVERGENCE_POLL_INTERVAL).await;
+    }
+
+    panic!(
+        "NuGet invalid-auth fallback did not converge.\nanonymous={latest_anonymous_body}\ninvalid_auth={latest_invalid_auth_body}"
+    );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
 async fn test_publish_release_enters_scanning_and_scan_completion_enqueues_reindex_search_job(
     pool: PgPool,
 ) {
@@ -19237,11 +23922,21 @@ async fn test_release_lifecycle_audit_sets_target_org_id_for_org_owned_packages(
     .await;
     assert_eq!(status, StatusCode::OK);
 
+    let (status, undeprecate_body) =
+        undeprecate_release_for_package(&app, &owner_jwt, "npm", "acme-release-widget", "1.0.0")
+            .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "undeprecate body: {undeprecate_body}"
+    );
+
     for action in [
         "release_publish",
         "release_yank",
         "release_unyank",
         "release_deprecate",
+        "release_undeprecate",
     ] {
         let target_org_id: Option<uuid::Uuid> = sqlx::query_scalar(
             "SELECT target_org_id FROM audit_logs \
@@ -19346,11 +24041,22 @@ async fn test_release_lifecycle_audit_leaves_target_org_id_null_for_personal_pac
     .await;
     assert_eq!(status, StatusCode::OK);
 
+    let (status, _) = undeprecate_release_for_package(
+        &app,
+        &owner_jwt,
+        "npm",
+        "personal-release-widget",
+        "1.0.0",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
     for action in [
         "release_publish",
         "release_yank",
         "release_unyank",
         "release_deprecate",
+        "release_undeprecate",
     ] {
         let target_org_id: Option<uuid::Uuid> = sqlx::query_scalar(
             "SELECT target_org_id FROM audit_logs \
@@ -19437,6 +24143,22 @@ async fn test_org_audit_includes_release_lifecycle_events_for_org_owned_packages
     .await;
     assert_eq!(status, StatusCode::OK);
 
+    let (status, _) = deprecate_release_for_package(
+        &app,
+        &owner_jwt,
+        "npm",
+        "acme-lifecycle-widget",
+        "1.0.0",
+        Some("prefer 2.0.0"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, _) =
+        undeprecate_release_for_package(&app, &owner_jwt, "npm", "acme-lifecycle-widget", "1.0.0")
+            .await;
+    assert_eq!(status, StatusCode::OK);
+
     // Also publish a personal-package release that must NOT appear in org audit.
     let (status, _) = create_repository_with_options(
         &app,
@@ -19495,6 +24217,29 @@ async fn test_org_audit_includes_release_lifecycle_events_for_org_owned_packages
     .await;
     assert_eq!(status, StatusCode::OK);
 
+    promote_release_to_published(&pool, "npm", "personal-lifecycle-widget", "1.0.0").await;
+
+    let (status, _) = deprecate_release_for_package(
+        &app,
+        &owner_jwt,
+        "npm",
+        "personal-lifecycle-widget",
+        "1.0.0",
+        Some("personal migration"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, _) = undeprecate_release_for_package(
+        &app,
+        &owner_jwt,
+        "npm",
+        "personal-lifecycle-widget",
+        "1.0.0",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
     let (status, publish_audit_body) = list_org_audit(
         &app,
         &owner_jwt,
@@ -19528,6 +24273,31 @@ async fn test_org_audit_includes_release_lifecycle_events_for_org_owned_packages
     assert_eq!(yank_logs[0]["target_org_id"].as_str(), Some(org_id));
     assert_eq!(yank_logs[0]["metadata"]["reason"], "supply chain issue");
 
+    let (status, undeprecate_audit_body) = list_org_audit(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        Some("action=release_undeprecate&per_page=20"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let undeprecate_logs = undeprecate_audit_body["logs"]
+        .as_array()
+        .expect("undeprecate audit logs response should be an array");
+    assert_eq!(
+        undeprecate_logs.len(),
+        1,
+        "response: {undeprecate_audit_body}"
+    );
+    assert_eq!(undeprecate_logs[0]["action"], "release_undeprecate");
+    assert_eq!(undeprecate_logs[0]["target_org_id"].as_str(), Some(org_id));
+    assert_eq!(
+        undeprecate_logs[0]["metadata"]["name"],
+        "acme-lifecycle-widget"
+    );
+    assert_eq!(undeprecate_logs[0]["metadata"]["version"], "1.0.0");
+    assert_eq!(undeprecate_logs[0]["metadata"]["restored_status"], "yanked");
+
     let publish_export_resp = export_org_audit_csv(
         &app,
         &owner_jwt,
@@ -19547,6 +24317,278 @@ async fn test_org_audit_includes_release_lifecycle_events_for_org_owned_packages
     assert!(publish_export_lines[1].contains(org_id));
     assert!(publish_export_body.contains("acme-lifecycle-widget"));
     assert!(!publish_export_body.contains("personal-lifecycle-widget"));
+
+    let undeprecate_export_resp = export_org_audit_csv(
+        &app,
+        &owner_jwt,
+        "acme-corp",
+        Some("action=release_undeprecate"),
+    )
+    .await;
+    assert_eq!(undeprecate_export_resp.status(), StatusCode::OK);
+    let undeprecate_export_body = body_text(undeprecate_export_resp).await;
+    let undeprecate_export_lines = undeprecate_export_body.lines().collect::<Vec<_>>();
+    assert_eq!(
+        undeprecate_export_lines.len(),
+        2,
+        "unexpected CSV export body: {undeprecate_export_body}"
+    );
+    assert!(undeprecate_export_lines[1].contains(",release_undeprecate,"));
+    assert!(undeprecate_export_lines[1].contains(org_id));
+    assert!(undeprecate_export_body.contains("acme-lifecycle-widget"));
+    assert!(undeprecate_export_body.contains("restored_status"));
+    assert!(undeprecate_export_body.contains("yanked"));
+    assert!(!undeprecate_export_body.contains("personal-lifecycle-widget"));
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_package_tag_lifecycle_supports_create_update_and_delete(pool: PgPool) {
+    let app = app(pool);
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let owner_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, _) = create_repository_with_options(
+        &app,
+        &owner_jwt,
+        "Personal Pkgs",
+        "personal-pkgs",
+        None,
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_package_with_options(
+        &app,
+        &owner_jwt,
+        "npm",
+        "taggable-widget",
+        "personal-pkgs",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) =
+        create_release_for_package(&app, &owner_jwt, "npm", "taggable-widget", "1.0.0").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) =
+        create_release_for_package(&app, &owner_jwt, "npm", "taggable-widget", "1.1.0").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, initial_tags) = list_package_tags(&app, None, "npm", "taggable-widget").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected list response: {initial_tags}"
+    );
+    assert_eq!(initial_tags["tags"], json!({}));
+
+    let (status, create_body) = upsert_package_tag(
+        &app,
+        &owner_jwt,
+        "npm",
+        "taggable-widget",
+        "latest",
+        "1.0.0",
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected create tag response: {create_body}"
+    );
+    assert_eq!(create_body["message"], "Tag updated");
+    assert_eq!(create_body["tag"], "latest");
+    assert_eq!(create_body["version"], "1.0.0");
+
+    let (status, created_tags) = list_package_tags(&app, None, "npm", "taggable-widget").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected list response: {created_tags}"
+    );
+    assert_eq!(created_tags["tags"]["latest"]["version"], "1.0.0");
+    assert!(created_tags["tags"]["latest"]["updated_at"].is_string());
+
+    let (status, update_body) = upsert_package_tag(
+        &app,
+        &owner_jwt,
+        "npm",
+        "taggable-widget",
+        "latest",
+        "1.1.0",
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected update tag response: {update_body}"
+    );
+    assert_eq!(update_body["version"], "1.1.0");
+
+    let (status, updated_tags) = list_package_tags(&app, None, "npm", "taggable-widget").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected list response: {updated_tags}"
+    );
+    assert_eq!(updated_tags["tags"]["latest"]["version"], "1.1.0");
+
+    let (status, delete_body) =
+        delete_package_tag(&app, &owner_jwt, "npm", "taggable-widget", "latest").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected delete tag response: {delete_body}"
+    );
+    assert_eq!(delete_body["message"], "Tag deleted");
+    assert_eq!(delete_body["tag"], "latest");
+
+    let (status, final_tags) = list_package_tags(&app, None, "npm", "taggable-widget").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected list response: {final_tags}"
+    );
+    assert_eq!(final_tags["tags"], json!({}));
+
+    let (status, missing_delete_body) =
+        delete_package_tag(&app, &owner_jwt, "npm", "taggable-widget", "latest").await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "unexpected delete missing tag response: {missing_delete_body}"
+    );
+    assert!(missing_delete_body["error"]
+        .as_str()
+        .expect("missing tag error should be returned")
+        .contains("Tag 'latest' not found"));
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_undeprecate_release_restores_previous_visible_status(pool: PgPool) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    let owner_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, _) = create_repository_with_options(
+        &app,
+        &owner_jwt,
+        "Personal Pkgs",
+        "personal-pkgs",
+        None,
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_package_with_options(
+        &app,
+        &owner_jwt,
+        "npm",
+        "undeprecate-widget",
+        "personal-pkgs",
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) =
+        create_release_for_package(&app, &owner_jwt, "npm", "undeprecate-widget", "1.0.0").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) =
+        create_release_for_package(&app, &owner_jwt, "npm", "undeprecate-widget", "2.0.0").await;
+    assert_eq!(status, StatusCode::CREATED);
+    promote_release_to_published(&pool, "npm", "undeprecate-widget", "1.0.0").await;
+    promote_release_to_published(&pool, "npm", "undeprecate-widget", "2.0.0").await;
+
+    let (status, _) = deprecate_release_for_package(
+        &app,
+        &owner_jwt,
+        "npm",
+        "undeprecate-widget",
+        "1.0.0",
+        Some("use 2.0.0"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, undeprecate_body) =
+        undeprecate_release_for_package(&app, &owner_jwt, "npm", "undeprecate-widget", "1.0.0")
+            .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected undeprecate response: {undeprecate_body}"
+    );
+    assert_eq!(undeprecate_body["message"], "Release undeprecated");
+    assert_eq!(undeprecate_body["status"], "published");
+
+    let (status, release_body) =
+        get_release_detail(&app, Some(&owner_jwt), "npm", "undeprecate-widget", "1.0.0").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected release detail: {release_body}"
+    );
+    assert_eq!(release_body["status"], "published");
+    assert_eq!(release_body["is_deprecated"], false);
+    assert_eq!(release_body["deprecation_message"], Value::Null);
+
+    let (status, _) = deprecate_release_for_package(
+        &app,
+        &owner_jwt,
+        "npm",
+        "undeprecate-widget",
+        "2.0.0",
+        Some("paused rollout"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = yank_release_for_package(
+        &app,
+        &owner_jwt,
+        "npm",
+        "undeprecate-widget",
+        "2.0.0",
+        Some("investigating regression"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, yanked_undeprecate_body) =
+        undeprecate_release_for_package(&app, &owner_jwt, "npm", "undeprecate-widget", "2.0.0")
+            .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected yanked undeprecate response: {yanked_undeprecate_body}"
+    );
+    assert_eq!(yanked_undeprecate_body["status"], "yanked");
+
+    let (status, yanked_release_body) =
+        get_release_detail(&app, Some(&owner_jwt), "npm", "undeprecate-widget", "2.0.0").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected yanked release detail: {yanked_release_body}"
+    );
+    assert_eq!(yanked_release_body["status"], "yanked");
+    assert_eq!(yanked_release_body["is_yanked"], true);
+    assert_eq!(yanked_release_body["is_deprecated"], false);
+    assert_eq!(yanked_release_body["deprecation_message"], Value::Null);
+
+    let (status, conflict_body) =
+        undeprecate_release_for_package(&app, &owner_jwt, "npm", "undeprecate-widget", "1.0.0")
+            .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(conflict_body["error"]
+        .as_str()
+        .expect("conflict error should be present")
+        .contains("not deprecated"));
 }
 
 #[sqlx::test(migrations = "../../migrations")]

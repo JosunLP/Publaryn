@@ -7,6 +7,7 @@ export interface PackageMetadataFormValues {
   repositoryUrl: string;
   license: string;
   keywords: string;
+  visibility: string;
 }
 
 interface NormalizedPackageMetadataValues {
@@ -16,6 +17,27 @@ interface NormalizedPackageMetadataValues {
   repositoryUrl: string | null;
   license: string | null;
   keywords: string[] | null;
+  visibility: string | null;
+}
+
+interface NormalizedPackageMetadataInputValues
+  extends Omit<NormalizedPackageMetadataValues, 'visibility'> {
+  visibility: string | null | undefined;
+}
+
+const PACKAGE_VISIBILITY_VALUES = new Set([
+  'public',
+  'private',
+  'internal_org',
+  'unlisted',
+  'quarantined',
+]);
+
+class PackageMetadataValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PackageMetadataValidationError';
+  }
 }
 
 export function createPackageMetadataFormValues(
@@ -28,12 +50,13 @@ export function createPackageMetadataFormValues(
     repositoryUrl: pkg?.repository_url ?? '',
     license: pkg?.license ?? '',
     keywords: Array.isArray(pkg?.keywords) ? pkg.keywords.join(', ') : '',
+    visibility: normalizeStoredPackageVisibility(pkg?.visibility) ?? '',
   };
 }
 
 export function normalizePackageMetadataInput(
   values: PackageMetadataFormValues
-): NormalizedPackageMetadataValues {
+): NormalizedPackageMetadataInputValues {
   return {
     description: normalizePackageMetadataText(values.description),
     readme: normalizePackageMetadataReadme(values.readme),
@@ -41,6 +64,7 @@ export function normalizePackageMetadataInput(
     repositoryUrl: normalizePackageMetadataText(values.repositoryUrl),
     license: normalizePackageMetadataText(values.license),
     keywords: normalizePackageMetadataKeywords(values.keywords),
+    visibility: normalizePackageVisibilityInput(values.visibility),
   };
 }
 
@@ -51,6 +75,8 @@ export function buildPackageMetadataUpdateInput(
   const current = normalizeCurrentPackageMetadata(pkg);
   const next = normalizePackageMetadataInput(values);
   const input: UpdatePackageInput = {};
+  const visibilityInputIsBlank =
+    typeof values.visibility === 'string' && values.visibility.trim().length === 0;
 
   if (current.description !== next.description) {
     input.description = next.description;
@@ -76,6 +102,17 @@ export function buildPackageMetadataUpdateInput(
     input.keywords = next.keywords;
   }
 
+  if (visibilityInputIsBlank) {
+    if (current.visibility !== null) {
+      input.visibility = null;
+    }
+  } else if (
+    next.visibility !== undefined &&
+    current.visibility !== next.visibility
+  ) {
+    input.visibility = next.visibility;
+  }
+
   return input;
 }
 
@@ -83,7 +120,81 @@ export function packageMetadataHasChanges(
   pkg: PackageDetail | null | undefined,
   values: PackageMetadataFormValues
 ): boolean {
-  return Object.keys(buildPackageMetadataUpdateInput(pkg, values)).length > 0;
+  try {
+    return Object.keys(buildPackageMetadataUpdateInput(pkg, values)).length > 0;
+  } catch (error) {
+    if (error instanceof PackageMetadataValidationError) {
+      return true;
+    }
+
+    throw error;
+  }
+}
+
+function createInvalidPackageVisibilityError(
+  value: string
+): PackageMetadataValidationError {
+  return new PackageMetadataValidationError(
+    `Invalid package visibility: ${value}`
+  );
+}
+
+function normalizeCurrentPackageMetadata(
+  pkg: PackageDetail | null | undefined
+): NormalizedPackageMetadataValues {
+  return {
+    description: normalizePackageMetadataText(pkg?.description),
+    readme:
+      typeof pkg?.readme === 'string' && pkg.readme.trim().length > 0
+        ? pkg.readme
+        : null,
+    homepage: normalizePackageMetadataText(pkg?.homepage),
+    repositoryUrl: normalizePackageMetadataText(pkg?.repository_url),
+    license: normalizePackageMetadataText(pkg?.license),
+    keywords: normalizeKeywordList(pkg?.keywords),
+    visibility: normalizeStoredPackageVisibility(pkg?.visibility),
+  };
+}
+
+function normalizeStoredPackageVisibility(
+  value: string | null | undefined
+): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const normalized = value.trim().toLowerCase().replace(/-/g, '_');
+  return PACKAGE_VISIBILITY_VALUES.has(normalized) ? normalized : null;
+}
+
+function normalizePackageVisibilityInput(
+  value: string | null | undefined
+): string | null | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+
+  const normalized = value.trim().toLowerCase().replace(/-/g, '_');
+  if (!normalized) {
+    return null;
+  }
+
+  if (PACKAGE_VISIBILITY_VALUES.has(normalized)) {
+    return normalized;
+  }
+
+  throw createInvalidPackageVisibilityError(value);
+}
+
+function normalizePackageMetadataText(
+  value: string | null | undefined
+): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
 }
 
 export function normalizePackageMetadataKeywords(
@@ -113,33 +224,6 @@ export function normalizePackageMetadataKeywords(
   }
 
   return normalized.length > 0 ? normalized : null;
-}
-
-function normalizeCurrentPackageMetadata(
-  pkg: PackageDetail | null | undefined
-): NormalizedPackageMetadataValues {
-  return {
-    description: normalizePackageMetadataText(pkg?.description),
-    readme:
-      typeof pkg?.readme === 'string' && pkg.readme.trim().length > 0
-        ? pkg.readme
-        : null,
-    homepage: normalizePackageMetadataText(pkg?.homepage),
-    repositoryUrl: normalizePackageMetadataText(pkg?.repository_url),
-    license: normalizePackageMetadataText(pkg?.license),
-    keywords: normalizeKeywordList(pkg?.keywords),
-  };
-}
-
-function normalizePackageMetadataText(
-  value: string | null | undefined
-): string | null {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  return trimmed ? trimmed : null;
 }
 
 function normalizePackageMetadataReadme(

@@ -54,6 +54,40 @@ interface SearchCall {
   repository: string;
 }
 
+interface AuditRequest {
+  action: string;
+  actorUserId: string;
+  occurredFrom: string;
+  occurredUntil: string;
+  page: number;
+  perPage: number;
+}
+
+interface AuditExportRequest {
+  action: string;
+  actorUserId: string;
+  occurredFrom: string;
+  occurredUntil: string;
+  page: string | null;
+  perPage: string | null;
+}
+
+interface AccessHistoryRequest {
+  page: number;
+  perPage: number;
+}
+
+interface AuditLogFixture {
+  id: string;
+  action: string;
+  actor_user_id: string;
+  actor_username: string;
+  actor_display_name: string;
+  target_org_id: string;
+  metadata: JsonRecord;
+  occurred_at: string;
+}
+
 interface FetchScenario {
   canManageInvitations: boolean;
   canManageMembers: boolean;
@@ -118,6 +152,7 @@ interface FetchScenario {
   memberRemoveCalls: string[];
   orgUpdateCalls: MutationCall[];
   ownershipTransfers: MutationCall[];
+  orgName: string;
   orgMfaRequired: boolean;
   orgMemberDirectoryIsPrivate: boolean;
   teamRepositoryAccessUpdates: MutationCall[];
@@ -128,9 +163,16 @@ interface FetchScenario {
   repositoryTransfers: MutationCall[];
   packageTransfers: MutationCall[];
   searchCalls: SearchCall[];
+  auditLogs: AuditLogFixture[];
+  auditRequests: AuditRequest[];
+  auditExportRequests: AuditExportRequest[];
+  accessHistory: JsonRecord[];
+  accessHistoryRequests: AccessHistoryRequest[];
+  accessHistoryExportRequests: string[];
 }
 
 const ORG_ID = '11111111-1111-4111-8111-111111111111';
+const AUDIT_ACTOR_USER_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const TEAM_SLUG = 'release-engineering';
 const ORG_SLUG = 'source-org';
 const TARGET_ORG_SLUG = 'target-org';
@@ -229,11 +271,58 @@ const members = [
     joined_at: '2026-04-01T00:00:00Z',
   },
   {
-    user_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    user_id: AUDIT_ACTOR_USER_ID,
     username: 'admin-user',
     display_name: 'Admin User',
     role: 'admin',
     joined_at: '2026-04-02T00:00:00Z',
+  },
+];
+
+const auditLogs = Array.from({ length: 41 }, (_, index) => {
+  const entryNumber = index + 1;
+  const suffix = String(entryNumber).padStart(3, '0');
+  const day = String((index % 28) + 1).padStart(2, '0');
+  const hour = String(index % 24).padStart(2, '0');
+
+  return {
+    id: `audit-${suffix}`,
+    action: 'team_update',
+    actor_user_id: AUDIT_ACTOR_USER_ID,
+    actor_username: 'admin-user',
+    actor_display_name: 'Admin User',
+    target_org_id: ORG_ID,
+    metadata: {
+      name: `Audit Team ${suffix}`,
+      previous_description: `Previous audit description ${suffix}`,
+      description: `Updated audit description ${suffix}`,
+    },
+    occurred_at: `2026-04-${day}T${hour}:00:00Z`,
+  } satisfies AuditLogFixture;
+});
+
+const accessHistory = [
+  {
+    id: 'access-001',
+    action: 'team_package_access_update',
+    scope: 'package',
+    event: 'updated',
+    team_slug: TEAM_SLUG,
+    team_name: 'Release Engineering',
+    target_label: 'npm · package-101',
+    target: {
+      ecosystem: 'npm',
+      name: 'package-101',
+      normalized_name: 'package-101',
+    },
+    previous_permissions: ['write_metadata'],
+    permissions: ['admin', 'publish'],
+    actor_user_id: AUDIT_ACTOR_USER_ID,
+    actor_username: 'admin-user',
+    actor_display_name: 'Admin User',
+    occurred_at: '2026-04-25T12:00:00Z',
+    summary:
+      'Changed Release Engineering access for npm · package-101 from write metadata to admin, publish.',
   },
 ];
 
@@ -245,7 +334,17 @@ mock.module('$app/stores', () => ({
 
 mock.module('$app/navigation', () => ({
   async goto(path: string | URL): Promise<void> {
-    gotoCalls.push(path.toString());
+    const nextPath = path.toString();
+    gotoCalls.push(nextPath);
+
+    const nextUrl = new URL(nextPath, 'https://example.test');
+    if (nextUrl.pathname === `/orgs/${ORG_SLUG}`) {
+      pageStore.set(
+        buildPageState(nextUrl.toString(), {
+          slug: ORG_SLUG,
+        })
+      );
+    }
   },
 }));
 
@@ -439,6 +538,7 @@ describe('route-level multi-page org dataset coverage', () => {
       expect(scenario.orgUpdateCalls[0]).toEqual({
         path: `/v1/orgs/${ORG_SLUG}`,
         body: {
+          name: 'Source Org',
           description: 'Source organization',
           website: null,
           email: null,
@@ -482,6 +582,7 @@ describe('route-level multi-page org dataset coverage', () => {
       expect(scenario.orgUpdateCalls[0]).toEqual({
         path: `/v1/orgs/${ORG_SLUG}`,
         body: {
+          name: 'Source Org',
           description: 'Source organization',
           website: null,
           email: null,
@@ -492,6 +593,119 @@ describe('route-level multi-page org dataset coverage', () => {
       expect(
         queryCheckbox(target, '#org-profile-member-directory-private').checked
       ).toBe(true);
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace saves and reloads the organization display name', async () => {
+    const scenario = createFetchScenario();
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(queryRequiredInput(target, '#org-profile-name').value).toBe(
+          'Source Org'
+        );
+      });
+
+      const nameInput = queryRequiredInput(target, '#org-profile-name');
+      const profileForm = queryRequiredForm(nameInput.closest('form'));
+      changeValue(nameInput, 'Source Registry');
+      submitForm(profileForm);
+
+      await waitFor(() => {
+        expect(scenario.orgUpdateCalls).toHaveLength(1);
+        expect(target.textContent).toContain('Organization profile updated.');
+        expect(queryRequiredInput(target, '#org-profile-name').value).toBe(
+          'Source Registry'
+        );
+      });
+
+      expect(scenario.orgUpdateCalls[0]).toEqual({
+        path: `/v1/orgs/${ORG_SLUG}`,
+        body: {
+          name: 'Source Registry',
+          description: 'Source organization',
+          website: null,
+          email: null,
+          mfa_required: false,
+          member_directory_is_private: false,
+        },
+      });
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace blocks blank organization names client-side and keeps the slug guidance visible', async () => {
+    const scenario = createFetchScenario();
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(queryRequiredInput(target, '#org-profile-name').value).toBe(
+          'Source Org'
+        );
+        expect(target.textContent).toContain(
+          'Organization slugs are part of workspace URLs'
+        );
+      }, 5_000);
+
+      const nameInput = queryRequiredInput(target, '#org-profile-name');
+      const profileForm = queryRequiredForm(nameInput.closest('form'));
+      changeValue(nameInput, '   ');
+      submitForm(profileForm);
+
+      await waitFor(() => {
+        expect(target.textContent).toContain('Organization name is required.');
+      });
+
+      expect(scenario.orgUpdateCalls).toEqual([]);
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace blocks invalid profile contact fields and keeps profile guidance visible', async () => {
+    const scenario = createFetchScenario();
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(queryRequiredInput(target, '#org-profile-name').value).toBe(
+          'Source Org'
+        );
+        expect(target.textContent).toContain(
+          'Use a full http:// or https:// URL.'
+        );
+        expect(target.textContent).toContain('Optional public contact email');
+      });
+
+      const websiteInput = queryRequiredInput(target, '#org-profile-website');
+      const emailInput = queryRequiredInput(target, '#org-profile-email');
+      const profileForm = queryRequiredForm(websiteInput.closest('form'));
+
+      changeValue(websiteInput, 'example.test');
+      submitForm(profileForm);
+
+      await waitFor(() => {
+        expect(target.textContent).toContain(
+          'Website must be a valid http:// or https:// URL.'
+        );
+      });
+      expect(scenario.orgUpdateCalls).toEqual([]);
+
+      changeValue(websiteInput, 'https://source.example.test');
+      changeValue(emailInput, 'not-an-email');
+      submitForm(profileForm);
+
+      await waitFor(() => {
+        expect(target.textContent).toContain(
+          'Email must be a valid email address.'
+        );
+      });
+      expect(scenario.orgUpdateCalls).toEqual([]);
     } finally {
       unmount();
     }
@@ -519,6 +733,264 @@ describe('route-level multi-page org dataset coverage', () => {
         expect(target.textContent).toContain(`Deleted team ${TEAM_SLUG}.`);
       });
     } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace paginates activity log across route navigation', async () => {
+    const scenario = createFetchScenario();
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(scenario.auditRequests).toEqual([
+          {
+            action: '',
+            actorUserId: '',
+            occurredFrom: '',
+            occurredUntil: '',
+            page: 1,
+            perPage: 20,
+          },
+        ]);
+        expect(target.textContent).toContain(
+          'Showing page 1 with up to 20 events.'
+        );
+        expect(target.textContent).toContain('Audit Team 001');
+        expect(target.textContent).toContain('Audit Team 020');
+        expect(target.textContent).not.toContain('Audit Team 021');
+        expect(queryButtonByText(target, '← Prev')).toBeNull();
+        expect(queryButtonByText(target, 'Next →')).not.toBeNull();
+      }, 5_000);
+
+      click(queryRequiredButtonByText(target, 'Next →'));
+
+      await waitFor(() => {
+        expect(gotoCalls.at(-1)).toBe(`/orgs/${ORG_SLUG}?page=2`);
+        expect(scenario.auditRequests.map((request) => request.page)).toEqual([
+          1, 2,
+        ]);
+        expect(target.textContent).toContain(
+          'Showing page 2 with up to 20 events.'
+        );
+        expect(target.textContent).toContain('Audit Team 021');
+        expect(target.textContent).toContain('Audit Team 040');
+        expect(target.textContent).not.toContain('Audit Team 001');
+        expect(queryButtonByText(target, '← Prev')).not.toBeNull();
+        expect(queryButtonByText(target, 'Next →')).not.toBeNull();
+      }, 5_000);
+
+      click(queryRequiredButtonByText(target, 'Next →'));
+
+      await waitFor(() => {
+        expect(gotoCalls.at(-1)).toBe(`/orgs/${ORG_SLUG}?page=3`);
+        expect(scenario.auditRequests.map((request) => request.page)).toEqual([
+          1, 2, 3,
+        ]);
+        expect(target.textContent).toContain(
+          'Showing page 3 with up to 20 events.'
+        );
+        expect(target.textContent).toContain('Audit Team 041');
+        expect(target.textContent).not.toContain('Audit Team 040');
+        expect(queryButtonByText(target, '← Prev')).not.toBeNull();
+        expect(queryButtonByText(target, 'Next →')).toBeNull();
+      }, 5_000);
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace resets activity log pagination when filters change', async () => {
+    const scenario = createFetchScenario();
+    const { target, unmount } = await mountOrgPage(scenario, '?page=2');
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain(
+          'Showing page 2 with up to 20 events.'
+        );
+        expect(scenario.auditRequests.map((request) => request.page)).toEqual([
+          2,
+        ]);
+      }, 5_000);
+
+      changeValue(
+        queryRequiredSelect(target, '#org-audit-action'),
+        'team_update'
+      );
+      changeValue(queryRequiredInput(target, '#org-audit-actor'), 'admin-user');
+      changeValue(queryRequiredInput(target, '#org-audit-from'), '2026-04-01');
+      changeValue(queryRequiredInput(target, '#org-audit-until'), '2026-04-30');
+      submitForm(
+        queryRequiredForm(
+          queryRequiredSelect(target, '#org-audit-action').closest('form')
+        )
+      );
+
+      await waitFor(() => {
+        const lastNavigation = new URL(
+          gotoCalls.at(-1) || '',
+          'https://example.test'
+        );
+        expect(lastNavigation.pathname).toBe(`/orgs/${ORG_SLUG}`);
+        expect(lastNavigation.searchParams.get('page')).toBeNull();
+        expect(lastNavigation.searchParams.get('action')).toBe('team_update');
+        expect(lastNavigation.searchParams.get('actor_user_id')).toBe(
+          AUDIT_ACTOR_USER_ID
+        );
+        expect(lastNavigation.searchParams.get('actor_username')).toBe(
+          'admin-user'
+        );
+        expect(lastNavigation.searchParams.get('occurred_from')).toBe(
+          '2026-04-01'
+        );
+        expect(lastNavigation.searchParams.get('occurred_until')).toBe(
+          '2026-04-30'
+        );
+        expect(scenario.auditRequests.at(-1)).toEqual({
+          action: 'team_update',
+          actorUserId: AUDIT_ACTOR_USER_ID,
+          occurredFrom: '2026-04-01',
+          occurredUntil: '2026-04-30',
+          page: 1,
+          perPage: 20,
+        });
+        expect(target.textContent).toContain(
+          'Showing page 1 with up to 20 events, filtered by team updated, actor @admin-user, UTC dates 2026-04-01 through 2026-04-30.'
+        );
+      }, 5_000);
+    } finally {
+      unmount();
+    }
+  });
+
+  test('org workspace exports filtered activity log without pagination parameters', async () => {
+    const scenario = createFetchScenario();
+    const originalCreateObjectURL = window.URL.createObjectURL;
+    const originalRevokeObjectURL = window.URL.revokeObjectURL;
+    const createObjectURLCalls: Blob[] = [];
+    const revokeObjectURLCalls: string[] = [];
+    const createObjectURL = (blob: Blob): string => {
+      createObjectURLCalls.push(blob);
+      return 'blob:audit-export';
+    };
+    const revokeObjectURL = (objectUrl: string): void => {
+      revokeObjectURLCalls.push(objectUrl);
+    };
+    Object.defineProperty(window.URL, 'createObjectURL', {
+      configurable: true,
+      writable: true,
+      value: createObjectURL,
+    });
+    Object.defineProperty(window.URL, 'revokeObjectURL', {
+      configurable: true,
+      writable: true,
+      value: revokeObjectURL,
+    });
+
+    const { target, unmount } = await mountOrgPage(
+      scenario,
+      `?action=team_update&actor_user_id=${AUDIT_ACTOR_USER_ID}&actor_username=admin-user&occurred_from=2026-04-01&occurred_until=2026-04-30&page=2`
+    );
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain(
+          'Showing page 2 with up to 20 events, filtered by team updated, actor @admin-user, UTC dates 2026-04-01 through 2026-04-30.'
+        );
+      }, 5_000);
+
+      click(queryRequiredButtonByText(target, 'Export CSV'));
+
+      await waitFor(() => {
+        expect(scenario.auditExportRequests).toEqual([
+          {
+            action: 'team_update',
+            actorUserId: AUDIT_ACTOR_USER_ID,
+            occurredFrom: '2026-04-01',
+            occurredUntil: '2026-04-30',
+            page: null,
+            perPage: null,
+          },
+        ]);
+        expect(createObjectURLCalls).toHaveLength(1);
+        expect(revokeObjectURLCalls).toEqual(['blob:audit-export']);
+      }, 5_000);
+    } finally {
+      Object.defineProperty(window.URL, 'createObjectURL', {
+        configurable: true,
+        writable: true,
+        value: originalCreateObjectURL,
+      });
+      Object.defineProperty(window.URL, 'revokeObjectURL', {
+        configurable: true,
+        writable: true,
+        value: originalRevokeObjectURL,
+      });
+      unmount();
+    }
+  });
+
+  test('org workspace renders and exports delegated access history', async () => {
+    const scenario = createFetchScenario();
+    const originalCreateObjectURL = window.URL.createObjectURL;
+    const originalRevokeObjectURL = window.URL.revokeObjectURL;
+    const createObjectURLCalls: Blob[] = [];
+    const revokeObjectURLCalls: string[] = [];
+    Object.defineProperty(window.URL, 'createObjectURL', {
+      configurable: true,
+      writable: true,
+      value: (blob: Blob): string => {
+        createObjectURLCalls.push(blob);
+        return 'blob:access-history-export';
+      },
+    });
+    Object.defineProperty(window.URL, 'revokeObjectURL', {
+      configurable: true,
+      writable: true,
+      value: (objectUrl: string): void => {
+        revokeObjectURLCalls.push(objectUrl);
+      },
+    });
+
+    const { target, unmount } = await mountOrgPage(scenario);
+
+    try {
+      await waitFor(() => {
+        expect(scenario.accessHistoryRequests).toEqual([
+          {
+            page: 1,
+            perPage: 8,
+          },
+        ]);
+        expect(target.textContent).toContain('Delegated access history');
+        expect(target.textContent).toContain('Package access');
+        expect(target.textContent).toContain('Updated · npm · package-101');
+        expect(target.textContent).toContain('team Release Engineering');
+        expect(target.textContent).toContain('Admin User (@admin-user)');
+        expect(target.textContent).toContain('Write Metadata → Admin, Publish');
+      }, 5_000);
+
+      click(queryRequiredButtonByText(target, 'Export access CSV'));
+
+      await waitFor(() => {
+        expect(scenario.accessHistoryExportRequests).toEqual([
+          `/v1/orgs/${ORG_SLUG}/access-history/export`,
+        ]);
+        expect(createObjectURLCalls).toHaveLength(1);
+        expect(revokeObjectURLCalls).toEqual(['blob:access-history-export']);
+      }, 5_000);
+    } finally {
+      Object.defineProperty(window.URL, 'createObjectURL', {
+        configurable: true,
+        writable: true,
+        value: originalCreateObjectURL,
+      });
+      Object.defineProperty(window.URL, 'revokeObjectURL', {
+        configurable: true,
+        writable: true,
+        value: originalRevokeObjectURL,
+      });
       unmount();
     }
   });
@@ -592,7 +1064,7 @@ describe('route-level multi-page org dataset coverage', () => {
         expect(target.textContent).toContain(`Deleted team ${TEAM_SLUG}.`);
       });
 
-      expect(target.textContent).not.toContain('Release Engineering');
+      expect(target.querySelector(`#team-${TEAM_SLUG}`)).toBeNull();
     } finally {
       unmount();
     }
@@ -2056,6 +2528,7 @@ function createFetchScenario(): FetchScenario {
     memberRemoveCalls: [],
     orgUpdateCalls: [],
     ownershipTransfers: [],
+    orgName: 'Source Org',
     orgMfaRequired: false,
     orgMemberDirectoryIsPrivate: false,
     teamRepositoryAccessUpdates: [],
@@ -2066,6 +2539,15 @@ function createFetchScenario(): FetchScenario {
     repositoryTransfers: [],
     packageTransfers: [],
     searchCalls: [],
+    auditLogs: auditLogs.map((log) => ({
+      ...log,
+      metadata: { ...log.metadata },
+    })),
+    auditRequests: [],
+    auditExportRequests: [],
+    accessHistory: accessHistory.map((entry) => ({ ...entry })),
+    accessHistoryRequests: [],
+    accessHistoryExportRequests: [],
   };
 }
 
@@ -2093,7 +2575,7 @@ async function handleApiRequest(
     return apiResponse({
       org: {
         id: ORG_ID,
-        name: 'Source Org',
+        name: scenario.orgName,
         slug: ORG_SLUG,
         description: 'Source organization',
         is_verified: true,
@@ -2367,12 +2849,43 @@ async function handleApiRequest(
   }
 
   if (method === 'GET' && requestPath === `/v1/orgs/${ORG_SLUG}/audit`) {
+    const request = readAuditRequest(url);
+    const filteredLogs = filterAuditLogs(scenario.auditLogs, request);
+    scenario.auditRequests.push(request);
+
     return apiResponse({
-      page: 1,
-      per_page: 20,
-      has_next: false,
-      logs: [],
+      page: request.page,
+      per_page: request.perPage,
+      has_next: request.page * request.perPage < filteredLogs.length,
+      logs: paginate(filteredLogs, request.page, request.perPage),
     });
+  }
+
+  if (method === 'GET' && requestPath === `/v1/orgs/${ORG_SLUG}/audit/export`) {
+    scenario.auditExportRequests.push(readAuditExportRequest(url));
+    return apiResponse('id,action\naudit-001,team_update\n');
+  }
+
+  if (
+    method === 'GET' &&
+    requestPath === `/v1/orgs/${ORG_SLUG}/access-history`
+  ) {
+    const request = readAccessHistoryRequest(url);
+    scenario.accessHistoryRequests.push(request);
+    return apiResponse({
+      page: request.page,
+      per_page: request.perPage,
+      has_next: request.page * request.perPage < scenario.accessHistory.length,
+      entries: paginate(scenario.accessHistory, request.page, request.perPage),
+    });
+  }
+
+  if (
+    method === 'GET' &&
+    requestPath === `/v1/orgs/${ORG_SLUG}/access-history/export`
+  ) {
+    scenario.accessHistoryExportRequests.push(requestPath);
+    return apiResponse('id,scope,event\naccess-001,package,updated\n');
   }
 
   if (
@@ -2413,6 +2926,10 @@ async function handleApiRequest(
 
   if (method === 'PATCH' && requestPath === `/v1/orgs/${ORG_SLUG}`) {
     scenario.orgUpdateCalls.push({ path: requestPath, body });
+    scenario.orgName =
+      typeof body.name === 'string' && body.name.trim().length > 0
+        ? body.name.trim()
+        : scenario.orgName;
     scenario.orgMfaRequired = body.mfa_required === true;
     scenario.orgMemberDirectoryIsPrivate =
       body.member_directory_is_private === true;
@@ -2581,6 +3098,59 @@ function parsePerPage(value: string | null, fallback = 100): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function readAuditRequest(url: URL): AuditRequest {
+  return {
+    action: url.searchParams.get('action') || '',
+    actorUserId: url.searchParams.get('actor_user_id') || '',
+    occurredFrom: url.searchParams.get('occurred_from') || '',
+    occurredUntil: url.searchParams.get('occurred_until') || '',
+    page: parsePage(url.searchParams.get('page')),
+    perPage: parsePerPage(url.searchParams.get('per_page'), 20),
+  };
+}
+
+function readAuditExportRequest(url: URL): AuditExportRequest {
+  return {
+    action: url.searchParams.get('action') || '',
+    actorUserId: url.searchParams.get('actor_user_id') || '',
+    occurredFrom: url.searchParams.get('occurred_from') || '',
+    occurredUntil: url.searchParams.get('occurred_until') || '',
+    page: url.searchParams.get('page'),
+    perPage: url.searchParams.get('per_page'),
+  };
+}
+
+function readAccessHistoryRequest(url: URL): AccessHistoryRequest {
+  return {
+    page: parsePage(url.searchParams.get('page')),
+    perPage: parsePerPage(url.searchParams.get('per_page'), 8),
+  };
+}
+
+function filterAuditLogs(
+  logs: AuditLogFixture[],
+  request: AuditRequest
+): AuditLogFixture[] {
+  return logs.filter((log) => {
+    if (request.action && log.action !== request.action) {
+      return false;
+    }
+    if (request.actorUserId && log.actor_user_id !== request.actorUserId) {
+      return false;
+    }
+
+    const occurredDate = log.occurred_at.slice(0, 10);
+    if (request.occurredFrom && occurredDate < request.occurredFrom) {
+      return false;
+    }
+    if (request.occurredUntil && occurredDate > request.occurredUntil) {
+      return false;
+    }
+
+    return true;
+  });
+}
+
 function apiResponse<T>(data: T): { data: T; requestId: null } {
   return {
     data,
@@ -2675,17 +3245,43 @@ function queryRequiredButton(
   return element;
 }
 
+function queryButtonByText(
+  root: ParentNode | Element,
+  text: string
+): HTMLButtonElement | null {
+  return (
+    Array.from(root.querySelectorAll('button')).find(
+      (button): button is HTMLButtonElement =>
+        button instanceof HTMLButtonElement &&
+        button.textContent?.trim() === text
+    ) || null
+  );
+}
+
+function queryRequiredButtonByText(
+  root: ParentNode | Element,
+  text: string
+): HTMLButtonElement {
+  const button = queryButtonByText(root, text);
+  if (!button) {
+    throw new Error(`Expected button with text: ${text}`);
+  }
+
+  return button;
+}
+
 function optionValues(select: HTMLSelectElement): string[] {
   return Array.from(select.options).map((option) => option.value);
 }
 
 async function mountOrgPage(
-  scenario: FetchScenario
+  scenario: FetchScenario,
+  search = ''
 ): Promise<Awaited<ReturnType<typeof renderSvelte>>> {
   currentScenario = scenario;
   currentAuthToken = 'pub_test_token';
   pageStore.set(
-    buildPageState(`https://example.test/orgs/${ORG_SLUG}`, {
+    buildPageState(`https://example.test/orgs/${ORG_SLUG}${search}`, {
       slug: ORG_SLUG,
     })
   );

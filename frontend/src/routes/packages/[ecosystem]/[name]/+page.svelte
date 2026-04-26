@@ -18,8 +18,10 @@
     TrustedPublisher,
   } from '../../../../api/packages';
   import {
+    deletePackage as archivePackage,
     createRelease,
     createTrustedPublisher as createTrustedPublisherForPackage,
+    deleteTag as deletePackageTag,
     deleteTrustedPublisher as deleteTrustedPublisherForPackage,
     deprecateRelease,
     getPackage,
@@ -30,9 +32,11 @@
     publishRelease,
     severityLevel,
     transferPackageOwnership,
+    undeprecateRelease,
     unyankRelease,
     updatePackage,
     updateSecurityFinding,
+    upsertTag as upsertPackageTag,
     yankRelease,
   } from '../../../../api/packages';
   import type { PackageDetailTab } from '../../../../pages/package-detail-tabs';
@@ -66,6 +70,18 @@
   } from '../../../../utils/format';
   import { renderMarkdown } from '../../../../utils/markdown';
   import {
+    buildBundleAnalysisHighlights,
+    buildBundleAnalysisQuickFacts,
+    buildBundleAnalysisStats,
+    bundleAnalysisNotes,
+    bundleAnalysisRisk,
+    bundleAnalysisRiskBadgeSeverity,
+    bundleAnalysisRiskFactors,
+    bundleAnalysisRiskLabel,
+    bundleAnalysisRiskScoreLabel,
+    bundleAnalysisRiskSeverityLabel,
+  } from '../../../../utils/package-analysis';
+  import {
     buildPackageMetadataUpdateInput,
     createPackageMetadataFormValues,
     packageMetadataHasChanges,
@@ -75,6 +91,10 @@
     getReleaseActionAvailability,
     getRestoreReleaseLabel,
   } from '../../../../utils/releases';
+  import {
+    REPOSITORY_VISIBILITY_OPTIONS,
+    formatRepositoryVisibilityLabel,
+  } from '../../../../utils/repositories';
   import { SECURITY_SEVERITIES } from '../../../../utils/security';
   import {
     normalizeTrustedPublisherInput,
@@ -138,12 +158,15 @@
   let teamAccessError: string | null = null;
   let packageSettingsNotice: string | null = null;
   let packageSettingsError: string | null = null;
+  let archiveNotice: string | null = null;
+  let archiveError: string | null = null;
   let trustedPublisherNotice: string | null = null;
   let trustedPublisherError: string | null = null;
   let includeResolvedFindings = false;
   let findingSearchQuery = '';
   let findingSeverityFilters: string[] = [];
   let findingFocusMode: PackageSecurityFocusMode = 'triage';
+  let requestedTab: PackageDetailTab = 'readme';
   let activeTab: PackageDetailTab = 'readme';
   let findingsNotice: string | null = null;
   let findingsError: string | null = null;
@@ -167,7 +190,16 @@
   let packageSettingsRepositoryUrl = '';
   let packageSettingsLicense = '';
   let packageSettingsKeywords = '';
+  let packageSettingsVisibility = '';
   let updatingPackageSettings = false;
+  let archiveConfirmed = false;
+  let archivingPackage = false;
+  let tagName = '';
+  let tagVersion = '';
+  let savingTag = false;
+  let deletingTagName: string | null = null;
+  let tagNotice: string | null = null;
+  let tagError: string | null = null;
 
   let trustedPublisherIssuer = '';
   let trustedPublisherSubject = '';
@@ -182,7 +214,11 @@
 
   $: ecosystem = $page.params.ecosystem ?? '';
   $: name = $page.params.name ?? '';
-  $: activeTab = getPackageDetailTabFromQuery($page.url.searchParams);
+  $: requestedTab = getPackageDetailTabFromQuery($page.url.searchParams);
+  $: activeTab =
+    requestedTab === 'settings' && pkg?.can_manage_metadata !== true
+      ? 'readme'
+      : requestedTab;
   $: packageSecurityView = getPackageSecurityViewFromQuery(
     $page.url.searchParams
   );
@@ -241,6 +277,10 @@
     teamAccessError = null;
     packageSettingsNotice = null;
     packageSettingsError = null;
+    archiveNotice = null;
+    archiveError = null;
+    tagNotice = null;
+    tagError = null;
     trustedPublisherNotice = null;
     trustedPublisherError = null;
     includeResolvedFindings = packageSecurityView.includeResolved;
@@ -250,6 +290,8 @@
     resetReleaseForm();
     resetTransferForm();
     resetPackageSettingsForm();
+    resetArchiveForm();
+    resetTagForm();
     resetTrustedPublisherForm();
 
     try {
@@ -289,11 +331,12 @@
     ]);
 
     releases = loadedReleases;
-    tags = loadedTags;
+    tags = sortTags(loadedTags);
     findings = loadedFindings;
     transferState = loadedTransferState;
     trustedPublisherState = loadedTrustedPublisherState;
     teamAccessManagementState = loadedTeamAccessManagementState;
+    resetTagForm(latestVersionForPackage(pkg));
     loading = false;
   }
 
@@ -341,6 +384,15 @@
       return;
     }
 
+    const form = event.currentTarget as HTMLFormElement;
+    if (pkg.can_manage_visibility) {
+      const submittedVisibility = form
+        ? new FormData(form).get('visibility')?.toString()
+        : null;
+      packageSettingsVisibility =
+        submittedVisibility || packageSettingsVisibility;
+    }
+
     const input = buildPackageMetadataUpdateInput(pkg, {
       description: packageSettingsDescription,
       readme: packageSettingsReadme,
@@ -348,6 +400,7 @@
       repositoryUrl: packageSettingsRepositoryUrl,
       license: packageSettingsLicense,
       keywords: packageSettingsKeywords,
+      visibility: packageSettingsVisibility,
     });
 
     if (Object.keys(input).length === 0) {
@@ -371,6 +424,41 @@
           : 'Failed to update package settings.';
     } finally {
       updatingPackageSettings = false;
+    }
+  }
+
+  async function handleArchivePackage(event: SubmitEvent): Promise<void> {
+    event.preventDefault();
+
+    if (!pkg || pkg.can_manage_metadata !== true || archivingPackage) {
+      return;
+    }
+
+    if (pkg.is_archived) {
+      archiveError = null;
+      archiveNotice = 'This package is already archived.';
+      return;
+    }
+
+    if (!archiveConfirmed) {
+      archiveError =
+        'Please confirm that you understand archiving marks this package as archived.';
+      archiveNotice = null;
+      return;
+    }
+
+    archivingPackage = true;
+    archiveError = null;
+    archiveNotice = null;
+
+    try {
+      const result = await archivePackage(ecosystem, name);
+      await loadPackagePage();
+      archiveNotice = result.message || 'Package archived';
+    } catch (caughtError: unknown) {
+      archiveError = toErrorMessage(caughtError, 'Failed to archive package.');
+    } finally {
+      archivingPackage = false;
     }
   }
 
@@ -465,7 +553,7 @@
   }
 
   async function handlePackageTabChange(tab: PackageDetailTab): Promise<void> {
-    if (tab === activeTab) {
+    if (tab === requestedTab) {
       return;
     }
 
@@ -732,6 +820,26 @@
     }
   }
 
+  async function handleReleaseListUndeprecate(release: Release): Promise<void> {
+    activeReleaseActionVersion = release.version;
+    releaseActionError = null;
+    releaseActionNotice = null;
+
+    try {
+      const result = await undeprecateRelease(ecosystem, name, release.version);
+      await loadPackagePage();
+      releaseActionNotice =
+        result.message || `Removed deprecation from ${release.version}.`;
+    } catch (caughtError: unknown) {
+      releaseActionError = toErrorMessage(
+        caughtError,
+        'Failed to remove release deprecation.'
+      );
+    } finally {
+      activeReleaseActionVersion = null;
+    }
+  }
+
   async function handleReplacePackageTeamAccess(
     event: SubmitEvent
   ): Promise<void> {
@@ -944,6 +1052,77 @@
     }
   }
 
+  async function handleSaveTag(event: SubmitEvent): Promise<void> {
+    event.preventDefault();
+
+    const resolvedTag = tagName.trim();
+    const resolvedVersion = tagVersion.trim();
+
+    if (!resolvedTag) {
+      tagError = 'Enter a tag name.';
+      tagNotice = null;
+      return;
+    }
+
+    if (!resolvedVersion) {
+      tagError = 'Select a release version to tag.';
+      tagNotice = null;
+      return;
+    }
+
+    savingTag = true;
+    tagError = null;
+    tagNotice = null;
+
+    try {
+      const result = await upsertPackageTag(ecosystem, name, resolvedTag, {
+        version: resolvedVersion,
+      });
+      tags = sortTags((await listTags(ecosystem, name)) || []);
+      tagNotice =
+        result.message ||
+        `Tag ${resolvedTag} now points to ${resolvedVersion}.`;
+      resetTagForm(resolvedVersion);
+    } catch (caughtError: unknown) {
+      tagError = toErrorMessage(caughtError, 'Failed to save tag.');
+    } finally {
+      savingTag = false;
+    }
+  }
+
+  async function handleDeleteTag(tag: Tag): Promise<void> {
+    const resolvedTag = tag.tag?.trim() || tag.name?.trim() || '';
+    if (!resolvedTag || deletingTagName) {
+      return;
+    }
+
+    const confirmed = window.confirm(`Delete tag ${resolvedTag}?`);
+    if (!confirmed) {
+      return;
+    }
+
+    deletingTagName = resolvedTag;
+    tagError = null;
+    tagNotice = null;
+
+    try {
+      const result = await deletePackageTag(ecosystem, name, resolvedTag);
+      tags = tags.filter(
+        (currentTag) =>
+          (currentTag.tag?.trim() || currentTag.name?.trim() || '') !==
+          resolvedTag
+      );
+      tagNotice = result.message || `Deleted tag ${resolvedTag}.`;
+      if (!tagName.trim()) {
+        resetTagForm(latestVersionForPackage(pkg));
+      }
+    } catch (caughtError: unknown) {
+      tagError = toErrorMessage(caughtError, 'Failed to delete tag.');
+    } finally {
+      deletingTagName = null;
+    }
+  }
+
   function resetReleaseForm(): void {
     newReleaseVersion = '';
     newReleaseDescription = '';
@@ -969,7 +1148,24 @@
     packageSettingsRepositoryUrl = values.repositoryUrl;
     packageSettingsLicense = values.license;
     packageSettingsKeywords = values.keywords;
+    packageSettingsVisibility = values.visibility;
     updatingPackageSettings = false;
+  }
+
+  function resetArchiveForm(): void {
+    archiveConfirmed = false;
+    archivingPackage = false;
+  }
+
+  function resetTagForm(preferredVersion?: string | null): void {
+    tagName = '';
+    tagVersion =
+      preferredVersion?.trim() ||
+      latestVersionForPackage(pkg) ||
+      releases[0]?.version ||
+      '';
+    savingTag = false;
+    deletingTagName = null;
   }
 
   function resetTrustedPublisherForm(): void {
@@ -988,10 +1184,10 @@
   }
 
   function latestVersionForPackage(
-    currentPackage: PackageDetail
+    currentPackage: PackageDetail | null
   ): string | null {
     return (
-      currentPackage.latest_version ??
+      currentPackage?.latest_version ??
       (releases.length > 0 ? (releases[0]?.version ?? null) : null)
     );
   }
@@ -1063,11 +1259,28 @@
     return name || slug || 'Unnamed team';
   }
 
+  function sortTags(entries: Tag[]): Tag[] {
+    return [...entries].sort((left, right) =>
+      (left.tag || left.name || '').localeCompare(right.tag || right.name || '')
+    );
+  }
+
   function toErrorMessage(error: unknown, fallback: string): string {
     return error instanceof Error && error.message ? error.message : fallback;
   }
 
   $: packageMetadata = pkg?.ecosystem_metadata ?? null;
+  $: packageBundleAnalysis = pkg?.bundle_analysis ?? null;
+  $: packageBundleRisk = bundleAnalysisRisk(packageBundleAnalysis);
+  $: packageBundleRiskFactors = bundleAnalysisRiskFactors(
+    packageBundleAnalysis
+  );
+  $: packageBundleRiskScore = bundleAnalysisRiskScoreLabel(
+    packageBundleAnalysis
+  );
+  $: packageBundleRiskWorstSeverity = bundleAnalysisRiskSeverityLabel(
+    packageBundleAnalysis
+  );
   $: canonicalPackageEcosystem = pkg?.ecosystem ?? ecosystem;
   $: normalizedFindingSearchQuery =
     normalizePackageSecuritySearchQuery(findingSearchQuery);
@@ -1137,6 +1350,7 @@
         repositoryUrl: packageSettingsRepositoryUrl,
         license: packageSettingsLicense,
         keywords: packageSettingsKeywords,
+        visibility: packageSettingsVisibility,
       })
     : false;
   $: readmeHtml = renderMarkdown(pkg?.readme);
@@ -1248,6 +1462,15 @@
               >
             {/if}
           </button>
+          {#if pkg.can_manage_metadata}
+            <button
+              class:active={activeTab === 'settings'}
+              class="tab"
+              type="button"
+              on:click={() => handlePackageTabChange('settings')}
+              >Settings</button
+            >
+          {/if}
         </div>
 
         {#if activeTab === 'readme'}
@@ -1290,11 +1513,18 @@
                   {#if release.status && release.status !== 'deprecated'}
                     <span class="badge badge-ecosystem">{release.status}</span>
                   {/if}
+                  {#if release.bundle_analysis}
+                    <div class="token-row__scopes" style="margin-top:0.5rem;">
+                      {#each buildBundleAnalysisQuickFacts(release.bundle_analysis) as fact}
+                        <span class="badge badge-ecosystem">{fact}</span>
+                      {/each}
+                    </div>
+                  {/if}
                 </div>
                 <div class="release-row__meta">
                   {formatDate(release.published_at || release.created_at)}
                 </div>
-                {#if pkg.can_manage_releases && (releaseActions.canUploadArtifact || releaseActions.canYank || releaseActions.canRestore || releaseActions.canDeprecate)}
+                {#if pkg.can_manage_releases && (releaseActions.canUploadArtifact || releaseActions.canYank || releaseActions.canRestore || releaseActions.canDeprecate || releaseActions.canUndeprecate)}
                   <div class="release-row__actions">
                     {#if releaseActions.canUploadArtifact}
                       <a
@@ -1341,6 +1571,20 @@
                         {activeReleaseActionVersion === release.version
                           ? 'Working…'
                           : 'Deprecate'}
+                      </button>
+                    {/if}
+                    {#if releaseActions.canUndeprecate}
+                      <button
+                        type="button"
+                        class="btn btn-secondary btn-sm"
+                        data-release-undeprecate={release.version}
+                        disabled={activeReleaseActionVersion ===
+                          release.version}
+                        on:click={() => handleReleaseListUndeprecate(release)}
+                      >
+                        {activeReleaseActionVersion === release.version
+                          ? 'Working…'
+                          : 'Remove deprecation'}
                       </button>
                     {/if}
                     {#if release.status?.toLowerCase() === 'quarantine'}
@@ -1630,6 +1874,236 @@
             {/each}
           {/if}
         {/if}
+
+        {#if activeTab === 'settings' && pkg.can_manage_metadata}
+          <section class="surface-card settings-section">
+            <div class="surface-card__header">
+              <h2 class="surface-card__title">Package settings</h2>
+              <p class="surface-card__copy">
+                Update package metadata that appears on the detail page and in
+                search. Leave a field blank to clear its stored value.
+              </p>
+            </div>
+
+            <div class="surface-card__body">
+              {#if packageSettingsNotice}
+                <div class="alert alert-success" style="margin-bottom:12px;">
+                  {packageSettingsNotice}
+                </div>
+              {/if}
+              {#if packageSettingsError}
+                <div class="alert alert-error" style="margin-bottom:12px;">
+                  {packageSettingsError}
+                </div>
+              {/if}
+
+              <form id="package-settings-form" on:submit={handleUpdatePackage}>
+                <div class="form-group" style="margin-bottom:12px;">
+                  <label for="package-settings-description">Description</label>
+                  <textarea
+                    bind:value={packageSettingsDescription}
+                    id="package-settings-description"
+                    name="description"
+                    class="form-input"
+                    rows="3"
+                    placeholder="Short package summary"
+                  ></textarea>
+                </div>
+
+                {#if pkg.can_manage_visibility}
+                  <div class="form-group" style="margin-bottom:12px;">
+                    <label for="package-settings-visibility">Visibility</label>
+                    <select
+                      bind:value={packageSettingsVisibility}
+                      id="package-settings-visibility"
+                      name="visibility"
+                      class="form-input"
+                    >
+                      <option value="" disabled>Select visibility</option>
+                      {#each REPOSITORY_VISIBILITY_OPTIONS as option}
+                        <option value={option.value}>{option.label}</option>
+                      {/each}
+                    </select>
+                    <p
+                      class="settings-copy"
+                      style="margin-top:6px; margin-bottom:0;"
+                    >
+                      Package visibility cannot be broader than the enclosing
+                      repository visibility. Publaryn validates that boundary
+                      when settings are saved.
+                    </p>
+                  </div>
+                {:else if pkg.visibility}
+                  <div class="form-group" style="margin-bottom:12px;">
+                    <label for="package-settings-visibility-readonly"
+                      >Visibility</label
+                    >
+                    <input
+                      id="package-settings-visibility-readonly"
+                      class="form-input"
+                      value={formatRepositoryVisibilityLabel(pkg.visibility)}
+                      disabled
+                    />
+                    <p
+                      class="settings-copy"
+                      style="margin-top:6px; margin-bottom:0;"
+                    >
+                      Package administrators can change package visibility.
+                    </p>
+                  </div>
+                {/if}
+
+                <div class="grid gap-4 xl:grid-cols-2">
+                  <div class="form-group" style="margin-bottom:12px;">
+                    <label for="package-settings-homepage">Homepage</label>
+                    <input
+                      bind:value={packageSettingsHomepage}
+                      id="package-settings-homepage"
+                      name="homepage"
+                      class="form-input"
+                      placeholder="https://example.test/project"
+                    />
+                  </div>
+
+                  <div class="form-group" style="margin-bottom:12px;">
+                    <label for="package-settings-repository-url"
+                      >Repository URL</label
+                    >
+                    <input
+                      bind:value={packageSettingsRepositoryUrl}
+                      id="package-settings-repository-url"
+                      name="repository_url"
+                      class="form-input"
+                      placeholder="https://github.com/acme/demo-widget"
+                    />
+                  </div>
+                </div>
+
+                <div class="grid gap-4 xl:grid-cols-2">
+                  <div class="form-group" style="margin-bottom:12px;">
+                    <label for="package-settings-license">License</label>
+                    <input
+                      bind:value={packageSettingsLicense}
+                      id="package-settings-license"
+                      name="license"
+                      class="form-input"
+                      placeholder="MIT"
+                    />
+                  </div>
+
+                  <div class="form-group" style="margin-bottom:12px;">
+                    <label for="package-settings-keywords">Keywords</label>
+                    <input
+                      bind:value={packageSettingsKeywords}
+                      id="package-settings-keywords"
+                      name="keywords"
+                      class="form-input"
+                      placeholder="docs, cli, api"
+                    />
+                  </div>
+                </div>
+
+                <div class="form-group" style="margin-bottom:12px;">
+                  <label for="package-settings-readme">README</label>
+                  <textarea
+                    bind:value={packageSettingsReadme}
+                    id="package-settings-readme"
+                    name="readme"
+                    class="form-input"
+                    rows="12"
+                    placeholder="# Demo Widget"
+                  ></textarea>
+                </div>
+
+                <div style="display:flex; gap:8px;">
+                  <button
+                    type="submit"
+                    class="btn btn-primary"
+                    disabled={!packageSettingsHasChanges ||
+                      updatingPackageSettings}
+                  >
+                    {updatingPackageSettings ? 'Saving…' : 'Save settings'}
+                  </button>
+                  <button
+                    type="button"
+                    class="btn btn-secondary"
+                    on:click={() => resetPackageSettingsForm(pkg)}
+                    disabled={!packageSettingsHasChanges ||
+                      updatingPackageSettings}
+                  >
+                    Reset
+                  </button>
+                </div>
+              </form>
+            </div>
+          </section>
+
+          <section class="surface-card settings-section">
+            <div class="surface-card__header">
+              <h2 class="surface-card__title">Archive package</h2>
+              <p class="surface-card__copy">
+                Archive keeps package history and audit records intact while
+                marking the package as archived in Publaryn.
+              </p>
+            </div>
+
+            <div class="surface-card__body">
+              {#if archiveNotice}
+                <div class="alert alert-success" style="margin-bottom:12px;">
+                  {archiveNotice}
+                </div>
+              {/if}
+              {#if archiveError}
+                <div class="alert alert-error" style="margin-bottom:12px;">
+                  {archiveError}
+                </div>
+              {/if}
+
+              <div class="alert alert-warning" style="margin-bottom:12px;">
+                Archiving hides this package from normal maintenance workflows,
+                but it does not remove stored releases, artifacts, or audit
+                history.
+              </div>
+
+              {#if pkg.is_archived}
+                <p class="settings-copy" style="margin-bottom:0;">
+                  This package is already archived. Authorized maintainers can
+                  still inspect package details and audit history.
+                </p>
+              {:else}
+                <form
+                  id="package-archive-form"
+                  on:submit={handleArchivePackage}
+                >
+                  <div class="form-group" style="margin-bottom:12px;">
+                    <label class="flex items-start gap-2">
+                      <input
+                        bind:checked={archiveConfirmed}
+                        type="checkbox"
+                        id="package-archive-confirm"
+                        name="confirm"
+                        required
+                        disabled={archivingPackage}
+                      />
+                      <span
+                        >I understand archiving marks this package as archived
+                        and keeps its existing releases and audit history.</span
+                      >
+                    </label>
+                  </div>
+
+                  <button
+                    type="submit"
+                    class="btn btn-danger"
+                    disabled={archivingPackage}
+                  >
+                    {archivingPackage ? 'Archiving…' : 'Archive package'}
+                  </button>
+                </form>
+              {/if}
+            </div>
+          </section>
+        {/if}
       </div>
 
       <div class="detail-sidebar">
@@ -1768,6 +2242,108 @@
           </div>
         {/if}
 
+        {#if packageBundleRisk}
+          <div class="card">
+            <div class="sidebar-section">
+              <h3>Risk posture</h3>
+              <p class="settings-copy" style="margin-bottom:12px;">
+                Heuristic supply-chain signals derived from the latest visible
+                release{packageBundleAnalysis?.source_version
+                  ? ` (${packageBundleAnalysis.source_version})`
+                  : ''}. The score combines unresolved security findings with
+                install, native-code, and dependency-surface hints.
+              </p>
+              <div class="token-row__scopes" style="margin-bottom:12px;">
+                <span
+                  class={`badge badge-severity-${bundleAnalysisRiskBadgeSeverity(
+                    packageBundleAnalysis
+                  )}`}>{bundleAnalysisRiskLabel(packageBundleAnalysis)}</span
+                >
+                {#if packageBundleRiskScore}
+                  <span class="badge badge-ecosystem"
+                    >Score {packageBundleRiskScore}</span
+                  >
+                {/if}
+                {#if (packageBundleRisk.unresolved_finding_count || 0) > 0}
+                  <span class="badge badge-ecosystem"
+                    >{formatNumber(
+                      packageBundleRisk.unresolved_finding_count || 0
+                    )} unresolved finding{packageBundleRisk.unresolved_finding_count ===
+                    1
+                      ? ''
+                      : 's'}</span
+                  >
+                {/if}
+              </div>
+              {#if packageBundleRiskWorstSeverity}
+                <div class="sidebar-row">
+                  <span class="sidebar-row__label"
+                    >Worst unresolved finding</span
+                  >
+                  <span class="sidebar-row__value"
+                    >{packageBundleRiskWorstSeverity}</span
+                  >
+                </div>
+              {/if}
+              {#if packageBundleRiskFactors.length > 0}
+                <div
+                  class="settings-copy"
+                  style="display:grid; gap:6px; margin:0;"
+                >
+                  {#each packageBundleRiskFactors as factor}
+                    <span>{factor}</span>
+                  {/each}
+                </div>
+              {:else}
+                <p class="settings-copy" style="margin:0;">
+                  No elevated risk signals were detected in the latest analyzed
+                  release.
+                </p>
+              {/if}
+            </div>
+          </div>
+        {/if}
+
+        {#if packageBundleAnalysis}
+          <div class="card">
+            <div class="sidebar-section">
+              <h3>Bundle analysis</h3>
+              <p class="settings-copy" style="margin-bottom:12px;">
+                Bundlephobia-inspired metadata derived from the latest visible
+                release{packageBundleAnalysis.source_version
+                  ? ` (${packageBundleAnalysis.source_version})`
+                  : ''}.
+              </p>
+              {#each buildBundleAnalysisStats(packageBundleAnalysis) as stat}
+                <div class="sidebar-row">
+                  <span class="sidebar-row__label">{stat.label}</span>
+                  <span class="sidebar-row__value">{stat.value}</span>
+                </div>
+              {/each}
+              {#if buildBundleAnalysisHighlights(packageBundleAnalysis).length > 0}
+                <div
+                  class="token-row__scopes"
+                  style="margin-top:12px; margin-bottom:12px;"
+                >
+                  {#each buildBundleAnalysisHighlights(packageBundleAnalysis) as highlight}
+                    <span class="badge badge-ecosystem">{highlight}</span>
+                  {/each}
+                </div>
+              {/if}
+              {#if bundleAnalysisNotes(packageBundleAnalysis).length > 0}
+                <div
+                  class="settings-copy"
+                  style="display:grid; gap:6px; margin:0;"
+                >
+                  {#each bundleAnalysisNotes(packageBundleAnalysis) as note}
+                    <span>{note}</span>
+                  {/each}
+                </div>
+              {/if}
+            </div>
+          </div>
+        {/if}
+
         <div class="card">
           <div class="sidebar-section">
             <h3>Package info</h3>
@@ -1778,7 +2354,8 @@
               </div>{/if}
             {#if pkg.visibility}<div class="sidebar-row">
                 <span class="sidebar-row__label">Visibility</span><span
-                  class="sidebar-row__value">{pkg.visibility}</span
+                  class="sidebar-row__value"
+                  >{formatRepositoryVisibilityLabel(pkg.visibility)}</span
                 >
               </div>{/if}
             {#if pkg.download_count != null}<div class="sidebar-row">
@@ -1981,122 +2558,6 @@
                   {/if}
                 </div>
               {/if}
-            </div>
-          </div>
-        {/if}
-
-        {#if pkg.can_manage_metadata}
-          <div class="card">
-            <div class="sidebar-section">
-              <h3>Package settings</h3>
-              <p class="settings-copy" style="margin-bottom:12px;">
-                Update package metadata that appears on the detail page and in
-                search. Leave a field blank to clear its stored value.
-              </p>
-
-              {#if packageSettingsNotice}
-                <div class="alert alert-success" style="margin-bottom:12px;">
-                  {packageSettingsNotice}
-                </div>
-              {/if}
-              {#if packageSettingsError}
-                <div class="alert alert-error" style="margin-bottom:12px;">
-                  {packageSettingsError}
-                </div>
-              {/if}
-
-              <form id="package-settings-form" on:submit={handleUpdatePackage}>
-                <div class="form-group" style="margin-bottom:12px;">
-                  <label for="package-settings-description">Description</label>
-                  <textarea
-                    bind:value={packageSettingsDescription}
-                    id="package-settings-description"
-                    name="description"
-                    class="form-input"
-                    rows="3"
-                    placeholder="Short package summary"
-                  ></textarea>
-                </div>
-
-                <div class="form-group" style="margin-bottom:12px;">
-                  <label for="package-settings-homepage">Homepage</label>
-                  <input
-                    bind:value={packageSettingsHomepage}
-                    id="package-settings-homepage"
-                    name="homepage"
-                    class="form-input"
-                    placeholder="https://example.test/project"
-                  />
-                </div>
-
-                <div class="form-group" style="margin-bottom:12px;">
-                  <label for="package-settings-repository-url"
-                    >Repository URL</label
-                  >
-                  <input
-                    bind:value={packageSettingsRepositoryUrl}
-                    id="package-settings-repository-url"
-                    name="repository_url"
-                    class="form-input"
-                    placeholder="https://github.com/acme/demo-widget"
-                  />
-                </div>
-
-                <div class="form-group" style="margin-bottom:12px;">
-                  <label for="package-settings-license">License</label>
-                  <input
-                    bind:value={packageSettingsLicense}
-                    id="package-settings-license"
-                    name="license"
-                    class="form-input"
-                    placeholder="MIT"
-                  />
-                </div>
-
-                <div class="form-group" style="margin-bottom:12px;">
-                  <label for="package-settings-keywords">Keywords</label>
-                  <input
-                    bind:value={packageSettingsKeywords}
-                    id="package-settings-keywords"
-                    name="keywords"
-                    class="form-input"
-                    placeholder="docs, cli, api"
-                  />
-                </div>
-
-                <div class="form-group" style="margin-bottom:12px;">
-                  <label for="package-settings-readme">README</label>
-                  <textarea
-                    bind:value={packageSettingsReadme}
-                    id="package-settings-readme"
-                    name="readme"
-                    class="form-input"
-                    rows="8"
-                    placeholder="# Demo Widget"
-                  ></textarea>
-                </div>
-
-                <div style="display:flex; gap:8px;">
-                  <button
-                    type="submit"
-                    class="btn btn-primary"
-                    style="flex:1; justify-content:center;"
-                    disabled={!packageSettingsHasChanges ||
-                      updatingPackageSettings}
-                  >
-                    {updatingPackageSettings ? 'Saving…' : 'Save settings'}
-                  </button>
-                  <button
-                    type="button"
-                    class="btn btn-secondary"
-                    on:click={() => resetPackageSettingsForm(pkg)}
-                    disabled={!packageSettingsHasChanges ||
-                      updatingPackageSettings}
-                  >
-                    Reset
-                  </button>
-                </div>
-              </form>
             </div>
           </div>
         {/if}
@@ -2560,18 +3021,115 @@
           </div>
         {/if}
 
-        {#if tags.length > 0}
+        {#if tags.length > 0 || pkg.can_manage_releases}
           <div class="card">
             <div class="sidebar-section">
               <h3>Tags</h3>
-              {#each tags as tag}
-                <div class="sidebar-row">
-                  <span class="sidebar-row__label"
-                    >{tag.tag || tag.name || ''}</span
-                  >
-                  <span class="sidebar-row__value">{tag.version}</span>
+              {#if tagNotice}
+                <div class="alert alert-success" style="margin-bottom:12px;">
+                  {tagNotice}
                 </div>
-              {/each}
+              {/if}
+              {#if tagError}
+                <div class="alert alert-error" style="margin-bottom:12px;">
+                  {tagError}
+                </div>
+              {/if}
+              {#if tags.length > 0}
+                {#each tags as tag}
+                  {@const resolvedTag = tag.tag || tag.name || ''}
+                  <div class="sidebar-row" style="align-items:center; gap:8px;">
+                    <div style="min-width:0; flex:1;">
+                      <div class="sidebar-row__label">{resolvedTag}</div>
+                      <div class="sidebar-row__value">{tag.version}</div>
+                    </div>
+                    {#if pkg.can_manage_releases && resolvedTag}
+                      <button
+                        type="button"
+                        class="btn btn-secondary btn-sm"
+                        data-tag-delete={resolvedTag}
+                        on:click={() => handleDeleteTag(tag)}
+                        disabled={savingTag || deletingTagName === resolvedTag}
+                      >
+                        {deletingTagName === resolvedTag
+                          ? 'Removing…'
+                          : 'Delete'}
+                      </button>
+                    {/if}
+                  </div>
+                {/each}
+              {:else}
+                <p class="settings-copy" style="margin-bottom:12px;">
+                  No tags published yet.
+                </p>
+              {/if}
+
+              {#if pkg.can_manage_releases}
+                <div
+                  style="padding-top:12px; margin-top:12px; border-top:1px solid var(--color-border);"
+                >
+                  <h4
+                    style="font-size:0.875rem; font-weight:600; margin-bottom:12px;"
+                  >
+                    Create or retarget a tag
+                  </h4>
+                  <p class="settings-copy" style="margin-bottom:12px;">
+                    Point a mutable channel tag at a published release version
+                    for installs and automation.
+                  </p>
+                  <form id="package-tag-form" on:submit={handleSaveTag}>
+                    <div class="form-group" style="margin-bottom:12px;">
+                      <label for="package-tag-name">Tag name</label>
+                      <input
+                        bind:value={tagName}
+                        id="package-tag-name"
+                        name="tag"
+                        class="form-input"
+                        placeholder="latest"
+                        required
+                      />
+                    </div>
+                    <div class="form-group" style="margin-bottom:12px;">
+                      <label for="package-tag-version">Release version</label>
+                      <select
+                        bind:value={tagVersion}
+                        id="package-tag-version"
+                        name="version"
+                        class="form-input"
+                        required
+                        disabled={releases.length === 0}
+                      >
+                        <option value="" disabled>
+                          Select a release version
+                        </option>
+                        {#each releases as release}
+                          <option value={release.version}
+                            >{release.version}</option
+                          >
+                        {/each}
+                      </select>
+                    </div>
+                    <div style="display:flex; gap:8px;">
+                      <button
+                        type="submit"
+                        class="btn btn-primary"
+                        style="flex:1; justify-content:center;"
+                        disabled={savingTag || releases.length === 0}
+                      >
+                        {savingTag ? 'Saving…' : 'Save tag'}
+                      </button>
+                      <button
+                        type="button"
+                        class="btn btn-secondary"
+                        disabled={savingTag}
+                        on:click={() => resetTagForm()}
+                      >
+                        Reset
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              {/if}
             </div>
           </div>
         {/if}

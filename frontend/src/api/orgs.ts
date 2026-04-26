@@ -302,6 +302,56 @@ export interface OrgAuditListResponse {
   load_error?: NullableString;
 }
 
+export interface OrgAccessHistoryTarget {
+  id?: NullableString;
+  ecosystem?: NullableString;
+  name?: NullableString;
+  normalized_name?: NullableString;
+  slug?: NullableString;
+  namespace?: NullableString;
+  kind?: NullableString;
+  visibility?: NullableString;
+  is_verified?: boolean | null;
+}
+
+export interface OrgAccessHistoryEntry {
+  id?: NullableString;
+  action?: NullableString;
+  scope?: NullableString;
+  event?: NullableString;
+  team_id?: NullableString;
+  team_slug?: NullableString;
+  team_name?: NullableString;
+  target_label?: NullableString;
+  target?: OrgAccessHistoryTarget | null;
+  previous_permissions?: string[] | null;
+  permissions?: string[] | null;
+  actor_user_id?: NullableString;
+  actor_username?: NullableString;
+  actor_display_name?: NullableString;
+  actor_token_id?: NullableString;
+  occurred_at?: NullableString;
+  summary?: NullableString;
+}
+
+export interface OrgAccessHistoryListResponse {
+  page?: number | null;
+  per_page?: number | null;
+  has_next?: boolean | null;
+  entries: OrgAccessHistoryEntry[];
+  load_error?: NullableString;
+}
+
+export interface OrgAccessHistoryQuery {
+  scope?: string;
+  teamSlug?: string;
+  target?: string;
+  occurredFrom?: string;
+  occurredUntil?: string;
+  page?: number;
+  perPage?: number;
+}
+
 export interface OrgAuditQuery {
   action?: string;
   actorUserId?: string;
@@ -945,6 +995,51 @@ export async function exportOrgAuditLogsCsv(
       occurred_until: query.occurredUntil,
     },
   });
+
+  return data;
+}
+
+export async function listOrgAccessHistory(
+  slug: string,
+  query: OrgAccessHistoryQuery = {}
+): Promise<OrgAccessHistoryListResponse> {
+  const { data } = await api.get<OrgAccessHistoryListResponse>(
+    `/v1/orgs/${enc(slug)}/access-history`,
+    {
+      query: {
+        scope: query.scope,
+        team_slug: query.teamSlug,
+        target: query.target,
+        occurred_from: query.occurredFrom,
+        occurred_until: query.occurredUntil,
+        page: query.page,
+        per_page: query.perPage,
+      },
+    }
+  );
+
+  return data;
+}
+
+export async function exportOrgAccessHistoryCsv(
+  slug: string,
+  query: OrgAccessHistoryQuery = {}
+): Promise<string> {
+  const { data } = await api.get<string>(
+    `/v1/orgs/${enc(slug)}/access-history/export`,
+    {
+      headers: {
+        Accept: 'text/csv',
+      },
+      query: {
+        scope: query.scope,
+        team_slug: query.teamSlug,
+        target: query.target,
+        occurred_from: query.occurredFrom,
+        occurred_until: query.occurredUntil,
+      },
+    }
+  );
 
   return data;
 }

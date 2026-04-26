@@ -21,7 +21,7 @@ A self-hostable, security-first package registry platform that speaks the native
 
 > **Note:** Bun uses the npm adapter — no separate protocol implementation is required.
 
-The current documented baseline includes native publish/read flows for every ecosystem above, shared quarantine → scan → publish lifecycle controls, ecosystem-aware package/release detail responses, and a SvelteKit web portal that can browse package metadata, releases, security findings, trusted publishers, and OCI manifest references. The OCI adapter now also exposes native referrers discovery for subject-linked manifests (for example SBOMs or signatures already pushed through the registry) and inventory-backed background cleanup for unreferenced config/layer blobs, while broader attestation policy, signing UX, proxy/mirror/virtual repository lifecycle features, and richer discovery/ranking features remain intentionally separate follow-on work.
+The current documented baseline includes native publish/read flows for every ecosystem above, shared quarantine → scan → publish lifecycle controls, ecosystem-aware package/release detail responses, bundle-style analysis summaries for package and release detail views, and a SvelteKit web portal that can browse package metadata, releases, security findings, trusted publishers, and OCI manifest references. The OCI adapter now also exposes native referrers discovery for subject-linked manifests (for example SBOMs or signatures already pushed through the registry) and inventory-backed background cleanup for unreferenced config/layer blobs, while broader attestation policy, signing UX, proxy/mirror/virtual repository lifecycle features, and richer discovery/ranking features remain intentionally separate follow-on work.
 
 ---
 
@@ -363,8 +363,10 @@ GET    /v1/packages/:ecosystem/:name/releases/:version/artifacts/:filename
 PUT    /v1/packages/:ecosystem/:name/releases/:version/yank
 PUT    /v1/packages/:ecosystem/:name/releases/:version/unyank
 PUT    /v1/packages/:ecosystem/:name/releases/:version/deprecate
+PUT    /v1/packages/:ecosystem/:name/releases/:version/undeprecate
 GET    /v1/packages/:ecosystem/:name/tags
 PUT    /v1/packages/:ecosystem/:name/tags/:tag
+DELETE /v1/packages/:ecosystem/:name/tags/:tag
 GET    /v1/packages/:ecosystem/:name/security-findings
 PATCH  /v1/packages/:ecosystem/:name/security-findings/:finding_id
 GET    /v1/packages/:ecosystem/:name/trusted-publishers
@@ -391,6 +393,7 @@ Package and repository read endpoints enforce explicit visibility semantics.
 `public` resources are readable and discoverable by everyone.
 `unlisted` resources remain readable through direct URLs but are intentionally excluded from search and package listing surfaces.
 `private`, `internal_org`, and `quarantined` resources require authenticated visibility through ownership, organization membership, or delegated team access.
+Package administrators can update package visibility through the package settings API and web portal, but package visibility cannot be broader than the enclosing repository visibility.
 
 Control-plane package creation derives package ownership from the target repository instead of trusting caller-supplied owner fields.
 For the current slice, package names are also enforced as globally unique within an ecosystem so the existing `/v1/packages/:ecosystem/:name` control-plane paths remain unambiguous.

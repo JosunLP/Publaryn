@@ -43,6 +43,7 @@ use crate::{
         ensure_repository_package_creation_access, AuthenticatedIdentity,
         OptionalAuthenticatedIdentity,
     },
+    routes::package_analysis::load_release_bundle_analysis,
     routes::parse_ecosystem,
     scopes::{ensure_scope, SCOPE_PACKAGES_TRANSFER, SCOPE_PACKAGES_WRITE},
     state::AppState,
@@ -100,10 +101,14 @@ pub fn router() -> Router<AppState> {
             "/v1/packages/{ecosystem}/{name}/releases/{version}/deprecate",
             put(deprecate_release),
         )
+        .route(
+            "/v1/packages/{ecosystem}/{name}/releases/{version}/undeprecate",
+            put(undeprecate_release),
+        )
         .route("/v1/packages/{ecosystem}/{name}/tags", get(list_tags))
         .route(
             "/v1/packages/{ecosystem}/{name}/tags/{tag}",
-            put(upsert_tag),
+            put(upsert_tag).delete(delete_tag),
         )
 }
 
@@ -164,6 +169,24 @@ async fn can_manage_metadata_for_package(
 }
 
 async fn can_manage_trusted_publishers_for_package(
+    db: &sqlx::PgPool,
+    package_id: Uuid,
+    identity: &OptionalAuthenticatedIdentity,
+) -> ApiResult<bool> {
+    match identity.0.as_ref() {
+        Some(identity)
+            if identity
+                .scopes()
+                .iter()
+                .any(|scope| scope == SCOPE_PACKAGES_WRITE) =>
+        {
+            actor_can_admin_package_by_id(db, package_id, Some(identity.user_id)).await
+        }
+        _ => Ok(false),
+    }
+}
+
+async fn can_manage_visibility_for_package(
     db: &sqlx::PgPool,
     package_id: Uuid,
     identity: &OptionalAuthenticatedIdentity,
@@ -470,6 +493,8 @@ async fn get_package(
         can_manage_releases_for_package(&state.db, package_id, &identity).await?;
     let can_manage_trusted_publishers =
         can_manage_trusted_publishers_for_package(&state.db, package_id, &identity).await?;
+    let can_manage_visibility =
+        can_manage_visibility_for_package(&state.db, package_id, &identity).await?;
     let can_manage_security =
         can_manage_security_for_package(&state.db, package_id, &identity).await?;
     let can_transfer = match identity.0.as_ref() {
@@ -486,7 +511,7 @@ async fn get_package(
 
     let row = sqlx::query(
         "SELECT p.id, p.name, p.display_name, p.ecosystem, p.description, p.readme, \
-         p.homepage, p.repository_url, p.license, p.keywords, p.visibility, p.is_deprecated, \
+         p.homepage, p.repository_url, p.license, p.keywords, p.visibility::text AS visibility, p.is_deprecated, \
          p.deprecation_message, p.is_archived, p.download_count, p.owner_org_id, p.created_at, \
          p.updated_at, u.username AS owner_username, o.slug AS owner_org_slug \
          FROM packages p \
@@ -555,6 +580,63 @@ async fn get_package(
     } else {
         None
     };
+    let latest_visible_statuses = if can_manage_releases {
+        release_management_visible_statuses()
+    } else {
+        release_history_visible_statuses()
+    };
+    let latest_release_row = sqlx::query(
+        "SELECT id, version, provenance \
+         FROM releases \
+         WHERE package_id = $1 AND status::text = ANY($2) \
+         ORDER BY published_at DESC \
+         LIMIT 1",
+    )
+    .bind(package_id)
+    .bind(&latest_visible_statuses)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+    let latest_version = latest_release_row
+        .as_ref()
+        .and_then(|row| row.try_get::<String, _>("version").ok());
+    let bundle_analysis = match latest_release_row {
+        Some(row) => {
+            let release_id = row.try_get::<Uuid, _>("id").map_err(|e| {
+                ApiError(Error::Internal(format!("missing latest release id: {e}")))
+            })?;
+            let release_version = row.try_get::<String, _>("version").map_err(|e| {
+                ApiError(Error::Internal(format!(
+                    "missing latest release version: {e}"
+                )))
+            })?;
+            let provenance = row
+                .try_get::<Option<serde_json::Value>, _>("provenance")
+                .ok()
+                .flatten();
+
+            Some(
+                serde_json::to_value(
+                    load_release_bundle_analysis(
+                        &state.db,
+                        state.artifact_store.as_ref(),
+                        &eco,
+                        release_id,
+                        &release_version,
+                        provenance.as_ref(),
+                        true,
+                    )
+                    .await?,
+                )
+                .map_err(|e| {
+                    ApiError(Error::Internal(format!(
+                        "bundle analysis serialization failed: {e}"
+                    )))
+                })?,
+            )
+        }
+        None => None,
+    };
 
     Ok(Json(serde_json::json!({
         "id": row.try_get::<Uuid, _>("id").ok(),
@@ -574,13 +656,16 @@ async fn get_package(
         "download_count": row.try_get::<i64, _>("download_count").ok(),
         "owner_username": row.try_get::<Option<String>, _>("owner_username").ok().flatten(),
         "owner_org_slug": row.try_get::<Option<String>, _>("owner_org_slug").ok().flatten(),
+        "latest_version": latest_version,
         "can_manage_metadata": can_manage_metadata,
         "can_manage_releases": can_manage_releases,
         "can_manage_trusted_publishers": can_manage_trusted_publishers,
+        "can_manage_visibility": can_manage_visibility,
         "can_manage_security": can_manage_security,
         "can_transfer": can_transfer,
         "team_access": team_access,
         "ecosystem_metadata": ecosystem_metadata,
+        "bundle_analysis": bundle_analysis,
         "created_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at").ok(),
         "updated_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("updated_at").ok(),
     })))
@@ -600,6 +685,7 @@ struct UpdatePackageRequest {
     keywords: Option<Option<Vec<String>>>,
     #[serde(default, deserialize_with = "deserialize_explicit_nullable_field")]
     readme: Option<Option<String>>,
+    visibility: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -843,13 +929,12 @@ async fn update_package(
     let eco = parse_ecosystem(&ecosystem_str)?;
     let normalized = normalize_package_name(&name, &eco);
 
-    let package_id = ensure_package_metadata_write_access(
-        &state.db,
-        eco.as_str(),
-        &normalized,
-        identity.user_id,
-    )
-    .await?;
+    let package_id = if body.visibility.is_some() {
+        ensure_package_admin_access(&state.db, eco.as_str(), &normalized, identity.user_id).await?
+    } else {
+        ensure_package_metadata_write_access(&state.db, eco.as_str(), &normalized, identity.user_id)
+            .await?
+    };
 
     let mut tx = state
         .db
@@ -858,10 +943,13 @@ async fn update_package(
         .map_err(|e| ApiError(Error::Database(e)))?;
 
     let current_package = sqlx::query(
-        "SELECT id, name, owner_org_id, description, homepage, repository_url, license, keywords, readme \
-         FROM packages \
-         WHERE id = $1 \
-         FOR UPDATE",
+        "SELECT p.id, p.name, p.owner_org_id, p.description, p.homepage, p.repository_url, \
+                p.license, p.keywords, p.readme, p.visibility::text AS visibility, \
+                r.visibility::text AS repository_visibility \
+         FROM packages p \
+         JOIN repositories r ON r.id = p.repository_id \
+         WHERE p.id = $1 \
+         FOR UPDATE OF p",
     )
     .bind(package_id)
     .fetch_optional(&mut *tx)
@@ -897,6 +985,12 @@ async fn update_package(
     let current_readme = current_package
         .try_get::<Option<String>, _>("readme")
         .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let current_visibility = current_package
+        .try_get::<String, _>("visibility")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let repository_visibility = current_package
+        .try_get::<String, _>("repository_visibility")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
 
     let updated_description = body
         .description
@@ -922,6 +1016,22 @@ async fn update_package(
         .readme
         .map(normalize_optional_package_readme)
         .unwrap_or_else(|| current_readme.clone());
+    let current_visibility_value = parse_package_visibility(&current_visibility)?;
+    let repository_visibility_value = parse_package_visibility(&repository_visibility)?;
+    let updated_visibility = body
+        .visibility
+        .as_deref()
+        .map(parse_package_visibility)
+        .transpose()?
+        .map(|requested_visibility| {
+            derive_package_visibility(
+                Some(requested_visibility),
+                repository_visibility_value.clone(),
+                owner_org_id.is_some(),
+            )
+        })
+        .transpose()?
+        .unwrap_or_else(|| current_visibility_value.clone());
 
     let mut changed_fields = Vec::new();
     let mut changes = serde_json::Map::new();
@@ -992,7 +1102,9 @@ async fn update_package(
         );
     }
 
-    if changes.is_empty() {
+    let visibility_changed = current_visibility_value != updated_visibility;
+
+    if changes.is_empty() && !visibility_changed {
         return Ok(Json(serde_json::json!({ "message": "Package updated" })));
     }
 
@@ -1004,8 +1116,9 @@ async fn update_package(
              license        = $4, \
              keywords       = $5, \
              readme         = $6, \
+             visibility     = $7::visibility, \
              updated_at     = NOW() \
-         WHERE id = $7",
+         WHERE id = $8",
     )
     .bind(&updated_description)
     .bind(&updated_homepage)
@@ -1013,31 +1126,57 @@ async fn update_package(
     .bind(&updated_license)
     .bind(&updated_keywords)
     .bind(&updated_readme)
+    .bind(visibility_as_str(&updated_visibility))
     .bind(package_id)
     .execute(&mut *tx)
     .await
     .map_err(|e| ApiError(Error::Database(e)))?;
 
-    sqlx::query(
-        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_org_id, target_package_id, metadata, occurred_at) \
-         VALUES ($1, 'package_update', $2, $3, $4, $5, $6, NOW())",
-    )
-    .bind(Uuid::new_v4())
-    .bind(identity.user_id)
-    .bind(identity.audit_actor_token_id())
-    .bind(owner_org_id)
-    .bind(package_id)
-    .bind(serde_json::json!({
-        "ecosystem": eco.as_str(),
-        "package_name": package_name,
-        "name": package_name,
-        "normalized_name": normalized,
-        "changed_fields": changed_fields,
-        "changes": changes,
-    }))
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| ApiError(Error::Database(e)))?;
+    if !changes.is_empty() {
+        sqlx::query(
+            "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_org_id, target_package_id, metadata, occurred_at) \
+             VALUES ($1, 'package_update', $2, $3, $4, $5, $6, NOW())",
+        )
+        .bind(Uuid::new_v4())
+        .bind(identity.user_id)
+        .bind(identity.audit_actor_token_id())
+        .bind(owner_org_id)
+        .bind(package_id)
+        .bind(serde_json::json!({
+            "ecosystem": eco.as_str(),
+            "package_name": package_name,
+            "name": package_name,
+            "normalized_name": normalized,
+            "changed_fields": changed_fields,
+            "changes": changes,
+        }))
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+    }
+
+    if visibility_changed {
+        sqlx::query(
+            "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_org_id, target_package_id, metadata, occurred_at) \
+             VALUES ($1, 'package_visibility_change', $2, $3, $4, $5, $6, NOW())",
+        )
+        .bind(Uuid::new_v4())
+        .bind(identity.user_id)
+        .bind(identity.audit_actor_token_id())
+        .bind(owner_org_id)
+        .bind(package_id)
+        .bind(serde_json::json!({
+            "ecosystem": eco.as_str(),
+            "package_name": package_name,
+            "name": package_name,
+            "normalized_name": normalized,
+            "previous_visibility": visibility_as_str(&current_visibility_value),
+            "visibility": visibility_as_str(&updated_visibility),
+        }))
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+    }
 
     tx.commit()
         .await
@@ -1376,7 +1515,7 @@ async fn list_releases(
         };
 
     let rows = sqlx::query(
-        "SELECT version, status::text AS status, is_yanked, is_deprecated, is_prerelease, published_at \
+        "SELECT id, version, status::text AS status, is_yanked, is_deprecated, is_prerelease, published_at, provenance \
          FROM releases \
          WHERE package_id = $1 AND status::text = ANY($2) \
          ORDER BY published_at DESC",
@@ -1387,19 +1526,46 @@ async fn list_releases(
     .await
     .map_err(|e| ApiError(Error::Database(e)))?;
 
-    let releases: Vec<serde_json::Value> = rows
-        .iter()
-        .map(|r| {
-            serde_json::json!({
-                "version": r.try_get::<String, _>("version").ok(),
-                "status": r.try_get::<String, _>("status").ok(),
-                "is_yanked": r.try_get::<bool, _>("is_yanked").ok(),
-                "is_deprecated": r.try_get::<bool, _>("is_deprecated").ok(),
-                "is_prerelease": r.try_get::<bool, _>("is_prerelease").ok(),
-                "published_at": r.try_get::<chrono::DateTime<chrono::Utc>, _>("published_at").ok(),
-            })
-        })
-        .collect();
+    let mut releases = Vec::with_capacity(rows.len());
+    for row in rows {
+        let release_id = row
+            .try_get::<Uuid, _>("id")
+            .map_err(|e| ApiError(Error::Internal(format!("missing release id: {e}"))))?;
+        let version = row
+            .try_get::<String, _>("version")
+            .map_err(|e| ApiError(Error::Internal(format!("missing release version: {e}"))))?;
+        let provenance = row
+            .try_get::<Option<serde_json::Value>, _>("provenance")
+            .ok()
+            .flatten();
+        let bundle_analysis = serde_json::to_value(
+            load_release_bundle_analysis(
+                &state.db,
+                state.artifact_store.as_ref(),
+                &eco,
+                release_id,
+                &version,
+                provenance.as_ref(),
+                false,
+            )
+            .await?,
+        )
+        .map_err(|e| {
+            ApiError(Error::Internal(format!(
+                "bundle analysis serialization failed: {e}"
+            )))
+        })?;
+
+        releases.push(serde_json::json!({
+            "version": version,
+            "status": row.try_get::<String, _>("status").ok(),
+            "is_yanked": row.try_get::<bool, _>("is_yanked").ok(),
+            "is_deprecated": row.try_get::<bool, _>("is_deprecated").ok(),
+            "is_prerelease": row.try_get::<bool, _>("is_prerelease").ok(),
+            "published_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("published_at").ok(),
+            "bundle_analysis": bundle_analysis,
+        }));
+    }
 
     Ok(Json(serde_json::json!({ "releases": releases })))
 }
@@ -1444,6 +1610,23 @@ async fn get_release(
     let ecosystem_metadata =
         load_release_ecosystem_metadata(&state.db, &eco, release_id, release_provenance.as_ref())
             .await?;
+    let bundle_analysis = serde_json::to_value(
+        load_release_bundle_analysis(
+            &state.db,
+            state.artifact_store.as_ref(),
+            &eco,
+            release_id,
+            &version,
+            release_provenance.as_ref(),
+            true,
+        )
+        .await?,
+    )
+    .map_err(|e| {
+        ApiError(Error::Internal(format!(
+            "bundle analysis serialization failed: {e}"
+        )))
+    })?;
 
     Ok(Json(serde_json::json!({
         "id": row.try_get::<Uuid, _>("id").ok(),
@@ -1460,6 +1643,7 @@ async fn get_release(
         "changelog": row.try_get::<Option<String>, _>("changelog").ok().flatten(),
         "source_ref": row.try_get::<Option<String>, _>("source_ref").ok().flatten(),
         "ecosystem_metadata": ecosystem_metadata,
+        "bundle_analysis": bundle_analysis,
         "published_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("published_at").ok(),
     })))
 }
@@ -1695,6 +1879,97 @@ async fn deprecate_release(
     Ok(Json(serde_json::json!({ "message": "Release deprecated" })))
 }
 
+async fn undeprecate_release(
+    State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
+    Path((ecosystem_str, name, version)): Path<(String, String, String)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    ensure_scope(&identity, SCOPE_PACKAGES_WRITE)?;
+
+    let eco = parse_ecosystem(&ecosystem_str)?;
+    let normalized = normalize_package_name(&name, &eco);
+    let package_id =
+        ensure_package_publish_access(&state.db, eco.as_str(), &normalized, identity.user_id)
+            .await?;
+
+    let release_row = sqlx::query(
+        "SELECT id, is_yanked, is_deprecated \
+         FROM releases \
+         WHERE package_id = $1 AND version = $2",
+    )
+    .bind(package_id)
+    .bind(&version)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?
+    .ok_or_else(|| ApiError(Error::NotFound(format!("Release '{version}' not found"))))?;
+
+    let release_id: Uuid = release_row
+        .try_get("id")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let is_yanked = release_row
+        .try_get::<bool, _>("is_yanked")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    let is_deprecated = release_row
+        .try_get::<bool, _>("is_deprecated")
+        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+
+    if !is_deprecated {
+        return Err(ApiError(Error::Conflict(format!(
+            "Release '{version}' is not deprecated"
+        ))));
+    }
+
+    let restored_status = release_status_after_undeprecate(is_yanked);
+
+    sqlx::query(
+        "UPDATE releases \
+         SET is_deprecated = false, \
+             deprecation_message = NULL, \
+             status = $1::release_status, \
+             updated_at = NOW() \
+         WHERE id = $2",
+    )
+    .bind(restored_status)
+    .bind(release_id)
+    .execute(&state.db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    let owner_org_id: Option<Uuid> =
+        sqlx::query_scalar("SELECT owner_org_id FROM packages WHERE id = $1")
+            .bind(package_id)
+            .fetch_one(&state.db)
+            .await
+            .map_err(|e| ApiError(Error::Database(e)))?;
+
+    sqlx::query(
+        "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, target_org_id, target_package_id, target_release_id, metadata, occurred_at) \
+         VALUES ($1, 'release_undeprecate', $2, $3, $4, $5, $6, $7, NOW())",
+    )
+    .bind(Uuid::new_v4())
+    .bind(identity.user_id)
+    .bind(identity.audit_actor_token_id())
+    .bind(owner_org_id)
+    .bind(package_id)
+    .bind(release_id)
+    .bind(serde_json::json!({
+        "ecosystem": eco.as_str(),
+        "name": normalized,
+        "version": version,
+        "restored_status": restored_status,
+    }))
+    .execute(&state.db)
+    .await
+    .map_err(|e| ApiError(Error::Database(e)))?;
+
+    Ok(Json(serde_json::json!({
+        "message": "Release undeprecated",
+        "version": version,
+        "status": restored_status,
+    })))
+}
+
 async fn list_tags(
     State(state): State<AppState>,
     identity: OptionalAuthenticatedIdentity,
@@ -1788,6 +2063,36 @@ async fn upsert_tag(
         "message": "Tag updated",
         "tag": tag,
         "version": body.version,
+    })))
+}
+
+async fn delete_tag(
+    State(state): State<AppState>,
+    identity: AuthenticatedIdentity,
+    Path((ecosystem_str, name, tag)): Path<(String, String, String)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    ensure_scope(&identity, SCOPE_PACKAGES_WRITE)?;
+
+    let eco = parse_ecosystem(&ecosystem_str)?;
+    let normalized = normalize_package_name(&name, &eco);
+    let pkg_id =
+        ensure_package_publish_access(&state.db, eco.as_str(), &normalized, identity.user_id)
+            .await?;
+
+    let delete_result = sqlx::query("DELETE FROM channel_refs WHERE package_id = $1 AND name = $2")
+        .bind(pkg_id)
+        .bind(&tag)
+        .execute(&state.db)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))?;
+
+    if delete_result.rows_affected() == 0 {
+        return Err(ApiError(Error::NotFound(format!("Tag '{tag}' not found"))));
+    }
+
+    Ok(Json(serde_json::json!({
+        "message": "Tag deleted",
+        "tag": tag,
     })))
 }
 
@@ -2320,6 +2625,14 @@ fn release_status_after_unyank(is_deprecated: bool) -> &'static str {
     }
 }
 
+fn release_status_after_undeprecate(is_yanked: bool) -> &'static str {
+    if is_yanked {
+        "yanked"
+    } else {
+        "published"
+    }
+}
+
 fn release_status_accepts_artifact_upload(status: &str) -> bool {
     matches!(status, "quarantine" | "scanning")
 }
@@ -2774,8 +3087,9 @@ mod tests {
         ensure_release_allows_status_mutation, extract_namespace_claim_value,
         join_policy_violations, package_owner_from_fields, release_history_visible_statuses,
         release_management_visible_statuses, release_status_accepts_artifact_upload,
-        release_status_after_unyank, release_status_allows_direct_read,
-        release_status_can_be_published, validate_artifact_filename, validate_expected_sha256,
+        release_status_after_undeprecate, release_status_after_unyank,
+        release_status_allows_direct_read, release_status_can_be_published,
+        validate_artifact_filename, validate_expected_sha256,
         validate_package_creation_repository_kind, validate_package_transfer_target,
         version_looks_prerelease, visibility_scope_rank, PackageOwner,
     };
@@ -2937,6 +3251,16 @@ mod tests {
     #[test]
     fn release_status_after_unyank_restores_deprecated_for_deprecated_release() {
         assert_eq!(release_status_after_unyank(true), "deprecated");
+    }
+
+    #[test]
+    fn release_status_after_undeprecate_restores_published_for_normal_release() {
+        assert_eq!(release_status_after_undeprecate(false), "published");
+    }
+
+    #[test]
+    fn release_status_after_undeprecate_restores_yanked_for_yanked_release() {
+        assert_eq!(release_status_after_undeprecate(true), "yanked");
     }
 
     #[test]
