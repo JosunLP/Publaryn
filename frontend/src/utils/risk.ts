@@ -5,7 +5,7 @@ export type RiskBadgeSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
 export function riskBadgeSeverity(
   level: string | null | undefined
 ): RiskBadgeSeverity {
-  switch ((level || '').toLowerCase()) {
+  switch ((level || '').trim().toLowerCase()) {
     case 'critical':
       return 'critical';
     case 'high':

@@ -55,12 +55,12 @@ interface ApiErrorBody {
 const clientModuleUrl = new URL('../src/api/client.ts', import.meta.url).href;
 const sessionModuleUrl = new URL('../src/lib/session.ts', import.meta.url).href;
 const authModuleUrl = new URL('../src/api/auth.ts', import.meta.url).href;
-const authApi = (await import(authModuleUrl)) as typeof import('../src/api/auth');
 const LoginPagePath =
   fileURLToPath(new URL('../src/routes/login/+page.svelte', import.meta.url));
 
 let currentScenario: Scenario | null = null;
 let storedAuthToken: string | null = null;
+let authApiPromise: Promise<typeof import('../src/api/auth')> | null = null;
 
 mock.module('$app/navigation', () => ({
   async goto(href: string): Promise<void> {
@@ -133,6 +133,12 @@ mock.module(sessionModuleUrl, () => ({
   },
 }));
 
+function getAuthApi(): Promise<typeof import('../src/api/auth')> {
+  authApiPromise ??=
+    import(authModuleUrl) as Promise<typeof import('../src/api/auth')>;
+  return authApiPromise;
+}
+
 afterEach(() => {
   currentScenario = null;
   storedAuthToken = null;
@@ -141,6 +147,7 @@ afterEach(() => {
 describe('auth MFA API helpers', () => {
   test('requests setup state and returns the shared secret and recovery codes', async () => {
     currentScenario = createAuthApiScenario(false);
+    const authApi = await getAuthApi();
 
     const setupState = await authApi.setupMfa();
 
@@ -151,6 +158,7 @@ describe('auth MFA API helpers', () => {
 
   test('submits MFA verification and disable codes to the expected endpoints', async () => {
     currentScenario = createAuthApiScenario(false);
+    const authApi = await getAuthApi();
 
     await authApi.verifyMfaSetup('123456');
     expect(requireAuthApiScenario().verifyCalls).toEqual(['123456']);
