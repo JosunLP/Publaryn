@@ -3775,6 +3775,18 @@ async fn test_platform_admin_job_mutations_reject_non_retryable_states_and_enfor
         "unexpected missing-scope response: {missing_scope_body}"
     );
 
+    let missing_job_id = Uuid::new_v4();
+    let (status, missing_job_body) =
+        retry_platform_admin_job(&app, &admin_jwt, missing_job_id).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(
+        missing_job_body["error"]
+            .as_str()
+            .expect("missing job error should be present")
+            .contains("not found"),
+        "unexpected missing-job response: {missing_job_body}"
+    );
+
     sqlx::query("UPDATE users SET is_admin = FALSE, updated_at = NOW() WHERE username = 'alice'")
         .execute(&pool)
         .await
@@ -3844,6 +3856,8 @@ async fn test_platform_admin_recover_stale_jobs_only_resets_expired_running_jobs
     assert_eq!(recoverable_state.0, "pending");
     assert!(recoverable_state.3.is_none());
     assert!(recoverable_state.4.is_none());
+    assert!(recoverable_state.5.is_none());
+    assert!(recoverable_state.6.is_none());
 
     let active_state = fetch_background_job_state(&pool, active_job_id).await;
     assert_eq!(active_state.0, "running");
@@ -10864,8 +10878,8 @@ async fn test_private_package_reads_allow_delegated_package_or_repository_access
         "Package Delegated Repository",
         "package-delegated-repository",
         Some(org_id),
-        Some("public"),
-        Some("public"),
+        Some("private"),
+        Some("private"),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{package_repository_body}");
@@ -11011,19 +11025,24 @@ async fn test_private_package_reads_allow_delegated_package_or_repository_access
 
     let (status, package_delegate_repository) =
         get_repository_detail(&app, Some(&bob_jwt), "package-delegated-repository").await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(
-        package_delegate_repository["slug"],
-        "package-delegated-repository"
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(
+        package_delegate_repository["error"]
+            .as_str()
+            .expect("package-scoped repository detail error should be present")
+            .contains("not found"),
+        "unexpected package-scoped repository detail response: {package_delegate_repository}"
     );
 
     let (status, package_delegate_packages) =
         list_repository_packages(&app, Some(&bob_jwt), "package-delegated-repository").await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(
-        package_delegate_packages["packages"],
-        json!([]),
-        "package-scoped grants should not broaden repository package listings"
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(
+        package_delegate_packages["error"]
+            .as_str()
+            .expect("package-scoped repository packages error should be present")
+            .contains("not found"),
+        "unexpected package-scoped repository packages response: {package_delegate_packages}"
     );
 
     let (status, repository_delegate_detail) =
