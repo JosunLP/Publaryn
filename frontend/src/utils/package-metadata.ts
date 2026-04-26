@@ -113,7 +113,11 @@ export function packageMetadataHasChanges(
   pkg: PackageDetail | null | undefined,
   values: PackageMetadataFormValues
 ): boolean {
-  return Object.keys(buildPackageMetadataUpdateInput(pkg, values)).length > 0;
+  try {
+    return Object.keys(buildPackageMetadataUpdateInput(pkg, values)).length > 0;
+  } catch {
+    return true;
+  }
 }
 
 export function normalizePackageMetadataKeywords(
@@ -185,7 +189,11 @@ function normalizePackageVisibilityInput(
     return null;
   }
 
-  return PACKAGE_VISIBILITY_VALUES.has(normalized) ? normalized : undefined;
+  if (PACKAGE_VISIBILITY_VALUES.has(normalized)) {
+    return normalized;
+  }
+
+  throw new Error(`Invalid package visibility: ${value}`);
 }
 
 function normalizePackageMetadataText(

@@ -126,8 +126,9 @@ export function createOrgGovernanceController(options: OrgGovernanceControllerOp
           usernameOrEmail:
             formData.get('username_or_email')?.toString().trim() || '',
           role: formData.get('role')?.toString() || 'viewer',
-          expiresInDays:
-            Number(formData.get('expires_in_days')?.toString() || '7') || 7,
+          expiresInDays: normalizeInvitationExpiryDays(
+            formData.get('expires_in_days')
+          ),
         } satisfies SendInvitationInput);
         form.reset();
         await options.reload({ notice: 'Invitation sent successfully.' });
@@ -322,6 +323,12 @@ export function createOrgGovernanceController(options: OrgGovernanceControllerOp
       }
     },
   };
+}
+
+function normalizeInvitationExpiryDays(value: FormDataEntryValue | null): number {
+  const parsed =
+    typeof value === 'string' ? Number.parseInt(value, 10) : Number.NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 7;
 }
 
 function isValidWebsiteUrl(value: string): boolean {

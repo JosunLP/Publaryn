@@ -298,6 +298,65 @@ describe('org governance controller harness', () => {
     }
   });
 
+  test('clamps invalid invitation expiry values back to the default window', async () => {
+    const scenario = createScenario();
+    const { target, unmount, flush } = await renderSvelte(HarnessPath, {
+      loadState: createLoadState(scenario),
+      mutations: createMutations({
+        async sendInvitation(_slug, input) {
+          scenario.sendInvitationCalls.push({ ...input });
+          return { id: 'invite-2' };
+        },
+      }),
+    });
+
+    try {
+      await waitFor(() => {
+        flush();
+        expect(target.textContent).toContain('invited@example.test');
+      });
+
+      changeValue(
+        queryRequiredInput(target, '#org-invite-target'),
+        'negative@example.test'
+      );
+      changeValue(queryRequiredInput(target, '#org-invite-expiry'), '-3');
+      submitForm(queryRequiredForm(target, '#org-invite-form'));
+
+      await waitFor(() => {
+        flush();
+        expect(target.textContent).toContain('Invitation sent successfully.');
+      });
+
+      changeValue(
+        queryRequiredInput(target, '#org-invite-target'),
+        'zero@example.test'
+      );
+      changeValue(queryRequiredInput(target, '#org-invite-expiry'), '0');
+      submitForm(queryRequiredForm(target, '#org-invite-form'));
+
+      await waitFor(() => {
+        flush();
+        expect(scenario.sendInvitationCalls).toHaveLength(2);
+      });
+
+      expect(scenario.sendInvitationCalls).toEqual([
+        {
+          usernameOrEmail: 'negative@example.test',
+          role: 'viewer',
+          expiresInDays: 7,
+        },
+        {
+          usernameOrEmail: 'zero@example.test',
+          role: 'viewer',
+          expiresInDays: 7,
+        },
+      ]);
+    } finally {
+      unmount();
+    }
+  });
+
   test('adds members directly and updates existing member roles', async () => {
     const scenario = createScenario();
     const { target, unmount, flush } = await renderSvelte(HarnessPath, {

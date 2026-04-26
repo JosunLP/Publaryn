@@ -1,6 +1,6 @@
 /// <reference path="./bun-test.d.ts" />
 
-import { afterEach, describe, expect, mock, test } from 'bun:test';
+import { afterAll, afterEach, describe, expect, mock, test } from 'bun:test';
 import { fileURLToPath } from 'node:url';
 
 import { changeValue, renderSvelte, submitForm } from './svelte-dom';
@@ -55,6 +55,9 @@ interface ApiErrorBody {
 const clientModuleUrl = new URL('../src/api/client.ts', import.meta.url).href;
 const sessionModuleUrl = new URL('../src/lib/session.ts', import.meta.url).href;
 const authModuleUrl = new URL('../src/api/auth.ts', import.meta.url).href;
+const realClientModule = await import(
+  new URL('../src/api/client.ts?mfa-route-flow-real-client', import.meta.url).href
+);
 const LoginPagePath =
   fileURLToPath(new URL('../src/routes/login/+page.svelte', import.meta.url));
 
@@ -143,6 +146,20 @@ afterEach(() => {
   currentScenario = null;
   storedAuthToken = null;
   authApiPromise = null;
+});
+
+afterAll(() => {
+  mock.module('$app/navigation', () => ({
+    async goto(): Promise<void> {},
+  }));
+  mock.module(clientModuleUrl, () => realClientModule);
+  mock.module(sessionModuleUrl, () => ({
+    syncAuthToken(): void {},
+    clearSession(): void {},
+    authToken: {
+      subscribe: (_callback: (value: string | null) => void) => () => {},
+    },
+  }));
 });
 
 describe('auth MFA API helpers', () => {

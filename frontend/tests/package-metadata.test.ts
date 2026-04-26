@@ -66,7 +66,7 @@ describe('package metadata helpers', () => {
         repositoryUrl: ' \t ',
         license: '',
         keywords: ' , \n ',
-        visibility: 'unknown',
+        visibility: ' ',
       })
     ).toEqual({
       description: null,
@@ -75,8 +75,17 @@ describe('package metadata helpers', () => {
       repositoryUrl: null,
       license: null,
       keywords: null,
-      visibility: undefined,
+      visibility: null,
     });
+  });
+
+  test('throws for invalid visibility values instead of silently ignoring them', () => {
+    expect(() =>
+      normalizePackageMetadataInput({
+        ...createPackageMetadataFormValues(BASE_PACKAGE),
+        visibility: 'unknown',
+      })
+    ).toThrow('Invalid package visibility: unknown');
   });
 
   test('normalizes keyword text into a stable unique list', () => {
@@ -158,24 +167,24 @@ describe('package metadata helpers', () => {
     ).toBe(true);
   });
 
-  test('ignores invalid visibility values instead of clearing an existing visibility', () => {
+  test('treats invalid visibility values as actionable validation errors', () => {
     const privatePackage = {
       ...BASE_PACKAGE,
       visibility: 'private',
     };
 
-    expect(
+    expect(() =>
       buildPackageMetadataUpdateInput(privatePackage, {
         ...createPackageMetadataFormValues(privatePackage),
         visibility: 'definitely-not-valid',
       })
-    ).toEqual({});
+    ).toThrow('Invalid package visibility: definitely-not-valid');
     expect(
       packageMetadataHasChanges(privatePackage, {
         ...createPackageMetadataFormValues(privatePackage),
         visibility: 'definitely-not-valid',
       })
-    ).toBe(false);
+    ).toBe(true);
   });
 
   test('treats omitted visibility input as no change instead of clearing', () => {
