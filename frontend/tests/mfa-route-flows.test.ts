@@ -56,8 +56,9 @@ const clientModuleUrl = new URL('../src/api/client.ts', import.meta.url).href;
 const sessionModuleUrl = new URL('../src/lib/session.ts', import.meta.url).href;
 const authModuleUrl = new URL('../src/api/auth.ts', import.meta.url).href;
 // Capture the real client implementation before any mock.module() calls run.
-// The unique import URL bypasses the mocked client-module cache so afterAll()
-// can restore the original exports instead of leaking the test double.
+// The query parameter is a cache-buster that forces a fresh import of the real
+// client module, bypassing the mocked client-module cache so afterAll() can
+// restore the original exports instead of leaking the test double.
 const realClientModule = await import(
   new URL('../src/api/client.ts?mfa-route-flow-real-client', import.meta.url).href
 );

@@ -131,7 +131,9 @@ export function packageMetadataHasChanges(
   }
 }
 
-function invalidPackageVisibilityError(value: string): PackageMetadataValidationError {
+function createInvalidPackageVisibilityError(
+  value: string
+): PackageMetadataValidationError {
   return new PackageMetadataValidationError(
     `Invalid package visibility: ${value}`
   );
@@ -181,7 +183,7 @@ function normalizePackageVisibilityInput(
     return normalized;
   }
 
-  throw invalidPackageVisibilityError(value);
+  throw createInvalidPackageVisibilityError(value);
 }
 
 function normalizePackageMetadataText(
