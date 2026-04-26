@@ -33,6 +33,8 @@ const PACKAGE_VISIBILITY_VALUES = new Set([
   'quarantined',
 ]);
 
+class PackageMetadataValidationError extends Error {}
+
 export function createPackageMetadataFormValues(
   pkg: PackageDetail | null | undefined
 ): PackageMetadataFormValues {
@@ -115,38 +117,19 @@ export function packageMetadataHasChanges(
 ): boolean {
   try {
     return Object.keys(buildPackageMetadataUpdateInput(pkg, values)).length > 0;
-  } catch {
-    return true;
+  } catch (error) {
+    if (error instanceof PackageMetadataValidationError) {
+      return true;
+    }
+
+    throw error;
   }
 }
 
-export function normalizePackageMetadataKeywords(
-  value: string | null | undefined
-): string[] | null {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  const normalized: string[] = [];
-  for (const part of value.split(/[\n,]+/)) {
-    const trimmed = part.trim();
-    if (!trimmed) {
-      continue;
-    }
-
-    if (
-      normalized.some(
-        (existingKeyword) =>
-          existingKeyword.toLowerCase() === trimmed.toLowerCase()
-      )
-    ) {
-      continue;
-    }
-
-    normalized.push(trimmed);
-  }
-
-  return normalized.length > 0 ? normalized : null;
+function invalidPackageVisibilityError(value: string): PackageMetadataValidationError {
+  return new PackageMetadataValidationError(
+    `Invalid package visibility: ${value}`
+  );
 }
 
 function normalizeCurrentPackageMetadata(
@@ -193,7 +176,7 @@ function normalizePackageVisibilityInput(
     return normalized;
   }
 
-  throw new Error(`Invalid package visibility: ${value}`);
+  throw invalidPackageVisibilityError(value);
 }
 
 function normalizePackageMetadataText(
@@ -205,6 +188,35 @@ function normalizePackageMetadataText(
 
   const trimmed = value.trim();
   return trimmed ? trimmed : null;
+}
+
+export function normalizePackageMetadataKeywords(
+  value: string | null | undefined
+): string[] | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const normalized: string[] = [];
+  for (const part of value.split(/[\n,]+/)) {
+    const trimmed = part.trim();
+    if (!trimmed) {
+      continue;
+    }
+
+    if (
+      normalized.some(
+        (existingKeyword) =>
+          existingKeyword.toLowerCase() === trimmed.toLowerCase()
+      )
+    ) {
+      continue;
+    }
+
+    normalized.push(trimmed);
+  }
+
+  return normalized.length > 0 ? normalized : null;
 }
 
 function normalizePackageMetadataReadme(

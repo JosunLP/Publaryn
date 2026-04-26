@@ -55,6 +55,8 @@ interface ApiErrorBody {
 const clientModuleUrl = new URL('../src/api/client.ts', import.meta.url).href;
 const sessionModuleUrl = new URL('../src/lib/session.ts', import.meta.url).href;
 const authModuleUrl = new URL('../src/api/auth.ts', import.meta.url).href;
+// Use a unique import URL so this lookup bypasses the mocked client-module cache
+// and gives afterAll() a fresh copy of the real implementation to restore.
 const realClientModule = await import(
   new URL('../src/api/client.ts?mfa-route-flow-real-client', import.meta.url).href
 );
