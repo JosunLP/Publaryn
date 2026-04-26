@@ -724,6 +724,41 @@ async fn list_platform_admin_jobs(
     (status, body)
 }
 
+async fn retry_platform_admin_job(
+    app: &axum::Router,
+    bearer_token: &str,
+    job_id: Uuid,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri(format!("/v1/admin/jobs/{job_id}/retry"))
+        .header(header::AUTHORIZATION, format!("Bearer {bearer_token}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
+async fn recover_stale_platform_admin_jobs(
+    app: &axum::Router,
+    bearer_token: &str,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/v1/admin/jobs/recover-stale")
+        .header(header::AUTHORIZATION, format!("Bearer {bearer_token}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    (status, body)
+}
+
 /// Read public platform stats and return the response.
 async fn get_platform_stats(app: &axum::Router) -> (StatusCode, Value) {
     let req = Request::builder()
@@ -1963,6 +1998,49 @@ async fn fetch_background_jobs(
         )
     })
     .collect()
+}
+
+async fn fetch_background_job_state(
+    pool: &PgPool,
+    job_id: Uuid,
+) -> (
+    String,
+    i32,
+    Option<String>,
+    Option<DateTime<Utc>>,
+    Option<String>,
+    Option<DateTime<Utc>>,
+    Option<DateTime<Utc>>,
+    DateTime<Utc>,
+) {
+    let row = sqlx::query(
+        "SELECT status::text AS status, attempts, last_error, locked_until, locked_by, \
+                started_at, completed_at, scheduled_at \
+         FROM background_jobs \
+         WHERE id = $1",
+    )
+    .bind(job_id)
+    .fetch_one(pool)
+    .await
+    .expect("background job should be queryable");
+
+    (
+        row.try_get("status").expect("job status should be present"),
+        row.try_get("attempts")
+            .expect("job attempts should be present"),
+        row.try_get("last_error")
+            .expect("job last_error should be readable"),
+        row.try_get("locked_until")
+            .expect("job locked_until should be readable"),
+        row.try_get("locked_by")
+            .expect("job locked_by should be readable"),
+        row.try_get("started_at")
+            .expect("job started_at should be readable"),
+        row.try_get("completed_at")
+            .expect("job completed_at should be readable"),
+        row.try_get("scheduled_at")
+            .expect("job scheduled_at should be readable"),
+    )
 }
 
 async fn fetch_oci_cleanup_jobs(pool: &PgPool) -> Vec<(serde_json::Value, String, DateTime<Utc>)> {
@@ -3544,6 +3622,252 @@ async fn test_platform_admin_jobs_expose_summary_and_filterable_results(pool: Pg
     assert_eq!(jobs[0]["kind"], "scan_artifact");
     assert_eq!(jobs[0]["status"], "pending");
     assert_eq!(jobs[0]["payload"]["artifact_id"], "artifact-123");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_platform_admin_job_retry_resets_failed_and_dead_jobs_and_audits(pool: PgPool) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    promote_user_to_platform_admin(&pool, "alice").await;
+    let admin_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    sqlx::query("DELETE FROM background_jobs")
+        .execute(&pool)
+        .await
+        .expect("background jobs should be clear before retry tests");
+
+    let failed_job_id = Uuid::new_v4();
+    let dead_job_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO background_jobs \
+         (id, kind, payload, status, attempts, max_attempts, last_error, scheduled_at, locked_until, locked_by, started_at, completed_at, created_at) \
+         VALUES \
+         ($1, 'scan_artifact'::job_kind, $2, 'failed'::job_status, 3, 5, 'artifact scan failed', NOW() - INTERVAL '30 minutes', NOW() - INTERVAL '10 minutes', 'worker-a', NOW() - INTERVAL '31 minutes', NOW() - INTERVAL '30 minutes', NOW() - INTERVAL '31 minutes'), \
+         ($3, 'reindex_search'::job_kind, $4, 'dead'::job_status, 5, 5, 'queue exhausted', NOW() - INTERVAL '45 minutes', NOW() - INTERVAL '20 minutes', 'worker-b', NOW() - INTERVAL '46 minutes', NOW() - INTERVAL '45 minutes', NOW() - INTERVAL '46 minutes')",
+    )
+    .bind(failed_job_id)
+    .bind(json!({ "artifact_id": "artifact-123" }))
+    .bind(dead_job_id)
+    .bind(json!({ "package_id": Uuid::new_v4() }))
+    .execute(&pool)
+    .await
+    .expect("retryable jobs should seed successfully");
+
+    let retry_started_at = Utc::now();
+    let (status, failed_body) = retry_platform_admin_job(&app, &admin_jwt, failed_job_id).await;
+    assert_eq!(status, StatusCode::OK, "response: {failed_body}");
+    assert_eq!(failed_body["message"], "Background job scheduled for retry");
+    assert_eq!(failed_body["job"]["status"], "pending");
+    assert_eq!(failed_body["job"]["attempts"], 0);
+
+    let (status, dead_body) = retry_platform_admin_job(&app, &admin_jwt, dead_job_id).await;
+    assert_eq!(status, StatusCode::OK, "response: {dead_body}");
+    assert_eq!(dead_body["job"]["status"], "pending");
+    assert_eq!(dead_body["job"]["attempts"], 0);
+
+    let failed_state = fetch_background_job_state(&pool, failed_job_id).await;
+    assert_eq!(failed_state.0, "pending");
+    assert_eq!(failed_state.1, 0);
+    assert_eq!(failed_state.2.as_deref(), Some("artifact scan failed"));
+    assert!(failed_state.3.is_none());
+    assert!(failed_state.4.is_none());
+    assert!(failed_state.5.is_none());
+    assert!(failed_state.6.is_none());
+    assert!(failed_state.7 >= retry_started_at);
+
+    let dead_state = fetch_background_job_state(&pool, dead_job_id).await;
+    assert_eq!(dead_state.0, "pending");
+    assert_eq!(dead_state.1, 0);
+    assert_eq!(dead_state.2.as_deref(), Some("queue exhausted"));
+    assert!(dead_state.3.is_none());
+    assert!(dead_state.4.is_none());
+    assert!(dead_state.5.is_none());
+    assert!(dead_state.6.is_none());
+    assert!(dead_state.7 >= retry_started_at);
+
+    let retry_audit_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::BIGINT FROM audit_logs WHERE action = 'admin_job_retry'::audit_action",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("retry audit log count should be queryable");
+    assert_eq!(retry_audit_count, 2);
+
+    let latest_retry_metadata: Value = sqlx::query_scalar(
+        "SELECT metadata \
+         FROM audit_logs \
+         WHERE action = 'admin_job_retry'::audit_action \
+         ORDER BY occurred_at DESC \
+         LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("latest retry audit metadata should be queryable");
+    assert_eq!(latest_retry_metadata["previous_status"], "dead");
+    assert_eq!(latest_retry_metadata["previous_attempts"], 5);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_platform_admin_job_mutations_reject_non_retryable_states_and_enforce_access(
+    pool: PgPool,
+) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    promote_user_to_platform_admin(&pool, "alice").await;
+    let admin_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    let (status, no_audit_scope_body) =
+        create_personal_access_token(&app, &admin_jwt, "admin-no-audit", &["packages:write"]).await;
+    assert_eq!(status, StatusCode::CREATED, "{no_audit_scope_body}");
+    let admin_no_audit_token = no_audit_scope_body["token"]
+        .as_str()
+        .expect("admin token without audit scope should be returned")
+        .to_owned();
+
+    let (status, audit_scope_body) =
+        create_personal_access_token(&app, &admin_jwt, "admin-audit", &["audit:read"]).await;
+    assert_eq!(status, StatusCode::CREATED, "{audit_scope_body}");
+    let admin_audit_token = audit_scope_body["token"]
+        .as_str()
+        .expect("admin token with audit scope should be returned")
+        .to_owned();
+
+    sqlx::query("DELETE FROM background_jobs")
+        .execute(&pool)
+        .await
+        .expect("background jobs should be clear before admin mutation auth tests");
+
+    let pending_job_id = Uuid::new_v4();
+    let stale_job_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO background_jobs \
+         (id, kind, payload, status, attempts, max_attempts, last_error, scheduled_at, locked_until, locked_by, started_at, completed_at, created_at) \
+         VALUES \
+         ($1, 'scan_artifact'::job_kind, $2, 'pending'::job_status, 0, 5, NULL, NOW(), NULL, NULL, NULL, NULL, NOW()), \
+         ($3, 'cleanup_oci_blobs'::job_kind, $4, 'running'::job_status, 1, 5, NULL, NOW() - INTERVAL '1 hour', NOW() - INTERVAL '5 minutes', 'worker-stale', NOW() - INTERVAL '1 hour', NULL, NOW() - INTERVAL '1 hour')",
+    )
+    .bind(pending_job_id)
+    .bind(json!({ "artifact_id": "artifact-123" }))
+    .bind(stale_job_id)
+    .bind(json!({ "digests": ["sha256:abc"] }))
+    .execute(&pool)
+    .await
+    .expect("admin mutation jobs should seed successfully");
+
+    let (status, conflict_body) = retry_platform_admin_job(&app, &admin_jwt, pending_job_id).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(
+        conflict_body["error"]
+            .as_str()
+            .expect("conflict error should be present")
+            .contains("cannot be retried from status 'pending'"),
+        "unexpected conflict response: {conflict_body}"
+    );
+
+    let (status, missing_scope_body) =
+        retry_platform_admin_job(&app, &admin_no_audit_token, pending_job_id).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(
+        missing_scope_body["error"]
+            .as_str()
+            .expect("scope error should be present")
+            .contains("audit:read"),
+        "unexpected missing-scope response: {missing_scope_body}"
+    );
+
+    sqlx::query("UPDATE users SET is_admin = FALSE, updated_at = NOW() WHERE username = 'alice'")
+        .execute(&pool)
+        .await
+        .expect("admin user should be demotable for access tests");
+
+    let (status, missing_admin_body) =
+        recover_stale_platform_admin_jobs(&app, &admin_audit_token).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(
+        missing_admin_body["error"]
+            .as_str()
+            .expect("platform-admin error should be present")
+            .contains("platform administrator"),
+        "unexpected missing-admin response: {missing_admin_body}"
+    );
+
+    let stale_state = fetch_background_job_state(&pool, stale_job_id).await;
+    assert_eq!(stale_state.0, "running");
+    assert_eq!(stale_state.4.as_deref(), Some("worker-stale"));
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_platform_admin_recover_stale_jobs_only_resets_expired_running_jobs_and_audits(
+    pool: PgPool,
+) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    promote_user_to_platform_admin(&pool, "alice").await;
+    let admin_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+
+    sqlx::query("DELETE FROM background_jobs")
+        .execute(&pool)
+        .await
+        .expect("background jobs should be clear before stale recovery tests");
+
+    let recoverable_job_id = Uuid::new_v4();
+    let active_job_id = Uuid::new_v4();
+    let pending_job_id = Uuid::new_v4();
+    let dead_job_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO background_jobs \
+         (id, kind, payload, status, attempts, max_attempts, last_error, scheduled_at, locked_until, locked_by, started_at, completed_at, created_at) \
+         VALUES \
+         ($1, 'cleanup_oci_blobs'::job_kind, $2, 'running'::job_status, 1, 5, NULL, NOW() - INTERVAL '2 hours', NOW() - INTERVAL '10 minutes', 'worker-old', NOW() - INTERVAL '2 hours', NULL, NOW() - INTERVAL '2 hours'), \
+         ($3, 'scan_artifact'::job_kind, $4, 'running'::job_status, 1, 5, NULL, NOW() - INTERVAL '20 minutes', NOW() + INTERVAL '10 minutes', 'worker-live', NOW() - INTERVAL '20 minutes', NULL, NOW() - INTERVAL '20 minutes'), \
+         ($5, 'reindex_search'::job_kind, $6, 'pending'::job_status, 0, 5, NULL, NOW() - INTERVAL '15 minutes', NOW() - INTERVAL '5 minutes', 'worker-pending', NULL, NULL, NOW() - INTERVAL '15 minutes'), \
+         ($7, 'index_package'::job_kind, $8, 'dead'::job_status, 5, 5, 'boom', NOW() - INTERVAL '30 minutes', NOW() - INTERVAL '15 minutes', 'worker-dead', NOW() - INTERVAL '30 minutes', NOW() - INTERVAL '25 minutes', NOW() - INTERVAL '30 minutes')",
+    )
+    .bind(recoverable_job_id)
+    .bind(json!({ "digests": ["sha256:abc"] }))
+    .bind(active_job_id)
+    .bind(json!({ "artifact_id": "artifact-456" }))
+    .bind(pending_job_id)
+    .bind(json!({ "package_id": Uuid::new_v4() }))
+    .bind(dead_job_id)
+    .bind(json!({ "package_id": Uuid::new_v4() }))
+    .execute(&pool)
+    .await
+    .expect("stale recovery jobs should seed successfully");
+
+    let (status, body) = recover_stale_platform_admin_jobs(&app, &admin_jwt).await;
+    assert_eq!(status, StatusCode::OK, "response: {body}");
+    assert_eq!(body["message"], "Stale background jobs recovered");
+    assert_eq!(body["recovered_count"], 1);
+
+    let recoverable_state = fetch_background_job_state(&pool, recoverable_job_id).await;
+    assert_eq!(recoverable_state.0, "pending");
+    assert!(recoverable_state.3.is_none());
+    assert!(recoverable_state.4.is_none());
+
+    let active_state = fetch_background_job_state(&pool, active_job_id).await;
+    assert_eq!(active_state.0, "running");
+    assert_eq!(active_state.4.as_deref(), Some("worker-live"));
+
+    let pending_state = fetch_background_job_state(&pool, pending_job_id).await;
+    assert_eq!(pending_state.0, "pending");
+    assert_eq!(pending_state.4.as_deref(), Some("worker-pending"));
+
+    let dead_state = fetch_background_job_state(&pool, dead_job_id).await;
+    assert_eq!(dead_state.0, "dead");
+    assert_eq!(dead_state.4.as_deref(), Some("worker-dead"));
+
+    let recover_audit_metadata: Value = sqlx::query_scalar(
+        "SELECT metadata \
+         FROM audit_logs \
+         WHERE action = 'admin_jobs_recover_stale'::audit_action \
+         ORDER BY occurred_at DESC \
+         LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("recover-stale audit metadata should be queryable");
+    assert_eq!(recover_audit_metadata["recovered_count"], 1);
 }
 
 #[sqlx::test(migrations = "../../migrations")]
@@ -10513,6 +10837,215 @@ async fn test_package_ownership_transfer_requires_target_org_admin_membership(po
     assert_eq!(detail_after["owner_username"], "alice");
     assert_eq!(detail_after["owner_org_slug"], Value::Null);
     assert_eq!(detail_after["can_transfer"], true);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn test_private_package_reads_allow_delegated_package_or_repository_access_without_broadening_repository_reads(
+    pool: PgPool,
+) {
+    let app = app(pool.clone());
+    register_user(&app, "alice", "alice@test.dev", "super_secret_pw!").await;
+    register_user(&app, "bob", "bob@test.dev", "super_secret_pw!").await;
+    register_user(&app, "carol", "carol@test.dev", "super_secret_pw!").await;
+    register_user(&app, "dave", "dave@test.dev", "super_secret_pw!").await;
+    let alice_jwt = login_user(&app, "alice", "super_secret_pw!").await;
+    let bob_jwt = login_user(&app, "bob", "super_secret_pw!").await;
+    let carol_jwt = login_user(&app, "carol", "super_secret_pw!").await;
+    let dave_jwt = login_user(&app, "dave", "super_secret_pw!").await;
+
+    let (status, org_body) =
+        create_org(&app, &alice_jwt, "Acme Restricted", "acme-restricted").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let org_id = org_body["id"].as_str().expect("org id should be present");
+
+    let (status, package_repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Package Delegated Repository",
+        "package-delegated-repository",
+        Some(org_id),
+        Some("public"),
+        Some("public"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{package_repository_body}");
+
+    let (status, repository_body) = create_repository_with_options(
+        &app,
+        &alice_jwt,
+        "Restricted Packages",
+        "restricted-packages",
+        Some(org_id),
+        Some("private"),
+        Some("private"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{repository_body}");
+
+    let (status, package_only_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "npm",
+        "delegated-package-widget",
+        "package-delegated-repository",
+        Some("private"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{package_only_body}");
+
+    let (status, package_body) = create_package_with_options(
+        &app,
+        &alice_jwt,
+        "npm",
+        "delegated-read-widget",
+        "restricted-packages",
+        Some("private"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{package_body}");
+
+    let (status, _) = add_org_member(&app, &alice_jwt, "acme-restricted", "bob", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = add_org_member(&app, &alice_jwt, "acme-restricted", "carol", "viewer").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "acme-restricted",
+        "Package Reviewers",
+        "package-reviewers",
+        Some("Can read only explicitly granted private packages."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = create_team(
+        &app,
+        &alice_jwt,
+        "acme-restricted",
+        "Repository Reviewers",
+        "repository-reviewers",
+        Some("Can read private repositories and their packages."),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = add_team_member_to_team(
+        &app,
+        &alice_jwt,
+        "acme-restricted",
+        "package-reviewers",
+        "bob",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = add_team_member_to_team(
+        &app,
+        &alice_jwt,
+        "acme-restricted",
+        "repository-reviewers",
+        "carol",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, package_grant_body) = grant_team_package_access(
+        &app,
+        &alice_jwt,
+        "acme-restricted",
+        "package-reviewers",
+        "npm",
+        "delegated-package-widget",
+        &["security_review"],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{package_grant_body}");
+
+    let (status, repository_grant_body) = grant_team_repository_access(
+        &app,
+        &alice_jwt,
+        "acme-restricted",
+        "repository-reviewers",
+        "restricted-packages",
+        &["write_metadata"],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{repository_grant_body}");
+
+    sqlx::query(
+        "DELETE FROM org_memberships \
+         WHERE org_id = $1 \
+           AND user_id IN (SELECT id FROM users WHERE username IN ('bob', 'carol'))",
+    )
+    .bind(Uuid::parse_str(org_id).expect("org id should parse"))
+    .execute(&pool)
+    .await
+    .expect("delegated readers should be removable from direct org membership");
+
+    let (status, anonymous_detail) =
+        get_package_detail(&app, None, "npm", "delegated-read-widget").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(
+        anonymous_detail["error"]
+            .as_str()
+            .expect("anonymous error should be present")
+            .contains("not found"),
+        "unexpected anonymous package response: {anonymous_detail}"
+    );
+
+    let (status, unrelated_detail) =
+        get_package_detail(&app, Some(&dave_jwt), "npm", "delegated-read-widget").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(
+        unrelated_detail["error"]
+            .as_str()
+            .expect("outsider error should be present")
+            .contains("not found"),
+        "unexpected outsider package response: {unrelated_detail}"
+    );
+
+    let (status, package_delegate_detail) =
+        get_package_detail(&app, Some(&bob_jwt), "npm", "delegated-package-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(package_delegate_detail["name"], "delegated-package-widget");
+
+    let (status, package_delegate_repository) =
+        get_repository_detail(&app, Some(&bob_jwt), "package-delegated-repository").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        package_delegate_repository["slug"],
+        "package-delegated-repository"
+    );
+
+    let (status, package_delegate_packages) =
+        list_repository_packages(&app, Some(&bob_jwt), "package-delegated-repository").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        package_delegate_packages["packages"],
+        json!([]),
+        "package-scoped grants should not broaden repository package listings"
+    );
+
+    let (status, repository_delegate_detail) =
+        get_package_detail(&app, Some(&carol_jwt), "npm", "delegated-read-widget").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        repository_delegate_detail["repository_slug"],
+        "restricted-packages"
+    );
+
+    let (status, repository_detail) =
+        get_repository_detail(&app, Some(&carol_jwt), "restricted-packages").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(repository_detail["slug"], "restricted-packages");
+
+    let (status, repository_packages) =
+        list_repository_packages(&app, Some(&carol_jwt), "restricted-packages").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        repository_packages["packages"][0]["name"],
+        "delegated-read-widget"
+    );
 }
 
 #[sqlx::test(migrations = "../../migrations")]

@@ -228,7 +228,7 @@ pub async fn fail_job(
 
 /// Recover stale jobs whose lock has expired without completion.
 /// These are likely from crashed workers. They are reset to `pending`.
-pub async fn recover_stale_jobs<'e, E>(executor: E) -> anyhow::Result<u64>
+pub async fn recover_stale_jobs<'e, E>(executor: E) -> sqlx::Result<u64>
 where
     E: Executor<'e, Database = Postgres>,
 {

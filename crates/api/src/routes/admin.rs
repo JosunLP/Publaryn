@@ -419,7 +419,7 @@ async fn recover_stale_background_jobs(
 
     let recovered_count = queue::recover_stale_jobs(&mut *tx)
         .await
-        .map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+        .map_err(|e| ApiError(Error::Database(e)))?;
 
     sqlx::query(
         "INSERT INTO audit_logs (id, action, actor_user_id, actor_token_id, metadata, occurred_at) \

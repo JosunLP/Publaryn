@@ -7,7 +7,7 @@ use serde::Serialize;
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
-use publaryn_core::{error::Error, security};
+use publaryn_core::{authz_queries, error::Error, security};
 
 use crate::{
     error::{ApiError, ApiResult},
@@ -817,23 +817,9 @@ async fn actor_has_any_team_package_access(
     package_id: Uuid,
     actor_user_id: Uuid,
 ) -> ApiResult<bool> {
-    sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS (\
-             SELECT 1 \
-             FROM team_package_access tpa \
-             JOIN team_memberships tm ON tm.team_id = tpa.team_id \
-             JOIN teams t ON t.id = tpa.team_id \
-             JOIN packages p ON p.id = tpa.package_id \
-             WHERE tpa.package_id = $1 \
-               AND tm.user_id = $2 \
-               AND t.org_id = p.owner_org_id\
-         )",
-    )
-    .bind(package_id)
-    .bind(actor_user_id)
-    .fetch_one(db)
-    .await
-    .map_err(|e| ApiError(Error::Database(e)))
+    authz_queries::actor_has_any_team_package_access(db, package_id, actor_user_id)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))
 }
 
 async fn actor_has_any_team_repository_access(
@@ -841,23 +827,9 @@ async fn actor_has_any_team_repository_access(
     repository_id: Uuid,
     actor_user_id: Uuid,
 ) -> ApiResult<bool> {
-    sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS (\
-             SELECT 1 \
-             FROM team_repository_access tra \
-             JOIN team_memberships tm ON tm.team_id = tra.team_id \
-             JOIN teams t ON t.id = tra.team_id \
-             JOIN repositories r ON r.id = tra.repository_id \
-             WHERE tra.repository_id = $1 \
-               AND tm.user_id = $2 \
-               AND t.org_id = r.owner_org_id\
-         )",
-    )
-    .bind(repository_id)
-    .bind(actor_user_id)
-    .fetch_one(db)
-    .await
-    .map_err(|e| ApiError(Error::Database(e)))
+    authz_queries::actor_has_any_team_repository_access(db, repository_id, actor_user_id)
+        .await
+        .map_err(|e| ApiError(Error::Database(e)))
 }
 
 async fn actor_has_team_package_permissions(
@@ -1220,10 +1192,10 @@ pub async fn ensure_package_read_access(
         }
         None => (false, false),
     };
-    let delegated_read_access = team_package_read_access || team_repository_read_access;
-
-    let can_read_package_non_public = package_owner_read_access || delegated_read_access;
-    let can_read_repository_non_public = repository_owner_read_access || delegated_read_access;
+    let can_read_package_non_public =
+        package_owner_read_access || team_package_read_access || team_repository_read_access;
+    let can_read_repository_non_public =
+        repository_owner_read_access || team_repository_read_access;
 
     if !visibility_allows_read(&package_visibility, can_read_package_non_public)
         || !visibility_allows_read(&repository_visibility, can_read_repository_non_public)

@@ -1,3 +1,4 @@
+pub mod authz_queries;
 pub mod domain;
 pub mod error;
 pub mod policy;
