@@ -86,14 +86,8 @@ describe('package metadata helpers', () => {
         visibility: 'unknown',
       })
     ).toThrow(
-      'Allowed values: public, private, internal_org, unlisted, quarantined'
+      'Invalid package visibility: unknown. Allowed values: public, private, internal_org, unlisted, quarantined. Normalized input: unknown. Visibility values are trimmed, lowercased, and hyphens are converted to underscores.'
     );
-    expect(() =>
-      normalizePackageMetadataInput({
-        ...createPackageMetadataFormValues(BASE_PACKAGE),
-        visibility: 'unknown',
-      })
-    ).toThrow('Normalized input: unknown');
   });
 
   test('normalizes keyword text into a stable unique list', () => {
