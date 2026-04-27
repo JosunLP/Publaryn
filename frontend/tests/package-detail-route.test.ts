@@ -3,7 +3,13 @@
 import { afterEach, describe, expect, mock, test } from 'bun:test';
 import { writable } from 'svelte/store';
 
-import { changeValue, renderSvelte, setChecked } from './svelte-dom';
+import {
+  changeValue,
+  click,
+  renderSvelte,
+  setChecked,
+  submitForm,
+} from './svelte-dom';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -22,19 +28,31 @@ interface ApiRequestOptions {
   body?: JsonRecord;
 }
 
+interface MutationCall {
+  path: string;
+  body?: JsonRecord;
+}
+
 interface Scenario {
   requests: string[];
   gotoCalls: string[];
+  packageMutations: MutationCall[];
+  packageArchiveCalls: string[];
   packageDetail: JsonRecord;
+  releases: JsonRecord[];
   findings: JsonRecord[];
   organizations: JsonRecord[];
   teams: JsonRecord[];
+  tags: Record<string, { version: string }>;
+  tagMutations: string[];
+  releaseMutations: string[];
 }
 
 const ECOSYSTEM = 'npm';
 const PACKAGE_NAME = 'demo-widget';
 const ORG_SLUG = 'acme';
-const apiClientModuleUrl = new URL('../src/api/client.ts', import.meta.url).href;
+const apiClientModuleUrl = new URL('../src/api/client.ts', import.meta.url)
+  .href;
 const pageStore = writable<TestPageState>(
   buildPageState(
     `https://example.test/packages/${ECOSYSTEM}/${PACKAGE_NAME}?tab=security`
@@ -107,14 +125,67 @@ mock.module(apiClientModuleUrl, () => {
   };
 });
 
-const PackagePage = await import('../src/routes/packages/[ecosystem]/[name]/+page.svelte');
+const PackagePage =
+  await import('../src/routes/packages/[ecosystem]/[name]/+page.svelte');
 
 afterEach(() => {
   currentScenario = null;
-  setPageHref(`https://example.test/packages/${ECOSYSTEM}/${PACKAGE_NAME}?tab=security`);
+  setPageHref(
+    `https://example.test/packages/${ECOSYSTEM}/${PACKAGE_NAME}?tab=security`
+  );
 });
 
 describe('package detail security access route', () => {
+  test('renders risk posture from the latest visible release analysis', async () => {
+    currentScenario = createScenario({
+      packageDetail: {
+        bundle_analysis: {
+          source_version: '1.2.3',
+          direct_dependency_count: 12,
+          install_script_count: 1,
+          has_native_code: true,
+          risk: {
+            score: 54,
+            level: 'high',
+            unresolved_finding_count: 1,
+            worst_unresolved_severity: 'high',
+            factors: [
+              '1 unresolved security finding (worst severity: high)',
+              '1 install lifecycle script runs during install',
+              'Native build tooling is detected',
+              '12 direct dependencies increase the supply-chain surface',
+            ],
+          },
+        },
+      },
+    });
+
+    const { target, unmount } = await renderSvelte(PackagePage.default);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Risk posture');
+        expect(target.textContent).toContain('High risk');
+        expect(normalizeWhitespace(target.textContent)).toContain(
+          'Score 54 / 100'
+        );
+        expect(target.textContent).toContain('Worst unresolved finding');
+        expect(target.textContent).toContain(
+          '1 unresolved security finding (worst severity: high)'
+        );
+        expect(target.textContent).toContain(
+          'Native build tooling is detected'
+        );
+      });
+
+      const riskSection = querySectionByHeading(target, 'Risk posture');
+      expect(riskSection.textContent).toContain('1 unresolved finding');
+      expect(riskSection.textContent).toContain('High');
+    } finally {
+      unmount();
+    }
+  });
+
   test('surfaces delegated security review teams and filters large finding sets for triage', async () => {
     currentScenario = createScenario();
 
@@ -147,7 +218,9 @@ describe('package detail security access route', () => {
         'Delegated team access'
       );
       expect(delegatedAccessSection.textContent).toContain('Readers Team');
-      expect(delegatedAccessSection.textContent).toContain('Can triage findings');
+      expect(delegatedAccessSection.textContent).toContain(
+        'Can triage findings'
+      );
 
       await waitFor(() => {
         expect(normalizeWhitespace(target.textContent)).toContain(
@@ -170,7 +243,10 @@ describe('package detail security access route', () => {
         expect(target.textContent).not.toContain('Known malicious payload');
       });
 
-      changeValue(queryRequiredInput(target, '#package-security-search'), 'prototype');
+      changeValue(
+        queryRequiredInput(target, '#package-security-search'),
+        'prototype'
+      );
 
       await waitFor(() => {
         expect(normalizeWhitespace(target.textContent)).toContain(
@@ -181,10 +257,7 @@ describe('package detail security access route', () => {
       });
 
       setChecked(
-        queryRequiredCheckbox(
-          target,
-          'input[type="checkbox"][value="high"]'
-        ),
+        queryRequiredCheckbox(target, 'input[type="checkbox"][value="high"]'),
         true
       );
 
@@ -230,18 +303,21 @@ describe('package detail security access route', () => {
         expect(target.textContent).not.toContain('Prototype pollution');
       });
 
+      expect(queryRequiredSelect(target, '#package-security-focus').value).toBe(
+        'resolved'
+      );
       expect(
-        queryRequiredSelect(target, '#package-security-focus').value
-      ).toBe('resolved');
-      expect(
-        queryRequiredCheckbox(target, '#package-security-include-resolved').checked
+        queryRequiredCheckbox(target, '#package-security-include-resolved')
+          .checked
       ).toBe(true);
       expect(queryRequiredInput(target, '#package-security-search').value).toBe(
         'pub-2026-0007'
       );
       expect(
-        queryRequiredCheckbox(target, 'input[type="checkbox"][value="critical"]')
-          .checked
+        queryRequiredCheckbox(
+          target,
+          'input[type="checkbox"][value="critical"]'
+        ).checked
       ).toBe(true);
 
       expect(currentScenario.requests).toEqual([
@@ -251,6 +327,281 @@ describe('package detail security access route', () => {
         `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/security-findings`,
         '/v1/users/me/organizations',
         `/v1/orgs/${ORG_SLUG}/teams`,
+      ]);
+    } finally {
+      unmount();
+    }
+  });
+
+  test('loads and saves package metadata from the dedicated settings tab', async () => {
+    currentScenario = createScenario({
+      packageDetail: {
+        can_manage_metadata: true,
+        can_manage_visibility: true,
+        visibility: 'public',
+        description: 'Original package summary.',
+        readme: '# Demo Widget\n\nOriginal readme content.',
+        homepage: 'https://example.test/demo-widget',
+        repository_url: 'https://github.com/acme/demo-widget',
+        license: 'MIT',
+        keywords: ['widgets', 'cli'],
+      },
+    });
+    setPageHref(
+      `https://example.test/packages/${ECOSYSTEM}/${PACKAGE_NAME}?tab=settings`
+    );
+
+    const { target, unmount } = await renderSvelte(PackagePage.default);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Package settings');
+        expect(
+          queryRequiredTextArea(target, '#package-settings-description').value
+        ).toBe('Original package summary.');
+        expect(
+          queryRequiredInput(target, '#package-settings-homepage').value
+        ).toBe('https://example.test/demo-widget');
+        expect(
+          queryRequiredInput(target, '#package-settings-keywords').value
+        ).toBe('widgets, cli');
+        expect(
+          queryRequiredSelect(target, '#package-settings-visibility').value
+        ).toBe('public');
+      });
+
+      changeValue(
+        queryRequiredTextArea(target, '#package-settings-description'),
+        'Updated package summary for release automation.'
+      );
+      changeValue(
+        queryRequiredInput(target, '#package-settings-homepage'),
+        'https://example.test/demo-widget/v2'
+      );
+      changeValue(
+        queryRequiredInput(target, '#package-settings-keywords'),
+        'widgets, cli, release'
+      );
+      changeValue(
+        queryRequiredSelect(target, '#package-settings-visibility'),
+        'unlisted'
+      );
+      submitForm(queryRequiredForm(target, '#package-settings-form'));
+
+      await waitFor(() => {
+        expect(target.textContent).toContain('Package updated');
+        expect(
+          queryRequiredTextArea(target, '#package-settings-description').value
+        ).toBe('Updated package summary for release automation.');
+        expect(
+          queryRequiredInput(target, '#package-settings-homepage').value
+        ).toBe('https://example.test/demo-widget/v2');
+        expect(
+          queryRequiredInput(target, '#package-settings-keywords').value
+        ).toBe('widgets, cli, release');
+        expect(
+          queryRequiredSelect(target, '#package-settings-visibility').value
+        ).toBe('unlisted');
+      });
+
+      expect(currentScenario?.packageMutations).toEqual([
+        {
+          path: `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}`,
+          body: {
+            description: 'Updated package summary for release automation.',
+            homepage: 'https://example.test/demo-widget/v2',
+            keywords: ['widgets', 'cli', 'release'],
+            visibility: 'unlisted',
+          },
+        },
+      ]);
+      expect(currentScenario?.requests).toEqual([
+        `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}`,
+        `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/releases`,
+        `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/tags`,
+        `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/security-findings`,
+        '/v1/users/me/organizations',
+        `/v1/orgs/${ORG_SLUG}/teams`,
+        `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}`,
+        `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/releases`,
+        `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/tags`,
+        `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/security-findings`,
+        '/v1/users/me/organizations',
+        `/v1/orgs/${ORG_SLUG}/teams`,
+      ]);
+    } finally {
+      unmount();
+    }
+  });
+
+  test('archives a package from the settings tab after explicit confirmation', async () => {
+    currentScenario = createScenario({
+      packageDetail: {
+        can_manage_metadata: true,
+        is_archived: false,
+      },
+    });
+    setPageHref(
+      `https://example.test/packages/${ECOSYSTEM}/${PACKAGE_NAME}?tab=settings`
+    );
+
+    const { target, unmount } = await renderSvelte(PackagePage.default);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Archive package');
+        expect(
+          queryRequiredCheckbox(target, '#package-archive-confirm').checked
+        ).toBe(false);
+      });
+
+      submitForm(queryRequiredForm(target, '#package-archive-form'));
+
+      await waitFor(() => {
+        expect(target.textContent).toContain(
+          'Please confirm that you understand archiving marks this package as archived.'
+        );
+      });
+
+      setChecked(
+        queryRequiredCheckbox(target, '#package-archive-confirm'),
+        true
+      );
+      submitForm(queryRequiredForm(target, '#package-archive-form'));
+
+      await waitFor(() => {
+        expect(target.textContent).toContain('Package archived');
+        expect(target.textContent).toContain(
+          'This package is already archived.'
+        );
+        expect(target.querySelector('#package-archive-form')).toBeNull();
+      });
+
+      expect(currentScenario?.packageArchiveCalls).toEqual([
+        `DELETE /v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}`,
+      ]);
+      expect(currentScenario?.packageDetail.is_archived).toBe(true);
+      expect(currentScenario?.requests).toEqual([
+        `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}`,
+        `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/releases`,
+        `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/tags`,
+        `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/security-findings`,
+        '/v1/users/me/organizations',
+        `/v1/orgs/${ORG_SLUG}/teams`,
+        `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}`,
+        `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/releases`,
+        `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/tags`,
+        `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/security-findings`,
+        '/v1/users/me/organizations',
+        `/v1/orgs/${ORG_SLUG}/teams`,
+      ]);
+    } finally {
+      unmount();
+    }
+  });
+
+  test('manages package tags from the package sidebar', async () => {
+    currentScenario = createScenario({
+      packageDetail: {
+        can_manage_releases: true,
+      },
+      releases: [
+        {
+          version: '1.2.3',
+          status: 'published',
+        },
+        {
+          version: '1.3.0',
+          status: 'published',
+        },
+      ],
+      tags: {
+        latest: { version: '1.2.3' },
+      },
+    });
+
+    let confirmCalls = 0;
+    const originalConfirm = window.confirm;
+    window.confirm = (() => {
+      confirmCalls += 1;
+      return true;
+    }) as typeof window.confirm;
+
+    const { target, unmount } = await renderSvelte(PackagePage.default);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Create or retarget a tag');
+        expect(target.textContent).toContain('latest');
+        expect(target.textContent).toContain('1.2.3');
+      });
+
+      changeValue(queryRequiredInput(target, '#package-tag-name'), 'beta');
+      changeValue(queryRequiredSelect(target, '#package-tag-version'), '1.3.0');
+      submitForm(queryRequiredForm(target, '#package-tag-form'));
+
+      await waitFor(() => {
+        expect(target.textContent).toContain('Tag updated');
+        expect(target.textContent).toContain('beta');
+        expect(target.textContent).toContain('1.3.0');
+      });
+
+      click(queryRequiredButton(target, '[data-tag-delete="latest"]'));
+
+      await waitFor(() => {
+        expect(target.textContent).toContain('Tag deleted');
+        const tagsSection = querySectionByHeading(target, 'Tags');
+        expect(tagsSection.textContent).not.toContain('latest');
+        expect(tagsSection.textContent).toContain('beta');
+      });
+
+      expect(confirmCalls).toBe(1);
+      expect(currentScenario?.tagMutations).toEqual([
+        `PUT /v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/tags/beta`,
+        `DELETE /v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/tags/latest`,
+      ]);
+    } finally {
+      window.confirm = originalConfirm;
+      unmount();
+    }
+  });
+
+  test('removes deprecation from a release in the versions tab', async () => {
+    currentScenario = createScenario({
+      packageDetail: {
+        can_manage_releases: true,
+      },
+      releases: [
+        {
+          version: '1.2.3',
+          status: 'deprecated',
+          is_deprecated: true,
+          is_yanked: false,
+          deprecation_message: 'Use 2.0.0 instead',
+        },
+      ],
+    });
+    setPageHref(
+      `https://example.test/packages/${ECOSYSTEM}/${PACKAGE_NAME}?tab=versions`
+    );
+
+    const { target, unmount } = await renderSvelte(PackagePage.default);
+
+    try {
+      await waitFor(() => {
+        expect(target.textContent).toContain('Remove deprecation');
+        expect(target.textContent).toContain('deprecated');
+      });
+
+      click(queryRequiredButton(target, '[data-release-undeprecate="1.2.3"]'));
+
+      await waitFor(() => {
+        expect(target.textContent).toContain('Release undeprecated');
+        expect(target.textContent).not.toContain('Remove deprecation');
+      });
+
+      expect(currentScenario?.releaseMutations).toEqual([
+        `PUT /v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/releases/1.2.3/undeprecate`,
       ]);
     } finally {
       unmount();
@@ -271,20 +622,139 @@ async function handleApiRequest(
     currentScenario.requests.push(path);
   }
 
-  if (method === 'GET' && path === `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}`) {
+  if (
+    method === 'GET' &&
+    path === `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}`
+  ) {
     return apiResponse(currentScenario.packageDetail);
   }
 
-  if (method === 'GET' && path === `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/releases`) {
+  if (
+    method === 'PATCH' &&
+    path === `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}`
+  ) {
+    currentScenario.packageMutations.push({
+      path,
+      body: options?.body,
+    });
+    currentScenario.packageDetail = {
+      ...currentScenario.packageDetail,
+      ...(Object.prototype.hasOwnProperty.call(
+        options?.body || {},
+        'description'
+      )
+        ? { description: options?.body?.description ?? null }
+        : {}),
+      ...(Object.prototype.hasOwnProperty.call(options?.body || {}, 'readme')
+        ? { readme: options?.body?.readme ?? null }
+        : {}),
+      ...(Object.prototype.hasOwnProperty.call(options?.body || {}, 'homepage')
+        ? { homepage: options?.body?.homepage ?? null }
+        : {}),
+      ...(Object.prototype.hasOwnProperty.call(
+        options?.body || {},
+        'repository_url'
+      )
+        ? { repository_url: options?.body?.repository_url ?? null }
+        : {}),
+      ...(Object.prototype.hasOwnProperty.call(options?.body || {}, 'license')
+        ? { license: options?.body?.license ?? null }
+        : {}),
+      ...(Object.prototype.hasOwnProperty.call(options?.body || {}, 'keywords')
+        ? { keywords: options?.body?.keywords ?? null }
+        : {}),
+      ...(Object.prototype.hasOwnProperty.call(
+        options?.body || {},
+        'visibility'
+      )
+        ? { visibility: options?.body?.visibility ?? null }
+        : {}),
+    };
+    return apiResponse({ message: 'Package updated' });
+  }
+
+  if (
+    method === 'DELETE' &&
+    path === `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}`
+  ) {
+    currentScenario.packageArchiveCalls.push(`${method} ${path}`);
+    currentScenario.packageDetail = {
+      ...currentScenario.packageDetail,
+      is_archived: true,
+    };
+    return apiResponse({ message: 'Package archived' });
+  }
+
+  if (
+    method === 'GET' &&
+    path === `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/releases`
+  ) {
     expect(options?.query).toEqual({
       page: undefined,
       per_page: 20,
     });
-    return apiResponse({ releases: [] });
+    return apiResponse({ releases: currentScenario.releases });
   }
 
-  if (method === 'GET' && path === `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/tags`) {
-    return apiResponse({ tags: {} });
+  if (
+    method === 'GET' &&
+    path === `/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/tags`
+  ) {
+    return apiResponse({ tags: currentScenario.tags });
+  }
+
+  if (
+    method === 'PUT' &&
+    path.startsWith(`/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/releases/`) &&
+    path.endsWith('/undeprecate')
+  ) {
+    const version = decodeURIComponent(path.split('/').at(-2) || '');
+    currentScenario.releaseMutations.push(`${method} ${path}`);
+    currentScenario.releases = currentScenario.releases.map((release) =>
+      release.version === version
+        ? {
+            ...release,
+            status: 'published',
+            is_deprecated: false,
+            deprecation_message: null,
+          }
+        : release
+    );
+    return apiResponse({
+      message: 'Release undeprecated',
+      version,
+      status: 'published',
+    });
+  }
+
+  if (
+    method === 'PUT' &&
+    path.startsWith(`/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/tags/`)
+  ) {
+    const tag = decodeURIComponent(path.split('/').at(-1) || '');
+    const version = String(options?.body?.version || '').trim();
+    if (!tag || !version) {
+      throw new Error(`Invalid tag mutation body for ${path}.`);
+    }
+
+    currentScenario.tagMutations.push(`${method} ${path}`);
+    currentScenario.tags[tag] = { version };
+    return apiResponse({ message: 'Tag updated', tag, version });
+  }
+
+  if (
+    method === 'DELETE' &&
+    path.startsWith(`/v1/packages/${ECOSYSTEM}/${PACKAGE_NAME}/tags/`)
+  ) {
+    const tag = decodeURIComponent(path.split('/').at(-1) || '');
+    currentScenario.tagMutations.push(`${method} ${path}`);
+
+    if (!(tag in currentScenario.tags)) {
+      throw new Error(`Missing tag ${tag}.`);
+    }
+
+    delete currentScenario.tags[tag];
+    return apiResponse({ message: 'Tag deleted', tag });
   }
 
   if (
@@ -295,7 +765,9 @@ async function handleApiRequest(
     return apiResponse({
       findings: includeResolved
         ? currentScenario.findings
-        : currentScenario.findings.filter((finding) => finding.is_resolved !== true),
+        : currentScenario.findings.filter(
+            (finding) => finding.is_resolved !== true
+          ),
     });
   }
 
@@ -317,10 +789,12 @@ function apiResponse(data: JsonRecord): { data: JsonRecord; requestId: null } {
   };
 }
 
-function createScenario(): Scenario {
+function createScenario(overrides: Partial<Scenario> = {}): Scenario {
   return {
     requests: [],
     gotoCalls: [],
+    packageMutations: [],
+    packageArchiveCalls: [],
     packageDetail: {
       ecosystem: ECOSYSTEM,
       name: PACKAGE_NAME,
@@ -332,6 +806,7 @@ function createScenario(): Scenario {
       can_manage_metadata: false,
       can_manage_releases: false,
       can_manage_trusted_publishers: false,
+      can_manage_visibility: false,
       can_transfer: false,
       team_access: [
         {
@@ -356,14 +831,17 @@ function createScenario(): Scenario {
           granted_at: '2026-04-12T00:00:00Z',
         },
       ],
+      ...(overrides.packageDetail || {}),
     },
-    findings: [
+    releases: overrides.releases || [],
+    findings: overrides.findings || [
       {
         id: 'finding-1',
         kind: 'vulnerability',
         severity: 'high',
         title: 'Prototype pollution',
-        description: 'User-controlled merge input can pollute object prototypes.',
+        description:
+          'User-controlled merge input can pollute object prototypes.',
         advisory_id: 'CVE-2026-0001',
         is_resolved: false,
         detected_at: '2026-04-13T00:00:00Z',
@@ -408,7 +886,7 @@ function createScenario(): Scenario {
         artifact_filename: 'demo-widget-1.2.1.tgz',
       },
     ],
-    organizations: [
+    organizations: overrides.organizations || [
       {
         id: 'org-1',
         slug: ORG_SLUG,
@@ -416,7 +894,7 @@ function createScenario(): Scenario {
         role: 'admin',
       },
     ],
-    teams: [
+    teams: overrides.teams || [
       {
         id: 'team-security',
         slug: 'security-team',
@@ -425,6 +903,9 @@ function createScenario(): Scenario {
         created_at: '2026-04-01T00:00:00Z',
       },
     ],
+    tags: overrides.tags || {},
+    tagMutations: [],
+    releaseMutations: [],
   };
 }
 
@@ -444,7 +925,10 @@ function buildPageState(href: string): TestPageState {
   };
 }
 
-function querySectionByHeading(target: HTMLElement, headingText: string): HTMLElement {
+function querySectionByHeading(
+  target: HTMLElement,
+  headingText: string
+): HTMLElement {
   const heading = Array.from(target.querySelectorAll('h2, h3, h4')).find(
     (element) => element.textContent?.trim() === headingText
   );
@@ -466,7 +950,10 @@ function querySectionByHeading(target: HTMLElement, headingText: string): HTMLEl
   return container;
 }
 
-function queryRequiredInput(target: HTMLElement, selector: string): HTMLInputElement {
+function queryRequiredInput(
+  target: HTMLElement,
+  selector: string
+): HTMLInputElement {
   const element = target.querySelector(selector);
   if (!(element instanceof HTMLInputElement)) {
     throw new Error(`Missing input for selector ${selector}.`);
@@ -474,7 +961,21 @@ function queryRequiredInput(target: HTMLElement, selector: string): HTMLInputEle
   return element;
 }
 
-function queryRequiredSelect(target: HTMLElement, selector: string): HTMLSelectElement {
+function queryRequiredTextArea(
+  target: HTMLElement,
+  selector: string
+): HTMLTextAreaElement {
+  const element = target.querySelector(selector);
+  if (!(element instanceof HTMLTextAreaElement)) {
+    throw new Error(`Missing textarea for selector ${selector}.`);
+  }
+  return element;
+}
+
+function queryRequiredSelect(
+  target: HTMLElement,
+  selector: string
+): HTMLSelectElement {
   const element = target.querySelector(selector);
   if (!(element instanceof HTMLSelectElement)) {
     throw new Error(`Missing select for selector ${selector}.`);
@@ -482,7 +983,32 @@ function queryRequiredSelect(target: HTMLElement, selector: string): HTMLSelectE
   return element;
 }
 
-function queryRequiredCheckbox(target: ParentNode, selector: string): HTMLInputElement {
+function queryRequiredButton(
+  target: ParentNode,
+  selector: string
+): HTMLButtonElement {
+  const element = target.querySelector(selector);
+  if (!(element instanceof HTMLButtonElement)) {
+    throw new Error(`Missing button for selector ${selector}.`);
+  }
+  return element;
+}
+
+function queryRequiredForm(
+  target: ParentNode,
+  selector: string
+): HTMLFormElement {
+  const element = target.querySelector(selector);
+  if (!(element instanceof HTMLFormElement)) {
+    throw new Error(`Missing form for selector ${selector}.`);
+  }
+  return element;
+}
+
+function queryRequiredCheckbox(
+  target: ParentNode,
+  selector: string
+): HTMLInputElement {
   const element = target.querySelector(selector);
   if (!(element instanceof HTMLInputElement)) {
     throw new Error(`Missing checkbox for selector ${selector}.`);
@@ -492,7 +1018,10 @@ function queryRequiredCheckbox(target: ParentNode, selector: string): HTMLInputE
 
 async function waitFor(
   assertion: () => void,
-  { timeout = 1000, interval = 10 }: { timeout?: number; interval?: number } = {}
+  {
+    timeout = 1000,
+    interval = 10,
+  }: { timeout?: number; interval?: number } = {}
 ): Promise<void> {
   const startedAt = Date.now();
   let lastError: unknown;
@@ -507,7 +1036,9 @@ async function waitFor(
     }
   }
 
-  throw lastError instanceof Error ? lastError : new Error('Timed out waiting for assertion.');
+  throw lastError instanceof Error
+    ? lastError
+    : new Error('Timed out waiting for assertion.');
 }
 
 function normalizeWhitespace(value: string | null | undefined): string {

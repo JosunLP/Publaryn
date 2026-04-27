@@ -129,6 +129,39 @@ export type ReleaseEcosystemMetadata =
       };
     };
 
+export interface BundleAnalysisSummary {
+  source_version?: NullableString;
+  artifact_count?: number | null;
+  total_artifact_size_bytes?: number | null;
+  compressed_size_bytes?: number | null;
+  install_size_bytes?: number | null;
+  file_count?: number | null;
+  direct_dependency_count?: number | null;
+  runtime_dependency_count?: number | null;
+  development_dependency_count?: number | null;
+  peer_dependency_count?: number | null;
+  optional_dependency_count?: number | null;
+  bundled_dependency_count?: number | null;
+  dependency_group_count?: number | null;
+  extra_count?: number | null;
+  package_type_count?: number | null;
+  layer_count?: number | null;
+  install_script_count?: number | null;
+  has_cli_entrypoints?: boolean | null;
+  has_tree_shaking_hints?: boolean | null;
+  has_native_code?: boolean | null;
+  risk?: BundleRiskSummary | null;
+  notes?: string[] | null;
+}
+
+export interface BundleRiskSummary {
+  score?: number | null;
+  level?: NullableString;
+  unresolved_finding_count?: number | null;
+  worst_unresolved_severity?: NullableString;
+  factors?: string[] | null;
+}
+
 export interface SearchPackagesOptions {
   q?: string;
   ecosystem?: string;
@@ -151,6 +184,18 @@ export interface SearchPackage {
   download_count?: number | null;
   updated_at?: NullableString;
   description?: NullableString;
+  discovery?: SearchPackageDiscoverySummary | null;
+}
+
+export interface SearchPackageDiscoverySummary {
+  risk_level?: NullableString;
+  unresolved_security_finding_count?: number | null;
+  worst_unresolved_security_severity?: NullableString;
+  has_trusted_publisher?: boolean | null;
+  trusted_publisher_count?: number | null;
+  latest_release_status?: NullableString;
+  latest_release_published_at?: NullableString;
+  signals?: string[] | null;
 }
 
 export interface SearchPackagesResponse {
@@ -179,21 +224,21 @@ export interface PackageDetail {
   can_manage_metadata?: boolean;
   can_manage_releases?: boolean;
   can_manage_trusted_publishers?: boolean;
+  can_manage_visibility?: boolean;
   can_manage_security?: boolean;
   can_transfer?: boolean;
-  team_access?:
-    | Array<{
-        team_id?: NullableString;
-        team_slug?: NullableString;
-        team_name?: NullableString;
-        permissions?: string[] | null;
-        granted_at?: NullableString;
-      }>
-    | null;
+  team_access?: Array<{
+    team_id?: NullableString;
+    team_slug?: NullableString;
+    team_name?: NullableString;
+    permissions?: string[] | null;
+    granted_at?: NullableString;
+  }> | null;
   homepage?: NullableString;
   repository_url?: NullableString;
   keywords?: string[] | null;
   ecosystem_metadata?: PackageEcosystemMetadata | null;
+  bundle_analysis?: BundleAnalysisSummary | null;
 }
 
 export interface CreatePackageInput {
@@ -223,6 +268,7 @@ export interface UpdatePackageInput {
   license?: NullableString;
   keywords?: string[] | null;
   readme?: NullableString;
+  visibility?: NullableString;
 }
 
 interface ReleaseListResponse {
@@ -279,6 +325,7 @@ export interface Release {
   can_manage_releases?: boolean;
   sha256?: NullableString;
   ecosystem_metadata?: ReleaseEcosystemMetadata | null;
+  bundle_analysis?: BundleAnalysisSummary | null;
 }
 
 export interface Artifact {
@@ -321,6 +368,12 @@ export interface Tag {
   tag?: NullableString;
   name?: NullableString;
   version: string;
+}
+
+export interface TagMutationResult {
+  message?: NullableString;
+  tag?: NullableString;
+  version?: NullableString;
 }
 
 export interface TrustedPublisher {
@@ -424,12 +477,33 @@ export async function updatePackage(
   if (hasOwn(input, 'readme')) {
     body.readme = input.readme ?? null;
   }
+  if (hasOwn(input, 'visibility')) {
+    if (input.visibility === null) {
+      body.visibility = null;
+    } else {
+      const visibility = emptyToUndefined(input.visibility);
+      if (visibility !== undefined) {
+        body.visibility = visibility;
+      }
+    }
+  }
 
   const { data } = await api.patch<PackageMutationResult>(
     `/v1/packages/${enc(ecosystem)}/${enc(name)}`,
     {
       body,
     }
+  );
+
+  return data;
+}
+
+export async function deletePackage(
+  ecosystem: string,
+  name: string
+): Promise<PackageMutationResult> {
+  const { data } = await api.delete<PackageMutationResult>(
+    `/v1/packages/${enc(ecosystem)}/${enc(name)}`
   );
 
   return data;
@@ -580,6 +654,18 @@ export async function deprecateRelease(
   return data;
 }
 
+export async function undeprecateRelease(
+  ecosystem: string,
+  name: string,
+  version: string
+): Promise<ReleaseMutationResult> {
+  const { data } = await api.put<ReleaseMutationResult>(
+    `/v1/packages/${enc(ecosystem)}/${enc(name)}/releases/${enc(version)}/undeprecate`
+  );
+
+  return data;
+}
+
 export async function listTags(
   ecosystem: string,
   name: string
@@ -593,6 +679,36 @@ export async function listTags(
     name: tag,
     version: details?.version || '',
   }));
+}
+
+export async function upsertTag(
+  ecosystem: string,
+  name: string,
+  tag: string,
+  { version }: { version: string }
+): Promise<TagMutationResult> {
+  const { data } = await api.put<TagMutationResult>(
+    `/v1/packages/${enc(ecosystem)}/${enc(name)}/tags/${enc(tag)}`,
+    {
+      body: {
+        version,
+      },
+    }
+  );
+
+  return data;
+}
+
+export async function deleteTag(
+  ecosystem: string,
+  name: string,
+  tag: string
+): Promise<TagMutationResult> {
+  const { data } = await api.delete<TagMutationResult>(
+    `/v1/packages/${enc(ecosystem)}/${enc(name)}/tags/${enc(tag)}`
+  );
+
+  return data;
 }
 
 export async function transferPackageOwnership(

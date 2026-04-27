@@ -16,7 +16,7 @@ product surface it governs.
 | [0009](0009-control-plane-release-publication-and-artifact-storage.md) | Control-plane release publication and artifact storage                | release lifecycle and artifact storage            |
 | [0010](0010-npm-registry-protocol-adapter.md)                          | npm registry protocol adapter                                         | npm/Bun adapter architecture                      |
 | [0011](0011-stateless-api-runtime-and-graceful-lifecycle.md)           | Stateless API runtime and graceful lifecycle                          | API process model and shutdown                    |
-| [0012](0012-team-package-governance.md)                                | Team package governance                                               | delegated team access                             |
+| [0012](0012-team-package-governance.md)                                | Team delegated governance                                             | package, repository, and namespace team access    |
 | [0013](0013-pypi-simple-api-read-surface.md)                           | PyPI Simple API read surface                                          | PyPI read adapter                                 |
 | [0014](0014-pypi-legacy-upload-bridge.md)                              | PyPI legacy upload bridge                                             | PyPI publish adapter                              |
 | [0015](0015-pypi-trusted-publishing.md)                                | PyPI trusted publishing                                               | OIDC trusted publishing                           |

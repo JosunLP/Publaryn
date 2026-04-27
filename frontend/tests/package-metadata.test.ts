@@ -4,10 +4,14 @@ import { describe, expect, test } from 'bun:test';
 
 import type { PackageDetail } from '../src/api/packages';
 import {
+  PACKAGE_VISIBILITY_VALUES_HINT,
+  PackageMetadataValidationError,
   buildPackageMetadataUpdateInput,
   createPackageMetadataFormValues,
+  getPackageMetadataChangeState,
   normalizePackageMetadataInput,
   normalizePackageMetadataKeywords,
+  normalizePackageVisibilityInput,
   packageMetadataHasChanges,
 } from '../src/utils/package-metadata';
 
@@ -19,6 +23,7 @@ const BASE_PACKAGE: PackageDetail = {
   repository_url: 'https://github.com/acme/demo-widget',
   license: 'MIT',
   keywords: ['docs', 'API'],
+  visibility: 'public',
 };
 
 describe('package metadata helpers', () => {
@@ -30,6 +35,7 @@ describe('package metadata helpers', () => {
       repositoryUrl: 'https://github.com/acme/demo-widget',
       license: 'MIT',
       keywords: 'docs, API',
+      visibility: 'public',
     });
   });
 
@@ -42,6 +48,7 @@ describe('package metadata helpers', () => {
         repositoryUrl: ' https://github.com/acme/demo-widget ',
         license: ' Apache-2.0 ',
         keywords: ' docs, API, docs,\ncli ',
+        visibility: ' Unlisted ',
       })
     ).toEqual({
       description: 'Updated description',
@@ -50,6 +57,7 @@ describe('package metadata helpers', () => {
       repositoryUrl: 'https://github.com/acme/demo-widget',
       license: 'Apache-2.0',
       keywords: ['docs', 'API', 'cli'],
+      visibility: 'unlisted',
     });
   });
 
@@ -62,6 +70,7 @@ describe('package metadata helpers', () => {
         repositoryUrl: ' \t ',
         license: '',
         keywords: ' , \n ',
+        visibility: ' ',
       })
     ).toEqual({
       description: null,
@@ -70,7 +79,48 @@ describe('package metadata helpers', () => {
       repositoryUrl: null,
       license: null,
       keywords: null,
+      visibility: null,
     });
+  });
+
+  test('throws for invalid visibility values instead of silently ignoring them', () => {
+    expect(() =>
+      normalizePackageMetadataInput({
+        ...createPackageMetadataFormValues(BASE_PACKAGE),
+        visibility: 'unknown',
+      })
+    ).toThrow(
+      'Invalid package visibility: unknown. Allowed values: public, private, internal_org, unlisted, quarantined.'
+    );
+  });
+
+  test('normalizes allowed visibility values, including hyphenated input', () => {
+    expect(normalizePackageVisibilityInput('public')).toBe('public');
+    expect(normalizePackageVisibilityInput('PRIVATE')).toBe('private');
+    expect(normalizePackageVisibilityInput('internal-org')).toBe(
+      'internal_org'
+    );
+    expect(normalizePackageVisibilityInput('internal org')).toBe(
+      'internal_org'
+    );
+    expect(normalizePackageVisibilityInput(' quarantined ')).toBe(
+      'quarantined'
+    );
+  });
+
+  test('treats blank and omitted visibility input distinctly', () => {
+    expect(normalizePackageVisibilityInput(' \n\t ')).toBeNull();
+    expect(normalizePackageVisibilityInput(undefined)).toBeUndefined();
+    expect(normalizePackageVisibilityInput(null)).toBeUndefined();
+  });
+
+  test('throws a useful visibility validation error for unknown values', () => {
+    const invalidVisibility = () => normalizePackageVisibilityInput('internal-team');
+
+    expect(invalidVisibility).toThrow(
+      `Invalid package visibility: internal-team. Allowed values: ${PACKAGE_VISIBILITY_VALUES_HINT}. Normalized: internal_team.`
+    );
+    expect(invalidVisibility).toThrow(PackageMetadataValidationError);
   });
 
   test('normalizes keyword text into a stable unique list', () => {
@@ -84,6 +134,10 @@ describe('package metadata helpers', () => {
     const formValues = createPackageMetadataFormValues(BASE_PACKAGE);
 
     expect(packageMetadataHasChanges(BASE_PACKAGE, formValues)).toBe(false);
+    expect(getPackageMetadataChangeState(BASE_PACKAGE, formValues)).toEqual({
+      hasChanges: false,
+      hasValidationError: false,
+    });
     expect(buildPackageMetadataUpdateInput(BASE_PACKAGE, formValues)).toEqual(
       {}
     );
@@ -97,6 +151,7 @@ describe('package metadata helpers', () => {
       repositoryUrl: ' https://github.com/acme/demo-widget-next ',
       license: 'MIT',
       keywords: 'docs, cli',
+      visibility: 'public',
     });
 
     expect(input).toEqual({
@@ -113,7 +168,100 @@ describe('package metadata helpers', () => {
         repositoryUrl: ' https://github.com/acme/demo-widget-next ',
         license: 'MIT',
         keywords: 'docs, cli',
+        visibility: 'public',
       })
     ).toBe(true);
+  });
+
+  test('includes visibility only when the package visibility changed', () => {
+    expect(
+      buildPackageMetadataUpdateInput(BASE_PACKAGE, {
+        ...createPackageMetadataFormValues(BASE_PACKAGE),
+        visibility: 'internal-org',
+      })
+    ).toEqual({
+      visibility: 'internal_org',
+    });
+  });
+
+  test('normalizes spaced visibility input before emitting mutation payloads', () => {
+    expect(
+      buildPackageMetadataUpdateInput(BASE_PACKAGE, {
+        ...createPackageMetadataFormValues(BASE_PACKAGE),
+        visibility: 'internal org',
+      })
+    ).toEqual({
+      visibility: 'internal_org',
+    });
+  });
+
+  test('allows visibility to be cleared back to the default state', () => {
+    const privatePackage = {
+      ...BASE_PACKAGE,
+      visibility: 'private',
+    };
+
+    expect(
+      buildPackageMetadataUpdateInput(privatePackage, {
+        ...createPackageMetadataFormValues(privatePackage),
+        visibility: '',
+      })
+    ).toEqual({
+      visibility: null,
+    });
+    expect(
+      packageMetadataHasChanges(privatePackage, {
+        ...createPackageMetadataFormValues(privatePackage),
+        visibility: '',
+      })
+    ).toBe(true);
+  });
+
+  test('treats invalid visibility values as actionable validation errors', () => {
+    const privatePackage = {
+      ...BASE_PACKAGE,
+      visibility: 'private',
+    };
+    const invalidValues = {
+      ...createPackageMetadataFormValues(privatePackage),
+      visibility: 'definitely-not-valid',
+    };
+
+    expect(() =>
+      buildPackageMetadataUpdateInput(privatePackage, invalidValues)
+    ).toThrow(
+      'Invalid package visibility: definitely-not-valid. Allowed values: public, private, internal_org, unlisted, quarantined. Normalized: definitely_not_valid.'
+    );
+    expect(() => packageMetadataHasChanges(privatePackage, invalidValues)).not.toThrow();
+    expect(packageMetadataHasChanges(privatePackage, invalidValues)).toBe(false);
+
+    const invalidChangeState = getPackageMetadataChangeState(
+      privatePackage,
+      invalidValues
+    );
+    expect(invalidChangeState).toEqual({
+      hasChanges: false,
+      hasValidationError: true,
+    });
+  });
+
+  test('treats omitted visibility input as no change instead of clearing', () => {
+    const privatePackage = {
+      ...BASE_PACKAGE,
+      visibility: 'private',
+    };
+
+    expect(
+      buildPackageMetadataUpdateInput(privatePackage, {
+        ...createPackageMetadataFormValues(privatePackage),
+        visibility: undefined as unknown as string,
+      })
+    ).toEqual({});
+    expect(
+      packageMetadataHasChanges(privatePackage, {
+        ...createPackageMetadataFormValues(privatePackage),
+        visibility: undefined as unknown as string,
+      })
+    ).toBe(false);
   });
 });

@@ -48,6 +48,7 @@ The 1.0 baseline is intentionally opinionated:
 
 ## Where to go next
 
+- [Review the working 1.1.0 roadmap](./1.1.0-roadmap.md)
 - [Read the 1.0 release contract](/1.0)
 - [Open the API and adapter route reference](/api-routes)
 - [Architecture overview](/architecture/README)

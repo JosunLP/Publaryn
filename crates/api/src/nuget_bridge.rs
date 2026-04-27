@@ -5,7 +5,9 @@ use bytes::Bytes;
 use publaryn_core::error::Error;
 use sqlx::PgPool;
 
-use publaryn_adapter_nuget::routes::{NuGetAppState, NuGetSearchHit, StoredObject};
+use publaryn_adapter_nuget::routes::{
+    NuGetAppState, NuGetSearchHit, NuGetSearchResults, StoredObject,
+};
 
 use crate::state::AppState;
 use crate::storage::PutArtifactObject;
@@ -50,38 +52,50 @@ impl NuGetAppState for AppState {
         &self.config.auth.issuer
     }
 
+    async fn reindex_package_document(&self, package_id: uuid::Uuid) -> Result<(), Error> {
+        crate::package_search::reindex_package_document(&self.db, self.search.as_ref(), package_id)
+            .await
+    }
+
     async fn search_packages(
         &self,
         query: &str,
         take: u32,
         skip: u32,
-    ) -> Result<Vec<NuGetSearchHit>, Error> {
-        use publaryn_search::SearchIndex;
-
+        actor_user_id: Option<uuid::Uuid>,
+    ) -> Result<NuGetSearchResults, Error> {
         let search_query = publaryn_search::query::SearchQuery {
             q: query.to_owned(),
             ecosystem: Some(publaryn_core::domain::namespace::Ecosystem::Nuget),
-            limit: Some(take),
-            offset: Some(skip),
+            limit: Some(crate::routes::search::search_batch_size(take)),
+            offset: Some(0),
         };
 
-        let results = self
-            .search
-            .search(&search_query)
-            .await
-            .map_err(|e| Error::Internal(e.to_string()))?;
+        let results = crate::routes::search::load_visible_search_window(
+            self,
+            self.search.as_ref(),
+            &search_query,
+            actor_user_id,
+            crate::routes::search::SearchScopeFilters::default(),
+            skip as usize,
+            take as usize,
+        )
+        .await
+        .map_err(|err| err.0)?;
 
-        Ok(results
-            .hits
-            .into_iter()
-            .filter(|hit| hit.visibility == "public")
-            .map(|hit| NuGetSearchHit {
-                id: hit.name,
-                version: hit.latest_version.unwrap_or_default(),
-                description: hit.description,
-                tags: hit.keywords,
-                total_downloads: hit.download_count,
-            })
-            .collect())
+        Ok(NuGetSearchResults {
+            total: results.total,
+            hits: results
+                .packages
+                .into_iter()
+                .map(|hit| NuGetSearchHit {
+                    id: hit.name,
+                    version: hit.latest_version.unwrap_or_default(),
+                    description: hit.description,
+                    tags: hit.keywords,
+                    total_downloads: hit.download_count,
+                })
+                .collect(),
+        })
     }
 }

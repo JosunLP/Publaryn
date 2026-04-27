@@ -7,7 +7,19 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
-- Post-1.0 release follow-up work.
+### 1.1.0 added
+
+- completed `1.1.0` roadmap in `docs/product/1.1.0-roadmap.md`
+- heuristic risk posture on package and release detail surfaces derived from bundle analysis and unresolved security findings
+- search discovery hints for risk level, unresolved security findings, trusted publishing, latest release state, and freshness signals
+- operator job retry and stale-lock recovery endpoints with retry eligibility, stale state, and recovery hints
+- normalized dependency overview on release detail pages for ecosystems with stored structured metadata
+- organization delegated-access history API, CSV export, and workspace panel for package, repository, and namespace grants
+
+### 1.1.0 documentation
+
+- release-facing `1.1.0` notes in `docs/releases/1.1.0.md`
+- API route reference entries for organization access-history list and export endpoints
 
 ## [1.0.0] - 2026-04-23
 

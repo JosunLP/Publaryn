@@ -8,6 +8,7 @@
     getRelease,
     listArtifacts,
     publishRelease,
+    undeprecateRelease,
     unyankRelease,
     uploadReleaseArtifact,
     yankRelease,
@@ -18,7 +19,24 @@
     formatVersionLabel,
     installCommand,
   } from '../../../../../../utils/ecosystem';
-  import { copyToClipboard, formatDate } from '../../../../../../utils/format';
+  import {
+    copyToClipboard,
+    formatDate,
+    formatFileSize,
+    formatNumber,
+  } from '../../../../../../utils/format';
+  import {
+    buildBundleAnalysisHighlights,
+    buildBundleAnalysisStats,
+    bundleAnalysisNotes,
+    bundleAnalysisRisk,
+    bundleAnalysisRiskBadgeSeverity,
+    bundleAnalysisRiskFactors,
+    bundleAnalysisRiskLabel,
+    bundleAnalysisRiskScoreLabel,
+    bundleAnalysisRiskSeverityLabel,
+  } from '../../../../../../utils/package-analysis';
+  import { buildReleaseDependencyOverview } from '../../../../../../utils/release-metadata';
   import {
     ARTIFACT_KIND_OPTIONS,
     describeReleaseReadiness,
@@ -52,6 +70,7 @@
   let yanking = false;
   let restoring = false;
   let deprecating = false;
+  let undeprecating = false;
 
   $: ecosystem = $page.params.ecosystem ?? '';
   $: name = $page.params.name ?? '';
@@ -84,10 +103,7 @@
       if (caughtError instanceof ApiError && caughtError.status === 404) {
         notFound = true;
       } else {
-        loadError =
-          caughtError instanceof Error && caughtError.message
-            ? caughtError.message
-            : 'Failed to load version.';
+        loadError = toErrorMessage(caughtError, 'Failed to load version.');
       }
       loading = false;
       return;
@@ -120,6 +136,7 @@
     notice = null;
 
     try {
+      const uploadedFilename = artifactFile.name;
       await uploadReleaseArtifact(eecosystem(), ename(), eversion(), {
         filename: artifactFile.name,
         kind: artifactKind,
@@ -129,13 +146,10 @@
         signatureKeyId: signatureKeyId.trim() || undefined,
       });
 
-      notice = `Uploaded ${artifactFile.name}.`;
       await loadVersionPage();
+      notice = `Uploaded ${uploadedFilename}.`;
     } catch (caughtError: unknown) {
-      error =
-        caughtError instanceof Error && caughtError.message
-          ? caughtError.message
-          : 'Failed to upload artifact.';
+      error = toErrorMessage(caughtError, 'Failed to upload artifact.');
     } finally {
       uploadingArtifact = false;
     }
@@ -148,13 +162,10 @@
 
     try {
       const result = await publishRelease(eecosystem(), ename(), eversion());
-      notice = result.message || 'Release submitted for scanning.';
       await loadVersionPage();
+      notice = result.message || 'Release submitted for scanning.';
     } catch (caughtError: unknown) {
-      error =
-        caughtError instanceof Error && caughtError.message
-          ? caughtError.message
-          : 'Failed to publish release.';
+      error = toErrorMessage(caughtError, 'Failed to publish release.');
     } finally {
       publishing = false;
     }
@@ -169,13 +180,10 @@
       const result = await yankRelease(eecosystem(), ename(), eversion(), {
         reason: yankReason.trim() || undefined,
       });
-      notice = result.message || 'Release yanked successfully.';
       await loadVersionPage();
+      notice = result.message || 'Release yanked successfully.';
     } catch (caughtError: unknown) {
-      error =
-        caughtError instanceof Error && caughtError.message
-          ? caughtError.message
-          : 'Failed to yank release.';
+      error = toErrorMessage(caughtError, 'Failed to yank release.');
     } finally {
       yanking = false;
     }
@@ -188,13 +196,10 @@
 
     try {
       const result = await unyankRelease(eecosystem(), ename(), eversion());
-      notice = result.message || 'Release restored successfully.';
       await loadVersionPage();
+      notice = result.message || 'Release restored successfully.';
     } catch (caughtError: unknown) {
-      error =
-        caughtError instanceof Error && caughtError.message
-          ? caughtError.message
-          : 'Failed to restore release.';
+      error = toErrorMessage(caughtError, 'Failed to restore release.');
     } finally {
       restoring = false;
     }
@@ -211,26 +216,33 @@
       const result = await deprecateRelease(eecosystem(), ename(), eversion(), {
         message: deprecationMessage.trim() || undefined,
       });
-      notice = result.message || 'Release deprecated successfully.';
       await loadVersionPage();
+      notice = result.message || 'Release deprecated successfully.';
     } catch (caughtError: unknown) {
-      error =
-        caughtError instanceof Error && caughtError.message
-          ? caughtError.message
-          : 'Failed to deprecate release.';
+      error = toErrorMessage(caughtError, 'Failed to deprecate release.');
     } finally {
       deprecating = false;
     }
   }
 
-  function formatFileSize(bytes: number): string {
-    if (bytes < 1024) {
-      return `${bytes} B`;
+  async function handleUndeprecate(): Promise<void> {
+    undeprecating = true;
+    error = null;
+    notice = null;
+
+    try {
+      const result = await undeprecateRelease(
+        eecosystem(),
+        ename(),
+        eversion()
+      );
+      await loadVersionPage();
+      notice = result.message || 'Release undeprecated successfully.';
+    } catch (caughtError: unknown) {
+      error = toErrorMessage(caughtError, 'Failed to remove release deprecation.');
+    } finally {
+      undeprecating = false;
     }
-    if (bytes < 1024 * 1024) {
-      return `${(bytes / 1024).toFixed(1)} KB`;
-    }
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   }
 
   function formatJson(value: unknown): string {
@@ -243,6 +255,12 @@
 
   function stringValue(value: unknown): string | null {
     return typeof value === 'string' && value.trim().length > 0 ? value : null;
+  }
+
+  function toErrorMessage(caughtError: unknown, fallback: string): string {
+    return caughtError instanceof Error && caughtError.message
+      ? caughtError.message
+      : fallback;
   }
 
   function stringArrayValue(value: unknown): string[] {
@@ -302,7 +320,18 @@
   }
 
   $: artifactCount = artifacts.length;
+  $: bundleAnalysis = release?.bundle_analysis ?? null;
+  $: bundleAnalysisStats = buildBundleAnalysisStats(bundleAnalysis);
+  $: bundleAnalysisHighlights = buildBundleAnalysisHighlights(bundleAnalysis);
+  $: bundleAnalysisDetailNotes = bundleAnalysisNotes(bundleAnalysis);
+  $: releaseBundleRisk = bundleAnalysisRisk(bundleAnalysis);
+  $: releaseBundleRiskFactors = bundleAnalysisRiskFactors(bundleAnalysis);
+  $: releaseBundleRiskScore = bundleAnalysisRiskScoreLabel(bundleAnalysis);
+  $: releaseBundleRiskWorstSeverity =
+    bundleAnalysisRiskSeverityLabel(bundleAnalysis);
   $: releaseMetadata = release?.ecosystem_metadata ?? null;
+  $: releaseDependencyOverview =
+    buildReleaseDependencyOverview(releaseMetadata);
   $: cargoMetadata =
     releaseMetadata?.kind === 'cargo' ? releaseMetadata.details : null;
   $: nugetMetadata =
@@ -344,6 +373,7 @@
         canYank: false,
         canRestore: false,
         canDeprecate: false,
+        canUndeprecate: false,
       };
   $: releaseStatus = (release?.status || '').trim().toLowerCase();
   $: readiness = release
@@ -397,12 +427,14 @@
           </p>
           <div class="page-hero__meta">
             <span class="badge badge-ecosystem"
-              >{ecosystemIcon(eecosystem())} {ecosystemLabel(eecosystem())}</span
+              >{ecosystemIcon(eecosystem())}
+              {ecosystemLabel(eecosystem())}</span
             >
             <span class="badge badge-ecosystem"
               >{formatVersionLabel(eecosystem(), eversion())}</span
             >
-            {#if release.is_yanked}<span class="badge badge-yanked">yanked</span>{/if}
+            {#if release.is_yanked}<span class="badge badge-yanked">yanked</span
+              >{/if}
             {#if release.is_deprecated}<span class="badge badge-deprecated"
                 >deprecated</span
               >{/if}
@@ -470,6 +502,42 @@
           <div class="card mb-4">
             <h3 class="metadata-block__title">Changelog</h3>
             <pre>{release.changelog}</pre>
+          </div>
+        {/if}
+
+        {#if releaseDependencyOverview}
+          <div class="card mb-4">
+            <h3 class="metadata-block__title">Dependency overview</h3>
+            <p class="settings-copy" style="margin-bottom:12px;">
+              Normalized dependency groups extracted from the stored
+              {ecosystemLabel(releaseDependencyOverview.ecosystem)} release metadata.
+            </p>
+            <div class="token-row__scopes" style="margin-bottom:12px;">
+              <span class="badge badge-ecosystem"
+                >{formatNumber(releaseDependencyOverview.total)} total</span
+              >
+              <span class="badge badge-ecosystem"
+                >{formatNumber(releaseDependencyOverview.groups.length)} group{releaseDependencyOverview
+                  .groups.length === 1
+                  ? ''
+                  : 's'}</span
+              >
+            </div>
+            {#each releaseDependencyOverview.groups as group}
+              <div class="sidebar-row">
+                <span class="sidebar-row__label">{group.label}</span>
+                <span class="sidebar-row__value"
+                  >{formatNumber(group.count)}</span
+                >
+              </div>
+              {#if group.names.length > 0}
+                <div class="token-row__scopes" style="margin:6px 0 12px;">
+                  {#each group.names as dependencyName}
+                    <span class="badge badge-ecosystem">{dependencyName}</span>
+                  {/each}
+                </div>
+              {/if}
+            {/each}
           </div>
         {/if}
 
@@ -1049,6 +1117,103 @@
           </div>
         </div>
 
+        {#if releaseBundleRisk}
+          <div class="card">
+            <div class="sidebar-section">
+              <h3>Risk posture</h3>
+              <p class="settings-copy" style="margin-bottom:12px;">
+                Heuristic supply-chain signals for this release based on
+                unresolved security findings plus install, native-code, and
+                dependency-surface hints.
+              </p>
+              <div class="token-row__scopes" style="margin-bottom:12px;">
+                <span
+                  class={`badge badge-severity-${bundleAnalysisRiskBadgeSeverity(
+                    bundleAnalysis
+                  )}`}>{bundleAnalysisRiskLabel(bundleAnalysis)}</span
+                >
+                {#if releaseBundleRiskScore}
+                  <span class="badge badge-ecosystem"
+                    >Score {releaseBundleRiskScore}</span
+                  >
+                {/if}
+                {#if (releaseBundleRisk.unresolved_finding_count || 0) > 0}
+                  <span class="badge badge-ecosystem"
+                    >{formatNumber(
+                      releaseBundleRisk.unresolved_finding_count || 0
+                    )} unresolved finding{releaseBundleRisk.unresolved_finding_count ===
+                    1
+                      ? ''
+                      : 's'}</span
+                  >
+                {/if}
+              </div>
+              {#if releaseBundleRiskWorstSeverity}
+                <div class="sidebar-row">
+                  <span class="sidebar-row__label"
+                    >Worst unresolved finding</span
+                  >
+                  <span class="sidebar-row__value"
+                    >{releaseBundleRiskWorstSeverity}</span
+                  >
+                </div>
+              {/if}
+              {#if releaseBundleRiskFactors.length > 0}
+                <div
+                  class="settings-copy"
+                  style="display:grid; gap:6px; margin:0;"
+                >
+                  {#each releaseBundleRiskFactors as factor}
+                    <span>{factor}</span>
+                  {/each}
+                </div>
+              {:else}
+                <p class="settings-copy" style="margin:0;">
+                  No elevated risk signals were detected for this release.
+                </p>
+              {/if}
+            </div>
+          </div>
+        {/if}
+
+        {#if bundleAnalysis}
+          <div class="card">
+            <div class="sidebar-section">
+              <h3>Bundle analysis</h3>
+              <p class="settings-copy" style="margin-bottom:12px;">
+                Bundlephobia-inspired metadata derived from stored artifacts and
+                ecosystem-specific release metadata.
+              </p>
+              {#each bundleAnalysisStats as stat}
+                <div class="sidebar-row">
+                  <span class="sidebar-row__label">{stat.label}</span>
+                  <span class="sidebar-row__value">{stat.value}</span>
+                </div>
+              {/each}
+              {#if bundleAnalysisHighlights.length > 0}
+                <div
+                  class="token-row__scopes"
+                  style="margin-top:12px; margin-bottom:12px;"
+                >
+                  {#each bundleAnalysisHighlights as highlight}
+                    <span class="badge badge-ecosystem">{highlight}</span>
+                  {/each}
+                </div>
+              {/if}
+              {#if bundleAnalysisDetailNotes.length > 0}
+                <div
+                  class="settings-copy"
+                  style="display:grid; gap:6px; margin:0;"
+                >
+                  {#each bundleAnalysisDetailNotes as note}
+                    <span>{note}</span>
+                  {/each}
+                </div>
+              {/if}
+            </div>
+          </div>
+        {/if}
+
         {#if release.can_manage_releases}
           <div class="card">
             <div class="sidebar-section">
@@ -1196,6 +1361,21 @@
                     {deprecating ? 'Deprecating…' : 'Deprecate release'}
                   </button>
                 </form>
+              {/if}
+
+              {#if actionAvailability.canUndeprecate}
+                <button
+                  id="release-undeprecate"
+                  type="button"
+                  class="btn btn-secondary"
+                  style="width:100%; justify-content:center; margin-top:12px;"
+                  disabled={undeprecating}
+                  on:click={handleUndeprecate}
+                >
+                  {undeprecating
+                    ? 'Removing deprecation…'
+                    : 'Remove deprecation'}
+                </button>
               {/if}
             </div>
           </div>

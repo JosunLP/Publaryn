@@ -60,7 +60,8 @@ Your goal is to deliver exactly one coherent, PR-sized slice that is already sup
 
 - [Concept](../../docs/concept.md) says the immediate frontend goal is to expand the governance baseline into dedicated organization workspaces, then into teams, package access, audit, and security surfaces.
 - [ADR 0012](../../docs/adr/0012-team-package-governance.md) explicitly lists surfacing team package access in the frontend as follow-up work.
-- [Organization workspace page](../../frontend/src/pages/org-detail.ts) is the current frontend hub for org governance.
+- [Organization workspace route](../../frontend/src/routes/orgs/[slug]/+page.svelte) is the current frontend hub for org governance.
+- [Organization team detail route](../../frontend/src/routes/orgs/[slug]/teams/[team_slug]/+page.svelte) is the focused surface for delegated team member and access management.
 - [Organization API client](../../frontend/src/api/orgs.ts) is the frontend wrapper layer to inspect first.
 - [Organization routes](../../crates/api/src/routes/orgs.rs) already expose organization ownership transfer, team CRUD, team membership, and team package-access endpoints.
 
@@ -73,6 +74,7 @@ If multiple slices are viable, choose the smallest high-value slice that extends
 - add frontend support for team CRUD in the organization workspace
 - add team member management UI and any missing client wrappers
 - add delegated package-access management UI for org-owned packages
+- add delegated repository-access or namespace-access management UI for org-owned assets
 - add organization ownership-transfer UI
 - add targeted tests for delegated authorization paths if the UI scope is too large for one safe pass
 

@@ -11,6 +11,7 @@ import {
 describe('package detail tab helpers', () => {
   test('normalizes supported tabs and falls back to readme', () => {
     expect(normalizePackageDetailTab('security')).toBe('security');
+    expect(normalizePackageDetailTab('settings')).toBe('settings');
     expect(normalizePackageDetailTab('  Versions  ')).toBe('versions');
     expect(normalizePackageDetailTab('unknown')).toBe('readme');
     expect(normalizePackageDetailTab(null)).toBe('readme');
@@ -20,6 +21,9 @@ describe('package detail tab helpers', () => {
     expect(
       getPackageDetailTabFromQuery(new URLSearchParams('tab=security'))
     ).toBe('security');
+    expect(
+      getPackageDetailTabFromQuery(new URLSearchParams('tab=settings'))
+    ).toBe('settings');
     expect(getPackageDetailTabFromQuery(new URLSearchParams('tab=nope'))).toBe(
       'readme'
     );
@@ -29,14 +33,14 @@ describe('package detail tab helpers', () => {
     const path = buildPackageDetailPath(
       'npm',
       '@acme/widget',
-      { tab: 'security' },
+      { tab: 'settings' },
       '?foo=bar'
     );
     const url = new URL(path, 'https://example.test');
 
     expect(url.pathname).toBe('/packages/npm/%40acme%2Fwidget');
     expect(url.searchParams.get('foo')).toBe('bar');
-    expect(url.searchParams.get('tab')).toBe('security');
+    expect(url.searchParams.get('tab')).toBe('settings');
   });
 
   test('builds package detail paths with URL-backed security filters', () => {

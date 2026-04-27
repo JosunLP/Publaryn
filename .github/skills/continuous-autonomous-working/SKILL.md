@@ -1,6 +1,6 @@
 ---
 name: continuous-autonomous-working
-description: 'Complete multi-step coding and repo tasks continuously without waiting for human restarts. Use when the user wants autonomous execution, end-to-end delivery, proactive next steps, iterative debugging, testing, validation, and minimal check-ins. Trigger phrases: continue autonomously, keep going until done, no restarts, do the whole task, finish end-to-end, do not stop between steps.'
+description: 'Complete multi-step coding and repo tasks continuously without waiting for human restarts. Use when the user wants autonomous execution, end-to-end delivery, proactive next steps, iterative debugging, testing, validation, minimal check-ins, or chained PR-sized slices. Trigger phrases: continue autonomously, keep going until done, no restarts, do the whole task, finish end-to-end, do not stop between steps.'
 argument-hint: 'Describe the task to complete autonomously, plus any boundaries, approvals, or stop conditions.'
 user-invocable: true
 disable-model-invocation: false
@@ -10,7 +10,7 @@ disable-model-invocation: false
 
 ## Outcome
 
-Drive a task from understanding to implementation, validation, and wrap-up without making the user manually restart the workflow after each intermediate step.
+Drive a task from understanding to implementation, validation, and wrap-up without making the user manually restart the workflow after each intermediate step or after each clearly unlocked next slice.
 
 ## When to Use
 
@@ -25,10 +25,12 @@ Use this skill when the user:
 
 - Prefer action over unnecessary confirmation.
 - Continue to the next obvious step after each successful investigation, edit, or test.
+- Prefer successive reviewable slices over one sweeping speculative rewrite.
 - Use small, verifiable changes instead of large speculative rewrites.
 - Keep the user informed with brief progress updates, but do not stop for permission unless required.
 - Respect safety, policy, destructive-operation, credential, and approval boundaries.
 - Default autonomy boundary: code, configuration, analysis, and validation are in scope; commits, pushes, pull requests, deployments, and other external publication steps are out of scope unless the user explicitly expands the boundary.
+- When the repository has an explicit product contract, ADR set, or release checklist, re-check those sources before starting a new slice that could affect them.
 
 ## Procedure
 
@@ -43,7 +45,7 @@ Use this skill when the user:
    - Avoid broad exploration unless the task is genuinely ambiguous.
 
 3. **Create and maintain a lightweight todo list**
-   - Break the work into concrete, testable steps.
+   - Break the work into concrete, testable steps or PR-sized slices.
    - Keep exactly one step in progress.
    - Update the list as new subproblems or follow-up checks appear.
 
@@ -61,6 +63,7 @@ Use this skill when the user:
    - After each successful step, move straight to the next planned step.
    - Do not ask the user to continue, confirm, or restart the workflow when the next action is clear.
    - If the best next step is another investigation or test, do it.
+   - If the user explicitly asked for ongoing autonomous progress and one completed slice naturally unlocks the next, continue into the next slice instead of stopping at the first local success.
 
 7. **Close the loop**
    - Ensure the original request is fully addressed.
@@ -109,6 +112,7 @@ Before stopping, verify that:
 - relevant code paths were tested or otherwise validated
 - changed files are internally consistent
 - any newly introduced errors were resolved
+- any explicit contract, ADR, or release-facing expectations touched by the work still match the implementation
 - the todo list is fully updated with completed or blocked status
 - the final message includes results, verification, and any necessary follow-up
 

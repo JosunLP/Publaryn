@@ -18,6 +18,7 @@ pub const SCOPE_REPOSITORIES_TRANSFER: &str = "repositories:transfer";
 pub const SCOPE_PACKAGES_WRITE: &str = "packages:write";
 pub const SCOPE_PACKAGES_TRANSFER: &str = "packages:transfer";
 pub const SCOPE_AUDIT_READ: &str = "audit:read";
+pub const SCOPE_ADMIN_WRITE: &str = "admin:write";
 
 const DEFAULT_SESSION_SCOPES: &[&str] = &[
     SCOPE_PROFILE_WRITE,
@@ -48,9 +49,10 @@ const GRANTABLE_SCOPES: &[&str] = &[
     SCOPE_PACKAGES_WRITE,
     SCOPE_PACKAGES_TRANSFER,
     SCOPE_AUDIT_READ,
+    SCOPE_ADMIN_WRITE,
 ];
 
-const ADMIN_ONLY_SCOPES: &[&str] = &[SCOPE_AUDIT_READ];
+const ADMIN_ONLY_SCOPES: &[&str] = &[SCOPE_AUDIT_READ, SCOPE_ADMIN_WRITE];
 
 pub fn default_session_scopes(is_platform_admin: bool) -> Vec<String> {
     let mut scopes = DEFAULT_SESSION_SCOPES
@@ -60,6 +62,7 @@ pub fn default_session_scopes(is_platform_admin: bool) -> Vec<String> {
 
     if is_platform_admin {
         scopes.push(SCOPE_AUDIT_READ.to_owned());
+        scopes.push(SCOPE_ADMIN_WRITE.to_owned());
     }
 
     scopes
@@ -131,8 +134,8 @@ pub fn ensure_scope(identity: &AuthenticatedIdentity, scope: &str) -> ApiResult<
 mod tests {
     use super::{
         default_session_scopes, ensure_scope_grant_allowed, normalize_requested_scopes,
-        supported_scopes, SCOPE_AUDIT_READ, SCOPE_NAMESPACES_TRANSFER, SCOPE_ORGS_TRANSFER,
-        SCOPE_PACKAGES_TRANSFER, SCOPE_PACKAGES_WRITE, SCOPE_PROFILE_WRITE,
+        supported_scopes, SCOPE_ADMIN_WRITE, SCOPE_AUDIT_READ, SCOPE_NAMESPACES_TRANSFER,
+        SCOPE_ORGS_TRANSFER, SCOPE_PACKAGES_TRANSFER, SCOPE_PACKAGES_WRITE, SCOPE_PROFILE_WRITE,
         SCOPE_REPOSITORIES_TRANSFER,
     };
 
@@ -142,6 +145,7 @@ mod tests {
 
         assert!(scopes.contains(&SCOPE_PROFILE_WRITE.to_owned()));
         assert!(!scopes.contains(&SCOPE_AUDIT_READ.to_owned()));
+        assert!(!scopes.contains(&SCOPE_ADMIN_WRITE.to_owned()));
     }
 
     #[test]
@@ -149,6 +153,7 @@ mod tests {
         let scopes = default_session_scopes(true);
 
         assert!(scopes.contains(&SCOPE_AUDIT_READ.to_owned()));
+        assert!(scopes.contains(&SCOPE_ADMIN_WRITE.to_owned()));
     }
 
     #[test]
@@ -193,6 +198,17 @@ mod tests {
     }
 
     #[test]
+    fn non_admins_cannot_grant_admin_write_scope() {
+        let error = ensure_scope_grant_allowed(&[SCOPE_ADMIN_WRITE.to_owned()], false)
+            .expect_err("standard users must not grant admin-write scope");
+
+        assert_eq!(
+            error.0.to_string(),
+            "Forbidden: Only platform administrators can grant the 'admin:write' scope"
+        );
+    }
+
+    #[test]
     fn supported_scope_list_contains_expected_package_scope() {
         assert!(supported_scopes().contains(&SCOPE_PACKAGES_WRITE));
     }
@@ -215,5 +231,10 @@ mod tests {
     #[test]
     fn supported_scope_list_contains_namespace_transfer_scope() {
         assert!(supported_scopes().contains(&SCOPE_NAMESPACES_TRANSFER));
+    }
+
+    #[test]
+    fn supported_scope_list_contains_admin_write_scope() {
+        assert!(supported_scopes().contains(&SCOPE_ADMIN_WRITE));
     }
 }

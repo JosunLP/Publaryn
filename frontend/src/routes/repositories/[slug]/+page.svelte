@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { browser } from '$app/environment';
   import { page } from '$app/stores';
 
   import { ApiError } from '../../../api/client';
@@ -12,6 +13,11 @@
     listRepositoryPackages,
     updateRepository,
   } from '../../../api/repositories';
+  import {
+    createRepositoryTransferController,
+    loadRepositoryTransferState,
+    type RepositoryTransferState,
+  } from '../../../pages/repository-transfer';
   import {
     buildPackageDetailsPath,
     buildPackageSecurityPath,
@@ -47,6 +53,14 @@
   let updatingRepository = false;
   let repositoryDescription = '';
   let repositoryVisibility = 'public';
+  let transferState: RepositoryTransferState = {
+    showTransfer: false,
+    organizations: [],
+    loadError: null,
+  };
+  let targetOrgSlug = '';
+  let transferConfirmed = false;
+  let transferringRepository = false;
 
   let creatingPackage = false;
   let newPackageEcosystem = DEFAULT_PACKAGE_ECOSYSTEM;
@@ -89,6 +103,14 @@
     packages = [];
     packageError = null;
     notFound = false;
+    transferState = {
+      showTransfer: false,
+      organizations: [],
+      loadError: null,
+    };
+    targetOrgSlug = '';
+    transferConfirmed = false;
+    transferringRepository = false;
 
     try {
       repository = await getRepository(slug);
@@ -104,6 +126,11 @@
       loading = false;
       return;
     }
+
+    transferState = await loadRepositoryTransferState({
+      isBrowser: browser,
+      repository,
+    });
 
     try {
       const packageData = await listRepositoryPackages(slug, {
@@ -252,6 +279,24 @@
       ? caughtError.message
       : fallback;
   }
+
+  const repositoryTransferController = createRepositoryTransferController({
+    getRepository: () => repository,
+    getSlug: () => slug,
+    getTargetOrgSlug: () => targetOrgSlug,
+    getTransferConfirmed: () => transferConfirmed,
+    setNotice: (value) => {
+      notice = value;
+    },
+    setError: (value) => {
+      error = value;
+    },
+    setTransferringRepository: (value) => {
+      transferringRepository = value;
+    },
+    loadRepositoryPage,
+    toErrorMessage,
+  });
 </script>
 
 <svelte:head>
@@ -659,6 +704,82 @@
             {/if}
           </div>
         </div>
+
+        {#if transferState.showTransfer}
+          <div class="card">
+            <div class="sidebar-section">
+              <h3>Transfer ownership</h3>
+              <div class="alert alert-warning mb-3">
+                This transfer is immediate.
+              </div>
+              <p class="settings-copy mb-3">
+                Move this repository away from {repository.owner_org_slug ||
+                  repository.owner_username ||
+                  'the current owner'} into an organization you already
+                administer.
+              </p>
+              {#if transferState.loadError}
+                <div class="alert alert-error mb-3">
+                  {transferState.loadError}
+                </div>
+              {/if}
+              {#if transferState.organizations.length === 0}
+                <p class="settings-copy mb-0">
+                  You can transfer this repository, but you do not currently
+                  administer another organization that can receive it.
+                </p>
+              {:else}
+                <form
+                  id="repository-transfer-form"
+                  on:submit={(event) => repositoryTransferController.submit(event)}
+                >
+                  <div class="form-group mb-3">
+                    <label for="repository-transfer-target"
+                      >Target organization</label
+                    >
+                    <select
+                      bind:value={targetOrgSlug}
+                      id="repository-transfer-target"
+                      name="target_org_slug"
+                      class="form-input"
+                      required
+                    >
+                      <option value="">Select an organization</option>
+                      {#each transferState.organizations as organization}
+                        <option value={organization.slug || ''}
+                          >{organization.name ||
+                            organization.slug ||
+                            'Unnamed organization'}</option
+                        >
+                      {/each}
+                    </select>
+                  </div>
+                  <div class="form-group mb-3">
+                    <label class="flex items-start gap-2">
+                      <input
+                        bind:checked={transferConfirmed}
+                        type="checkbox"
+                        id="repository-transfer-confirm"
+                        name="confirm"
+                        required
+                      />
+                      <span>I understand this repository transfer is immediate.</span>
+                    </label>
+                  </div>
+                  <button
+                    type="submit"
+                    class="btn btn-danger w-full justify-center"
+                    disabled={transferringRepository}
+                  >
+                    {transferringRepository
+                      ? 'Transferring…'
+                      : 'Transfer repository'}
+                  </button>
+                </form>
+              {/if}
+            </div>
+          </div>
+        {/if}
 
         {#if repository.upstream_url}
           <div class="card">
