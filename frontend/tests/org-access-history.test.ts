@@ -79,6 +79,9 @@ describe('org access history helpers', () => {
         new Date('2026-04-25T12:00:00Z')
       )
     ).toBe('org-access-history-organization-2026-04-25.csv');
+    expect(
+      buildOrgAccessHistoryExportFilename('source-org', new Date('not-a-date'))
+    ).toBe('org-access-history-source-org-unknown-date.csv');
   });
 
   test('normalizes event and scope identifiers consistently across labels and summaries', () => {

@@ -120,7 +120,9 @@ export function buildOrgAccessHistoryExportFilename(
   slug: string,
   exportedAt: Date
 ): string {
-  const datePart = exportedAt.toISOString().slice(0, 10);
+  const datePart = Number.isNaN(exportedAt.getTime())
+    ? 'unknown-date'
+    : exportedAt.toISOString().slice(0, 10);
   const safeSlug = sanitizeExportFilenameSlug(slug);
   return `org-access-history-${safeSlug}-${datePart}.csv`;
 }

@@ -232,7 +232,7 @@ struct JobKindCountRow {
         (status = 200, description = "Platform-admin background job queue visibility and recovery triage", body = AdminJobsResponse),
         (status = 400, description = "Invalid background job filter parameter"),
         (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Authenticated actor lacks platform-admin access or audit:read scope"),
+        (status = 403, description = "Authenticated actor lacks platform-admin access or audit:read/admin:write scope"),
     )
 )]
 #[allow(dead_code)]
@@ -467,7 +467,12 @@ async fn ensure_admin_jobs_read_access(
     db: &sqlx::PgPool,
     identity: &AuthenticatedIdentity,
 ) -> ApiResult<()> {
-    ensure_scope(identity, SCOPE_AUDIT_READ)?;
+    if !has_admin_jobs_read_scope(identity) {
+        return Err(ApiError(Error::Forbidden(format!(
+            "This operation requires the '{}' or '{}' scope",
+            SCOPE_AUDIT_READ, SCOPE_ADMIN_WRITE
+        ))));
+    }
     ensure_platform_admin(db, identity.user_id).await
 }
 
@@ -477,6 +482,13 @@ async fn ensure_admin_jobs_write_access(
 ) -> ApiResult<()> {
     ensure_scope(identity, SCOPE_ADMIN_WRITE)?;
     ensure_platform_admin(db, identity.user_id).await
+}
+
+fn has_admin_jobs_read_scope(identity: &AuthenticatedIdentity) -> bool {
+    identity
+        .scopes()
+        .iter()
+        .any(|scope| scope == SCOPE_AUDIT_READ || scope == SCOPE_ADMIN_WRITE)
 }
 
 fn parse_job_status(input: &str) -> ApiResult<JobStatus> {
@@ -629,13 +641,15 @@ async fn stale_jobs_count(db: &sqlx::PgPool) -> ApiResult<i64> {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_job_kind, parse_job_status, retry_recovery_hint, BackgroundJobResponse,
-        RECOVER_STALE_RECOVERY_HINT,
+        has_admin_jobs_read_scope, parse_job_kind, parse_job_status, retry_recovery_hint,
+        BackgroundJobResponse, RECOVER_STALE_RECOVERY_HINT,
     };
     use chrono::{Duration, Utc};
     use publaryn_workers::queue::{JobKind, JobStatus};
     use serde_json::json;
     use uuid::Uuid;
+
+    use crate::request_auth::{AuthenticatedIdentity, CredentialKind};
 
     #[test]
     fn parses_known_job_status_values() {
@@ -662,6 +676,32 @@ mod tests {
             parse_job_kind("cleanup_oci_blobs").unwrap(),
             JobKind::CleanupOciBlobs
         );
+    }
+
+    #[test]
+    fn admin_job_reads_allow_admin_write_scope() {
+        let audit_reader = AuthenticatedIdentity {
+            user_id: Uuid::new_v4(),
+            token_id: None,
+            scopes: vec!["audit:read".to_owned()],
+            credential_kind: CredentialKind::Jwt,
+        };
+        let admin_writer = AuthenticatedIdentity {
+            user_id: Uuid::new_v4(),
+            token_id: None,
+            scopes: vec!["admin:write".to_owned()],
+            credential_kind: CredentialKind::Jwt,
+        };
+        let unrelated = AuthenticatedIdentity {
+            user_id: Uuid::new_v4(),
+            token_id: None,
+            scopes: vec!["packages:write".to_owned()],
+            credential_kind: CredentialKind::Jwt,
+        };
+
+        assert!(has_admin_jobs_read_scope(&audit_reader));
+        assert!(has_admin_jobs_read_scope(&admin_writer));
+        assert!(!has_admin_jobs_read_scope(&unrelated));
     }
 
     #[test]
