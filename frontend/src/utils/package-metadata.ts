@@ -83,8 +83,7 @@ export function buildPackageMetadataUpdateInput(
   const current = normalizeCurrentPackageMetadata(pkg);
   const next = normalizePackageMetadataInput(values);
   const input: UpdatePackageInput = {};
-  const visibilityInputIsBlank =
-    typeof values.visibility === 'string' && values.visibility.trim().length === 0;
+  const visibilityInputIsBlank = values.visibility?.trim().length === 0;
 
   if (current.description !== next.description) {
     input.description = next.description;
@@ -114,10 +113,7 @@ export function buildPackageMetadataUpdateInput(
     if (current.visibility !== null) {
       input.visibility = null;
     }
-  } else if (
-    next.visibility !== undefined &&
-    current.visibility !== next.visibility
-  ) {
+  } else if (next.visibility !== undefined && current.visibility !== next.visibility) {
     input.visibility = next.visibility;
   }
 

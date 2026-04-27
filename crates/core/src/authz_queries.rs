@@ -219,7 +219,7 @@ mod tests {
     async fn insert_team_package_access(pool: &PgPool, team_id: Uuid, package_id: Uuid) {
         sqlx::query(
             "INSERT INTO team_package_access (id, team_id, package_id, permission, granted_at) \
-             VALUES ($1, $2, $3, 'read_private', NOW())",
+             VALUES ($1, $2, $3, 'admin', NOW())",
         )
         .bind(Uuid::new_v4())
         .bind(team_id)
@@ -232,7 +232,7 @@ mod tests {
     async fn insert_team_repository_access(pool: &PgPool, team_id: Uuid, repository_id: Uuid) {
         sqlx::query(
             "INSERT INTO team_repository_access (id, team_id, repository_id, permission, granted_at) \
-             VALUES ($1, $2, $3, 'read_private', NOW())",
+             VALUES ($1, $2, $3, 'admin', NOW())",
         )
         .bind(Uuid::new_v4())
         .bind(team_id)

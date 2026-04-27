@@ -79,7 +79,10 @@ export function createSettingsMfaController(options: SettingsMfaControllerOption
       try {
         await actions.verifyMfaSetup(code);
         options.setMfaVerifyCode('');
-        await options.loadSettings({ notice: 'MFA enabled successfully.' });
+        await options.loadSettings({
+          notice: 'MFA enabled successfully.',
+          mfaSetupState: null,
+        });
       } catch (caughtError: unknown) {
         await options.loadSettings({
           error: options.toErrorMessage(caughtError, 'Failed to verify MFA setup.'),
@@ -104,7 +107,10 @@ export function createSettingsMfaController(options: SettingsMfaControllerOption
       try {
         await actions.disableMfa(code);
         options.setMfaDisableCode('');
-        await options.loadSettings({ notice: 'MFA disabled.' });
+        await options.loadSettings({
+          notice: 'MFA disabled.',
+          mfaSetupState: null,
+        });
       } catch (caughtError: unknown) {
         await options.loadSettings({
           error: options.toErrorMessage(caughtError, 'Failed to disable MFA.'),
