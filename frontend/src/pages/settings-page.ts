@@ -194,7 +194,7 @@ export async function loadSettingsPageState(options: {
   return {
     user: loadedUser,
     tokens: tokenData.tokens || [],
-    tokensError: ('load_error' in tokenData ? tokenData.load_error : null) || null,
+    tokensError: 'load_error' in tokenData ? (tokenData.load_error ?? null) : null,
     organizations,
     namespaceTransferTargets: selectNamespaceTransferTargets(
       organizations,
