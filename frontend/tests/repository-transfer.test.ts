@@ -13,12 +13,12 @@ import {
 
 describe('repository transfer helpers', () => {
   test('skips loading transfer targets outside the browser or without transfer access', async () => {
-    const repository: RepositoryDetail = { can_transfer: true };
+    const repositoryWithTransferAccess: RepositoryDetail = { can_transfer: true };
 
     await expect(
       loadRepositoryTransferState({
         isBrowser: false,
-        repository,
+        repository: repositoryWithTransferAccess,
         dependencies: {
           getAuthToken: () => 'token',
           async listMyOrganizations() {
