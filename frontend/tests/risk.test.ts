@@ -9,8 +9,8 @@ describe('risk helpers', () => {
     expect(riskBadgeSeverity(' unknown ')).toBe('info');
   });
 
-  test('preserves trimmed labels for display', () => {
-    expect(riskLabel(' moderate ')).toBe('Moderate risk');
+  test('preserves trimmed labels for display with shared normalization', () => {
+    expect(riskLabel(' moderate ')).toBe('Medium risk');
     expect(riskLabel(' high ')).toBe('High risk');
     expect(riskLabel(' critical ')).toBe('Critical risk');
     expect(riskLabel(' unknown ')).toBe('Unknown risk');

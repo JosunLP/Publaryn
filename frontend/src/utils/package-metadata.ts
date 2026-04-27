@@ -32,6 +32,9 @@ const PACKAGE_VISIBILITY_VALUES = new Set([
   'unlisted',
   'quarantined',
 ]);
+const PACKAGE_VISIBILITY_VALUES_HINT = Array.from(PACKAGE_VISIBILITY_VALUES).join(
+  ', '
+);
 
 class PackageMetadataValidationError extends Error {
   constructor(message: string) {
@@ -134,8 +137,10 @@ export function packageMetadataHasChanges(
 function createInvalidPackageVisibilityError(
   value: string
 ): PackageMetadataValidationError {
+  const normalizedValue = value.trim().toLowerCase().replace(/-/g, '_');
+
   return new PackageMetadataValidationError(
-    `Invalid package visibility: ${value}`
+    `Invalid package visibility: ${value}. Allowed values: ${PACKAGE_VISIBILITY_VALUES_HINT}. Normalized input: ${normalizedValue || '(empty)'}. Visibility values are trimmed, lowercased, and hyphens are converted to underscores.`
   );
 }
 

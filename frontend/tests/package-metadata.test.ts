@@ -85,7 +85,15 @@ describe('package metadata helpers', () => {
         ...createPackageMetadataFormValues(BASE_PACKAGE),
         visibility: 'unknown',
       })
-    ).toThrow('Invalid package visibility: unknown');
+    ).toThrow(
+      'Allowed values: public, private, internal_org, unlisted, quarantined'
+    );
+    expect(() =>
+      normalizePackageMetadataInput({
+        ...createPackageMetadataFormValues(BASE_PACKAGE),
+        visibility: 'unknown',
+      })
+    ).toThrow('Normalized input: unknown');
   });
 
   test('normalizes keyword text into a stable unique list', () => {
@@ -178,7 +186,7 @@ describe('package metadata helpers', () => {
         ...createPackageMetadataFormValues(privatePackage),
         visibility: 'definitely-not-valid',
       })
-    ).toThrow('Invalid package visibility: definitely-not-valid');
+    ).toThrow('Normalized input: definitely_not_valid');
     expect(
       packageMetadataHasChanges(privatePackage, {
         ...createPackageMetadataFormValues(privatePackage),
