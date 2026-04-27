@@ -511,13 +511,14 @@ async fn get_package(
 
     let row = sqlx::query(
         "SELECT p.id, p.name, p.display_name, p.ecosystem, p.description, p.readme, \
-         p.homepage, p.repository_url, p.license, p.keywords, p.visibility::text AS visibility, p.is_deprecated, \
-         p.deprecation_message, p.is_archived, p.download_count, p.owner_org_id, p.created_at, \
-         p.updated_at, u.username AS owner_username, o.slug AS owner_org_slug \
-         FROM packages p \
-         LEFT JOIN users u ON u.id = p.owner_user_id \
-         LEFT JOIN organizations o ON o.id = p.owner_org_id \
-         WHERE p.id = $1",
+          p.homepage, p.repository_url, p.license, p.keywords, p.visibility::text AS visibility, p.is_deprecated, \
+          p.deprecation_message, p.is_archived, p.download_count, p.owner_org_id, p.created_at, \
+          p.updated_at, r.slug AS repository_slug, u.username AS owner_username, o.slug AS owner_org_slug \
+          FROM packages p \
+          JOIN repositories r ON r.id = p.repository_id \
+          LEFT JOIN users u ON u.id = p.owner_user_id \
+          LEFT JOIN organizations o ON o.id = p.owner_org_id \
+          WHERE p.id = $1",
     )
     .bind(package_id)
     .fetch_optional(&state.db)
@@ -650,6 +651,7 @@ async fn get_package(
         "license": row.try_get::<Option<String>, _>("license").ok().flatten(),
         "keywords": row.try_get::<Vec<String>, _>("keywords").ok(),
         "visibility": row.try_get::<String, _>("visibility").ok(),
+        "repository_slug": row.try_get::<String, _>("repository_slug").ok(),
         "is_deprecated": row.try_get::<bool, _>("is_deprecated").ok(),
         "deprecation_message": row.try_get::<Option<String>, _>("deprecation_message").ok().flatten(),
         "is_archived": row.try_get::<bool, _>("is_archived").ok(),
