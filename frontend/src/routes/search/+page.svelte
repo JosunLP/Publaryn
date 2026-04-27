@@ -20,6 +20,7 @@
     getSearchViewFromQuery,
   } from '../../pages/search-query';
   import {
+    searchResultHasDiscoveryDetails,
     formatSearchResultRepository,
     searchResultDiscoverySignals,
     searchResultRiskBadgeSeverity,
@@ -420,23 +421,21 @@
                     >{formatRepositoryVisibilityLabel(pkg.visibility)}</span
                   >
                 {/if}
-                {#if pkg.discovery}
+                {#if searchResultHasDiscoveryDetails(pkg)}
+                  {@const unresolvedFindingCount =
+                    pkg.discovery?.unresolved_security_finding_count || 0}
                   <span
                     class={`badge badge-severity-${searchResultRiskBadgeSeverity(
                       pkg
                     )}`}>{searchResultRiskLabel(pkg)}</span
                   >
-                  {#if pkg.discovery.has_trusted_publisher}
+                  {#if pkg.discovery?.has_trusted_publisher}
                     <span class="badge badge-ecosystem">trusted publisher</span>
                   {/if}
-                  {#if (pkg.discovery.unresolved_security_finding_count || 0) > 0}
+                  {#if unresolvedFindingCount > 0}
                     <span class="badge badge-ecosystem"
-                      >{formatNumber(
-                        pkg.discovery.unresolved_security_finding_count || 0
-                      )} unresolved finding{pkg.discovery
-                        .unresolved_security_finding_count === 1
-                        ? ''
-                        : 's'}</span
+                      >{formatNumber(unresolvedFindingCount)} unresolved
+                      finding{unresolvedFindingCount === 1 ? '' : 's'}</span
                     >
                   {/if}
                 {/if}

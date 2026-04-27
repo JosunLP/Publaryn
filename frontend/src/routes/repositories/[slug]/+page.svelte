@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { browser } from '$app/environment';
   import { page } from '$app/stores';
 
   import { ApiError, getAuthToken } from '../../../api/client';
@@ -153,6 +154,7 @@
     currentRepository: RepositoryDetail | null
   ): Promise<TransferState> {
     if (
+      !browser ||
       !currentRepository ||
       !getAuthToken() ||
       currentRepository.can_transfer !== true

@@ -88,6 +88,10 @@ mock.module('$app/stores', () => ({
   },
 }));
 
+mock.module('$app/environment', () => ({
+  browser: true,
+}));
+
 mock.module(apiClientModuleUrl, () => {
   class ApiError<TBody = unknown> extends Error {
     readonly status: number;

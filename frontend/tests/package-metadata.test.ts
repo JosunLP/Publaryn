@@ -99,6 +99,9 @@ describe('package metadata helpers', () => {
     expect(normalizePackageVisibilityInput('internal-org')).toBe(
       'internal_org'
     );
+    expect(normalizePackageVisibilityInput('internal org')).toBe(
+      'internal_org'
+    );
     expect(normalizePackageVisibilityInput(' quarantined ')).toBe(
       'quarantined'
     );

@@ -3,6 +3,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   formatSearchResultRepository,
   searchResultDiscoverySignals,
+  searchResultHasDiscoveryDetails,
   searchResultRiskBadgeSeverity,
   searchResultRiskLabel,
 } from '../src/pages/search-results';
@@ -65,6 +66,7 @@ describe('search result discovery formatting', () => {
     expect(searchResultRiskLabel({ discovery: null })).toBe('Risk pending');
     expect(searchResultRiskBadgeSeverity({ discovery: null })).toBe('info');
     expect(searchResultDiscoverySignals({ discovery: null })).toEqual([]);
+    expect(searchResultHasDiscoveryDetails({ discovery: null })).toBe(false);
   });
 
   test('treats blank discovery risk values as pending', () => {
@@ -81,5 +83,38 @@ describe('search result discovery formatting', () => {
         discovery: { risk_level: ' moderate ', signals: [] },
       })
     ).toBe('medium');
+  });
+
+  test('only reports discovery details when meaningful signals exist', () => {
+    expect(
+      searchResultHasDiscoveryDetails({
+        discovery: {
+          risk_level: '   ',
+          has_trusted_publisher: false,
+          unresolved_security_finding_count: 0,
+          signals: [],
+        },
+      })
+    ).toBe(false);
+    expect(
+      searchResultHasDiscoveryDetails({
+        discovery: {
+          risk_level: null,
+          has_trusted_publisher: true,
+          unresolved_security_finding_count: 0,
+          signals: [],
+        },
+      })
+    ).toBe(true);
+    expect(
+      searchResultHasDiscoveryDetails({
+        discovery: {
+          risk_level: null,
+          has_trusted_publisher: false,
+          unresolved_security_finding_count: 2,
+          signals: [],
+        },
+      })
+    ).toBe(true);
   });
 });

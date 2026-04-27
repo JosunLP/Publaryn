@@ -153,7 +153,7 @@ export function getPackageMetadataChangeState(
 function createInvalidPackageVisibilityError(
   value: string
 ): PackageMetadataValidationError {
-  const normalizedValue = value.trim().toLowerCase().replace(/-/g, '_');
+  const normalizedValue = value.trim().toLowerCase().replace(/[\s-]+/g, '_');
   const normalizedHint =
     normalizedValue && normalizedValue !== value
       ? ` Normalized: ${normalizedValue}.`
@@ -188,7 +188,7 @@ function normalizeStoredPackageVisibility(
     return null;
   }
 
-  const normalized = value.trim().toLowerCase().replace(/-/g, '_');
+  const normalized = value.trim().toLowerCase().replace(/[\s-]+/g, '_');
   return PACKAGE_VISIBILITY_VALUES.has(normalized) ? normalized : null;
 }
 
@@ -199,7 +199,7 @@ export function normalizePackageVisibilityInput(
     return undefined;
   }
 
-  const normalized = value.trim().toLowerCase().replace(/-/g, '_');
+  const normalized = value.trim().toLowerCase().replace(/[\s-]+/g, '_');
   if (!normalized) {
     return null;
   }

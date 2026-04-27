@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 
 import {
   buildBundleAnalysisHighlights,
+  buildBundleAnalysisQuickFacts,
   buildBundleAnalysisStats,
   bundleAnalysisRiskScoreLabel,
   bundleAnalysisRiskBadgeSeverity,
@@ -28,6 +29,20 @@ describe('package analysis helpers', () => {
         total_artifact_size_bytes: 2048,
       })
     ).toEqual([{ label: 'Total artifact size', value: '2.0 KiB' }]);
+  });
+
+  test('keeps zero-valued metrics and pins artifact count first', () => {
+    expect(
+      buildBundleAnalysisStats({
+        artifact_count: 0,
+        total_artifact_size_bytes: 2048,
+        direct_dependency_count: 0,
+      })
+    ).toEqual([
+      { label: 'Artifacts', value: '0' },
+      { label: 'Total artifact size', value: '2.0 KiB' },
+      { label: 'Direct deps', value: '0' },
+    ]);
   });
 
   test('reuses shared risk formatting for bundle analysis summaries', () => {
@@ -95,5 +110,16 @@ describe('package analysis helpers', () => {
         },
       })
     ).toBeNull();
+  });
+
+  test('limits quick facts to the first three rendered facts', () => {
+    expect(
+      buildBundleAnalysisQuickFacts({
+        compressed_size_bytes: 2048,
+        install_size_bytes: 4096,
+        direct_dependency_count: 7,
+        layer_count: 3,
+      })
+    ).toEqual(['compressed 2.0 KiB', 'install 4.0 KiB', '7 direct deps']);
   });
 });
