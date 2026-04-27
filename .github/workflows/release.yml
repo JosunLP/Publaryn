@@ -164,7 +164,7 @@ jobs:
           needs.prepare-release.outputs.version }} > /tmp/github-release-body.md
 
       - name: Update GitHub release body
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           script: |
             const fs = require('node:fs');
