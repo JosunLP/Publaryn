@@ -234,7 +234,7 @@ where
 {
     let result = sqlx::query(
         "UPDATE background_jobs \
-         SET status = 'pending', locked_until = NULL, locked_by = NULL, started_at = NULL \
+         SET status = 'pending', locked_until = NULL, locked_by = NULL, started_at = NULL, scheduled_at = NOW() \
          WHERE status = 'running' AND locked_until < NOW()",
     )
     .execute(executor)

@@ -128,7 +128,7 @@ export function packageMetadataHasChanges(
   pkg: PackageDetail | null | undefined,
   values: PackageMetadataFormValues
 ): boolean {
-  return Object.keys(buildPackageMetadataUpdateInput(pkg, values)).length > 0;
+  return getPackageMetadataChangeState(pkg, values).hasChanges;
 }
 
 export function getPackageMetadataChangeState(

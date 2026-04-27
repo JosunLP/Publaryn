@@ -139,6 +139,33 @@ describe('release dependency overview helpers', () => {
 
     expect(
       buildReleaseDependencyOverview({
+        kind: 'nuget',
+        details: {
+          authors: 'Alice',
+          dependency_groups: [
+            {
+              dependencies: [{ id: 'Fallback.Framework.Package' }],
+            },
+          ],
+          is_listed: true,
+          package_types: [],
+          tags: [],
+        },
+      })
+    ).toEqual({
+      ecosystem: 'nuget',
+      total: 1,
+      groups: [
+        {
+          label: 'Any framework',
+          count: 1,
+          names: ['Fallback.Framework.Package'],
+        },
+      ],
+    });
+
+    expect(
+      buildReleaseDependencyOverview({
         kind: 'cargo',
         details: {
           dependencies: [],

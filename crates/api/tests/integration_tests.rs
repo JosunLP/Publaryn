@@ -3872,6 +3872,7 @@ async fn test_platform_admin_recover_stale_jobs_only_resets_expired_running_jobs
     assert!(recoverable_state.4.is_none());
     assert!(recoverable_state.5.is_none());
     assert!(recoverable_state.6.is_none());
+    assert!(recoverable_state.7 > Utc::now() - chrono::Duration::minutes(1));
 
     let active_state = fetch_background_job_state(&pool, active_job_id).await;
     assert_eq!(active_state.0, "running");

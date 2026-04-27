@@ -45,7 +45,7 @@ describe('search result discovery formatting', () => {
   test('formats risk labels and badges from discovery hints', () => {
     const result = {
       discovery: {
-        risk_level: 'moderate',
+        risk_level: 'medium',
         signals: [
           '2 unresolved security findings',
           'Trusted publisher configured',
@@ -53,7 +53,7 @@ describe('search result discovery formatting', () => {
       },
     };
 
-    expect(searchResultRiskLabel(result)).toBe('Moderate risk');
+    expect(searchResultRiskLabel(result)).toBe('Medium risk');
     expect(searchResultRiskBadgeSeverity(result)).toBe('medium');
     expect(searchResultDiscoverySignals(result)).toEqual([
       '2 unresolved security findings',

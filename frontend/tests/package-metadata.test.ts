@@ -218,9 +218,13 @@ describe('package metadata helpers', () => {
         ...createPackageMetadataFormValues(privatePackage),
         visibility: 'definitely-not-valid',
       })
-    ).toThrow(
-      'Invalid package visibility: definitely-not-valid. Allowed values: public, private, internal_org, unlisted, quarantined. Normalized: definitely_not_valid.'
-    );
+    ).not.toThrow();
+    expect(
+      packageMetadataHasChanges(privatePackage, {
+        ...createPackageMetadataFormValues(privatePackage),
+        visibility: 'definitely-not-valid',
+      })
+    ).toBe(false);
     expect(
       getPackageMetadataChangeState(privatePackage, {
         ...createPackageMetadataFormValues(privatePackage),

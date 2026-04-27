@@ -417,7 +417,7 @@ fn search_discovery_risk_level(
     {
         Some("critical") => Some("critical"),
         Some("high") => Some("high"),
-        Some("medium") => Some("moderate"),
+        Some("medium") => Some("medium"),
         Some("low" | "info") if unresolved_security_finding_count > 0 => Some("low"),
         _ if unresolved_security_finding_count > 0 => Some("low"),
         _ if latest_release_visible => Some("low"),
