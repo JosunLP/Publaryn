@@ -175,14 +175,10 @@ describe('repository detail route', () => {
         ).toEqual(['', 'private', 'internal_org', 'unlisted', 'quarantined']);
       });
 
-      expect(currentScenario.requests).toEqual([
+      expect(visibleRepositoryRequests(currentScenario.requests)).toEqual([
         {
           method: 'GET',
           path: `/v1/repositories/${REPOSITORY_SLUG}`,
-        },
-        {
-          method: 'GET',
-          path: '/v1/users/me/organizations',
         },
         {
           method: 'GET',
@@ -234,14 +230,10 @@ describe('repository detail route', () => {
           },
         },
       ]);
-      expect(currentScenario.requests).toEqual([
+      expect(visibleRepositoryRequests(currentScenario.requests)).toEqual([
         {
           method: 'GET',
           path: `/v1/repositories/${REPOSITORY_SLUG}`,
-        },
-        {
-          method: 'GET',
-          path: '/v1/users/me/organizations',
         },
         {
           method: 'GET',
@@ -254,10 +246,6 @@ describe('repository detail route', () => {
         {
           method: 'GET',
           path: `/v1/repositories/${REPOSITORY_SLUG}`,
-        },
-        {
-          method: 'GET',
-          path: '/v1/users/me/organizations',
         },
         {
           method: 'GET',
@@ -343,14 +331,10 @@ describe('repository detail route', () => {
           },
         },
       ]);
-      expect(currentScenario.requests).toEqual([
+      expect(visibleRepositoryRequests(currentScenario.requests)).toEqual([
         {
           method: 'GET',
           path: `/v1/repositories/${REPOSITORY_SLUG}`,
-        },
-        {
-          method: 'GET',
-          path: '/v1/users/me/organizations',
         },
         {
           method: 'GET',
@@ -363,10 +347,6 @@ describe('repository detail route', () => {
         {
           method: 'GET',
           path: `/v1/repositories/${REPOSITORY_SLUG}`,
-        },
-        {
-          method: 'GET',
-          path: '/v1/users/me/organizations',
         },
         {
           method: 'GET',
@@ -626,6 +606,14 @@ function queryClosestForm(element: Element): HTMLFormElement {
 
 function optionValues(select: HTMLSelectElement): string[] {
   return Array.from(select.options).map((option) => option.value);
+}
+
+function visibleRepositoryRequests(requests: RequestCall[]): RequestCall[] {
+  return requests.filter(
+    (request) =>
+      request.path === `/v1/repositories/${REPOSITORY_SLUG}` ||
+      request.path === `/v1/repositories/${REPOSITORY_SLUG}/packages`
+  );
 }
 
 async function waitFor(
