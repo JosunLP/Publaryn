@@ -20,6 +20,7 @@ import { listUserNamespaces } from '../api/namespaces';
 import type {
   CreateTokenResponse,
   TokenRecord,
+  TokenListResponse,
 } from '../api/tokens';
 import { createToken, listTokens, revokeToken } from '../api/tokens';
 import { selectNamespaceTransferTargets } from './personal-namespaces';
@@ -44,6 +45,7 @@ export interface SettingsPageLoaders {
 export interface SettingsPageLoadedState {
   user: UserProfile;
   tokens: TokenRecord[];
+  tokensError: string | null;
   organizations: OrganizationMembership[];
   namespaceTransferTargets: OrganizationMembership[];
   organizationsError: string | null;
@@ -55,6 +57,10 @@ export interface SettingsPageLoadedState {
   avatarUrl: string;
   website: string;
   bio: string;
+}
+
+interface SettingsPageTokenListState extends TokenListResponse {
+  load_error?: string | null;
 }
 
 export interface SettingsPageTokenActions {
@@ -142,7 +148,12 @@ export async function loadSettingsPageState(options: {
 
   const [tokenData, organizationData, invitationData, namespaceData] =
     await Promise.all([
-      loaders.listTokens(),
+      loaders.listTokens().catch(
+        (caughtError: unknown): SettingsPageTokenListState => ({
+          tokens: [],
+          load_error: options.toErrorMessage(caughtError, 'Failed to load tokens.'),
+        })
+      ),
       loaders.listMyOrganizations().catch(
         (caughtError: unknown): OrganizationListResponse => ({
           organizations: [],
@@ -183,6 +194,7 @@ export async function loadSettingsPageState(options: {
   return {
     user: loadedUser,
     tokens: tokenData.tokens || [],
+    tokensError: ('load_error' in tokenData ? tokenData.load_error : null) || null,
     organizations,
     namespaceTransferTargets: selectNamespaceTransferTargets(
       organizations,

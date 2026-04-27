@@ -117,4 +117,21 @@ describe('search result discovery formatting', () => {
       })
     ).toBe(true);
   });
+
+  test('reuses precomputed discovery signals when checking detail visibility', () => {
+    const discoverySignals = ['Trusted publisher configured'];
+    expect(
+      searchResultHasDiscoveryDetails(
+        {
+          discovery: {
+            risk_level: null,
+            has_trusted_publisher: false,
+            unresolved_security_finding_count: 0,
+            signals: [],
+          },
+        },
+        discoverySignals
+      )
+    ).toBe(true);
+  });
 });

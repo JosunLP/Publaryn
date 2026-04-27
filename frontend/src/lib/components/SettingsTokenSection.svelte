@@ -9,6 +9,7 @@
   export let tokenScopeOptions: readonly string[] = [];
   export let creatingToken = false;
   export let tokens: TokenRecord[] = [];
+  export let tokensError: string | null = null;
   export let handleScopeToggle: (scope: string, checked: boolean) => void;
   export let handleTokenSubmit: (event: SubmitEvent) => void | Promise<void>;
   export let handleRevokeToken: (tokenId: string) => void | Promise<void>;
@@ -94,6 +95,9 @@
 
   <div class="settings-subsection">
     <h3>Active tokens</h3>
+    {#if tokensError}
+      <div class="alert alert-error">{tokensError}</div>
+    {/if}
     {#if tokens.length === 0}
       <div class="empty-state">
         <h3>No tokens yet</h3>

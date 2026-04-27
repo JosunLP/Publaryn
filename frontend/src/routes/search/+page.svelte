@@ -421,7 +421,7 @@
                     >{formatRepositoryVisibilityLabel(pkg.visibility)}</span
                   >
                 {/if}
-                {#if searchResultHasDiscoveryDetails(pkg)}
+                {#if searchResultHasDiscoveryDetails(pkg, discoverySignals)}
                   {@const unresolvedFindingCount =
                     pkg.discovery?.unresolved_security_finding_count || 0}
                   <span

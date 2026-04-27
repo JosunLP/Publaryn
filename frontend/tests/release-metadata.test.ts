@@ -71,6 +71,31 @@ describe('release dependency overview helpers', () => {
     });
   });
 
+  test('sorts object dependency names for deterministic output', () => {
+    expect(
+      buildReleaseDependencyOverview({
+        kind: 'composer',
+        details: {
+          require: {
+            zebra: '^1.0.0',
+            alpha: '^2.0.0',
+          },
+          'require-dev': {},
+        },
+      })
+    ).toEqual({
+      ecosystem: 'composer',
+      total: 2,
+      groups: [
+        {
+          label: 'Runtime require',
+          count: 2,
+          names: ['alpha', 'zebra'],
+        },
+      ],
+    });
+  });
+
   test('summarizes NuGet target framework dependency groups', () => {
     expect(
       buildReleaseDependencyOverview({
@@ -293,6 +318,47 @@ describe('release dependency overview helpers', () => {
           label: 'Compile dependencies',
           count: 1,
           names: ['org.example:core'],
+        },
+      ],
+    });
+  });
+
+  test('emits Maven groups in deterministic scope order', () => {
+    expect(
+      buildReleaseDependencyOverview({
+        kind: 'maven',
+        details: {
+          dependencies: [
+            { artifact_id: 'tests', scope: 'test' },
+            { artifact_id: 'runtime', scope: 'runtime' },
+            { artifact_id: 'core' },
+            { artifact_id: 'provided', scope: 'provided' },
+          ],
+        },
+      })
+    ).toEqual({
+      ecosystem: 'maven',
+      total: 4,
+      groups: [
+        {
+          label: 'Compile dependencies',
+          count: 1,
+          names: ['core'],
+        },
+        {
+          label: 'Runtime dependencies',
+          count: 1,
+          names: ['runtime'],
+        },
+        {
+          label: 'Provided dependencies',
+          count: 1,
+          names: ['provided'],
+        },
+        {
+          label: 'Test dependencies',
+          count: 1,
+          names: ['tests'],
         },
       ],
     });

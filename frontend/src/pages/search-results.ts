@@ -40,12 +40,13 @@ export function searchResultDiscoverySignals(
 }
 
 export function searchResultHasDiscoveryDetails(
-  result: Pick<SearchPackage, 'discovery'>
+  result: Pick<SearchPackage, 'discovery'>,
+  signals: string[] = searchResultDiscoverySignals(result)
 ): boolean {
   const discovery = result.discovery;
   return Boolean(
     normalizeSearchResultValue(discovery?.risk_level) ||
-      searchResultDiscoverySignals(result).length > 0 ||
+      signals.length > 0 ||
       discovery?.has_trusted_publisher ||
       (discovery?.unresolved_security_finding_count || 0) > 0
   );

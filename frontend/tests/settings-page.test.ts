@@ -10,6 +10,7 @@ import {
   setChecked,
   submitForm,
 } from './svelte-dom';
+import { loadSettingsPageState } from '../src/pages/settings-page';
 
 import type {
   SettingsPageLoaders,
@@ -40,6 +41,43 @@ afterEach(() => {
 });
 
 describe('settings page controller harness', () => {
+  test('keeps loading settings when token loading fails', async () => {
+    await expect(
+      loadSettingsPageState({
+        toErrorMessage: (_caughtError, fallback) => fallback,
+        loaders: createLoaders({
+          async listTokens() {
+            throw new Error('tokens unavailable');
+          },
+          async listMyOrganizations() {
+            return {
+              organizations: [
+                {
+                  id: 'membership-1',
+                  org_id: 'org-1',
+                  org_slug: 'docs-team',
+                  org_name: 'Docs Team',
+                  role: 'owner',
+                },
+              ],
+              load_error: null,
+            };
+          },
+        }),
+      })
+    ).resolves.toMatchObject({
+      tokens: [],
+      tokensError: 'Failed to load tokens.',
+      organizations: [
+        {
+          org_slug: 'docs-team',
+          org_name: 'Docs Team',
+        },
+      ],
+      organizationsError: null,
+    });
+  });
+
   test('redirects unauthenticated visitors to login before loading settings', async () => {
     let getCurrentUserCalls = 0;
     const loaders = createLoaders({

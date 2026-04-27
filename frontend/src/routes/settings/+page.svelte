@@ -48,6 +48,7 @@
 
   let user: UserProfile | null = null;
   let tokens: TokenRecord[] = [];
+  let tokensError: string | null = null;
   let organizations: OrganizationMembership[] = [];
   let namespaceTransferTargets: OrganizationMembership[] = [];
   let organizationsError: string | null = null;
@@ -108,6 +109,7 @@
 
       user = loadedState.user;
       tokens = loadedState.tokens;
+      tokensError = loadedState.tokensError;
       organizations = loadedState.organizations;
       namespaceTransferTargets = loadedState.namespaceTransferTargets;
       organizationsError = loadedState.organizationsError;
@@ -821,6 +823,7 @@
       tokenScopeOptions={TOKEN_SCOPE_OPTIONS}
       {creatingToken}
       {tokens}
+      {tokensError}
       {handleScopeToggle}
       {handleTokenSubmit}
       {handleRevokeToken}

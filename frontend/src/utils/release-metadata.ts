@@ -106,7 +106,36 @@ function dependencyObjectEntries(value: unknown): unknown[] {
 
   return Object.keys(value)
     .filter((name) => name.trim().length > 0)
+    .sort((left, right) => left.localeCompare(right))
     .map((name) => ({ name }));
+}
+
+const MAVEN_SCOPE_ORDER = new Map<string, number>([
+  ['compile', 0],
+  ['runtime', 1],
+  ['provided', 2],
+  ['test', 3],
+  ['system', 4],
+  ['import', 5],
+]);
+
+function compareMavenScopes(left: string, right: string): number {
+  const leftOrder = MAVEN_SCOPE_ORDER.get(left);
+  const rightOrder = MAVEN_SCOPE_ORDER.get(right);
+
+  if (leftOrder != null || rightOrder != null) {
+    if (leftOrder == null) {
+      return 1;
+    }
+
+    if (rightOrder == null) {
+      return -1;
+    }
+
+    return leftOrder - rightOrder;
+  }
+
+  return left.localeCompare(right);
 }
 
 function cargoDependencyOverview(
@@ -206,11 +235,10 @@ function mavenDependencyOverview(
   for (const dependency of dependencies) {
     const rawScope = isRecord(dependency) ? stringValue(dependency.scope) : null;
     const scope = rawScope ?? 'compile';
-    const label = `${scope.charAt(0).toUpperCase()}${scope.slice(1)} dependencies`;
-    let group = grouped.get(label);
+    let group = grouped.get(scope);
     if (!group) {
       group = [];
-      grouped.set(label, group);
+      grouped.set(scope, group);
     }
 
     group.push(dependency);
@@ -218,9 +246,14 @@ function mavenDependencyOverview(
 
   return compactGroups(
     'maven',
-    [...grouped.entries()].map(([label, dependencies]) =>
-      groupSummary(label, dependencies)
-    )
+    [...grouped.entries()]
+      .sort(([leftScope], [rightScope]) => compareMavenScopes(leftScope, rightScope))
+      .map(([scope, scopeDependencies]) =>
+        groupSummary(
+          `${scope.charAt(0).toUpperCase()}${scope.slice(1)} dependencies`,
+          scopeDependencies
+        )
+      )
   );
 }
 
