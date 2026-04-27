@@ -204,33 +204,24 @@ describe('package metadata helpers', () => {
       ...BASE_PACKAGE,
       visibility: 'private',
     };
+    const invalidValues = {
+      ...createPackageMetadataFormValues(privatePackage),
+      visibility: 'definitely-not-valid',
+    };
 
     expect(() =>
-      buildPackageMetadataUpdateInput(privatePackage, {
-        ...createPackageMetadataFormValues(privatePackage),
-        visibility: 'definitely-not-valid',
-      })
+      buildPackageMetadataUpdateInput(privatePackage, invalidValues)
     ).toThrow(
       'Invalid package visibility: definitely-not-valid. Allowed values: public, private, internal_org, unlisted, quarantined. Normalized: definitely_not_valid.'
     );
-    expect(() =>
-      packageMetadataHasChanges(privatePackage, {
-        ...createPackageMetadataFormValues(privatePackage),
-        visibility: 'definitely-not-valid',
-      })
-    ).not.toThrow();
-    expect(
-      packageMetadataHasChanges(privatePackage, {
-        ...createPackageMetadataFormValues(privatePackage),
-        visibility: 'definitely-not-valid',
-      })
-    ).toBe(false);
-    expect(
-      getPackageMetadataChangeState(privatePackage, {
-        ...createPackageMetadataFormValues(privatePackage),
-        visibility: 'definitely-not-valid',
-      })
-    ).toEqual({
+    expect(() => packageMetadataHasChanges(privatePackage, invalidValues)).not.toThrow();
+    expect(packageMetadataHasChanges(privatePackage, invalidValues)).toBe(false);
+
+    const invalidChangeState = getPackageMetadataChangeState(
+      privatePackage,
+      invalidValues
+    );
+    expect(invalidChangeState).toEqual({
       hasChanges: false,
       hasValidationError: true,
     });

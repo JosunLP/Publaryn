@@ -3866,13 +3866,22 @@ async fn test_platform_admin_recover_stale_jobs_only_resets_expired_running_jobs
     assert_eq!(body["message"], "Stale background jobs recovered");
     assert_eq!(body["recovered_count"], 1);
 
-    let recoverable_state = fetch_background_job_state(&pool, recoverable_job_id).await;
-    assert_eq!(recoverable_state.0, "pending");
-    assert!(recoverable_state.3.is_none());
-    assert!(recoverable_state.4.is_none());
-    assert!(recoverable_state.5.is_none());
-    assert!(recoverable_state.6.is_none());
-    assert!(recoverable_state.7 > Utc::now() - chrono::Duration::minutes(1));
+    let (
+        recoverable_status,
+        _recoverable_attempts,
+        _recoverable_last_error,
+        recoverable_locked_until,
+        recoverable_locked_by,
+        recoverable_started_at,
+        recoverable_completed_at,
+        recoverable_scheduled_at,
+    ) = fetch_background_job_state(&pool, recoverable_job_id).await;
+    assert_eq!(recoverable_status, "pending");
+    assert!(recoverable_locked_until.is_none());
+    assert!(recoverable_locked_by.is_none());
+    assert!(recoverable_started_at.is_none());
+    assert!(recoverable_completed_at.is_none());
+    assert!(recoverable_scheduled_at > Utc::now() - chrono::Duration::minutes(1));
 
     let active_state = fetch_background_job_state(&pool, active_job_id).await;
     assert_eq!(active_state.0, "running");
