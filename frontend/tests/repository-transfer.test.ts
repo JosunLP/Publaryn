@@ -163,6 +163,7 @@ describe('repository transfer helpers', () => {
       },
       async loadRepositoryPage(options) {
         reloads.push(options || {});
+        transferring = false;
       },
       toErrorMessage: (_caughtError, fallback) => fallback,
       dependencies: {
