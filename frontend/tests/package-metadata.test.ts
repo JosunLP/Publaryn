@@ -86,7 +86,7 @@ describe('package metadata helpers', () => {
         visibility: 'unknown',
       })
     ).toThrow(
-      'Invalid package visibility: unknown. Allowed values: public, private, internal_org, unlisted, quarantined. Normalized input: unknown. Visibility values are trimmed, lowercased, and hyphens are converted to underscores.'
+      'Invalid package visibility: unknown. Allowed values: public, private, internal_org, unlisted, quarantined.'
     );
   });
 
@@ -180,7 +180,9 @@ describe('package metadata helpers', () => {
         ...createPackageMetadataFormValues(privatePackage),
         visibility: 'definitely-not-valid',
       })
-    ).toThrow('Normalized input: definitely_not_valid');
+    ).toThrow(
+      'Invalid package visibility: definitely-not-valid. Allowed values: public, private, internal_org, unlisted, quarantined. Normalized: definitely_not_valid.'
+    );
     expect(
       packageMetadataHasChanges(privatePackage, {
         ...createPackageMetadataFormValues(privatePackage),

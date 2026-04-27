@@ -138,9 +138,13 @@ function createInvalidPackageVisibilityError(
   value: string
 ): PackageMetadataValidationError {
   const normalizedValue = value.trim().toLowerCase().replace(/-/g, '_');
+  const normalizedHint =
+    normalizedValue && normalizedValue !== value
+      ? ` Normalized: ${normalizedValue}.`
+      : '';
 
   return new PackageMetadataValidationError(
-    `Invalid package visibility: ${value}. Allowed values: ${PACKAGE_VISIBILITY_VALUES_HINT}. Normalized input: ${normalizedValue || '(empty)'}. Visibility values are trimmed, lowercased, and hyphens are converted to underscores.`
+    `Invalid package visibility: ${value}. Allowed values: ${PACKAGE_VISIBILITY_VALUES_HINT}.${normalizedHint}`
   );
 }
 
