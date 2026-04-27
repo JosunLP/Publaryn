@@ -13,12 +13,12 @@ import {
 
 describe('repository transfer helpers', () => {
   test('skips loading transfer targets outside the browser or without transfer access', async () => {
-    const repositoryWithTransferAccess: RepositoryDetail = { can_transfer: true };
+    const minimalRepository: RepositoryDetail = { can_transfer: true };
 
     await expect(
       loadRepositoryTransferState({
         isBrowser: false,
-        repository: repositoryWithTransferAccess,
+        repository: minimalRepository,
         dependencies: {
           getAuthToken: () => 'token',
           async listMyOrganizations() {
@@ -193,7 +193,7 @@ describe('repository transfer helpers', () => {
         notice: 'Repository ownership transferred to target-org.',
       },
     ]);
-    expect(transferring).toBeTrue();
+    expect(transferring).toBeFalse();
   });
 
   test('keeps transfer state active when the mutation fails', async () => {

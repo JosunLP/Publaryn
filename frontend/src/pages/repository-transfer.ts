@@ -140,6 +140,7 @@ export function createRepositoryTransferController(
           }
         );
 
+        options.setTransferringRepository(false);
         await options.loadRepositoryPage({
           notice: `Repository ownership transferred to ${result.owner?.name || result.owner?.slug || targetOrgSlug}.`,
         });
