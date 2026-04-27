@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # ── Frontend build stage ───────────────────────────────────
-FROM oven/bun:1.3.12 AS frontend
+FROM oven/bun:1.3.13 AS frontend
 
 WORKDIR /app/frontend
 COPY frontend/package.json frontend/bun.lock ./
