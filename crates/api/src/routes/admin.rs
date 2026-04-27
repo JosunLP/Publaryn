@@ -16,7 +16,7 @@ use publaryn_workers::queue::{self, Job, JobKind, JobStatus};
 use crate::{
     error::{ApiError, ApiResult},
     request_auth::{ensure_platform_admin, AuthenticatedIdentity},
-    scopes::{ensure_scope, SCOPE_AUDIT_READ},
+    scopes::{ensure_scope, SCOPE_ADMIN_WRITE, SCOPE_AUDIT_READ},
     state::AppState,
 };
 
@@ -243,7 +243,7 @@ async fn list_background_jobs(
     identity: AuthenticatedIdentity,
     Query(query): Query<AdminJobsQuery>,
 ) -> ApiResult<Json<AdminJobsResponse>> {
-    ensure_admin_jobs_access(&state.db, &identity).await?;
+    ensure_admin_jobs_read_access(&state.db, &identity).await?;
 
     let state_filter = query.state.as_deref().map(parse_job_status).transpose()?;
     let kind_filter = query.kind.as_deref().map(parse_job_kind).transpose()?;
@@ -301,7 +301,7 @@ async fn list_background_jobs(
     responses(
         (status = 200, description = "Background job reset to pending for retry", body = AdminJobRetryResponse),
         (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Authenticated actor lacks platform-admin access or audit:read scope"),
+        (status = 403, description = "Authenticated actor lacks platform-admin access or admin:write scope"),
         (status = 404, description = "Background job not found"),
         (status = 409, description = "Background job status is not retryable"),
     )
@@ -314,7 +314,7 @@ async fn retry_background_job(
     identity: AuthenticatedIdentity,
     Path(job_id): Path<Uuid>,
 ) -> ApiResult<Json<AdminJobRetryResponse>> {
-    ensure_admin_jobs_access(&state.db, &identity).await?;
+    ensure_admin_jobs_write_access(&state.db, &identity).await?;
 
     let mut tx = state
         .db
@@ -399,7 +399,7 @@ async fn retry_background_job(
     responses(
         (status = 200, description = "Stale running jobs reset to pending", body = AdminJobsRecoverStaleResponse),
         (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Authenticated actor lacks platform-admin access or audit:read scope"),
+        (status = 403, description = "Authenticated actor lacks platform-admin access or admin:write scope"),
     )
 )]
 #[allow(dead_code)]
@@ -409,7 +409,7 @@ async fn recover_stale_background_jobs(
     State(state): State<AppState>,
     identity: AuthenticatedIdentity,
 ) -> ApiResult<Json<AdminJobsRecoverStaleResponse>> {
-    ensure_admin_jobs_access(&state.db, &identity).await?;
+    ensure_admin_jobs_write_access(&state.db, &identity).await?;
 
     let mut tx = state
         .db
@@ -463,11 +463,19 @@ async fn insert_admin_audit_log(
     Ok(())
 }
 
-async fn ensure_admin_jobs_access(
+async fn ensure_admin_jobs_read_access(
     db: &sqlx::PgPool,
     identity: &AuthenticatedIdentity,
 ) -> ApiResult<()> {
     ensure_scope(identity, SCOPE_AUDIT_READ)?;
+    ensure_platform_admin(db, identity.user_id).await
+}
+
+async fn ensure_admin_jobs_write_access(
+    db: &sqlx::PgPool,
+    identity: &AuthenticatedIdentity,
+) -> ApiResult<()> {
+    ensure_scope(identity, SCOPE_ADMIN_WRITE)?;
     ensure_platform_admin(db, identity.user_id).await
 }
 

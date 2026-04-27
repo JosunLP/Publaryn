@@ -3716,20 +3716,20 @@ async fn test_platform_admin_job_mutations_reject_non_retryable_states_and_enfor
     promote_user_to_platform_admin(&pool, "alice").await;
     let admin_jwt = login_user(&app, "alice", "super_secret_pw!").await;
 
-    let (status, no_audit_scope_body) =
-        create_personal_access_token(&app, &admin_jwt, "admin-no-audit", &["packages:write"]).await;
-    assert_eq!(status, StatusCode::CREATED, "{no_audit_scope_body}");
-    let admin_no_audit_token = no_audit_scope_body["token"]
-        .as_str()
-        .expect("admin token without audit scope should be returned")
-        .to_owned();
-
     let (status, audit_scope_body) =
         create_personal_access_token(&app, &admin_jwt, "admin-audit", &["audit:read"]).await;
     assert_eq!(status, StatusCode::CREATED, "{audit_scope_body}");
     let admin_audit_token = audit_scope_body["token"]
         .as_str()
         .expect("admin token with audit scope should be returned")
+        .to_owned();
+
+    let (status, admin_write_scope_body) =
+        create_personal_access_token(&app, &admin_jwt, "admin-write", &["admin:write"]).await;
+    assert_eq!(status, StatusCode::CREATED, "{admin_write_scope_body}");
+    let admin_write_token = admin_write_scope_body["token"]
+        .as_str()
+        .expect("admin token with admin:write scope should be returned")
         .to_owned();
 
     sqlx::query("DELETE FROM background_jobs")
@@ -3754,6 +3754,9 @@ async fn test_platform_admin_job_mutations_reject_non_retryable_states_and_enfor
     .await
     .expect("admin mutation jobs should seed successfully");
 
+    let (status, list_body) = list_platform_admin_jobs(&app, &admin_audit_token, None).await;
+    assert_eq!(status, StatusCode::OK, "response: {list_body}");
+
     let (status, conflict_body) = retry_platform_admin_job(&app, &admin_jwt, pending_job_id).await;
     assert_eq!(status, StatusCode::CONFLICT);
     assert!(
@@ -3765,14 +3768,25 @@ async fn test_platform_admin_job_mutations_reject_non_retryable_states_and_enfor
     );
 
     let (status, missing_scope_body) =
-        retry_platform_admin_job(&app, &admin_no_audit_token, pending_job_id).await;
+        retry_platform_admin_job(&app, &admin_audit_token, pending_job_id).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert!(
         missing_scope_body["error"]
             .as_str()
             .expect("scope error should be present")
-            .contains("audit:read"),
+            .contains("admin:write"),
         "unexpected missing-scope response: {missing_scope_body}"
+    );
+
+    let (status, missing_recover_scope_body) =
+        recover_stale_platform_admin_jobs(&app, &admin_audit_token).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(
+        missing_recover_scope_body["error"]
+            .as_str()
+            .expect("scope error should be present")
+            .contains("admin:write"),
+        "unexpected missing-scope response: {missing_recover_scope_body}"
     );
 
     let missing_job_id = Uuid::new_v4();
@@ -3793,7 +3807,7 @@ async fn test_platform_admin_job_mutations_reject_non_retryable_states_and_enfor
         .expect("admin user should be demotable for access tests");
 
     let (status, missing_admin_body) =
-        recover_stale_platform_admin_jobs(&app, &admin_audit_token).await;
+        recover_stale_platform_admin_jobs(&app, &admin_write_token).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert!(
         missing_admin_body["error"]

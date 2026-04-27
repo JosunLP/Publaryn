@@ -25,18 +25,18 @@ interface NormalizedPackageMetadataInputValues
   visibility: string | null | undefined;
 }
 
-const PACKAGE_VISIBILITY_VALUES = new Set([
+export const PACKAGE_VISIBILITY_VALUES = new Set([
   'public',
   'private',
   'internal_org',
   'unlisted',
   'quarantined',
 ]);
-const PACKAGE_VISIBILITY_VALUES_HINT = Array.from(PACKAGE_VISIBILITY_VALUES).join(
+export const PACKAGE_VISIBILITY_VALUES_HINT = Array.from(PACKAGE_VISIBILITY_VALUES).join(
   ', '
 );
 
-class PackageMetadataValidationError extends Error {
+export class PackageMetadataValidationError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'PackageMetadataValidationError';
@@ -176,7 +176,7 @@ function normalizeStoredPackageVisibility(
   return PACKAGE_VISIBILITY_VALUES.has(normalized) ? normalized : null;
 }
 
-function normalizePackageVisibilityInput(
+export function normalizePackageVisibilityInput(
   value: string | null | undefined
 ): string | null | undefined {
   if (typeof value !== 'string') {

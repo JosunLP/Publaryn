@@ -4,10 +4,12 @@ import { describe, expect, test } from 'bun:test';
 
 import type { PackageDetail } from '../src/api/packages';
 import {
+  PACKAGE_VISIBILITY_VALUES_HINT,
   buildPackageMetadataUpdateInput,
   createPackageMetadataFormValues,
   normalizePackageMetadataInput,
   normalizePackageMetadataKeywords,
+  normalizePackageVisibilityInput,
   packageMetadataHasChanges,
 } from '../src/utils/package-metadata';
 
@@ -87,6 +89,29 @@ describe('package metadata helpers', () => {
       })
     ).toThrow(
       'Invalid package visibility: unknown. Allowed values: public, private, internal_org, unlisted, quarantined.'
+    );
+  });
+
+  test('normalizes allowed visibility values, including hyphenated input', () => {
+    expect(normalizePackageVisibilityInput('public')).toBe('public');
+    expect(normalizePackageVisibilityInput('PRIVATE')).toBe('private');
+    expect(normalizePackageVisibilityInput('internal-org')).toBe(
+      'internal_org'
+    );
+    expect(normalizePackageVisibilityInput(' quarantined ')).toBe(
+      'quarantined'
+    );
+  });
+
+  test('treats blank and omitted visibility input distinctly', () => {
+    expect(normalizePackageVisibilityInput(' \n\t ')).toBeNull();
+    expect(normalizePackageVisibilityInput(undefined)).toBeUndefined();
+    expect(normalizePackageVisibilityInput(null)).toBeUndefined();
+  });
+
+  test('throws a useful visibility validation error for unknown values', () => {
+    expect(() => normalizePackageVisibilityInput('internal-team')).toThrow(
+      `Invalid package visibility: internal-team. Allowed values: ${PACKAGE_VISIBILITY_VALUES_HINT}. Normalized: internal_team.`
     );
   });
 
