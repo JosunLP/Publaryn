@@ -136,8 +136,10 @@ export function getPackageMetadataChangeState(
   values: PackageMetadataFormValues
 ): PackageMetadataChangeState {
   try {
+    const updateInput = buildPackageMetadataUpdateInput(pkg, values);
+
     return {
-      hasChanges: packageMetadataHasChanges(pkg, values),
+      hasChanges: Object.keys(updateInput).length > 0,
       hasValidationError: false,
     };
   } catch (error) {
