@@ -165,7 +165,7 @@ async function compileComponentModule(componentPath: string): Promise<string> {
     `${createHash('sha256').update(componentPath).digest('hex')}.mjs`
   );
   mkdirSync(outputDir, { recursive: true });
-  const rewrittenCode = await rewriteRelativeImports(
+  const rewrittenCode = await rewriteComponentRuntimeImports(
     compiled.js.code,
     componentPath
   );
@@ -174,7 +174,7 @@ async function compileComponentModule(componentPath: string): Promise<string> {
   return pathToFileURL(outputPath).href;
 }
 
-async function rewriteRelativeImports(
+async function rewriteComponentRuntimeImports(
   code: string,
   componentPath: string
 ): Promise<string> {
@@ -207,7 +207,19 @@ async function rewriteRelativeImports(
     rewrittenCode = rewrittenCode.replaceAll(specifier, rewrittenSpecifier);
   }
 
-  return rewrittenCode;
+  return rewriteSvelteClientRuntimeImport(rewrittenCode);
+}
+
+function rewriteSvelteClientRuntimeImport(code: string): string {
+  const svelteClientRuntimeUrl = new URL(
+    '../node_modules/svelte/src/index-client.js',
+    import.meta.url
+  ).href;
+
+  return code.replaceAll(
+    /from\s+(['"])svelte\1/g,
+    `from '${svelteClientRuntimeUrl}'`
+  );
 }
 
 function resolveRelativeImport(

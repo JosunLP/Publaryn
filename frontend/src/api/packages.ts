@@ -221,6 +221,7 @@ export interface PackageDetail {
   updated_at?: NullableString;
   owner_username?: NullableString;
   owner_org_slug?: NullableString;
+  repository_slug?: NullableString;
   can_manage_metadata?: boolean;
   can_manage_releases?: boolean;
   can_manage_trusted_publishers?: boolean;
