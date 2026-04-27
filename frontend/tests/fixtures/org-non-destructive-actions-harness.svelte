@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
+
   import type { NamespaceClaim } from '../../src/api/namespaces';
   import type { Team } from '../../src/api/orgs';
   import type { OrgPackageSummary, OrgRepositorySummary } from '../../src/api/orgs';
@@ -107,7 +109,7 @@
     mutations,
   });
 
-  queueMicrotask(() => {
+  onMount(() => {
     void reload();
   });
 </script>

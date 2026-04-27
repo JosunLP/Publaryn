@@ -1,5 +1,6 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
+  import { onMount } from 'svelte';
 
   import type { MfaSetupState } from '../../src/api/auth';
   import type {
@@ -186,7 +187,7 @@
     organizationActions,
   });
 
-  queueMicrotask(() => {
+  onMount(() => {
     void settingsPageController.initialize();
   });
 </script>

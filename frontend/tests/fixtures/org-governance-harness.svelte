@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
+
   import type {
     OrgMember,
     OrgInvitation,
@@ -109,7 +111,7 @@
     mutations,
   });
 
-  queueMicrotask(() => {
+  onMount(() => {
     void reload();
   });
 </script>

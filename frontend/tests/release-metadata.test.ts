@@ -323,6 +323,56 @@ describe('release dependency overview helpers', () => {
     });
   });
 
+  test('handles mixed dependency shapes across ecosystems', () => {
+    expect(
+      buildReleaseDependencyOverview({
+        kind: 'cargo',
+        details: {
+          dependencies: ['serde', { name: 'tokio' }],
+          features: {},
+        },
+      })
+    ).toEqual({
+      ecosystem: 'cargo',
+      total: 2,
+      groups: [
+        {
+          label: 'Runtime dependencies',
+          count: 2,
+          names: ['serde', 'tokio'],
+        },
+      ],
+    });
+
+    expect(
+      buildReleaseDependencyOverview({
+        kind: 'rubygems',
+        details: {
+          platform: 'ruby',
+          authors: ['Alice'],
+          licenses: ['MIT'],
+          runtime_dependencies: ['rack', { name: 'zeitwerk' }],
+          development_dependencies: [{ name: 'rspec' }],
+        },
+      })
+    ).toEqual({
+      ecosystem: 'rubygems',
+      total: 3,
+      groups: [
+        {
+          label: 'Runtime dependencies',
+          count: 2,
+          names: ['rack', 'zeitwerk'],
+        },
+        {
+          label: 'Development dependencies',
+          count: 1,
+          names: ['rspec'],
+        },
+      ],
+    });
+  });
+
   test('emits Maven groups in deterministic scope order', () => {
     expect(
       buildReleaseDependencyOverview({

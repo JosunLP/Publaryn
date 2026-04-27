@@ -5,6 +5,7 @@ import { describe, expect, test } from 'bun:test';
 import type { PackageDetail } from '../src/api/packages';
 import {
   PACKAGE_VISIBILITY_VALUES_HINT,
+  PackageMetadataValidationError,
   buildPackageMetadataUpdateInput,
   createPackageMetadataFormValues,
   getPackageMetadataChangeState,
@@ -117,6 +118,9 @@ describe('package metadata helpers', () => {
     expect(() => normalizePackageVisibilityInput('internal-team')).toThrow(
       `Invalid package visibility: internal-team. Allowed values: ${PACKAGE_VISIBILITY_VALUES_HINT}. Normalized: internal_team.`
     );
+    expect(() => normalizePackageVisibilityInput('internal-team')).toThrow(
+      PackageMetadataValidationError
+    );
   });
 
   test('normalizes keyword text into a stable unique list', () => {
@@ -174,6 +178,17 @@ describe('package metadata helpers', () => {
       buildPackageMetadataUpdateInput(BASE_PACKAGE, {
         ...createPackageMetadataFormValues(BASE_PACKAGE),
         visibility: 'internal-org',
+      })
+    ).toEqual({
+      visibility: 'internal_org',
+    });
+  });
+
+  test('normalizes spaced visibility input before emitting mutation payloads', () => {
+    expect(
+      buildPackageMetadataUpdateInput(BASE_PACKAGE, {
+        ...createPackageMetadataFormValues(BASE_PACKAGE),
+        visibility: 'internal org',
       })
     ).toEqual({
       visibility: 'internal_org',
