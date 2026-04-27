@@ -123,12 +123,12 @@ function compareMavenScopes(left: string, right: string): number {
   const leftOrder = MAVEN_SCOPE_ORDER.get(left);
   const rightOrder = MAVEN_SCOPE_ORDER.get(right);
 
-  if (leftOrder != null || rightOrder != null) {
-    if (leftOrder == null) {
+  if (leftOrder !== undefined || rightOrder !== undefined) {
+    if (leftOrder === undefined) {
       return 1;
     }
 
-    if (rightOrder == null) {
+    if (rightOrder === undefined) {
       return -1;
     }
 
