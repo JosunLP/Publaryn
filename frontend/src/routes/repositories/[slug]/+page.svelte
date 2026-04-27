@@ -2,9 +2,7 @@
   import { browser } from '$app/environment';
   import { page } from '$app/stores';
 
-  import { ApiError, getAuthToken } from '../../../api/client';
-  import type { OrganizationMembership } from '../../../api/orgs';
-  import { listMyOrganizations } from '../../../api/orgs';
+  import { ApiError } from '../../../api/client';
   import { createPackage } from '../../../api/packages';
   import type {
     RepositoryDetail,
@@ -13,9 +11,13 @@
   import {
     getRepository,
     listRepositoryPackages,
-    transferRepositoryOwnership,
     updateRepository,
   } from '../../../api/repositories';
+  import {
+    createRepositoryTransferController,
+    loadRepositoryTransferState,
+    type RepositoryTransferState,
+  } from '../../../pages/repository-transfer';
   import {
     buildPackageDetailsPath,
     buildPackageSecurityPath,
@@ -32,18 +34,11 @@
     formatRepositoryPackageCoverageLabel,
     formatRepositoryVisibilityLabel,
     resolveRepositoryOwnerSummary,
-    selectRepositoryTransferTargets,
   } from '../../../utils/repositories';
   import { deriveRepositoryDetailCapabilities } from '../../../utils/repository-detail';
 
   const MAX_VISIBLE_PACKAGES = 100;
   const DEFAULT_PACKAGE_ECOSYSTEM = 'npm';
-
-  interface TransferState {
-    showTransfer: boolean;
-    organizations: OrganizationMembership[];
-    loadError: string | null;
-  }
 
   let lastSlug = '';
   let loading = true;
@@ -58,7 +53,7 @@
   let updatingRepository = false;
   let repositoryDescription = '';
   let repositoryVisibility = 'public';
-  let transferState: TransferState = {
+  let transferState: RepositoryTransferState = {
     showTransfer: false,
     organizations: [],
     loadError: null,
@@ -132,7 +127,10 @@
       return;
     }
 
-    transferState = await loadTransferState(repository);
+    transferState = await loadRepositoryTransferState({
+      isBrowser: browser,
+      repository,
+    });
 
     try {
       const packageData = await listRepositoryPackages(slug, {
@@ -147,44 +145,6 @@
       );
     } finally {
       loading = false;
-    }
-  }
-
-  async function loadTransferState(
-    currentRepository: RepositoryDetail | null
-  ): Promise<TransferState> {
-    if (
-      !browser ||
-      !currentRepository ||
-      !getAuthToken() ||
-      currentRepository.can_transfer !== true
-    ) {
-      return {
-        showTransfer: false,
-        organizations: [],
-        loadError: null,
-      };
-    }
-
-    try {
-      const response = await listMyOrganizations();
-      return {
-        showTransfer: true,
-        organizations: selectRepositoryTransferTargets(
-          response.organizations || [],
-          currentRepository.owner_org_slug
-        ),
-        loadError: null,
-      };
-    } catch (caughtError: unknown) {
-      return {
-        showTransfer: true,
-        organizations: [],
-        loadError:
-          caughtError instanceof Error && caughtError.message
-            ? caughtError.message
-            : 'Failed to load your organizations for repository transfer.',
-      };
     }
   }
 
@@ -289,52 +249,6 @@
     }
   }
 
-  async function handleTransferRepository(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
-
-    if (!repository || repository.can_transfer !== true) {
-      return;
-    }
-
-    const formData = new FormData(event.currentTarget as HTMLFormElement);
-    const repositorySlug = repository.slug?.trim() || slug;
-    const nextTargetOrgSlug =
-      formData.get('target_org_slug')?.toString().trim() || targetOrgSlug.trim();
-    const confirmed = formData.get('confirm') !== null || transferConfirmed;
-
-    if (!nextTargetOrgSlug) {
-      notice = null;
-      error = 'Select a target organization.';
-      return;
-    }
-
-    if (!confirmed) {
-      notice = null;
-      error = 'Please confirm the repository transfer.';
-      return;
-    }
-
-    transferringRepository = true;
-    notice = null;
-    error = null;
-
-    try {
-      const result = await transferRepositoryOwnership(repositorySlug, {
-        targetOrgSlug: nextTargetOrgSlug,
-      });
-
-      await loadRepositoryPage({
-        notice: `Repository ownership transferred to ${result.owner?.name || result.owner?.slug || nextTargetOrgSlug}.`,
-      });
-    } catch (caughtError: unknown) {
-      error = toErrorMessage(
-        caughtError,
-        'Failed to transfer repository ownership.'
-      );
-      transferringRepository = false;
-    }
-  }
-
   function formatVisiblePackageSummary(packageCount: number): string {
     if (packageCount >= MAX_VISIBLE_PACKAGES) {
       return `Showing the first ${MAX_VISIBLE_PACKAGES} visible packages.`;
@@ -365,6 +279,24 @@
       ? caughtError.message
       : fallback;
   }
+
+  const repositoryTransferController = createRepositoryTransferController({
+    getRepository: () => repository,
+    getSlug: () => slug,
+    getTargetOrgSlug: () => targetOrgSlug,
+    getTransferConfirmed: () => transferConfirmed,
+    setNotice: (value) => {
+      notice = value;
+    },
+    setError: (value) => {
+      error = value;
+    },
+    setTransferringRepository: (value) => {
+      transferringRepository = value;
+    },
+    loadRepositoryPage,
+    toErrorMessage,
+  });
 </script>
 
 <svelte:head>
@@ -799,7 +731,7 @@
               {:else}
                 <form
                   id="repository-transfer-form"
-                  on:submit={handleTransferRepository}
+                  on:submit={(event) => repositoryTransferController.submit(event)}
                 >
                   <div class="form-group mb-3">
                     <label for="repository-transfer-target"

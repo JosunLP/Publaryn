@@ -6,11 +6,19 @@ import {
   buildBundleAnalysisStats,
   bundleAnalysisRiskScoreLabel,
   bundleAnalysisRiskBadgeSeverity,
+  bundleAnalysisRiskFactors,
   bundleAnalysisRiskLabel,
   bundleAnalysisRiskSeverityLabel,
 } from '../src/utils/package-analysis';
 
 describe('package analysis helpers', () => {
+  test('returns empty collections for missing bundle analysis data', () => {
+    expect(buildBundleAnalysisStats(null)).toEqual([]);
+    expect(buildBundleAnalysisHighlights(undefined)).toEqual([]);
+    expect(buildBundleAnalysisQuickFacts(null)).toEqual([]);
+    expect(bundleAnalysisRiskFactors(undefined)).toEqual([]);
+  });
+
   test('labels artifact size separately from artifact count', () => {
     expect(
       buildBundleAnalysisStats({
@@ -121,5 +129,22 @@ describe('package analysis helpers', () => {
         layer_count: 3,
       })
     ).toEqual(['compressed 2.0 KiB', 'install 4.0 KiB', '7 direct deps']);
+  });
+
+  test('pluralizes singular quick facts and filters empty risk factors', () => {
+    expect(
+      buildBundleAnalysisQuickFacts({
+        direct_dependency_count: 1,
+        layer_count: 1,
+      })
+    ).toEqual(['1 direct dep', '1 layer']);
+
+    expect(
+      bundleAnalysisRiskFactors({
+        risk: {
+          factors: ['Native modules', '', '  ', 'Install scripts'],
+        },
+      })
+    ).toEqual(['Native modules', 'Install scripts']);
   });
 });
