@@ -146,8 +146,9 @@ describe('package analysis helpers', () => {
         },
       })
     ).toEqual(['Native modules', 'Install scripts']);
-    expect(bundleAnalysisRiskFactors({ risk: { factors: null } })).toEqual([]);
-    expect(bundleAnalysisRiskFactors({ risk: { factors: undefined } })).toEqual([]);
+    for (const factors of [null, undefined]) {
+      expect(bundleAnalysisRiskFactors({ risk: { factors } })).toEqual([]);
+    }
     expect(
       bundleAnalysisRiskFactors({
         risk: {

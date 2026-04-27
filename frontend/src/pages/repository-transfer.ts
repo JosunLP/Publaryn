@@ -1,10 +1,7 @@
 import { getAuthToken } from '../api/client';
 import type { OrganizationMembership } from '../api/orgs';
 import { listMyOrganizations } from '../api/orgs';
-import type {
-  RepositoryDetail,
-  RepositoryTransferOwnershipResult,
-} from '../api/repositories';
+import type { RepositoryDetail } from '../api/repositories';
 import { transferRepositoryOwnership } from '../api/repositories';
 import { selectRepositoryTransferTargets } from '../utils/repositories';
 
@@ -136,10 +133,12 @@ export function createRepositoryTransferController(
       options.setError(null);
 
       try {
-        const result: RepositoryTransferOwnershipResult =
-          await dependencies.transferRepositoryOwnership(repositorySlug, {
+        const result = await dependencies.transferRepositoryOwnership(
+          repositorySlug,
+          {
             targetOrgSlug,
-          });
+          }
+        );
 
         await options.loadRepositoryPage({
           notice: `Repository ownership transferred to ${result.owner?.name || result.owner?.slug || targetOrgSlug}.`,
