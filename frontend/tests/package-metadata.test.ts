@@ -115,12 +115,12 @@ describe('package metadata helpers', () => {
   });
 
   test('throws a useful visibility validation error for unknown values', () => {
-    expect(() => normalizePackageVisibilityInput('internal-team')).toThrow(
+    const invalidVisibility = () => normalizePackageVisibilityInput('internal-team');
+
+    expect(invalidVisibility).toThrow(
       `Invalid package visibility: internal-team. Allowed values: ${PACKAGE_VISIBILITY_VALUES_HINT}. Normalized: internal_team.`
     );
-    expect(() => normalizePackageVisibilityInput('internal-team')).toThrow(
-      PackageMetadataValidationError
-    );
+    expect(invalidVisibility).toThrow(PackageMetadataValidationError);
   });
 
   test('normalizes keyword text into a stable unique list', () => {
