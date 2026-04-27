@@ -146,6 +146,7 @@ describe('package analysis helpers', () => {
         },
       })
     ).toEqual(['Native modules', 'Install scripts']);
+    // Stored payloads may omit factors as either null or undefined depending on source.
     for (const factors of [null, undefined]) {
       expect(bundleAnalysisRiskFactors({ risk: { factors } })).toEqual([]);
     }
