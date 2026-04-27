@@ -163,6 +163,10 @@ fn extract_api_key(headers: &HeaderMap) -> Option<&str> {
         }
     }
 
+    extract_authorization_bearer_token(headers)
+}
+
+fn extract_authorization_bearer_token(headers: &HeaderMap) -> Option<&str> {
     // Fall back to Authorization: Bearer
     headers.get(AUTHORIZATION)?.to_str().ok().and_then(|val| {
         let mut parts = val.splitn(2, ' ');
@@ -1525,10 +1529,11 @@ async fn search<S: NuGetAppState>(
             Ok(identity) => Some(identity.user_id),
             Err(_) => return nuget_error_response(StatusCode::UNAUTHORIZED, "Unauthorized"),
         }
-    } else if headers.contains_key(AUTHORIZATION) {
+    } else if extract_authorization_bearer_token(&headers).is_some() {
         // Search remains anonymously readable, and some proxies attach ambient Authorization
-        // headers. Invalid generic bearer credentials therefore fall back to anonymous search,
-        // while explicit x-nuget-apikey auth remains authoritative and returns 401.
+        // headers. Only recognized Bearer credentials are attempted here; malformed or unrelated
+        // Authorization schemes therefore continue anonymously, while explicit x-nuget-apikey
+        // auth remains authoritative and returns 401.
         authenticate(&state, &headers)
             .await
             .ok()
@@ -1574,4 +1579,40 @@ async fn search<S: NuGetAppState>(
         Json(response),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    #[test]
+    fn extract_api_key_prefers_x_nuget_apikey() {
+        let mut headers = HeaderMap::new();
+        headers.insert(&X_NUGET_APIKEY, HeaderValue::from_static(" nuget-key "));
+        headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer bearer-key"));
+
+        assert_eq!(extract_api_key(&headers), Some("nuget-key"));
+    }
+
+    #[test]
+    fn extract_api_key_uses_bearer_authorization_when_present() {
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer bearer-key"));
+
+        assert_eq!(extract_api_key(&headers), Some("bearer-key"));
+        assert_eq!(
+            extract_authorization_bearer_token(&headers),
+            Some("bearer-key")
+        );
+    }
+
+    #[test]
+    fn extract_api_key_ignores_non_bearer_authorization() {
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, HeaderValue::from_static("Basic abc123"));
+
+        assert_eq!(extract_api_key(&headers), None);
+        assert_eq!(extract_authorization_bearer_token(&headers), None);
+    }
 }

@@ -62,6 +62,8 @@
         bind:value={tokenExpiryDays}
         type="number"
         min="1"
+        step="1"
+        inputmode="numeric"
         class="form-input"
         placeholder="30"
       />

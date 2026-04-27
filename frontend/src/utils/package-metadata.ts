@@ -25,6 +25,11 @@ interface NormalizedPackageMetadataInputValues
   visibility: string | null | undefined;
 }
 
+export interface PackageMetadataChangeState {
+  hasChanges: boolean;
+  hasValidationError: boolean;
+}
+
 export const PACKAGE_VISIBILITY_VALUES = new Set([
   'public',
   'private',
@@ -123,11 +128,24 @@ export function packageMetadataHasChanges(
   pkg: PackageDetail | null | undefined,
   values: PackageMetadataFormValues
 ): boolean {
+  return Object.keys(buildPackageMetadataUpdateInput(pkg, values)).length > 0;
+}
+
+export function getPackageMetadataChangeState(
+  pkg: PackageDetail | null | undefined,
+  values: PackageMetadataFormValues
+): PackageMetadataChangeState {
   try {
-    return Object.keys(buildPackageMetadataUpdateInput(pkg, values)).length > 0;
+    return {
+      hasChanges: packageMetadataHasChanges(pkg, values),
+      hasValidationError: false,
+    };
   } catch (error) {
     if (error instanceof PackageMetadataValidationError) {
-      return true;
+      return {
+        hasChanges: false,
+        hasValidationError: true,
+      };
     }
 
     throw error;

@@ -113,6 +113,13 @@ describe('settings page controller harness', () => {
         expect(target.textContent).toContain('bootstrap-token');
       });
 
+      expect(queryRequiredInput(target, '#token-expiry').getAttribute('step')).toBe(
+        '1'
+      );
+      expect(
+        queryRequiredInput(target, '#token-expiry').getAttribute('inputmode')
+      ).toBe('numeric');
+
       changeValue(queryRequiredInput(target, '#token-name'), 'CI deploy token');
       changeValue(queryRequiredInput(target, '#token-expiry'), '30');
       setChecked(queryScopeCheckbox(target, 'tokens:write'), false);

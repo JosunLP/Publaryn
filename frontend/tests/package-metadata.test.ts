@@ -7,6 +7,7 @@ import {
   PACKAGE_VISIBILITY_VALUES_HINT,
   buildPackageMetadataUpdateInput,
   createPackageMetadataFormValues,
+  getPackageMetadataChangeState,
   normalizePackageMetadataInput,
   normalizePackageMetadataKeywords,
   normalizePackageVisibilityInput,
@@ -126,6 +127,10 @@ describe('package metadata helpers', () => {
     const formValues = createPackageMetadataFormValues(BASE_PACKAGE);
 
     expect(packageMetadataHasChanges(BASE_PACKAGE, formValues)).toBe(false);
+    expect(getPackageMetadataChangeState(BASE_PACKAGE, formValues)).toEqual({
+      hasChanges: false,
+      hasValidationError: false,
+    });
     expect(buildPackageMetadataUpdateInput(BASE_PACKAGE, formValues)).toEqual(
       {}
     );
@@ -208,12 +213,23 @@ describe('package metadata helpers', () => {
     ).toThrow(
       'Invalid package visibility: definitely-not-valid. Allowed values: public, private, internal_org, unlisted, quarantined. Normalized: definitely_not_valid.'
     );
-    expect(
+    expect(() =>
       packageMetadataHasChanges(privatePackage, {
         ...createPackageMetadataFormValues(privatePackage),
         visibility: 'definitely-not-valid',
       })
-    ).toBe(true);
+    ).toThrow(
+      'Invalid package visibility: definitely-not-valid. Allowed values: public, private, internal_org, unlisted, quarantined. Normalized: definitely_not_valid.'
+    );
+    expect(
+      getPackageMetadataChangeState(privatePackage, {
+        ...createPackageMetadataFormValues(privatePackage),
+        visibility: 'definitely-not-valid',
+      })
+    ).toEqual({
+      hasChanges: false,
+      hasValidationError: true,
+    });
   });
 
   test('treats omitted visibility input as no change instead of clearing', () => {

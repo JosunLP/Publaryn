@@ -84,7 +84,7 @@
   import {
     buildPackageMetadataUpdateInput,
     createPackageMetadataFormValues,
-    packageMetadataHasChanges,
+    getPackageMetadataChangeState,
   } from '../../../../utils/package-metadata';
   import { selectPackageTransferTargets } from '../../../../utils/package-transfer';
   import {
@@ -1342,8 +1342,8 @@
   $: ociPackageMetadata =
     packageMetadata?.kind === 'oci' ? packageMetadata.details : null;
   $: openFindings = findings.filter((finding) => !finding.is_resolved);
-  $: packageSettingsHasChanges = pkg
-    ? packageMetadataHasChanges(pkg, {
+  $: packageSettingsChangeState = pkg
+    ? getPackageMetadataChangeState(pkg, {
         description: packageSettingsDescription,
         readme: packageSettingsReadme,
         homepage: packageSettingsHomepage,
@@ -1352,7 +1352,10 @@
         keywords: packageSettingsKeywords,
         visibility: packageSettingsVisibility,
       })
-    : false;
+    : { hasChanges: false, hasValidationError: false };
+  $: packageSettingsCanSubmit =
+    packageSettingsChangeState.hasChanges ||
+    packageSettingsChangeState.hasValidationError;
   $: readmeHtml = renderMarkdown(pkg?.readme);
 </script>
 
@@ -2016,21 +2019,21 @@
                 </div>
 
                 <div style="display:flex; gap:8px;">
-                  <button
-                    type="submit"
-                    class="btn btn-primary"
-                    disabled={!packageSettingsHasChanges ||
-                      updatingPackageSettings}
-                  >
+                    <button
+                      type="submit"
+                      class="btn btn-primary"
+                      disabled={!packageSettingsCanSubmit ||
+                        updatingPackageSettings}
+                    >
                     {updatingPackageSettings ? 'Saving…' : 'Save settings'}
                   </button>
-                  <button
-                    type="button"
-                    class="btn btn-secondary"
-                    on:click={() => resetPackageSettingsForm(pkg)}
-                    disabled={!packageSettingsHasChanges ||
-                      updatingPackageSettings}
-                  >
+                    <button
+                      type="button"
+                      class="btn btn-secondary"
+                      on:click={() => resetPackageSettingsForm(pkg)}
+                      disabled={!packageSettingsCanSubmit ||
+                        updatingPackageSettings}
+                    >
                     Reset
                   </button>
                 </div>

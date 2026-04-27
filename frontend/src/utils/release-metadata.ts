@@ -207,7 +207,13 @@ function mavenDependencyOverview(
     const rawScope = isRecord(dependency) ? stringValue(dependency.scope) : null;
     const scope = rawScope ?? 'compile';
     const label = `${scope.charAt(0).toUpperCase()}${scope.slice(1)} dependencies`;
-    grouped.set(label, [...(grouped.get(label) || []), dependency]);
+    let group = grouped.get(label);
+    if (!group) {
+      group = [];
+      grouped.set(label, group);
+    }
+
+    group.push(dependency);
   }
 
   return compactGroups(
