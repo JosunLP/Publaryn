@@ -7,7 +7,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
-### 1.1.0 added
+## [1.1.0] - 2026-04-28
+
+### Added
 
 - completed `1.1.0` roadmap in `docs/product/1.1.0-roadmap.md`
 - heuristic risk posture on package and release detail surfaces derived from bundle analysis and unresolved security findings
@@ -16,10 +18,13 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - normalized dependency overview on release detail pages for ecosystems with stored structured metadata
 - organization delegated-access history API, CSV export, and workspace panel for package, repository, and namespace grants
 
-### 1.1.0 documentation
+### Documentation
 
 - release-facing `1.1.0` notes in `docs/releases/1.1.0.md`
 - API route reference entries for organization access-history list and export endpoints
+
+See `docs/releases/1.1.0.md` for the human-readable release notes prepared for
+this stable release.
 
 ## [1.0.0] - 2026-04-23
 
