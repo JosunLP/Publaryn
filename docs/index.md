@@ -4,7 +4,7 @@ title: Publaryn Documentation
 titleTemplate: false
 hero:
   name: Publaryn
-  text: 1.0 release documentation
+  text: 1.1 release documentation
   tagline: Security-first, self-hostable multi-ecosystem package registry built in Rust.
   actions:
     - theme: brand
@@ -15,7 +15,7 @@ hero:
       link: /api-routes
     - theme: alt
       text: Review release notes
-      link: /releases/1.0.0
+      link: /releases/1.1.0
 features:
   - title: Clear 1.0 contract
     details: The release contract defines exactly what Publaryn 1.0 supports, what is deferred, and what must pass before the release can ship.
@@ -59,5 +59,5 @@ production-oriented baseline for self-hosted, multi-ecosystem package hosting.
 
 - [Release notes index](/releases/README)
 - [Product guide](/product/README)
-- [Publaryn 1.0.0 release notes](/releases/1.0.0)
+- [Publaryn 1.1.0 release notes](/releases/1.1.0)
 - [Operator queue recovery runbook](/operator/job-queue-recovery)

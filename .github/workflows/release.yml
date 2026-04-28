@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Release version to validate or publish (for example 1.0.0)
+        description: Release version to validate or publish (for example 1.1.0)
         required: true
         type: string
       publish:
