@@ -41,7 +41,7 @@ Frontend checks:
 
 - [Release checklist](/release-checklist)
 - [Release notes index](/releases/README)
-- [Publaryn 1.1.0 release notes](/releases/1.1.0)
+- [Publaryn 1.1.1 release notes](/releases/1.1.1)
 
 ## Runbooks
 

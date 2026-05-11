@@ -7,6 +7,22 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-05-11
+
+### Changed
+
+- refreshed Rust workspace dependencies, including `tokio`, `tower-http`, `utoipa`, and `quick-xml`
+- refreshed frontend dependencies, including SvelteKit, Vite, Tailwind/PostCSS, `dompurify`, `marked`, and `@bquery/bquery`
+- updated the local development Meilisearch image to `getmeili/meilisearch:v1.43`
+- updated the dependency review GitHub Action to `actions/dependency-review-action@v5`
+
+### Documentation
+
+- release-facing `1.1.1` notes in `docs/releases/1.1.1.md`
+
+See `docs/releases/1.1.1.md` for the human-readable release notes prepared for
+this stable release.
+
 ## [1.1.0] - 2026-04-28
 
 ### Added
