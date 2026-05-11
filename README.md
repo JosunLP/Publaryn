@@ -27,7 +27,7 @@ The current documented baseline includes native publish/read flows for every eco
 
 ## 1.0 Product Contract
 
-Publaryn is now targeting **1.1.0** as the current stable release on top of the production-ready 1.0 baseline for:
+Publaryn is now targeting **1.1.1** as the current stable release on top of the production-ready 1.0 baseline for:
 
 - self-hosted multi-ecosystem package hosting
 - native client compatibility across all currently mounted adapters

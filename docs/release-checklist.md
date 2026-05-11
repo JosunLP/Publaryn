@@ -1,6 +1,6 @@
 # Publaryn Release Checklist
 
-Use this checklist before publishing any stable Publaryn release. For `1.1.0`,
+Use this checklist before publishing any stable Publaryn release. For `1.1.1`,
 every item below is part of the release gate, not optional ceremony.
 
 ## 1. Contract and scope alignment
@@ -50,4 +50,4 @@ every item below is part of the release gate, not optional ceremony.
 
 - [ ] The release notes clearly separate supported, unsupported, and deferred features.
 - [ ] No undocumented route is required for the advertised 1.0 user journeys.
-- [ ] The final GitHub release description matches `docs/releases/1.1.0.md`.
+- [ ] The final GitHub release description matches `docs/releases/1.1.1.md`.

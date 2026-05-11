@@ -11,5 +11,6 @@ Every stable release note should include:
 
 ## Available releases
 
+- [Publaryn 1.1.1](./1.1.1.md)
 - [Publaryn 1.1.0](./1.1.0.md)
 - [Publaryn 1.0.0](./1.0.0.md)

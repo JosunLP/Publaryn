@@ -1,6 +1,6 @@
 {
   "name": "publaryn-docs",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "private": true,
   "description": "Publaryn documentation site powered by VitePress",
   "license": "Apache-2.0 AND MIT",
