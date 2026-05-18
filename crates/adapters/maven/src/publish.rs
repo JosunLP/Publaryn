@@ -5,7 +5,7 @@
 //! body.
 
 use bytes::Bytes;
-use quick_xml::{events::Event, Reader};
+use quick_xml::{events::Event, Reader, XmlVersion};
 use sha2::{Digest, Sha256, Sha512};
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
@@ -352,7 +352,7 @@ pub fn parse_pom_xml(xml_bytes: &[u8]) -> Result<ParsedPom> {
                 stack.pop();
             }
             Ok(Event::Text(ref e)) => {
-                let text = e.xml_content().unwrap_or_default().trim().to_owned();
+                let text = e.xml_content(XmlVersion::Implicit1_0).unwrap_or_default().trim().to_owned();
                 if text.is_empty() {
                     buf.clear();
                     continue;
