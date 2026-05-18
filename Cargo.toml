@@ -57,7 +57,7 @@ sha2 = "0.11.0"
 base64 = "0.22"
 blake2 = "0.10"
 hex = "0.4.3"
-jsonwebtoken = { version = "10.3.0", features = ["rust_crypto"] }
+jsonwebtoken = { version = "10.4.0", features = ["rust_crypto"] }
 md-5 = "0.11.0"
 totp-rs = { version = "5", features = ["gen_secret", "otpauth"] }
 
@@ -68,7 +68,7 @@ opentelemetry = "0.31.0"
 opentelemetry_sdk = { version = "0.31.0", features = ["rt-tokio"] }
 
 # Config
-config = "0.15.22"
+config = "0.15.23"
 dotenvy = "0.15.7"
 
 # Object Storage (S3/MinIO)
@@ -101,7 +101,7 @@ futures = "0.3"
 async-trait = "0.1"
 once_cell = "1.21.4"
 strsim = "0.11"
-quick-xml = "0.39.4"
+quick-xml = "0.40.1"
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 flate2 = "1"
 tar = "0.4"

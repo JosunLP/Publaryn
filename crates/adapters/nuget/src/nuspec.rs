@@ -95,7 +95,7 @@ pub fn parse_nuspec_xml(xml_bytes: &[u8]) -> Result<NuspecMetadata> {
 
     // We use a simple XML parsing approach using quick-xml events.
     use quick_xml::events::Event;
-    use quick_xml::Reader;
+    use quick_xml::{Reader, XmlVersion};
 
     let mut reader = Reader::from_str(xml_str);
     reader.config_mut().trim_text(true);
@@ -139,8 +139,10 @@ pub fn parse_nuspec_xml(xml_bytes: &[u8]) -> Result<NuspecMetadata> {
                         // Check for minClientVersion attribute
                         for attr in e.attributes().flatten() {
                             if local_name_str(attr.key.as_ref()) == "minClientVersion" {
-                                min_client_version =
-                                    attr.unescape_value().ok().map(|v| v.to_string());
+                                min_client_version = attr
+                                    .normalized_value(XmlVersion::Implicit1_0)
+                                    .ok()
+                                    .map(|v| v.to_string());
                             }
                         }
                     }
@@ -153,7 +155,11 @@ pub fn parse_nuspec_xml(xml_bytes: &[u8]) -> Result<NuspecMetadata> {
                             .attributes()
                             .flatten()
                             .find(|a| local_name_str(a.key.as_ref()) == "targetFramework")
-                            .and_then(|a| a.unescape_value().ok().map(|v| v.to_string()));
+                            .and_then(|a| {
+                                a.normalized_value(XmlVersion::Implicit1_0)
+                                    .ok()
+                                    .map(|v| v.to_string())
+                            });
                         current_group = Some(DependencyGroup {
                             target_framework: tf,
                             dependencies: Vec::new(),
@@ -167,15 +173,21 @@ pub fn parse_nuspec_xml(xml_bytes: &[u8]) -> Result<NuspecMetadata> {
                             match local_name_str(attr.key.as_ref()).as_str() {
                                 "id" => {
                                     dep_id = attr
-                                        .unescape_value()
+                                        .normalized_value(XmlVersion::Implicit1_0)
                                         .map(|v| v.to_string())
                                         .unwrap_or_default();
                                 }
                                 "version" => {
-                                    dep_version = attr.unescape_value().ok().map(|v| v.to_string());
+                                    dep_version = attr
+                                        .normalized_value(XmlVersion::Implicit1_0)
+                                        .ok()
+                                        .map(|v| v.to_string());
                                 }
                                 "exclude" => {
-                                    dep_exclude = attr.unescape_value().ok().map(|v| v.to_string());
+                                    dep_exclude = attr
+                                        .normalized_value(XmlVersion::Implicit1_0)
+                                        .ok()
+                                        .map(|v| v.to_string());
                                 }
                                 _ => {}
                             }
@@ -210,7 +222,7 @@ pub fn parse_nuspec_xml(xml_bytes: &[u8]) -> Result<NuspecMetadata> {
                             .flatten()
                             .find(|a| local_name_str(a.key.as_ref()) == "name")
                         {
-                            if let Ok(val) = attr.unescape_value() {
+                            if let Ok(val) = attr.normalized_value(XmlVersion::Implicit1_0) {
                                 package_types.push(PackageType {
                                     name: val.to_string(),
                                 });
@@ -221,7 +233,7 @@ pub fn parse_nuspec_xml(xml_bytes: &[u8]) -> Result<NuspecMetadata> {
                         // Check for type="expression" attribute
                         let is_expression = e.attributes().flatten().any(|a| {
                             local_name_str(a.key.as_ref()) == "type"
-                                && a.unescape_value()
+                                && a.normalized_value(XmlVersion::Implicit1_0)
                                     .map(|v| v == "expression")
                                     .unwrap_or(false)
                         });
@@ -241,7 +253,10 @@ pub fn parse_nuspec_xml(xml_bytes: &[u8]) -> Result<NuspecMetadata> {
                 current_element.clear();
             }
             Ok(Event::Text(ref e)) if !current_element.is_empty() && in_metadata => {
-                let text = e.xml_content().unwrap_or_default().to_string();
+                let text = e
+                    .xml_content(XmlVersion::Implicit1_0)
+                    .unwrap_or_default()
+                    .to_string();
                 match current_element.as_str() {
                     "id" => id = text,
                     "version" => version = text,
