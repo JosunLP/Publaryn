@@ -854,9 +854,9 @@ dependencies = [
 
 [[package]]
 name = "config"
-version = "0.15.22"
+version = "0.15.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8e68cfe19cd7d23ffde002c24ffa5cda73931913ef394d5eaaa32037dc940c0c"
+checksum = "f316c6237b2d38be61949ecd15268a4c6ca32570079394a2444d9ce2c72a72d8"
 dependencies = [
  "async-trait",
  "convert_case 0.6.0",
@@ -1847,6 +1847,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hashlink"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ea0b22561a9c04a7cb1a302c013e0259cd3b4bb619f145b32f72b8b4bcbed230"
+dependencies = [
+ "hashbrown 0.16.1",
+]
+
+[[package]]
 name = "headers"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2354,9 +2363,9 @@ dependencies = [
 
 [[package]]
 name = "jsonwebtoken"
-version = "10.3.0"
+version = "10.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0529410abe238729a60b108898784df8984c87f6054c9c4fcacc47e4803c1ce1"
+checksum = "eba32bfb4ffdeaca3e34431072faf01745c9b26d25504aa7a6cf5684334fc4fc"
 dependencies = [
  "aws-lc-rs",
  "base64",
@@ -2374,6 +2383,7 @@ dependencies = [
  "sha2 0.10.9",
  "signature 2.2.0",
  "simple_asn1",
+ "zeroize",
 ]
 
 [[package]]
@@ -3064,7 +3074,7 @@ dependencies = [
 
 [[package]]
 name = "publaryn-adapter-cargo-registry"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3087,7 +3097,7 @@ dependencies = [
 
 [[package]]
 name = "publaryn-adapter-composer"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3110,7 +3120,7 @@ dependencies = [
 
 [[package]]
 name = "publaryn-adapter-maven"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3134,7 +3144,7 @@ dependencies = [
 
 [[package]]
 name = "publaryn-adapter-npm"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3158,7 +3168,7 @@ dependencies = [
 
 [[package]]
 name = "publaryn-adapter-nuget"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3183,7 +3193,7 @@ dependencies = [
 
 [[package]]
 name = "publaryn-adapter-oci"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3205,7 +3215,7 @@ dependencies = [
 
 [[package]]
 name = "publaryn-adapter-pypi"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3230,7 +3240,7 @@ dependencies = [
 
 [[package]]
 name = "publaryn-adapter-rubygems"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3256,7 +3266,7 @@ dependencies = [
 
 [[package]]
 name = "publaryn-api"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3312,7 +3322,7 @@ dependencies = [
 
 [[package]]
 name = "publaryn-auth"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "anyhow",
  "argon2",
@@ -3337,7 +3347,7 @@ dependencies = [
 
 [[package]]
 name = "publaryn-core"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "chrono",
  "hex",
@@ -3357,7 +3367,7 @@ dependencies = [
 
 [[package]]
 name = "publaryn-search"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3374,7 +3384,7 @@ dependencies = [
 
 [[package]]
 name = "publaryn-test-utils"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -3394,7 +3404,7 @@ dependencies = [
 
 [[package]]
 name = "publaryn-workers"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3412,9 +3422,9 @@ dependencies = [
 
 [[package]]
 name = "quick-xml"
-version = "0.39.4"
+version = "0.40.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cdcc8dd4e2f670d309a5f0e83fe36dfdc05af317008fea29144da1a2ac858e5e"
+checksum = "2474bd2e5029e7ccb6abb2ba48cf2383a333851dedf495901544281590c7da7f"
 dependencies = [
  "memchr",
 ]
@@ -4372,7 +4382,7 @@ dependencies = [
  "futures-io",
  "futures-util",
  "hashbrown 0.15.5",
- "hashlink",
+ "hashlink 0.10.0",
  "indexmap",
  "log",
  "memchr",
@@ -5965,13 +5975,13 @@ checksum = "66fee0b777b0f5ac1c69bb06d361268faafa61cd4682ae064a171c16c433e9e4"
 
 [[package]]
 name = "yaml-rust2"
-version = "0.10.4"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2462ea039c445496d8793d052e13787f2b90e750b833afee748e601c17621ed9"
+checksum = "631a50d867fafb7093e709d75aaee9e0e0d5deb934021fcea25ac2fe09edc51e"
 dependencies = [
  "arraydeque",
  "encoding_rs",
- "hashlink",
+ "hashlink 0.11.0",
 ]
 
 [[package]]
@@ -6054,6 +6064,20 @@ name = "zeroize"
 version = "1.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b97154e67e32c85465826e8bcc1c59429aaaf107c1e4a9e53c8d8ccd5eff88d0"
+dependencies = [
+ "zeroize_derive",
+]
+
+[[package]]
+name = "zeroize_derive"
+version = "1.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "85a5b4158499876c763cb03bc4e49185d3cccbabb15b33c627f7884f43db852e"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
 
 [[package]]
 name = "zerotrie"
