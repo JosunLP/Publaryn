@@ -1,6 +1,6 @@
 [package]
 name = "publaryn-core"
-version = "1.1.1"
+version = "1.1.2"
 edition = "2021"
 description = "Core domain models and shared types for Publaryn"
 license.workspace = true
