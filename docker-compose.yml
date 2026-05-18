@@ -3,7 +3,7 @@ services:
   # PostgreSQL — primary datastore
   # ──────────────────────────────────────────────────────────
   postgres:
-    image: postgres:18.3-bookworm
+    image: postgres:18.4-bookworm
     restart: unless-stopped
     environment:
       POSTGRES_USER: publaryn
@@ -60,7 +60,7 @@ services:
   # Meilisearch — fast, typo-tolerant search
   # ──────────────────────────────────────────────────────────
   meilisearch:
-    image: getmeili/meilisearch:v1.43
+    image: getmeili/meilisearch:v1.44
     restart: unless-stopped
     environment:
       MEILI_MASTER_KEY: dev_master_key
