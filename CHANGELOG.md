@@ -7,6 +7,21 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-05-18
+
+### Changed
+
+- refreshed Rust workspace dependencies, including `jsonwebtoken`, `config`, and `quick-xml`
+- updated Maven and NuGet XML parsers to use `XmlVersion::Implicit1_0` for compatibility with `quick-xml` 0.40
+- updated the local development infrastructure images: `postgres:18.4-bookworm`, `redis:8-alpine`, and `getmeili/meilisearch:v1.44`
+
+### Documentation
+
+- release-facing `1.1.2` notes in `docs/releases/1.1.2.md`
+
+See `docs/releases/1.1.2.md` for the human-readable release notes prepared for
+this stable release.
+
 ## [1.1.1] - 2026-05-11
 
 ### Changed
