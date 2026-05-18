@@ -139,8 +139,10 @@ pub fn parse_nuspec_xml(xml_bytes: &[u8]) -> Result<NuspecMetadata> {
                         // Check for minClientVersion attribute
                         for attr in e.attributes().flatten() {
                             if local_name_str(attr.key.as_ref()) == "minClientVersion" {
-                                min_client_version =
-                                    attr.normalized_value(XmlVersion::Implicit1_0).ok().map(|v| v.to_string());
+                                min_client_version = attr
+                                    .normalized_value(XmlVersion::Implicit1_0)
+                                    .ok()
+                                    .map(|v| v.to_string());
                             }
                         }
                     }
@@ -153,7 +155,11 @@ pub fn parse_nuspec_xml(xml_bytes: &[u8]) -> Result<NuspecMetadata> {
                             .attributes()
                             .flatten()
                             .find(|a| local_name_str(a.key.as_ref()) == "targetFramework")
-                            .and_then(|a| a.normalized_value(XmlVersion::Implicit1_0).ok().map(|v| v.to_string()));
+                            .and_then(|a| {
+                                a.normalized_value(XmlVersion::Implicit1_0)
+                                    .ok()
+                                    .map(|v| v.to_string())
+                            });
                         current_group = Some(DependencyGroup {
                             target_framework: tf,
                             dependencies: Vec::new(),
@@ -172,10 +178,16 @@ pub fn parse_nuspec_xml(xml_bytes: &[u8]) -> Result<NuspecMetadata> {
                                         .unwrap_or_default();
                                 }
                                 "version" => {
-                                    dep_version = attr.normalized_value(XmlVersion::Implicit1_0).ok().map(|v| v.to_string());
+                                    dep_version = attr
+                                        .normalized_value(XmlVersion::Implicit1_0)
+                                        .ok()
+                                        .map(|v| v.to_string());
                                 }
                                 "exclude" => {
-                                    dep_exclude = attr.normalized_value(XmlVersion::Implicit1_0).ok().map(|v| v.to_string());
+                                    dep_exclude = attr
+                                        .normalized_value(XmlVersion::Implicit1_0)
+                                        .ok()
+                                        .map(|v| v.to_string());
                                 }
                                 _ => {}
                             }
@@ -241,7 +253,10 @@ pub fn parse_nuspec_xml(xml_bytes: &[u8]) -> Result<NuspecMetadata> {
                 current_element.clear();
             }
             Ok(Event::Text(ref e)) if !current_element.is_empty() && in_metadata => {
-                let text = e.xml_content(XmlVersion::Implicit1_0).unwrap_or_default().to_string();
+                let text = e
+                    .xml_content(XmlVersion::Implicit1_0)
+                    .unwrap_or_default()
+                    .to_string();
                 match current_element.as_str() {
                     "id" => id = text,
                     "version" => version = text,
