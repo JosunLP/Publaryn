@@ -1397,7 +1397,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2663,7 +2663,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3074,7 +3074,7 @@ dependencies = [
 
 [[package]]
 name = "publaryn-adapter-cargo-registry"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3097,7 +3097,7 @@ dependencies = [
 
 [[package]]
 name = "publaryn-adapter-composer"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3120,7 +3120,7 @@ dependencies = [
 
 [[package]]
 name = "publaryn-adapter-maven"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3144,7 +3144,7 @@ dependencies = [
 
 [[package]]
 name = "publaryn-adapter-npm"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3168,7 +3168,7 @@ dependencies = [
 
 [[package]]
 name = "publaryn-adapter-nuget"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3193,7 +3193,7 @@ dependencies = [
 
 [[package]]
 name = "publaryn-adapter-oci"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3215,7 +3215,7 @@ dependencies = [
 
 [[package]]
 name = "publaryn-adapter-pypi"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3240,7 +3240,7 @@ dependencies = [
 
 [[package]]
 name = "publaryn-adapter-rubygems"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3266,7 +3266,7 @@ dependencies = [
 
 [[package]]
 name = "publaryn-api"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3300,7 +3300,7 @@ dependencies = [
  "publaryn-test-utils",
  "publaryn-workers",
  "rand 0.10.1",
- "reqwest 0.13.3",
+ "reqwest 0.13.4",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -3322,7 +3322,7 @@ dependencies = [
 
 [[package]]
 name = "publaryn-auth"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "anyhow",
  "argon2",
@@ -3333,7 +3333,7 @@ dependencies = [
  "once_cell",
  "publaryn-core",
  "rand 0.10.1",
- "reqwest 0.13.3",
+ "reqwest 0.13.4",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -3347,7 +3347,7 @@ dependencies = [
 
 [[package]]
 name = "publaryn-core"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "chrono",
  "hex",
@@ -3367,7 +3367,7 @@ dependencies = [
 
 [[package]]
 name = "publaryn-search"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3384,7 +3384,7 @@ dependencies = [
 
 [[package]]
 name = "publaryn-test-utils"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -3404,7 +3404,7 @@ dependencies = [
 
 [[package]]
 name = "publaryn-workers"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3693,9 +3693,9 @@ dependencies = [
 
 [[package]]
 name = "reqwest"
-version = "0.13.3"
+version = "0.13.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62e0021ea2c22aed41653bc7e1419abb2c97e038ff2c33d0e1309e49a97deec0"
+checksum = "219c5811de6525e5416c7d5d53bb656d3afdbc6c5af816e0802bcfa42dbdc1c3"
 dependencies = [
  "base64",
  "bytes",
@@ -3869,7 +3869,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3940,7 +3940,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4118,9 +4118,9 @@ dependencies = [
 
 [[package]]
 name = "serde_json"
-version = "1.0.149"
+version = "1.0.150"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "83fc039473c5595ace860d8c4fafa220ff474b3fc6bfdb4293327f1a37e94d86"
+checksum = "e8014e44b4736ed0538adeecded0fce2a272f22dc9578a7eb6b2d9993c74cfb9"
 dependencies = [
  "itoa",
  "memchr",
@@ -4313,7 +4313,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4655,9 +4655,9 @@ dependencies = [
 
 [[package]]
 name = "tar"
-version = "0.4.45"
+version = "0.4.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22692a6476a21fa75fdfc11d452fda482af402c008cdbaf3476414e122040973"
+checksum = "3f6221d9a6003c78398e3b239969f352578258df48c8eb051caadae0015bc840"
 dependencies = [
  "filetime",
  "libc",
@@ -4674,7 +4674,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4938,9 +4938,9 @@ dependencies = [
 
 [[package]]
 name = "tower-http"
-version = "0.6.10"
+version = "0.6.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "68d6fdd9f81c2819c9a8b0e0cd91660e7746a8e6ea2ba7c6b2b057985f6bcb51"
+checksum = "4cfcf7e2740e6fc6d4d688b4ef00650406bb94adf4731e43c096c3a19fe40840"
 dependencies = [
  "async-compression",
  "bitflags",
@@ -5215,9 +5215,9 @@ dependencies = [
 
 [[package]]
 name = "uuid"
-version = "1.23.1"
+version = "1.23.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ddd74a9687298c6858e9b88ec8935ec45d22e8fd5e6394fa1bd4e99a87789c76"
+checksum = "d258b83ceec21034727ecee8c382cfa6c3e133699b0742c64571814fb420c9f7"
 dependencies = [
  "getrandom 0.4.2",
  "js-sys",
@@ -5493,7 +5493,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
