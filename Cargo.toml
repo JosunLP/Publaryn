@@ -28,7 +28,7 @@ tokio = { version = "1.52.3", features = ["full"] }
 axum = { version = "0.8.9", features = ["macros", "multipart"] }
 axum-extra = { version = "0.12.6", features = ["typed-header"] }
 tower = { version = "0.5.3" }
-tower-http = { version = "0.6.10", features = ["cors", "trace", "compression-gzip", "request-id", "timeout", "fs"] }
+tower-http = { version = "0.6.11", features = ["cors", "trace", "compression-gzip", "request-id", "timeout", "fs"] }
 hyper = { version = "1" }
 
 # Database
@@ -47,7 +47,7 @@ anyhow = "1"
 
 # UUID and time
 uuid = { version = "1", features = ["v4", "serde"] }
-chrono = { version = "0.4.44", features = ["serde"] }
+chrono = { version = "0.4.45", features = ["serde"] }
 
 # Crypto & security
 argon2 = "0.5"
@@ -85,7 +85,7 @@ fred = { version = "10.1.0", features = ["enable-rustls", "enable-native-tls"] }
 lettre = { version = "0.11.21", features = ["tokio1-native-tls", "builder", "smtp-transport"] }
 
 # HTTP client
-reqwest = { version = "0.13.3", features = ["json", "rustls"] }
+reqwest = { version = "0.13.4", features = ["json", "rustls"] }
 
 # OpenAPI
 utoipa = { version = "5.5.0", features = ["axum_extras", "chrono", "uuid"] }
