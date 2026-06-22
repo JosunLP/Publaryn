@@ -1,6 +1,6 @@
 [package]
 name = "publaryn-adapter-nuget"
-version = "1.1.2"
+version = "1.1.3"
 edition = "2021"
 description = "Publaryn ecosystem adapter: nuget"
 license.workspace = true
