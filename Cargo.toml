@@ -28,7 +28,7 @@ tokio = { version = "1.52.3", features = ["full"] }
 axum = { version = "0.8.9", features = ["macros", "multipart"] }
 axum-extra = { version = "0.12.6", features = ["typed-header"] }
 tower = { version = "0.5.3" }
-tower-http = { version = "0.6.11", features = ["cors", "trace", "compression-gzip", "request-id", "timeout", "fs"] }
+tower-http = { version = "0.7.0", features = ["cors", "trace", "compression-gzip", "request-id", "timeout", "fs"] }
 hyper = { version = "1" }
 
 # Database
@@ -92,7 +92,7 @@ utoipa = { version = "5.5.0", features = ["axum_extras", "chrono", "uuid"] }
 utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
 
 # Misc utilities
-itertools = "0.14.0"
+itertools = "0.15.0"
 regex = "1.12.3"
 url = "2.5.8"
 mime = "0.3"
