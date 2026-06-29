@@ -130,7 +130,7 @@ jobs:
           bun-version: 1.3.12
 
       - name: Restore Bun cache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-${{ hashFiles('frontend/bun.lock',
@@ -160,7 +160,7 @@ jobs:
           bun-version: 1.3.12
 
       - name: Restore Bun cache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-${{ hashFiles('frontend/bun.lock',
@@ -190,7 +190,7 @@ jobs:
           bun-version: 1.3.12
 
       - name: Restore Bun cache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-${{ hashFiles('frontend/bun.lock',
@@ -223,7 +223,7 @@ jobs:
           bun-version: 1.3.12
 
       - name: Restore Bun cache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-docs-${{ hashFiles('docs/bun.lock',
